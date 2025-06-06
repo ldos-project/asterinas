@@ -1,12 +1,16 @@
+<p style="font-size: 1.875em; text-align: center">
+<b>
+This is a fork of the <a href="https://github.com/asterinas/asterinas">Asterinas project repository</a>. This is not the original development repository of this kernel.
+</b>
+</p>
+
 <p align="center">
     <img src="docs/src/images/logo_en.svg" alt="asterinas-logo" width="620"><br>
     A secure, fast, and general-purpose OS kernel written in Rust and compatible with Linux<br/>
-    <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml/badge.svg?event=push" alt="Test x86-64" style="max-width: 100%;"></a>
-    <a href="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml/badge.svg?event=push" alt="Test riscv64" style="max-width: 100%;"></a>
-    <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml/badge.svg" alt="Test Intel TDX" style="max-width: 100%;"></a>
-    <a href="https://asterinas.github.io/benchmark/x86-64/"><img src="https://github.com/asterinas/asterinas/actions/workflows/benchmark_x86.yml/badge.svg" alt="Benchmark x86-64" style="max-width: 100%;"></a>
-    <br/>
 </p>
+
+
+
 
 English | [中文版](README_CN.md) | [日本語](README_JP.md)
 
