@@ -1,0 +1,10 @@
+# This file defines the code owners of the Asterinas main repo
+#
+# Feel free to volunteer as a code owner
+# when you have contributed enough to and acquired enough knowledge
+# of a specific sub-project/sub-system/component/module.
+
+#=============================================================================
+# The root code owners (maintainers)
+#=============================================================================
+* @ldos-project/clean-slate-team
