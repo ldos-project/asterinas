@@ -35,12 +35,12 @@ FROM build-qemu AS qemu
 # The libslirp dependency is for QEMU's network backend.
 WORKDIR /root
 
-RUN wget -O qemu.tar.xz https://download.qemu.org/qemu-9.1.0.tar.xz \
+RUN wget -O qemu.tar.xz https://download.qemu.org/qemu-10.0.2.tar.xz \
     && mkdir /root/qemu \
     && tar xf qemu.tar.xz --strip-components=1 -C /root/qemu \
     && rm qemu.tar.xz
 WORKDIR /root/qemu
-RUN ./configure --target-list=x86_64-softmmu --prefix=/usr/local/qemu --enable-slirp \
+RUN ./configure --target-list=x86_64-softmmu,riscv64-softmmu --prefix=/usr/local/qemu --enable-slirp \
     && make -j \
     && make install
 WORKDIR /root
@@ -98,7 +98,7 @@ WORKDIR /root
 RUN git clone --single-branch -b asterinas/2.12 https://github.com/asterinas/grub.git \
     && git -C grub checkout 0633bc8
 # Fetch and install the Unicode font data for grub.
-RUN wget -O unifont.pcf.gz https://unifoundry.com/pub/unifont/unifont-15.1.04/font-builds/unifont-15.1.04.pcf.gz \
+RUN wget -O unifont.pcf.gz https://ftp.gnu.org/gnu/unifont/unifont-15.1.04/unifont-15.1.04.pcf.gz \
     && mkdir -pv /usr/share/fonts/unifont \
     && gunzip -c unifont.pcf.gz > /usr/share/fonts/unifont/unifont.pcf \
     && rm unifont.pcf.gz

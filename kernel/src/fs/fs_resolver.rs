@@ -112,7 +112,7 @@ impl FsResolver {
             );
         }
 
-        if creation_flags.contains(CreationFlags::O_TRUNC) {
+        if inode_type.is_regular_file() && creation_flags.contains(CreationFlags::O_TRUNC) {
             target_dentry.resize(0)?;
         }
         InodeHandle::new(target_dentry, open_args.access_mode, open_args.status_flags)
@@ -510,7 +510,7 @@ pub fn split_path(path: &str) -> (&str, &str) {
     let file_name = path
         .split_inclusive('/')
         .filter(|&x| x != "/")
-        .last()
+        .next_back()
         .unwrap_or(".");
 
     let mut split = path.trim_end_matches('/').rsplitn(2, '/');

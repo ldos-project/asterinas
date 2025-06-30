@@ -2,6 +2,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use aster_rights::ReadDupOp;
 use takeable::Takeable;
 
 use super::{
@@ -11,20 +12,31 @@ use super::{
 };
 use crate::{
     events::IoEvents,
-    fs::file_handle::FileLike,
+    fs::{file_handle::FileLike, utils::EndpointState},
+    match_sock_option_mut,
     net::socket::{
+        options::{PeerCred, PeerGroups, SocketOption},
         private::SocketPrivate,
-        unix::UnixSocketAddr,
-        util::{send_recv_flags::SendRecvFlags, socket_addr::SocketAddr, MessageHeader},
-        SockShutdownCmd, Socket,
+        unix::{cred::SocketCred, CUserCred, UnixSocketAddr},
+        util::{
+            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+            MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
+        },
+        Socket,
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
+    process::{
+        signal::{PollHandle, Pollable, Pollee},
+        Gid,
+    },
     util::{MultiRead, MultiWrite},
 };
 
 pub struct UnixStreamSocket {
     state: RwMutex<Takeable<State>>,
+    options: RwMutex<OptionSet>,
+
+    pollee: Pollee,
     is_nonblocking: AtomicBool,
 }
 
@@ -32,13 +44,22 @@ impl UnixStreamSocket {
     pub(super) fn new_init(init: Init, is_nonblocking: bool) -> Arc<Self> {
         Arc::new(Self {
             state: RwMutex::new(Takeable::new(State::Init(init))),
+            options: RwMutex::new(OptionSet::new()),
+            pollee: Pollee::new(),
             is_nonblocking: AtomicBool::new(is_nonblocking),
         })
     }
 
-    pub(super) fn new_connected(connected: Connected, is_nonblocking: bool) -> Arc<Self> {
+    pub(super) fn new_connected(
+        connected: Connected,
+        options: OptionSet,
+        is_nonblocking: bool,
+    ) -> Arc<Self> {
+        let cloned_pollee = connected.cloned_pollee();
         Arc::new(Self {
             state: RwMutex::new(Takeable::new(State::Connected(connected))),
+            options: RwMutex::new(options),
+            pollee: cloned_pollee,
             is_nonblocking: AtomicBool::new(is_nonblocking),
         })
     }
@@ -50,16 +71,108 @@ enum State {
     Connected(Connected),
 }
 
+impl State {
+    pub(self) fn check_io_events(&self) -> IoEvents {
+        let mut events = IoEvents::empty();
+
+        let is_read_shutdown = self.is_read_shutdown();
+        let is_write_shutdown = self.is_write_shutdown();
+
+        if is_read_shutdown {
+            // The socket is shut down in one direction: the remote socket has shut down for
+            // writing or the local socket has shut down for reading.
+            events |= IoEvents::RDHUP | IoEvents::IN;
+
+            if is_write_shutdown {
+                // The socket is shut down in both directions. Neither reading nor writing is
+                // possible.
+                events |= IoEvents::HUP;
+            }
+        }
+
+        if is_write_shutdown && !matches!(self, State::Listen(_)) {
+            // The socket is shut down in another direction: The remote socket has shut down for
+            // reading or the local socket has shut down for writing.
+            events |= IoEvents::OUT;
+        }
+
+        events |= match self {
+            State::Init(init) => init.check_io_events(),
+            State::Listen(listener) => listener.check_io_events(),
+            State::Connected(connected) => connected.check_io_events(),
+        };
+
+        events
+    }
+
+    fn is_read_shutdown(&self) -> bool {
+        match self {
+            State::Init(init) => init.is_read_shutdown(),
+            State::Listen(listener) => listener.is_read_shutdown(),
+            State::Connected(connected) => connected.is_read_shutdown(),
+        }
+    }
+
+    fn is_write_shutdown(&self) -> bool {
+        match self {
+            State::Init(init) => init.is_write_shutdown(),
+            State::Listen(listener) => listener.is_write_shutdown(),
+            State::Connected(connected) => connected.is_write_shutdown(),
+        }
+    }
+
+    pub(self) fn peer_cred(&self) -> Option<CUserCred> {
+        match self {
+            Self::Init(_) => None,
+            Self::Listen(listener) => Some(listener.cred().to_c_user_cred()),
+            Self::Connected(connected) => Some(connected.peer_cred().to_c_user_cred()),
+        }
+    }
+
+    pub(self) fn peer_groups(&self) -> Result<Arc<[Gid]>> {
+        match self {
+            State::Init(_) => {
+                return_errno_with_message!(Errno::ENODATA, "the socket does not have peer groups")
+            }
+            State::Listen(listener) => Ok(listener.cred().groups()),
+            State::Connected(connected) => Ok(connected.peer_cred().groups()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct OptionSet {
+    socket: SocketOptionSet,
+}
+
+impl OptionSet {
+    pub(super) fn new() -> Self {
+        Self {
+            socket: SocketOptionSet::new_unix_stream(),
+        }
+    }
+}
+
 impl UnixStreamSocket {
     pub fn new(is_nonblocking: bool) -> Arc<Self> {
         Self::new_init(Init::new(), is_nonblocking)
     }
 
     pub fn new_pair(is_nonblocking: bool) -> (Arc<Self>, Arc<Self>) {
-        let (conn_a, conn_b) = Connected::new_pair(None, None, None, None);
+        let cred = SocketCred::<ReadDupOp>::new_current();
+
+        let (conn_a, conn_b) = Connected::new_pair(
+            None,
+            None,
+            EndpointState::default(),
+            EndpointState::default(),
+            cred.dup().restrict(),
+            cred.restrict(),
+        );
+        let options = OptionSet::new();
         (
-            Self::new_connected(conn_a, is_nonblocking),
-            Self::new_connected(conn_b, is_nonblocking),
+            Self::new_connected(conn_a, options.clone(), is_nonblocking),
+            Self::new_connected(conn_b, options, is_nonblocking),
         )
     }
 
@@ -107,7 +220,7 @@ impl UnixStreamSocket {
                 }
             };
 
-            let connected = match backlog.push_incoming(init) {
+            let connected = match backlog.push_incoming(init, self.pollee.clone()) {
                 Ok(connected) => connected,
                 Err((err, init)) => return (State::Init(init), Err(err)),
             };
@@ -126,14 +239,14 @@ impl UnixStreamSocket {
     }
 }
 
+pub(super) const SHUT_READ_EVENTS: IoEvents =
+    IoEvents::RDHUP.union(IoEvents::IN).union(IoEvents::HUP);
+pub(super) const SHUT_WRITE_EVENTS: IoEvents = IoEvents::OUT.union(IoEvents::HUP);
+
 impl Pollable for UnixStreamSocket {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        let inner = self.state.read();
-        match inner.as_ref() {
-            State::Init(init) => init.poll(mask, poller),
-            State::Listen(listen) => listen.poll(mask, poller),
-            State::Connected(connected) => connected.poll(mask, poller),
-        }
+        self.pollee
+            .poll_with(mask, poller, || self.state.read().check_io_events())
     }
 }
 
@@ -200,7 +313,7 @@ impl Socket for UnixStreamSocket {
                 }
             };
 
-            let listener = match init.listen(backlog) {
+            let listener = match init.listen(backlog, self.pollee.clone()) {
                 Ok(listener) => listener,
                 Err((err, init)) => {
                     return (State::Init(init), Err(err));
@@ -217,8 +330,8 @@ impl Socket for UnixStreamSocket {
 
     fn shutdown(&self, cmd: SockShutdownCmd) -> Result<()> {
         match self.state.read().as_ref() {
-            State::Init(init) => init.shutdown(cmd),
-            State::Listen(listen) => listen.shutdown(cmd),
+            State::Init(init) => init.shutdown(cmd, &self.pollee),
+            State::Listen(listen) => listen.shutdown(cmd, &self.pollee),
             State::Connected(connected) => connected.shutdown(cmd),
         }
 
@@ -258,8 +371,25 @@ impl Socket for UnixStreamSocket {
         }
 
         let MessageHeader {
-            control_message, ..
+            control_message,
+            addr,
         } = message_header;
+
+        // According to the Linux man pages, `EISCONN` _may_ be returned when the destination
+        // address is specified for a connection-mode socket. In practice, `sendmsg` on UNIX stream
+        // sockets will fail due to that. We follow the same behavior as the Linux implementation.
+        if addr.is_some() {
+            match self.state.read().as_ref() {
+                State::Init(_) | State::Listen(_) => return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "sending to a specific address is not allowed on UNIX stream sockets"
+                ),
+                State::Connected(_) => return_errno_with_message!(
+                    Errno::EISCONN,
+                    "sending to a specific address is not allowed on UNIX stream sockets"
+                ),
+            }
+        }
 
         if control_message.is_some() {
             // TODO: Support sending control message
@@ -287,4 +417,71 @@ impl Socket for UnixStreamSocket {
 
         Ok((received_bytes, message_header))
     }
+
+    fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
+        let state = self.state.read();
+        let options = self.options.read();
+
+        // Deal with UNIX-socket-specific socket-level options
+        match do_unix_getsockopt(option, state.as_ref()) {
+            Err(err) if err.error() == Errno::ENOPROTOOPT => (),
+            res => return res,
+        }
+
+        // Deal with socket-level options
+        match options.socket.get_option(option, state.as_ref()) {
+            Err(err) if err.error() == Errno::ENOPROTOOPT => (),
+            res => return res,
+        }
+
+        // TODO: Deal with socket options from other levels
+        warn!("only socket-level options are supported");
+
+        return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to get is unknown")
+    }
+
+    fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
+        let mut state = self.state.write();
+        let mut options = self.options.write();
+
+        match options.socket.set_option(option, state.as_mut()) {
+            Ok(_) => Ok(()),
+            Err(err) if err.error() == Errno::ENOPROTOOPT => {
+                // TODO: Deal with socket options from other levels
+                warn!("only socket-level options are supported");
+                return_errno_with_message!(
+                    Errno::ENOPROTOOPT,
+                    "the socket option to get is unknown"
+                )
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
+
+fn do_unix_getsockopt(option: &mut dyn SocketOption, state: &State) -> Result<()> {
+    match_sock_option_mut!(option, {
+        socket_peer_cred: PeerCred => {
+            let peer_cred = state.peer_cred().unwrap_or_else(CUserCred::new_unknown);
+            socket_peer_cred.set(peer_cred);
+        },
+        socket_peer_groups: PeerGroups => {
+            let groups = state.peer_groups()?;
+            socket_peer_groups.set(groups);
+        },
+        _ => return_errno_with_message!(
+            Errno::ENOPROTOOPT,
+            "the socket option to get is not UNIX-socket-specific"
+        )
+    });
+
+    Ok(())
+}
+
+impl GetSocketLevelOption for State {
+    fn is_listening(&self) -> bool {
+        matches!(self, Self::Listen(_))
+    }
+}
+
+impl SetSocketLevelOption for State {}

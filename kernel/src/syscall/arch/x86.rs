@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::syscall::{
+//! System call dispatch in the x86 architecture.
+
+use super::{
     accept::{sys_accept, sys_accept4},
     access::{sys_access, sys_faccessat, sys_faccessat2},
     alarm::sys_alarm,
@@ -15,10 +17,13 @@ use crate::syscall::{
     chroot::sys_chroot,
     clock_gettime::sys_clock_gettime,
     clone::{sys_clone, sys_clone3},
-    close::sys_close,
+    close::{sys_close, sys_close_range},
     connect::sys_connect,
     dup::{sys_dup, sys_dup2, sys_dup3},
-    epoll::{sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_wait},
+    epoll::{
+        sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2,
+        sys_epoll_wait,
+    },
     eventfd::{sys_eventfd, sys_eventfd2},
     execve::{sys_execve, sys_execveat},
     exit::sys_exit,
@@ -66,6 +71,7 @@ use crate::syscall::{
     mmap::sys_mmap,
     mount::sys_mount,
     mprotect::sys_mprotect,
+    mremap::sys_mremap,
     msync::sys_msync,
     munmap::sys_munmap,
     nanosleep::{sys_clock_nanosleep, sys_nanosleep},
@@ -181,6 +187,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_ACCESS = 21            => sys_access(args[..2]);
     SYS_PIPE = 22              => sys_pipe(args[..1]);
     SYS_SELECT = 23            => sys_select(args[..5]);
+    SYS_MREMAP = 25            => sys_mremap(args[..5]);
     SYS_MSYNC = 26             => sys_msync(args[..3]);
     SYS_SCHED_YIELD = 24       => sys_sched_yield(args[..0]);
     SYS_MADVISE = 28           => sys_madvise(args[..3]);
@@ -368,5 +375,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_PWRITEV2 = 328         => sys_pwritev2(args[..5]);
     SYS_STATX = 332            => sys_statx(args[..5]);
     SYS_CLONE3 = 435           => sys_clone3(args[..2], &user_ctx);
+    SYS_CLOSE_RANGE = 436      => sys_close_range(args[..3]);
     SYS_FACCESSAT2 = 439       => sys_faccessat2(args[..4]);
+    SYS_EPOLL_PWAIT2 = 441     => sys_epoll_pwait2(args[..5]);
 }

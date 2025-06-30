@@ -37,7 +37,7 @@ pub fn spawn_init_process(
     set_session_and_group(&process);
 
     // FIXME: This should be done by the userspace init process.
-    (crate::device::tty::get_n_tty().clone() as Arc<dyn Terminal>).set_control(&process)?;
+    (crate::device::tty::system_console().clone() as Arc<dyn Terminal>).set_control(&process)?;
 
     process.run();
 
@@ -118,8 +118,8 @@ fn create_init_task(
     };
 
     let mut user_ctx = UserContext::default();
-    user_ctx.set_instruction_pointer(elf_load_info.entry_point() as _);
-    user_ctx.set_stack_pointer(elf_load_info.user_stack_top() as _);
+    user_ctx.set_instruction_pointer(elf_load_info.entry_point as _);
+    user_ctx.set_stack_pointer(elf_load_info.user_stack_top as _);
     let thread_name = Some(ThreadName::new_from_executable_path(executable_path)?);
     let thread_builder = PosixThreadBuilder::new(tid, Arc::new(user_ctx), credentials)
         .thread_name(thread_name)

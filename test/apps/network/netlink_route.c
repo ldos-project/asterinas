@@ -4,7 +4,7 @@
 #include <netlink/route/addr.h>
 #include <unistd.h>
 
-#include "test.h"
+#include "../test.h"
 
 #define ETHER_NAME "eth0"
 #define LOOPBACK_NAME "lo"
@@ -146,18 +146,20 @@ int find_new_addr_until_done(char *buffer, size_t len, int *found_new_addr)
 	return 0;
 }
 
+#define BUFFER_SIZE 8192
+char buffer[BUFFER_SIZE];
+
+struct nl_req {
+	struct nlmsghdr hdr;
+	struct ifaddrmsg ifa;
+	struct nlattr ahdr;
+	char abuf[4];
+};
+
 FN_TEST(get_addr_error)
 {
-#define BUFFER_SIZE 8192
-
-	struct nl_req {
-		struct nlmsghdr hdr;
-		struct ifaddrmsg ifa;
-	};
-
 	int sock_fd;
 	struct sockaddr_nl sa;
-	char buffer[BUFFER_SIZE];
 
 	sock_fd = TEST_SUCC(socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE));
 
@@ -184,41 +186,68 @@ FN_TEST(get_addr_error)
 			 ((struct nlmsgerr *)NLMSG_DATA(buffer))->error ==
 				 -EOPNOTSUPP);
 
+	int found_new_addr;
+#define TEST_KERNEL_RESPONSE                                              \
+	found_new_addr = 0;                                               \
+	while (1) {                                                       \
+		size_t recv_len =                                         \
+			TEST_SUCC(recv(sock_fd, buffer, BUFFER_SIZE, 0)); \
+                                                                          \
+		int found_done = TEST_SUCC(find_new_addr_until_done(      \
+			buffer, recv_len, &found_new_addr));              \
+                                                                          \
+		if (found_done != 0) {                                    \
+			break;                                            \
+		}                                                         \
+	}
+
 	// 2. Invalid required index
 	req.hdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP | NLM_F_ACK;
 	req.ifa.ifa_index = 9999;
 	TEST_SUCC(sendmsg(sock_fd, &msg, 0));
-
-	int found_new_addr = 0;
-	while (1) {
-		size_t recv_len =
-			TEST_SUCC(recv(sock_fd, buffer, BUFFER_SIZE, 0));
-
-		int found_done = TEST_SUCC(find_new_addr_until_done(
-			buffer, recv_len, &found_new_addr));
-
-		if (found_done != 0) {
-			break;
-		}
-	}
+	TEST_KERNEL_RESPONSE;
 
 	// 3. Invalid required family
 	req.ifa.ifa_family = 255;
 	req.ifa.ifa_index = 0;
 	TEST_SUCC(sendmsg(sock_fd, &msg, 0));
+	TEST_KERNEL_RESPONSE;
 
-	found_new_addr = 0;
-	while (1) {
-		size_t recv_len =
-			TEST_SUCC(recv(sock_fd, buffer, BUFFER_SIZE, 0));
+	// 4. Unknown attribute
+	req.ahdr.nla_type = 0xdeef;
+	req.ahdr.nla_len = sizeof(req.ahdr) + sizeof(req.abuf);
+	req.hdr.nlmsg_len = sizeof(req);
+	iov = (struct iovec){ &req, sizeof(req) };
+	TEST_SUCC(sendmsg(sock_fd, &msg, 0));
+	TEST_KERNEL_RESPONSE;
 
-		int found_done = TEST_SUCC(find_new_addr_until_done(
-			buffer, recv_len, &found_new_addr));
+	TEST_SUCC(close(sock_fd));
+}
+END_TEST()
 
-		if (found_done != 0) {
-			break;
-		}
-	}
+FN_TEST(bufsize_msgsize)
+{
+	int sock_fd;
+	struct nl_req req;
+
+	sock_fd = TEST_SUCC(
+		socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE));
+
+	memset(&req, 0, sizeof(req));
+	req.hdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+	req.hdr.nlmsg_type = RTM_GETADDR;
+	req.hdr.nlmsg_flags = NLM_F_REQUEST;
+	req.hdr.nlmsg_seq = 1;
+	req.ifa.ifa_family = AF_UNSPEC;
+
+	// Send the request
+	TEST_RES(send(sock_fd, &req, sizeof(req), 0), _ret == sizeof(req));
+
+	// The buffer size is too short, but it still succeeds
+	TEST_SUCC(recv(sock_fd, buffer, 1, 0));
+
+	// The truncated message is now lost
+	TEST_ERRNO(recv(sock_fd, buffer, BUFFER_SIZE, 0), EAGAIN);
 
 	TEST_SUCC(close(sock_fd));
 }

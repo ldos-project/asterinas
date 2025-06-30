@@ -8,8 +8,8 @@ use core::{
 };
 
 use crate::{
-    arch::boot::DEVICE_TREE,
-    cpu::{CpuId, PinCurrentCpu},
+    arch::{self, boot::DEVICE_TREE},
+    cpu::{CpuId, IsaExtensions, PinCurrentCpu},
     timer::INTERRUPT_CALLBACKS,
     trap,
 };
@@ -67,7 +67,7 @@ pub(super) unsafe fn init() {
 }
 
 pub(super) fn handle_timer_interrupt() {
-    let irq_guard = trap::disable_local();
+    let irq_guard = trap::irq::disable_local();
     if irq_guard.current_cpu() == CpuId::bsp() {
         crate::timer::jiffies::ELAPSED.fetch_add(1, Ordering::Relaxed);
     }
@@ -107,10 +107,7 @@ fn set_next_timer_sstc() {
 }
 
 fn is_sstc_enabled() -> bool {
-    let Some(misa) = riscv::register::misa::read() else {
-        return false;
-    };
-    misa.has_extension('S')
+    arch::cpu::has_extensions(IsaExtensions::SSTC)
 }
 
 fn get_next_when() -> u64 {

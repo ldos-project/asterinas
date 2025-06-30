@@ -69,16 +69,26 @@ impl TryFrom<SchedPolicy> for LinuxSchedAttr {
                 ..Default::default()
             },
 
+            // The SCHED_IDLE policy is mapped to the highest nice value of
+            // `SchedPolicy::Fair` instead of `SchedPolicy::Idle`. Tasks of the
+            // latter policy are invisible to the user API.
+            SchedPolicy::Fair(Nice::MAX) => LinuxSchedAttr {
+                sched_policy: SCHED_IDLE,
+                ..Default::default()
+            },
+
             SchedPolicy::Fair(nice) => LinuxSchedAttr {
                 sched_policy: SCHED_NORMAL,
                 sched_nice: nice.value().get().into(),
                 ..Default::default()
             },
 
-            SchedPolicy::Idle => LinuxSchedAttr {
-                sched_policy: SCHED_IDLE,
-                ..Default::default()
-            },
+            SchedPolicy::Idle => {
+                return Err(Error::with_message(
+                    Errno::EACCES,
+                    "attr for idle tasks are not accessible",
+                ))
+            }
         })
     }
 }
@@ -112,7 +122,10 @@ impl TryFrom<LinuxSchedAttr> for SchedPolicy {
                     .map_err(|msg| Error::with_message(Errno::EINVAL, msg))?,
             )),
 
-            SCHED_IDLE => SchedPolicy::Idle,
+            // The SCHED_IDLE policy is mapped to the highest nice value of
+            // `SchedPolicy::Fair` instead of `SchedPolicy::Idle`. Tasks of the
+            // latter policy are invisible to the user API.
+            SCHED_IDLE => SchedPolicy::Fair(Nice::MAX),
 
             _ => {
                 return Err(Error::with_message(
@@ -183,9 +196,9 @@ pub(super) fn access_sched_attr_with<T>(
     f: impl FnOnce(&SchedAttr) -> Result<T>,
 ) -> Result<T> {
     match tid {
-        0 => f(&ctx.thread.sched_attr()),
+        0 => f(ctx.thread.sched_attr()),
         _ if tid > (i32::MAX as u32) => Err(Error::with_message(Errno::EINVAL, "invalid tid")),
-        _ => f(&thread_table::get_thread(tid)
+        _ => f(thread_table::get_thread(tid)
             .ok_or_else(|| Error::with_message(Errno::ESRCH, "thread does not exist"))?
             .sched_attr()),
     }

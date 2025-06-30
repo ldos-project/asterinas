@@ -5,13 +5,13 @@
 pub mod boot;
 pub(crate) mod cpu;
 pub mod device;
-pub mod iommu;
+pub(crate) mod iommu;
 pub(crate) mod irq;
 pub(crate) mod mm;
 pub(crate) mod pci;
 pub mod qemu;
-pub mod serial;
-pub mod task;
+pub(crate) mod serial;
+pub(crate) mod task;
 pub mod timer;
 pub mod trap;
 
@@ -61,6 +61,7 @@ pub fn read_random() -> Option<u64> {
 }
 
 pub(crate) fn enable_cpu_features() {
+    cpu::extension::init();
     unsafe {
         // We adopt a lazy approach to enable the floating-point unit; it's not
         // enabled before the first FPU trap.

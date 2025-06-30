@@ -87,6 +87,13 @@ impl ProcessVmarGuard<'_> {
         self.inner.as_ref().unwrap()
     }
 
+    /// Returns a reference to the process VMAR if it exists.
+    ///
+    /// Returns `None` if the process has exited and its VMAR has been dropped.
+    pub fn as_ref(&self) -> Option<&Vmar<Full>> {
+        self.inner.as_ref()
+    }
+
     /// Sets a new VMAR for the binding process.
     ///
     /// If the `new_vmar` is `None`, this method will remove the
@@ -171,7 +178,7 @@ impl ProcessVm {
     pub fn clear_and_map(&self) {
         let root_vmar = self.lock_root_vmar();
         root_vmar.unwrap().clear().unwrap();
-        self.heap.alloc_and_map_vm(&root_vmar.unwrap()).unwrap();
+        self.heap.alloc_and_map_vm(root_vmar.unwrap()).unwrap();
     }
 }
 

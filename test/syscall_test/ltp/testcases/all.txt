@@ -133,7 +133,7 @@ close01
 close02
 
 # close_range01
-# close_range02
+close_range02
 
 confstr01
 
@@ -190,10 +190,10 @@ epoll_wait04
 # epoll_wait06
 epoll_wait07
 # epoll_pwait01
-# epoll_pwait02
+epoll_pwait02
 # epoll_pwait03
-# epoll_pwait04
-# epoll_pwait05
+epoll_pwait04
+epoll_pwait05
 
 # eventfd01
 # eventfd02
@@ -883,11 +883,11 @@ mprotect05
 # mq_timedsend01
 # mq_unlink01
 
-# mremap01
-# mremap02
-# mremap03
+mremap01
+mremap02
+mremap03
 # mremap04
-# mremap05
+mremap05
 # mremap06
 
 # mseal01
@@ -924,8 +924,8 @@ mprotect05
 
 msync01
 msync02
-# msync03
-# msync04
+# msync03 # FIXME: This fails because the heap place holder is treated as mapped. Fix after https://github.com/asterinas/asterinas/pull/1999.
+# msync04 # TODO: support `/proc/self/pagemap` and `/proc/kpageflags`.
 
 # munlock01
 # munlock02

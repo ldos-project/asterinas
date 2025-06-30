@@ -27,6 +27,7 @@ sleep 0.2
 
 ./socketpair
 ./sockoption
+./sockoption_unix
 ./listen_backlog
 ./send_buf_full
 ./tcp_err
@@ -36,5 +37,6 @@ sleep 0.2
 
 ./netlink_route
 ./rtnl_err
+./uevent_err
 
 echo "All network test passed"

@@ -15,7 +15,6 @@ use crate::{
         page_table::PageTableEntryTrait,
         Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr, PAGE_SIZE,
     },
-    util::marker::SameSizeAs,
     Pod,
 };
 
@@ -30,6 +29,7 @@ impl PagingConstsTrait for PagingConsts {
     const BASE_PAGE_SIZE: usize = 4096;
     const NR_LEVELS: PagingLevel = 4;
     const ADDRESS_WIDTH: usize = 48;
+    const VA_SIGN_EXT: bool = true;
     const HIGHEST_TRANSLATION_LEVEL: PagingLevel = 2;
     const PTE_SIZE: usize = core::mem::size_of::<PageTableEntry>();
 }
@@ -160,9 +160,6 @@ macro_rules! parse_flags {
         ($val as usize & $from.bits() as usize) >> $from.bits().ilog2() << $to.bits().ilog2()
     };
 }
-
-// SAFETY: `PageTableEntry` has the same size as `usize`
-unsafe impl SameSizeAs<usize> for PageTableEntry {}
 
 impl PodOnce for PageTableEntry {}
 

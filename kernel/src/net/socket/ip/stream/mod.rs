@@ -10,6 +10,7 @@ use connected::{close_and_linger, ConnectedStream};
 use connecting::{ConnResult, ConnectingStream};
 use init::InitStream;
 use listen::ListenStream;
+use observer::StreamObserver;
 use options::{
     Congestion, DeferAccept, Inq, KeepIdle, MaxSegment, NoDelay, SynCnt, UserTimeout, WindowClamp,
     KEEPALIVE_INTERVAL,
@@ -19,8 +20,8 @@ use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
 use super::{
+    addr::UNSPECIFIED_LOCAL_ENDPOINT,
     options::{IpOptionSet, SetIpLevelOption},
-    UNSPECIFIED_LOCAL_ENDPOINT,
 };
 use crate::{
     events::IoEvents,
@@ -32,11 +33,8 @@ use crate::{
             options::{Error as SocketError, SocketOption},
             private::SocketPrivate,
             util::{
-                options::{SetSocketLevelOption, SocketOptionSet},
-                send_recv_flags::SendRecvFlags,
-                shutdown_cmd::SockShutdownCmd,
-                socket_addr::SocketAddr,
-                MessageHeader,
+                options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+                MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
             },
             Socket,
         },
@@ -50,12 +48,9 @@ mod connected;
 mod connecting;
 mod init;
 mod listen;
-mod observer;
+pub(super) mod observer;
 pub mod options;
 mod util;
-
-pub(in crate::net) use self::observer::StreamObserver;
-pub use self::util::CongestionControl;
 
 pub struct StreamSocket {
     // Lock order: `state` first, `options` second
@@ -341,7 +336,6 @@ impl StreamSocket {
         let remote_endpoint = connected_stream.remote_endpoint();
 
         drop(state);
-        self.pollee.invalidate();
         if let Some(iface) = iface_to_poll {
             iface.poll();
         }
@@ -594,10 +588,11 @@ impl Socket for StreamSocket {
             _ => ()
         });
 
+        let state = self.read_updated_state();
         let options = self.options.read();
 
         // Deal with socket-level options
-        match options.socket.get_option(option) {
+        match options.socket.get_option(option, state.as_ref()) {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res,
         }
@@ -671,10 +666,10 @@ impl Socket for StreamSocket {
         let mut options = self.options.write();
 
         // Deal with socket-level options
-        let need_iface_poll = match options.socket.set_option(option, state.as_mut()) {
+        let need_iface_poll = match options.socket.set_option(option, state.as_ref()) {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
-                match options.ip.set_option(option, state.as_mut()) {
+                match options.ip.set_option(option, state.as_ref()) {
                     Err(err) if err.error() == Errno::ENOPROTOOPT => {
                         // Deal with TCP-level options
                         do_tcp_setsockopt(option, &mut options, state.as_mut())?
@@ -803,6 +798,12 @@ impl State {
             State::Connected(ref connected_stream) => Some(connected_stream.iface()),
             State::Listen(ref listen_stream) => Some(listen_stream.iface()),
         }
+    }
+}
+
+impl GetSocketLevelOption for State {
+    fn is_listening(&self) -> bool {
+        matches!(self, Self::Listen(_))
     }
 }
 

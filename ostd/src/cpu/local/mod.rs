@@ -56,7 +56,7 @@ use static_cpu_local::StaticStorage;
 use super::CpuId;
 use crate::{
     mm::{frame::allocator, paddr_to_vaddr, Paddr, PAGE_SIZE},
-    trap::DisabledLocalIrqGuard,
+    trap::irq::DisabledLocalIrqGuard,
 };
 
 /// Dynamically-allocated CPU-local objects.
@@ -162,12 +162,14 @@ impl<'a, T: 'static, S: AnyStorage<T>> Deref for CpuLocalDerefGuard<'a, T, S> {
     }
 }
 
-// SAFETY: At any given time, only one task can access the inner value `T` of a
-// CPU-local variable if `T` is not `Sync`. We guarantee it by disabling the
-// reference to the inner value, or turning off preemptions when creating
-// the reference.
-unsafe impl<T: 'static, S: AnyStorage<T>> Sync for CpuLocal<T, S> {}
-unsafe impl<T: 'static> Send for CpuLocal<T, DynamicStorage<T>> {}
+// SAFETY: Although multiple tasks may access the inner value `T` of a CPU-local
+// variable at different times, only one task can access it at any given moment.
+// We guarantee it by disabling the reference to the inner value, or turning off
+// preemptions when creating the reference. Therefore, if `T` is `Send`, marking
+// `CpuLocal<T, S>` with `Sync` and `Send` only safely transfer ownership of the
+// entire `T` instance between tasks.
+unsafe impl<T: Send + 'static, S: AnyStorage<T>> Sync for CpuLocal<T, S> {}
+unsafe impl<T: Send + 'static> Send for CpuLocal<T, DynamicStorage<T>> {}
 
 // Implement `!Copy` and `!Clone` for `CpuLocal` to ensure memory safety:
 // - Prevent valid instances of `CpuLocal<T, StaticStorage<T>>` from being copied
@@ -322,7 +324,7 @@ mod test {
         crate::cpu_local! {
             static FOO: RefCell<usize> = RefCell::new(1);
         }
-        let irq_guard = crate::trap::disable_local();
+        let irq_guard = crate::trap::irq::disable_local();
         let foo_guard = FOO.get_with(&irq_guard);
         assert_eq!(*foo_guard.borrow(), 1);
         *foo_guard.borrow_mut() = 2;
@@ -335,7 +337,7 @@ mod test {
         crate::cpu_local_cell! {
             static BAR: usize = 3;
         }
-        let _guard = crate::trap::disable_local();
+        let _guard = crate::trap::irq::disable_local();
         assert_eq!(BAR.load(), 3);
         BAR.store(4);
         assert_eq!(BAR.load(), 4);

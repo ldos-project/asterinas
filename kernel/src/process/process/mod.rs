@@ -18,6 +18,7 @@ use super::{
 };
 use crate::{
     prelude::*,
+    process::{status::StopWaitStatus, WaitOptions},
     sched::{AtomicNice, Nice},
     thread::{AsThread, Thread},
     time::clocks::ProfClock,
@@ -600,35 +601,43 @@ impl Process {
         &self.sig_dispositions
     }
 
-    /// Enqueues a process-directed signal. This method should only be used for enqueue kernel
-    /// signal and fault signal.
+    /// Enqueues a process-directed signal.
+    ///
+    /// This method should only be used for enqueue kernel signals and fault signals.
     ///
     /// The signal may be delivered to any one of the threads that does not currently have the
-    /// signal blocked.  If more than one of the threads has the signal unblocked, then this method
+    /// signal blocked. If more than one of the threads have the signal unblocked, then this method
     /// chooses an arbitrary thread to which to deliver the signal.
-    ///
-    /// TODO: restrict these method with access control tool.
+    //
+    // TODO: Restrict this method with the access control tool.
     pub fn enqueue_signal(&self, signal: impl Signal + Clone + 'static) {
         if self.status.is_zombie() {
             return;
         }
 
-        // TODO: check that the signal is not user signal
+        let sig_dispositions = self.sig_dispositions.lock();
 
-        // Enqueue signal to the first thread that does not block the signal
+        // Drop the signal if it's ignored. See explanation at `enqueue_signal_locked`.
+        let signum = signal.num();
+        if sig_dispositions.get(signum).will_ignore(signum) {
+            return;
+        }
+
         let threads = self.tasks.lock();
+
+        // Enqueue the signal to the first thread that does not block the signal.
         for thread in threads.as_slice() {
             let posix_thread = thread.as_posix_thread().unwrap();
             if !posix_thread.has_signal_blocked(signal.num()) {
-                posix_thread.enqueue_signal(Box::new(signal));
+                posix_thread.enqueue_signal_locked(Box::new(signal), sig_dispositions);
                 return;
             }
         }
 
-        // If all threads block the signal, enqueue signal to the main thread
+        // If all threads block the signal, enqueue the signal to the main thread.
         let thread = threads.main();
         let posix_thread = thread.as_posix_thread().unwrap();
-        posix_thread.enqueue_signal(Box::new(signal));
+        posix_thread.enqueue_signal_locked(Box::new(signal), sig_dispositions);
     }
 
     /// Clears the parent death signal.
@@ -662,6 +671,47 @@ impl Process {
     /// Returns a reference to the process status.
     pub fn status(&self) -> &ProcessStatus {
         &self.status
+    }
+
+    /// Stops the process.
+    //
+    // FIXME: `ptrace` is another reason that can cause a process to stop.
+    // Consider extending the method signature to support `ptrace` if necessary.
+    pub fn stop(&self, sig_num: SigNum) {
+        if self.status.stop_status().stop(sig_num) {
+            self.wake_up_parent();
+        }
+    }
+
+    /// Resumes the stopped process.
+    pub fn resume(&self) {
+        if self.status.stop_status().resume() {
+            self.wake_up_parent();
+
+            // Note that the resume function is called by the thread which deals with SIGCONT,
+            // since SIGCONT is handled by any thread in this process, we need to wake
+            // up other stopped threads in the same process.
+            for task in self.tasks.lock().as_slice() {
+                let posix_thread = task.as_posix_thread().unwrap();
+                posix_thread.wake_signalled_waker();
+            }
+        }
+    }
+
+    /// Returns whether the process is stopped.
+    pub fn is_stopped(&self) -> bool {
+        self.status.stop_status().is_stopped()
+    }
+
+    /// Gets and clears the stop status changes for the `wait` syscall.
+    pub(super) fn wait_stopped_or_continued(&self, options: WaitOptions) -> Option<StopWaitStatus> {
+        self.status.stop_status().wait(options)
+    }
+
+    fn wake_up_parent(&self) {
+        let parent_guard = self.parent.lock();
+        let parent = parent_guard.process().upgrade().unwrap();
+        parent.children_wait_queue.wake_all();
     }
 
     // ******************* Subreaper ********************
@@ -705,4 +755,41 @@ impl Process {
             }
         }
     }
+}
+
+/// Enqueues a process-directed kernel signal asynchronously.
+///
+/// This is the asynchronous version of [`Process::enqueue_signal`]. By asynchronous, this method
+/// submits a work item and returns, so this method doesn't sleep and can be used in atomic mode.
+pub fn enqueue_signal_async(process: Weak<Process>, signum: SigNum) {
+    use super::signal::signals::kernel::KernelSignal;
+    use crate::thread::work_queue;
+
+    work_queue::submit_work_func(
+        move || {
+            if let Some(process) = process.upgrade() {
+                process.enqueue_signal(KernelSignal::new(signum));
+            }
+        },
+        work_queue::WorkPriority::High,
+    );
+}
+
+/// Broadcasts a process-directed kernel signal asynchronously.
+///
+/// This is the asynchronous version of [`ProcessGroup::broadcast_signal`]. By asynchronous, this
+/// method submits a work item and returns, so this method doesn't sleep and can be used in atomic
+/// mode.
+pub fn broadcast_signal_async(process_group: Weak<ProcessGroup>, signum: SigNum) {
+    use super::signal::signals::kernel::KernelSignal;
+    use crate::thread::work_queue;
+
+    work_queue::submit_work_func(
+        move || {
+            if let Some(process_group) = process_group.upgrade() {
+                process_group.broadcast_signal(KernelSignal::new(signum));
+            }
+        },
+        work_queue::WorkPriority::High,
+    );
 }

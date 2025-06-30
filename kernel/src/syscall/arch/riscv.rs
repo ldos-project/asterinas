@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::syscall::{
+//! System call dispatch in the RSIC-V architecture.
+
+use super::{
     accept::{sys_accept, sys_accept4},
     access::{sys_faccessat, sys_faccessat2},
     bind::sys_bind,
@@ -13,10 +15,10 @@ use crate::syscall::{
     chroot::sys_chroot,
     clock_gettime::sys_clock_gettime,
     clone::{sys_clone, sys_clone3},
-    close::sys_close,
+    close::{sys_close, sys_close_range},
     connect::sys_connect,
     dup::{sys_dup, sys_dup3},
-    epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait},
+    epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2},
     eventfd::sys_eventfd2,
     execve::{sys_execve, sys_execveat},
     exit::sys_exit,
@@ -60,6 +62,7 @@ use crate::syscall::{
     mmap::sys_mmap,
     mount::sys_mount,
     mprotect::sys_mprotect,
+    mremap::sys_mremap,
     msync::sys_msync,
     munmap::sys_munmap,
     nanosleep::{sys_clock_nanosleep, sys_nanosleep},
@@ -277,6 +280,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_RECVMSG = 212            => sys_recvmsg(args[..3]);
     SYS_BRK = 214                => sys_brk(args[..1]);
     SYS_MUNMAP = 215             => sys_munmap(args[..2]);
+    SYS_MREMAP = 216           => sys_mremap(args[..5]);
     SYS_CLONE = 220              => sys_clone(args[..5], &user_ctx);
     SYS_EXECVE = 221             => sys_execve(args[..3], &mut user_ctx);
     SYS_MMAP = 222               => sys_mmap(args[..6]);
@@ -302,5 +306,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_UTIMENSAT = 412          => sys_utimensat(args[..4]);
     SYS_SEMTIMEDOP = 420         => sys_semtimedop(args[..4]);
     SYS_CLONE3 = 435             => sys_clone3(args[..2], &user_ctx);
+    SYS_CLOSE_RANGE = 436      => sys_close_range(args[..3]);
     SYS_FACCESSAT2 = 439         => sys_faccessat2(args[..4]);
+    SYS_EPOLL_PWAIT2 = 441       => sys_epoll_pwait2(args[..5]);
 }

@@ -3,10 +3,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use aster_bigtcp::wire::IpEndpoint;
-use unbound::BindOptions;
+use bound::BoundDatagram;
+use unbound::{BindOptions, UnboundDatagram};
 
-use self::{bound::BoundDatagram, unbound::UnboundDatagram};
-use super::UNSPECIFIED_LOCAL_ENDPOINT;
+use super::addr::UNSPECIFIED_LOCAL_ENDPOINT;
 use crate::{
     events::IoEvents,
     match_sock_option_mut,
@@ -15,10 +15,8 @@ use crate::{
         private::SocketPrivate,
         util::{
             datagram_common::{select_remote_and_bind, Bound, Inner},
-            options::{SetSocketLevelOption, SocketOptionSet},
-            send_recv_flags::SendRecvFlags,
-            socket_addr::SocketAddr,
-            MessageHeader,
+            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+            MessageHeader, SendRecvFlags, SocketAddr,
         },
         Socket,
     },
@@ -28,10 +26,8 @@ use crate::{
 };
 
 mod bound;
-mod observer;
+pub(super) mod observer;
 mod unbound;
-
-pub(in crate::net) use self::observer::DatagramObserver;
 
 #[derive(Debug, Clone)]
 struct OptionSet {
@@ -227,7 +223,8 @@ impl Socket for DatagramSocket {
             _ => ()
         });
 
-        self.options.read().socket.get_option(option)
+        let inner = self.inner.read();
+        self.options.read().socket.get_option(option, &*inner)
     }
 
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
@@ -254,6 +251,12 @@ impl Socket for DatagramSocket {
                 Ok(())
             }
         }
+    }
+}
+
+impl GetSocketLevelOption for Inner<UnboundDatagram, BoundDatagram> {
+    fn is_listening(&self) -> bool {
+        false
     }
 }
 

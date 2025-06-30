@@ -25,6 +25,8 @@ TESTS ?= \
 	mknod_test \
 	mmap_test \
 	mount_test \
+	mremap_test \
+	msync_test \
 	open_create_test \
 	open_test \
 	ppoll_test \
@@ -33,9 +35,9 @@ TESTS ?= \
 	preadv2_test \
 	proc_test \
 	pselect_test \
+	pty_test \
 	pwrite64_test \
 	pwritev2_test \
-	pty_test \
 	read_test \
 	readv_test \
 	rename_test \
@@ -48,6 +50,8 @@ TESTS ?= \
 	sigaltstack_test \
 	signalfd_test \
 	socket_netlink_route_test \
+	socket_unix_pair_test \
+	socket_unix_stream_test \
 	stat_test \
 	stat_times_test \
 	statfs_test \

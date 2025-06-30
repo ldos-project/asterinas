@@ -52,10 +52,12 @@
 //!
 
 use ip::new_ip_option;
+use netlink::new_netlink_option;
 
 use crate::{net::socket::options::SocketOption, prelude::*};
 
 mod ip;
+mod netlink;
 mod socket;
 mod tcp;
 mod utils;
@@ -65,7 +67,7 @@ use self::{socket::new_socket_option, tcp::new_tcp_option};
 pub trait RawSocketOption: SocketOption {
     fn read_from_user(&mut self, addr: Vaddr, max_len: u32) -> Result<()>;
 
-    fn write_to_user(&self, addr: Vaddr, max_len: u32) -> Result<usize>;
+    fn write_to_user(&self, addr: Vaddr, max_len: &mut u32) -> Result<usize>;
 
     fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption;
 
@@ -85,11 +87,11 @@ macro_rules! impl_raw_socket_option {
                 Ok(())
             }
 
-            fn write_to_user(&self, addr: Vaddr, max_len: u32) -> Result<usize> {
+            fn write_to_user(&self, addr: Vaddr, max_len: &mut u32) -> Result<usize> {
                 use $crate::util::net::options::utils::WriteToUser;
 
                 let output = self.get().unwrap();
-                output.write_to_user(addr, max_len)
+                output.write_to_user(addr, *max_len)
             }
 
             fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
@@ -112,11 +114,39 @@ macro_rules! impl_raw_sock_option_get_only {
                 return_errno_with_message!(Errno::ENOPROTOOPT, "the option is getter-only");
             }
 
-            fn write_to_user(&self, addr: Vaddr, max_len: u32) -> Result<usize> {
+            fn write_to_user(&self, addr: Vaddr, max_len: &mut u32) -> Result<usize> {
                 use $crate::util::net::options::utils::WriteToUser;
 
                 let output = self.get().unwrap();
-                output.write_to_user(addr, max_len)
+                output.write_to_user(addr, *max_len)
+            }
+
+            fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
+                self
+            }
+
+            fn as_sock_option(&self) -> &dyn SocketOption {
+                self
+            }
+        }
+    };
+}
+
+/// Impl `RawSocketOption` for a struct which is for only `setsockopt` and implements `SocketOption`.
+#[macro_export]
+macro_rules! impl_raw_sock_option_set_only {
+    ($option:ty) => {
+        impl RawSocketOption for $option {
+            fn read_from_user(&mut self, addr: Vaddr, max_len: u32) -> Result<()> {
+                use $crate::util::net::options::utils::ReadFromUser;
+
+                let input = ReadFromUser::read_from_user(addr, max_len)?;
+                self.set(input);
+                Ok(())
+            }
+
+            fn write_to_user(&self, _addr: Vaddr, _max_len: &mut u32) -> Result<usize> {
+                return_errno_with_message!(Errno::ENOPROTOOPT, "the option is setter-only");
             }
 
             fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
@@ -138,6 +168,7 @@ pub fn new_raw_socket_option(
         CSocketOptionLevel::SOL_SOCKET => new_socket_option(name),
         CSocketOptionLevel::SOL_IP => new_ip_option(name),
         CSocketOptionLevel::SOL_TCP => new_tcp_option(name),
+        CSocketOptionLevel::SOL_NETLINK => new_netlink_option(name),
         _ => return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported option level"),
     }
 }
@@ -153,4 +184,5 @@ pub enum CSocketOptionLevel {
     SOL_UDP = 17,
     SOL_IPV6 = 41,
     SOL_RAW = 255,
+    SOL_NETLINK = 270,
 }

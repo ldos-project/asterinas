@@ -12,11 +12,7 @@ use crate::{
         file_table::{get_file_fast, FileDesc},
     },
     prelude::*,
-    vm::{
-        perms::VmPerms,
-        vmar::is_userspace_vaddr,
-        vmo::{VmoOptions, VmoRightsOp},
-    },
+    vm::{perms::VmPerms, vmar::is_userspace_vaddr, vmo::VmoOptions},
 };
 
 pub fn sys_mmap(
@@ -60,7 +56,7 @@ fn do_sys_mmap(
         option.flags.insert(MMapFlags::MAP_FIXED);
     }
 
-    check_option(addr, &option)?;
+    check_option(addr, len, &option)?;
 
     if len == 0 {
         return_errno_with_message!(Errno::EINVAL, "mmap len cannot be zero");
@@ -124,34 +120,28 @@ fn do_sys_mmap(
                 options = options.vmo(shared_vmo);
             }
         } else {
-            let vmo = {
-                let mut file_table = ctx.thread_local.borrow_file_table_mut();
-                let file = get_file_fast!(&mut file_table, fd);
-                let inode_handle = file.as_inode_or_err()?;
+            let mut file_table = ctx.thread_local.borrow_file_table_mut();
+            let file = get_file_fast!(&mut file_table, fd);
+            let inode_handle = file.as_inode_or_err()?;
 
-                let access_mode = inode_handle.access_mode();
-                if vm_perms.contains(VmPerms::READ) && !access_mode.is_readable() {
-                    return_errno!(Errno::EACCES);
-                }
-                if option.typ() == MMapType::Shared
-                    && vm_perms.contains(VmPerms::WRITE)
-                    && !access_mode.is_writable()
-                {
-                    return_errno!(Errno::EACCES);
-                }
+            let access_mode = inode_handle.access_mode();
+            if vm_perms.contains(VmPerms::READ) && !access_mode.is_readable() {
+                return_errno!(Errno::EACCES);
+            }
+            if option.typ() == MMapType::Shared
+                && vm_perms.contains(VmPerms::WRITE)
+                && !access_mode.is_writable()
+            {
+                return_errno!(Errno::EACCES);
+            }
 
-                let inode = inode_handle.dentry().inode();
-                inode
-                    .page_cache()
-                    .ok_or(Error::with_message(
-                        Errno::EBADF,
-                        "File does not have page cache",
-                    ))?
-                    .to_dyn()
-            };
+            let inode = inode_handle.dentry().inode();
+            if inode.page_cache().is_none() {
+                return_errno_with_message!(Errno::EBADF, "File does not have page cache");
+            }
 
             options = options
-                .vmo(vmo)
+                .inode(inode.clone())
                 .vmo_offset(offset)
                 .handle_page_faults_around();
         }
@@ -163,12 +153,15 @@ fn do_sys_mmap(
     Ok(map_addr)
 }
 
-fn check_option(addr: Vaddr, option: &MMapOptions) -> Result<()> {
+fn check_option(addr: Vaddr, size: usize, option: &MMapOptions) -> Result<()> {
     if option.typ() == MMapType::File {
         return_errno_with_message!(Errno::EINVAL, "Invalid mmap type");
     }
 
-    if option.flags().contains(MMapFlags::MAP_FIXED) && !is_userspace_vaddr(addr) {
+    let map_end = addr.checked_add(size).ok_or(Errno::EINVAL)?;
+    if option.flags().contains(MMapFlags::MAP_FIXED)
+        && !(is_userspace_vaddr(addr) && is_userspace_vaddr(map_end - 1))
+    {
         return_errno_with_message!(Errno::EINVAL, "Invalid mmap fixed addr");
     }
 

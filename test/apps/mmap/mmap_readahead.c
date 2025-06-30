@@ -4,7 +4,7 @@
 #include <sys/fcntl.h>
 #include <unistd.h>
 
-#include "../network/test.h"
+#include "../test.h"
 
 #define FILE_NAME "/tmp/mmap_readahead.txt"
 
@@ -22,9 +22,9 @@ FN_SETUP(mmap_readahead)
 
 	CHECK(ftruncate(fd, PAGE_SIZE * NR_PAGES));
 
-	addr = mmap(NULL, PAGE_SIZE * NR_PAGES, PROT_READ | PROT_WRITE,
-		    MAP_SHARED, fd, 0);
-	CHECK(addr == MAP_FAILED ? -1 : 0);
+	addr = CHECK_WITH(mmap(NULL, PAGE_SIZE * NR_PAGES,
+			       PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0),
+			  _ret != MAP_FAILED);
 }
 END_SETUP()
 

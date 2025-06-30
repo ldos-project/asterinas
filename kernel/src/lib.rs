@@ -47,6 +47,11 @@ extern crate controlled;
 #[macro_use]
 extern crate getset;
 
+#[cfg(target_arch = "x86_64")]
+#[path = "arch/x86/mod.rs"]
+pub mod arch;
+#[cfg(target_arch = "riscv64")]
+#[path = "arch/riscv/mod.rs"]
 pub mod arch;
 pub mod context;
 pub mod cpu;
@@ -111,8 +116,7 @@ fn ap_init() {
         );
 
         loop {
-            crate::thread::Thread::yield_now();
-            ostd::cpu::sleep_for_interrupt();
+            ostd::task::halt_cpu();
         }
     }
 
@@ -156,10 +160,10 @@ fn init_thread() {
         karg.get_initproc_envp().to_vec(),
     )
     .expect("Run init process failed.");
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
-        crate::thread::Thread::yield_now();
-        ostd::cpu::sleep_for_interrupt();
+        ostd::task::halt_cpu();
     }
 
     // TODO: exit via qemu isa debug device should not be the only way.

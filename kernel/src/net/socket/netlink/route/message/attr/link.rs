@@ -12,7 +12,8 @@ use crate::{
 /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/uapi/linux/if_link.h#L297>.
 #[derive(Debug, Clone, Copy, TryFromInt)]
 #[repr(u16)]
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types)]
+#[expect(clippy::upper_case_acronyms)]
 enum LinkAttrClass {
     UNSPEC = 0,
     ADDRESS = 1,
@@ -117,28 +118,52 @@ impl Attribute for LinkAttr {
         }
     }
 
-    fn read_from(reader: &mut dyn MultiRead) -> Result<Self>
+    fn read_from(header: &CAttrHeader, reader: &mut dyn MultiRead) -> Result<Option<Self>>
     where
         Self: Sized,
     {
-        let header = reader.read_val::<CAttrHeader>()?;
+        let payload_len = header.payload_len();
+
         // TODO: Currently, `IS_NET_BYTEORDER_MASK` and `IS_NESTED_MASK` are ignored.
-        let res = match LinkAttrClass::try_from(header.type_())? {
-            LinkAttrClass::IFNAME => Self::Name(reader.read_cstring_with_max_len(IFNAME_SIZE)?),
-            LinkAttrClass::MTU => Self::Mtu(reader.read_val()?),
-            LinkAttrClass::TXQLEN => Self::TxqLen(reader.read_val()?),
-            LinkAttrClass::LINKMODE => Self::LinkMode(reader.read_val()?),
-            LinkAttrClass::EXT_MASK => Self::ExtMask(reader.read_val()?),
-            class => {
-                // FIXME: Netlink should ignore all unknown attributes.
-                // But how to decide the payload type if the class is unknown?
-                // Reference: https://docs.kernel.org/userspace-api/netlink/intro.html#unknown-attributes
+        let Ok(class) = LinkAttrClass::try_from(header.type_()) else {
+            // Unknown attributes should be ignored.
+            // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#unknown-attributes>.
+            reader.skip_some(payload_len);
+            return Ok(None);
+        };
+
+        let res = match (class, payload_len) {
+            (LinkAttrClass::IFNAME, 1..=IFNAME_SIZE) => {
+                Self::Name(reader.read_cstring_with_max_len(payload_len)?)
+            }
+            (LinkAttrClass::MTU, 4) => Self::Mtu(reader.read_val_opt::<u32>()?.unwrap()),
+            (LinkAttrClass::TXQLEN, 4) => Self::TxqLen(reader.read_val_opt::<u32>()?.unwrap()),
+            (LinkAttrClass::LINKMODE, 1) => Self::LinkMode(reader.read_val_opt::<u8>()?.unwrap()),
+            (LinkAttrClass::EXT_MASK, 4) => {
+                const { assert!(size_of::<RtExtFilter>() == 4) };
+                Self::ExtMask(reader.read_val_opt::<RtExtFilter>()?.unwrap())
+            }
+
+            (
+                LinkAttrClass::IFNAME
+                | LinkAttrClass::MTU
+                | LinkAttrClass::TXQLEN
+                | LinkAttrClass::LINKMODE
+                | LinkAttrClass::EXT_MASK,
+                _,
+            ) => {
+                warn!("link attribute `{:?}` contains invalid payload", class);
+                return_errno_with_message!(Errno::EINVAL, "the link attribute is invalid");
+            }
+
+            (_, _) => {
                 warn!("link attribute `{:?}` is not supported", class);
-                return_errno_with_message!(Errno::EINVAL, "unsupported link attribute");
+                reader.skip_some(payload_len);
+                return Ok(None);
             }
         };
 
-        Ok(res)
+        Ok(Some(res))
     }
 }
 

@@ -4,7 +4,7 @@ mod multicast;
 
 pub use multicast::{GroupIdSet, MAX_GROUPS};
 
-use crate::{net::socket::SocketAddr, prelude::*};
+use crate::{net::socket::util::SocketAddr, prelude::*};
 
 /// The socket address of a netlink socket.
 ///
@@ -42,6 +42,11 @@ impl NetlinkSocketAddr {
     /// Returns the group ID set.
     pub const fn groups(&self) -> GroupIdSet {
         self.groups
+    }
+
+    /// Adds some new groups to the address.
+    pub fn add_groups(&mut self, groups: GroupIdSet) {
+        self.groups.add_groups(groups);
     }
 }
 
