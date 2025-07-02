@@ -4,7 +4,7 @@ version = "0.15.2"
 edition = "2021"
 description = "The linux bzImage setup binary"
 license = "MPL-2.0"
-repository = "https://github.com/asterinas/asterinas"
+repository = "https://github.com/ldos-project/asterinas"
 
 [[bin]]
 name = "linux-bzimage-setup"

@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-inherit-methods-macro = {git = "https://github.com/asterinas/inherit-methods-macro", rev = "98f7e3e"}
-ostd-pod = { git = "https://github.com/asterinas/ostd-pod", rev = "c4644be", version = "0.1.1" }
+inherit-methods-macro = {git = "https://github.com/ldos-project/inherit-methods-macro", rev = "98f7e3e"}
+ostd-pod = { git = "https://github.com/ldos-project/ostd-pod", rev = "c4644be", version = "0.1.1" }
 component = { path = "../../libs/comp-sys/component" }
 aster-block = { path = "../block" }
 ostd = { path = "../../../ostd" }

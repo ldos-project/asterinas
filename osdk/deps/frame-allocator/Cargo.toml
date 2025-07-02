@@ -4,7 +4,7 @@ version = "0.15.2"
 edition = "2021"
 description = "The default buddy system frame allocator shipped with OSDK."
 license = "MPL-2.0"
-repository ="https://github.com/asterinas/asterinas"
+repository ="https://github.com/ldos-project/asterinas"
 readme = "README.md"
 
 [dependencies]

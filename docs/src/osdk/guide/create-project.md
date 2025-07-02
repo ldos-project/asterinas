@@ -82,7 +82,7 @@ The dependency version may change over time.
 
 ```toml
 [dependencies.ostd]
-git = "https://github.com/asterinas/asterinas"
+git = "https://github.com/ldos-project/asterinas"
 branch = "main"
 ```
 

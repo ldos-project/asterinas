@@ -12,3 +12,4 @@ component-macro = { path = "../component-macro" }
 
 [build-dependencies]
 json = "0.12.4"
+

@@ -33,13 +33,13 @@ update_dep_version() {
     sed -i "0,/${pattern}/s/${pattern}/$2 = { version = \"${new_version}\"/1" $1
 }
 
-# Update Docker image versions (`asterinas/asterinas:{version}`) in file $1
+# Update Docker image versions (`ldosproject/asterinas:{version}`) in file $1
 update_image_versions() {
     echo "Updating file $1"
     # Update the version of the development container
-    sed -i "s/asterinas\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/asterinas:${new_version}/g" $1
+    sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
     # Update the test environment described in the OSDK manual
-    sed -i "s/asterinas\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/osdk:${new_version}/g" $1
+    sed -i "s/ldosproject\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/osdk:${new_version}/g" $1
 }
 
 # Print the help message
