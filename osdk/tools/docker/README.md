@@ -12,7 +12,7 @@ cd <asterinas dir>
 docker buildx build \
     -f osdk/tools/docker/Dockerfile \
     --build-arg ASTER_RUST_VERSION=$(grep "channel" rust-toolchain.toml | awk -F '"' '{print $2}') \
-    -t asterinas/osdk:$(cat DOCKER_IMAGE_VERSION) \
+    -t ldosproject/osdk:$(cat DOCKER_IMAGE_VERSION) \
     .
 ```
 
@@ -28,7 +28,7 @@ docker buildx build \
     -f osdk/tools/docker/tdx/Dockerfile \
     --build-arg ASTER_RUST_VERSION=$(grep "channel" rust-toolchain.toml | awk -F '"' '{print $2}') \
     --build-arg BASE_VERSION=$(cat DOCKER_IMAGE_VERSION) \
-    -t asterinas/osdk:$(cat DOCKER_IMAGE_VERSION)-tdx \
+    -t ldosproject/osdk:$(cat DOCKER_IMAGE_VERSION)-tdx \
     .
 ```
 

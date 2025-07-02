@@ -1,6 +1,6 @@
 # Asterinas Development Docker Images
 
-Asterinas development Docker images are provided to facilitate developing and testing Asterinas project. These images can be found in the [asterinas/asterinas](https://hub.docker.com/r/asterinas/asterinas/) repository on DockerHub.
+Asterinas development Docker images are provided to facilitate developing and testing Asterinas project. These images can be found in the [ldosproject/asterinas](https://hub.docker.com/r/ldosproject/asterinas/) repository on DockerHub.
 
 ## Building Docker Images
 
@@ -13,7 +13,7 @@ docker buildx build \
     -f tools/docker/Dockerfile \
     --build-arg ASTER_RUST_VERSION=$(grep "channel" rust-toolchain.toml | awk -F '"' '{print $2}') \
     --build-arg BASE_VERSION=$(cat DOCKER_IMAGE_VERSION) \
-    -t asterinas/asterinas:$(cat DOCKER_IMAGE_VERSION) \
+    -t ldosproject/asterinas:$(cat DOCKER_IMAGE_VERSION) \
     .
 ```
 
@@ -29,7 +29,7 @@ docker buildx build \
     -f tools/docker/tdx/Dockerfile \
     --build-arg ASTER_RUST_VERSION=$(grep "channel" rust-toolchain.toml | awk -F '"' '{print $2}') \
     --build-arg BASE_VERSION=$(cat DOCKER_IMAGE_VERSION) \
-    -t asterinas/asterinas:$(cat DOCKER_IMAGE_VERSION)-tdx \
+    -t ldosproject/asterinas:$(cat DOCKER_IMAGE_VERSION)-tdx \
     .
 ```
 

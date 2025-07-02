@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 ARG BASE_VERSION
-FROM asterinas/osdk:${BASE_VERSION} AS build-base
+FROM ldosproject/osdk:${BASE_VERSION} AS build-base
 
 SHELL ["/bin/bash", "-c"]
 
@@ -24,12 +24,51 @@ RUN apt update && apt-get install -y --no-install-recommends \
     unzip \
     zip
 
-#= Download dependency =====================================================
 
-WORKDIR /opt/linux_binary_cache
-RUN wget https://raw.githubusercontent.com/asterinas/linux_vdso/2a6d2db/vdso64.so -O vdso64.so
-RUN wget https://raw.githubusercontent.com/asterinas/linux_binary_cache/14598b6/vmlinuz-5.15.0-105 \
-        -O vmlinuz
+#= Install linux-modules for vdso and linux config =================================
+# TODO: This is very wasteful and maybe fragile. We should have our own custom vDSO.
+# TODO: We should be able to use a much smaller Linux config. We stick with this for the moment since it is similar to upstream.
+
+FROM build-base AS build-linux
+
+RUN apt-get install -y --no-install-recommends \
+    fakeroot \
+    build-essential \
+    ncurses-dev \
+    xz-utils \
+    libssl-dev \
+    bc \
+    flex \
+    libelf-dev \
+    bison \
+    linux-modules-6.8.0-60-generic
+
+WORKDIR /tmp
+
+RUN wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.105.tar.xz && \
+    echo "01b537650332d2852722a626169cf7e5e798d11f9b578171b477868555f5e44f  linux-5.15.105.tar.xz" | sha256sum -c - 
+
+RUN tar xf linux-5.15.105.tar.xz
+
+WORKDIR /tmp/linux-5.15.105
+
+# NOTE: This MAY pull the default configuration the linux-modules-6.8.0-60-generic package above.
+RUN make defconfig && \
+    scripts/config --disable SYSTEM_REVOCATION_KEYS && \
+    scripts/config --disable SYSTEM_TRUSTED_KEYS && \
+    scripts/config --enable EXT2_FS && \
+    scripts/config --enable VIRTIO_PCI && \
+    scripts/config --enable VIRTIO_MMIO && \
+    scripts/config --enable VIRTIO_NET && \
+    scripts/config --enable VIRTIO_BLK && \
+    make olddefconfig
+
+RUN make -j $(nproc) bzImage
+
+RUN mkdir /opt/linux_binary_cache && \
+    cp /usr/lib/modules/6.8.0-60-generic/vdso/vdso64.so /opt/linux_binary_cache/vdso64.so && \
+    cp arch/x86/boot/bzImage /opt/linux_binary_cache/vmlinuz && \
+    cp .config /opt/linux_binary_cache/vmlinuz.config
 
 #= Build benchmark =========================================================
 
@@ -386,6 +425,8 @@ COPY --from=build-applications /lib/x86_64-linux-gnu/libsqlite3.so /lib/x86_64-l
 COPY --from=build-applications /usr/local/memcached /usr/local/memcached
 COPY --from=build-applications /usr/local/apache2 /usr/local/apache2
 COPY --from=build-applications /usr/local/wrk /usr/local/wrk
+
+COPY --from=build-linux /opt/linux_binary_cache /opt/linux_binary_cache
 
 # Add the path of Asterinas tools
 ENV PATH="/root/asterinas/target/bin:${PATH}"
