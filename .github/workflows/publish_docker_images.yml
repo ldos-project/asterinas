@@ -26,7 +26,7 @@ jobs:
           file: ./osdk/tools/docker/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: asterinas/osdk:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
+          tags: ldosproject/osdk:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
           build-args: |
             ASTER_RUST_VERSION=${{ steps.prepare-for-docker-build-and-push.outputs.rust_version }}
 
@@ -48,7 +48,7 @@ jobs:
           file: ./osdk/tools/docker/tdx/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: asterinas/osdk:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}-tdx
+          tags: ldosproject/osdk:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}-tdx
           build-args: |
             BASE_VERSION=${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
 
@@ -70,7 +70,7 @@ jobs:
           file: ./tools/docker/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: asterinas/asterinas:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
+          tags: ldosproject/asterinas:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
           build-args: |
             BASE_VERSION=${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}
 
@@ -92,6 +92,6 @@ jobs:
           file: ./tools/docker/tdx/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: asterinas/asterinas:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}-tdx
+          tags: ldosproject/asterinas:${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}-tdx
           build-args: |
             BASE_VERSION=${{ steps.prepare-for-docker-build-and-push.outputs.image_version }}

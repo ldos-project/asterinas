@@ -134,12 +134,12 @@ runs:
 
     - name: Store benchmark results
       if: ${{ inputs.task == 'result' }}
-      uses: asterinas/github-action-benchmark@v5
+      uses: ldos-project/github-action-benchmark@v5
       with:
         # Use glob pattern to find all generated config files
         output-file-path: "configs/config_*.json"
         github-token: ${{ inputs.benchmark-secret }}
-        gh-repository: 'github.com/asterinas/benchmark'
+        gh-repository: 'github.com/ldos-project/benchmark'
         auto-push: true
         comment-on-alert: true
         fail-on-alert: false
