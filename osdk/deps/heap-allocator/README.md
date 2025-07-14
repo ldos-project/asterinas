@@ -6,5 +6,5 @@ This is the default slab-based global heap allocator shipped with
 implementation of a global heap allocator for OS kernels. It also features
 per-CPU caches for scalable allocations.
 
-This crate is part of the [Asterinas](https://github.com/asterinas/asterinas)
+This crate is part of the [Asterinas](https://github.com/ldos-project/asterinas)
 project.

@@ -6,5 +6,5 @@ metadata system in [OSTD](https://crates.io/crates/ostd) to provide a heap-free
 implementation of a buddy system allocator for OS kernels. It also features
 per-CPU caches and pools for scalable allocations.
 
-This crate is part of the [Asterinas](https://github.com/asterinas/asterinas)
+This crate is part of the [Asterinas](https://github.com/ldos-project/asterinas)
 project.

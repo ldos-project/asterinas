@@ -125,11 +125,11 @@ KNOWN_HOSTS_FILE="${WORK_DIR}/known_hosts"
 build_api_docs
 
 if [ "$1" = "nightly" ]; then
-    REPO_URL=git@github.com:asterinas/api-docs-nightly.git
+    REPO_URL=git@github.com:ldos-project/api-docs-nightly.git
     clone_repo
     update_nightly_doc
 elif [ "$1" = "release" ]; then
-    REPO_URL=git@github.com:asterinas/api-docs.git
+    REPO_URL=git@github.com:ldos-project/api-docs.git
     clone_repo
     update_release_doc
 else

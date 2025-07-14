@@ -1,22 +1,22 @@
-<p style="font-size: 1.875em; text-align: center">
-<b>
-This is a fork of the <a href="https://github.com/asterinas/asterinas">Asterinas project repository</a>. This is not the original development repository of this kernel.
-</b>
-</p>
+<div style="text-align: center;">
+<img src="docs/src/images/ldos_logo.webp" alt="asterinas-logo" width="350">
+</div>
 
-<p align="center">
-    <img src="docs/src/images/logo_en.svg" alt="asterinas-logo" width="620"><br>
-    A secure, fast, and general-purpose OS kernel written in Rust and compatible with Linux<br/>
-</p>
+[The Learning-Directed OS project](https://ldos.utexas.edu/) is developing the next-generation Machine Learning-based
+Operating System to drive computing infrastructure toward high efficiency and performance (see https://ldos.utexas.edu/
+for more information). 
 
+The project is developing a kernel based on [the Asterinas framekernel](https://asterinas.github.io). We are not
+affiliated with the original authors of Asterinas and we expect our work to diverge from theirs due to very different
+research goals. However, the original authors deserve a huge amount of credit for developing such an impressive system.
+Our work would not be possible without their generosity in making Asterinas freely available.
 
-
-
-English | [中文版](README_CN.md) | [日本語](README_JP.md)
-
-**NEWS: [USENIX ATC'25](https://www.usenix.org/conference/atc25) accepted two research papers on Asterinas: (1) _Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small and Sound TCB_ and (2) _Converos: Practical Model Checking for Verifying Rust OS Kernel Concurrency_. Congratulations to the Asterinas community🎉🎉🎉**
+Please do not report issues to the original Asterinas team or ask them questions about this repository. They are not
+responsible for any of the work done in this repository.
 
 ## Introducing Asterinas
+
+<img src="docs/src/images/logo_en.svg" alt="asterinas-logo" width="350">
 
 Asterinas is a _secure_, _fast_, and _general-purpose_ OS kernel
 that provides _Linux-compatible_ ABI.
@@ -55,13 +55,13 @@ Follow the three simple steps below to get Asterinas up and running.
 1. Download the latest source code.
 
 ```bash
-git clone https://github.com/asterinas/asterinas
+git clone https://github.com/ldos-project/asterinas
 ```
 
 2. Run a Docker container as the development environment.
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas asterinas/asterinas:0.15.2-20250613
+docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.15.2-20250613
 ```
 
 3. Inside the container, go to the project folder to build and run Asterinas.
@@ -80,6 +80,6 @@ See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about 
 ## License
 
 Asterinas's source code and documentation primarily use the 
-[Mozilla Public License (MPL), Version 2.0](https://github.com/asterinas/asterinas/blob/main/LICENSE-MPL).
+[Mozilla Public License (MPL), Version 2.0](https://github.com/ldos-project/asterinas/blob/main/LICENSE-MPL).
 Select components are under more permissive licenses,
-detailed [here](https://github.com/asterinas/asterinas/blob/main/.licenserc.yaml). For the rationales behind the choice of MPL, see [here](https://asterinas.github.io/book/index.html#licensing).
+detailed [here](https://github.com/ldos-project/asterinas/blob/main/.licenserc.yaml). For the rationales behind the choice of MPL, see [here](https://asterinas.github.io/book/index.html#licensing).

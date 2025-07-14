@@ -10,9 +10,9 @@ CARGO_TOML_PATH=${SCRIPT_DIR}/../../Cargo.toml
 VERSION=$( cat ${ASTER_SRC_DIR}/VERSION )
 
 if [ "$1" = "intel-tdx" ]; then
-    IMAGE_NAME="asterinas/asterinas:${VERSION}-tdx"
+    IMAGE_NAME="ldosproject/asterinas:${VERSION}-tdx"
 else
-    IMAGE_NAME="asterinas/asterinas:${VERSION}"
+    IMAGE_NAME="ldosproject/asterinas:${VERSION}"
 fi
 
 docker run -it --privileged --network=host --device=/dev/kvm --device=/dev/vhost-net -v ${ASTER_SRC_DIR}:/root/asterinas ${IMAGE_NAME}

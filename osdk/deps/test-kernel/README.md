@@ -5,5 +5,5 @@ runs unit tests. It is shipped with [OSDK](https://crates.io/crates/cargo-osdk)
 to provide default unit-test infrastructure for kernel projects based on
 [OSTD](https://crates.io/crates/ostd).
 
-This is part of the [Asterinas](https://github.com/asterinas/asterinas)
+This is part of the [Asterinas](https://github.com/ldos-project/asterinas)
 project.

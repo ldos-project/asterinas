@@ -95,7 +95,7 @@ FROM build-grub AS grub
 # EFI handover boot, which is deprecated. So we have to build GRUB from source.
 WORKDIR /root
 # See also: https://github.com/asterinas/asterinas/pull/1710
-RUN git clone --single-branch -b asterinas/2.12 https://github.com/asterinas/grub.git \
+RUN git clone --single-branch -b asterinas/2.12 https://github.com/ldos-project/grub.git \
     && git -C grub checkout 0633bc8
 # Fetch and install the Unicode font data for grub.
 RUN wget -O unifont.pcf.gz https://ftp.gnu.org/gnu/unifont/unifont-15.1.04/unifont-15.1.04.pcf.gz \
