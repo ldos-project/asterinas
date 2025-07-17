@@ -17,6 +17,7 @@
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
 #![feature(ptr_sub_ptr)]
+#![feature(step_trait)]
 #![feature(sync_unsafe_cell)]
 #![feature(trait_upcasting)]
 #![feature(unbounded_shifts)]
@@ -45,6 +46,7 @@ pub mod panic;
 pub mod prelude;
 pub mod smp;
 pub mod sync;
+pub mod tables;
 pub mod task;
 pub mod timer;
 pub mod trap;

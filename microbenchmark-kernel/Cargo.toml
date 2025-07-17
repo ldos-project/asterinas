@@ -1,0 +1,10 @@
+[package]
+name = "microbenchmark-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ostd = { version = "0.15.2", path = "../ostd" }
+
+[lints]
+workspace = true
