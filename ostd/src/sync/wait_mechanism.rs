@@ -50,7 +50,7 @@ impl<SF: Default, W> Default for WaitByLoopThen<SF, W, false> {
 impl<SF, W: Clone, const HAS_NEXT: bool> Clone for WaitByLoopThen<SF, W, HAS_NEXT> {
     fn clone(&self) -> Self {
         Self {
-            iterations: self.iterations.clone(),
+            iterations: self.iterations,
             next: self.next.clone(),
             _phantom: PhantomData,
         }
@@ -211,13 +211,13 @@ mod test {
 
     #[ktest]
     fn test_wait_by_yield() {
-        test_wait_mechanism(|| WaitByYield::default())
+        test_wait_mechanism(WaitByYield::default)
     }
 
     // TODO: This test hangs. I think it has to do with the scheduler not interruption busy waiting processes. #[ktest]
-    #[allow(unused)]
+    #[expect(unused)]
     fn test_wait_by_spin() {
-        test_wait_mechanism(|| WaitBySpin::default())
+        test_wait_mechanism(WaitBySpin::default)
     }
 
     #[ktest]

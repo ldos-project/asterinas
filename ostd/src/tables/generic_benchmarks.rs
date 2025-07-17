@@ -18,7 +18,7 @@ pub(crate) fn benchmark_streaming_produce_consume<T: Table<usize> + Sync + Send 
     let wait_queue = Arc::new(WaitQueue::new());
     let tasks: Vec<_> = tables
         .iter()
-        .map(|table| {
+        .flat_map(|table| {
             let producer_task = Arc::new(
                 TaskOptions::new({
                     let table = table.clone();
@@ -57,7 +57,6 @@ pub(crate) fn benchmark_streaming_produce_consume<T: Table<usize> + Sync + Send 
             );
             [producer_task, consumer_task]
         })
-        .flatten()
         .collect();
 
     let timer = Timer::start();
@@ -88,7 +87,7 @@ pub(crate) fn benchmark_call_return<T: Table<usize> + Sync + Send + 'static>(
     let done_count = Arc::new(AtomicUsize::new(0));
     let wait_queue = Arc::new(WaitQueue::new());
     let tasks: Vec<_> = (0..n_pairs)
-        .map(|_| {
+        .flat_map(|_| {
             let call_table = new_table();
             let return_table = new_table();
 
@@ -137,7 +136,6 @@ pub(crate) fn benchmark_call_return<T: Table<usize> + Sync + Send + 'static>(
             );
             [caller_task, callee_task]
         })
-        .flatten()
         .collect();
 
     let timer = Timer::start();

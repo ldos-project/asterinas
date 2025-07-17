@@ -1,5 +1,6 @@
 #![cfg(ktest)]
 #![allow(missing_docs)]
+#![allow(unused)]
 
 use alloc::sync::Arc;
 
@@ -10,35 +11,33 @@ pub(crate) struct TestMessage {
     x: u64,
 }
 
-#[allow(unused)]
 pub(crate) fn test_produce_consume<T: Table<TestMessage>>(table: Arc<T>) {
     let producer = table.attach_producer().unwrap();
     let consumer = table.attach_consumer().unwrap();
     let test_message = TestMessage { x: 42 };
 
-    producer.put(test_message.clone());
-    assert!(producer.try_put(test_message.clone()).is_some());
+    producer.put(test_message);
+    assert!(producer.try_put(test_message).is_some());
 
     assert_eq!(consumer.take(), test_message);
     assert_eq!(consumer.try_take(), None);
 
-    assert_eq!(producer.try_put(test_message.clone()), None);
+    assert_eq!(producer.try_put(test_message), None);
 }
 
-#[allow(unused)]
 pub(crate) fn test_produce_strong_observe<T: Table<TestMessage>>(table: Arc<T>) {
     let producer = table.attach_producer().unwrap();
     let consumer = table.attach_consumer().unwrap();
     let test_message = TestMessage { x: 42 };
 
     // Normal operation when there is no observer
-    producer.put(test_message.clone());
-    assert!(producer.try_put(test_message.clone()).is_some());
+    producer.put(test_message);
+    assert!(producer.try_put(test_message).is_some());
 
     assert_eq!(consumer.take(), test_message);
     assert_eq!(consumer.try_take(), None);
 
-    assert_eq!(producer.try_put(test_message.clone()), None);
+    assert_eq!(producer.try_put(test_message), None);
     assert_eq!(consumer.take(), test_message);
 
     assert_eq!(consumer.try_take(), None);
@@ -46,23 +45,22 @@ pub(crate) fn test_produce_strong_observe<T: Table<TestMessage>>(table: Arc<T>) 
     // With observer we should block sooner.
     let observer = table.attach_strong_observer().unwrap();
 
-    producer.put(test_message.clone());
-    assert!(producer.try_put(test_message.clone()).is_some());
+    producer.put(test_message);
+    assert!(producer.try_put(test_message).is_some());
 
     assert_eq!(consumer.take(), test_message);
     assert_eq!(consumer.try_take(), None);
     assert!(
-        producer.try_put(test_message.clone()).is_some(),
+        producer.try_put(test_message).is_some(),
         "Put should fail here due to observer not having observed."
     );
 
     assert_eq!(observer.strong_observe(), test_message);
     assert_eq!(observer.try_strong_observe(), None);
 
-    assert_eq!(producer.try_put(test_message.clone()), None);
+    assert_eq!(producer.try_put(test_message), None);
 }
 
-#[allow(unused)]
 pub(crate) fn test_produce_weak_observe<T: Table<TestMessage>>(table: Arc<T>) {
     let producer = table.attach_producer().unwrap();
     let consumer = table.attach_consumer().unwrap();
@@ -72,7 +70,7 @@ pub(crate) fn test_produce_weak_observe<T: Table<TestMessage>>(table: Arc<T>) {
     assert_eq!(weak_observer.weak_observe(recent_cursor), None);
 
     let test_message = TestMessage { x: 42 };
-    producer.put(test_message.clone());
+    producer.put(test_message);
 
     // Check recent cursor
     let recent_cursor = weak_observer.recent_cursor();
@@ -103,7 +101,7 @@ pub(crate) fn test_produce_weak_observe<T: Table<TestMessage>>(table: Arc<T>) {
 
     let test_message_2 = TestMessage { x: 43 };
 
-    producer.put(test_message_2.clone());
+    producer.put(Clone::clone(&test_message_2));
     assert_eq!(consumer.take(), test_message_2);
 
     let recent_cursor = weak_observer.recent_cursor();
@@ -119,7 +117,7 @@ pub(crate) fn test_produce_weak_observe<T: Table<TestMessage>>(table: Arc<T>) {
 
     let test_message_3 = TestMessage { x: 44 };
 
-    producer.put(test_message_3.clone());
+    producer.put(test_message_3);
 
     assert_eq!(weak_observer.weak_observe(oldest_cursor), None);
     assert_eq!(

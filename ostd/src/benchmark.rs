@@ -109,6 +109,12 @@ impl BenchmarkReporter {
     }
 }
 
+impl Default for BenchmarkReporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Run a benchmark function a few times to measure a rough iteration time, then run it enough to
 /// take roughly `goal_runtime` and report the results of the longer run.
 pub fn run_microbenchmark(

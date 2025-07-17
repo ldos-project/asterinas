@@ -29,14 +29,12 @@ use core::{
     any::type_name,
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     ptr,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-    usize,
 };
 
 use crossbeam_utils::CachePadded;
-use log::trace;
 
 use crate::{
     sync::{Mutex, WaitByYield, WaitMechanism, WaitQueue},
@@ -263,23 +261,6 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
             put_wait_queue,
             read_wait_queue,
         };
-        if cfg!(debug_assertions) && false {
-            trace!("Sizes:");
-            trace!("  overall: {}", mem::size_of_val(&ret));
-            trace!("  buffer: {}", mem::size_of_val(ret.buffer.as_ref()));
-            trace!("    element: {}", mem::size_of_val(&ret.buffer[0]));
-            // println!("    data: {}", mem::size_of_val(&ret.buffer[0].data));
-            trace!(
-                "  strong_observer_heads: {}",
-                mem::size_of_val(ret.strong_observer_heads.as_ref())
-            );
-            if let Some(weak_reader_states) = ret.weak_observer_states.as_ref() {
-                trace!(
-                    "  weak_reader_states: {}",
-                    mem::size_of_val(weak_reader_states.as_ref())
-                );
-            }
-        }
         Arc::new(ret)
     }
 
@@ -372,7 +353,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         // SAFETY: This slot is between current_tail_slot and current_head_slot, so it cannot be read. We are the only
         // writer, so no other thread can be doing this. Moving data into the buffer is safe because T is Send.
         unsafe {
-            (&mut *slot_cell.data.get()).write(data);
+            (*slot_cell.data.get()).write(data);
         }
 
         if WEAK_OBSERVERS && let Some(weak_reader_states) = &self.weak_observer_states {
@@ -387,7 +368,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         // Release ordering guarantees that observing the index means data was fully written.
         self.tail_index.store(current_tail + 1, Ordering::Release);
 
-        return None;
+        None
     }
 
     /// Try to consume a value. Returning `None` if there is none available.
@@ -446,9 +427,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     where
         T: Copy + Send,
     {
-        let Some(current_head) = self.can_take_for_head(head) else {
-            return None;
-        };
+        let current_head = self.can_take_for_head(head)?;
         let current_head_slot = self.mod_len(current_head);
 
         let slot_cell = &self.buffer[current_head_slot];
@@ -474,9 +453,6 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
 
     /// Get the generation from a weak observer state word.
     fn get_generation(v: u64) -> u64 {
-        // Check that this matches the documentation. If this changes, also change the documentation on
-        // ElementWeakState.
-        debug_assert!(Self::MAX_WEAK_OBSERVERS + 1 == 41);
         v >> (Self::MAX_WEAK_OBSERVERS + 1)
     }
 
@@ -874,7 +850,7 @@ mod test {
 }
 
 /// Benchmark functions which are invoked from the benchmark kernel
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod benchmark {
     use core::time::Duration;
 

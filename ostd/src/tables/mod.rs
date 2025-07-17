@@ -26,11 +26,11 @@ impl Step for Cursor {
     }
 
     fn forward_checked(start: Self, count: usize) -> Option<Self> {
-        Step::forward_checked(start.0, count).map(|v| Cursor(v))
+        Step::forward_checked(start.0, count).map(Cursor)
     }
 
     fn backward_checked(start: Self, count: usize) -> Option<Self> {
-        Step::backward_checked(start.0, count).map(|v| Cursor(v))
+        Step::backward_checked(start.0, count).map(Cursor)
     }
 }
 
