@@ -10,6 +10,8 @@ mod rwlock;
 mod rwmutex;
 mod spin;
 mod wait;
+mod wait_mechanism;
+mod wait_queue;
 
 pub(crate) use self::rcu::finish_grace_period;
 pub use self::{
@@ -26,7 +28,9 @@ pub use self::{
         RwMutexReadGuard, RwMutexUpgradeableGuard, RwMutexWriteGuard,
     },
     spin::{ArcSpinLockGuard, SpinLock, SpinLockGuard},
-    wait::{WaitQueue, Waiter, Waker},
+    wait::{Waiter, Waker},
+    wait_queue::WaitQueue,
+    wait_mechanism::{WaitBySpin, WaitBySpinThen, WaitByYield, WaitByYieldThen, WaitMechanism},
 };
 
 pub(crate) fn init() {
