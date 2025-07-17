@@ -135,10 +135,12 @@ where
             // check, but before the below `dequeue_current` action, we need to make sure that the
             // wakeup event isn't lost.
             //
-            // Currently, for the FIFO scheduler, `Scheduler::enqueue` will try to lock `local_rq`
-            // when the above race condition occurs, so it will wait until we finish calling the
-            // `dequeue_current` method and nothing bad will happen. This may need to be revisited
-            // after more complex schedulers are introduced.
+            // FIXME:MAJOR: Currently, `local_rq` acts as the lock which guarantees atomicity of the
+            // `has_woken` check and the descheduling. More specifically: Currently, for the FIFO
+            // scheduler, `Scheduler::enqueue` will try to lock `local_rq` when the above race
+            // condition occurs, so it will wait until we finish calling the `dequeue_current`
+            // method and nothing bad will happen. This may need to be revisited after more complex
+            // schedulers are introduced.
 
             local_rq.update_current(UpdateFlags::Wait);
             current = local_rq.dequeue_current();
@@ -262,8 +264,8 @@ where
     // `switch_to_task` will spin if it finds that the next task is still running on some CPU core,
     // which guarantees soundness regardless of the scheduler implementation.
     //
-    // FIXME: The scheduler decision and context switching are not atomic, which can lead to some
-    // strange behavior even if the scheduler is implemented correctly. See "Problem 2" at
+    // FIXME:MAJOR: The scheduler decision and context switching are not atomic, which can lead to
+    // some strange behavior even if the scheduler is implemented correctly. See "Problem 2" at
     // <https://github.com/asterinas/asterinas/issues/1633> for details.
     cpu_local::clear_need_preempt();
     processor::switch_to_task(next_task);

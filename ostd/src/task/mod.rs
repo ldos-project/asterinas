@@ -13,9 +13,10 @@ use core::{
     any::Any,
     borrow::Borrow,
     cell::{Cell, SyncUnsafeCell},
+    fmt::Display,
     ops::Deref,
     ptr::NonNull,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use kernel_stack::KernelStack;
@@ -47,6 +48,7 @@ pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
 
+    task_id: usize,
     data: Box<dyn Any + Send + Sync>,
     local_data: ForceSync<Box<dyn Any + Send>>,
 
@@ -62,6 +64,12 @@ pub struct Task {
     switched_to_cpu: AtomicBool,
 
     schedule_info: TaskScheduleInfo,
+}
+
+impl Display for Task {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("Task").field(&self.task_id).finish()
+    }
 }
 
 impl Task {
@@ -146,6 +154,13 @@ impl Task {
         };
         user_ctx.fpu_state().restore();
     }
+
+    /// Get an arbitrary ID for this task. It is unique for every task and is generally "small"
+    /// numbers on the order of the number of tasks that have been spawned in the system. There is
+    /// no way to look up tasks by ID. They are a debugging aide.
+    pub fn task_id(&self) -> usize {
+        self.task_id
+    }
 }
 
 /// Options to create or spawn a new task.
@@ -155,6 +170,9 @@ pub struct TaskOptions {
     local_data: Option<Box<dyn Any + Send>>,
     user_ctx: Option<Arc<UserContext>>,
 }
+
+/// The next ID to use for a task. This is atomically incremented in [`TaskOptions::build`].
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 impl TaskOptions {
     /// Creates a set of options for a task.
@@ -254,6 +272,7 @@ impl TaskOptions {
 
         let new_task = Task {
             func: ForceSync::new(Cell::new(self.func)),
+            task_id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             data: self.data.unwrap_or_else(|| Box::new(())),
             local_data: ForceSync::new(self.local_data.unwrap_or_else(|| Box::new(()))),
             user_ctx: self.user_ctx,
@@ -392,5 +411,22 @@ mod test {
             assert_eq!(1, 1);
         };
         let _ = crate::task::TaskOptions::new(task).data(()).spawn();
+    }
+
+    #[ktest]
+    fn task_id() {
+        #[expect(clippy::eq_op)]
+        let task = || {
+            assert_eq!(1, 1);
+        };
+        let task1 = crate::task::TaskOptions::new(task)
+            .data(())
+            .spawn()
+            .unwrap();
+        let task2 = crate::task::TaskOptions::new(task)
+            .data(())
+            .spawn()
+            .unwrap();
+        assert_ne!(task1.task_id(), task2.task_id());
     }
 }
