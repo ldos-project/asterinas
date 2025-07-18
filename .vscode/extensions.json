@@ -1,0 +1,9 @@
+{
+    "recommendations": [
+        "tamasfe.even-better-toml",
+        "rust-lang.rust-analyzer",
+        "gruntfuggly.todo-tree",
+        "vadimcn.vscode-lldb",
+        "streetsidesoftware.code-spell-checker"
+    ]
+}

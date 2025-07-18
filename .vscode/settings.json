@@ -1,4 +1,9 @@
 {
+    "rust-analyzer.cargo.cfgs":[
+        "debug_assertions",
+        "miri",
+        "ktest"
+    ], 
     "rust-analyzer.cargo.target": "x86_64-unknown-none",
     "rust-analyzer.check.extraEnv": {
         "RUSTFLAGS": "--check-cfg cfg(ktest) --cfg ktest"
@@ -30,5 +35,10 @@
         "**/CVS": false,
         "**/Thumbs.db": false
     },
-    "rust-analyzer.checkOnSave": true
+    "rust-analyzer.checkOnSave": true,
+    "cSpell.words": [
+        "Asterinas",
+        "kspace",
+        "ktest"
+    ],
 }
