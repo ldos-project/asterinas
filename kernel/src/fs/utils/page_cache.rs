@@ -3,14 +3,13 @@
 #![expect(dead_code)]
 
 use core::{
-    iter,
-    ops::Range,
-    sync::atomic::{AtomicU8, Ordering},
+    iter, ops::Range, sync::atomic::{AtomicU8, Ordering}
 };
 
 use align_ext::AlignExt;
 use aster_block::bio::{BioStatus, BioWaiter};
 use aster_rights::Full;
+use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use lru::LruCache;
 use ostd::{
     impl_untyped_frame_meta_for,
@@ -53,7 +52,7 @@ impl PageCache {
 
     /// Returns the Vmo object.
     // TODO: The capability is too high，restrict it to eliminate the possibility of misuse.
-    //       For example, the `resize` api should be forbidded.
+    //       For example, the `resize` api should be forbidden.
     pub fn pages(&self) -> &Vmo<Full> {
         &self.pages
     }
@@ -364,10 +363,10 @@ impl PageCacheManager {
         let mut bio_waiter = BioWaiter::new();
         let mut pages = self.pages.lock();
         let backend = self.backend();
-        let backend_npages = backend.npages();
+        let backend_n_pages = backend.npages();
         for idx in page_idx_range.start..page_idx_range.end {
             if let Some(page) = pages.peek(&idx) {
-                if page.load_state() == PageState::Dirty && idx < backend_npages {
+                if page.load_state() == PageState::Dirty && idx < backend_n_pages {
                     let waiter = backend.write_page_async(idx, page)?;
                     bio_waiter.concat(waiter);
                 }
@@ -541,7 +540,7 @@ impl CachePageExt for CachePage {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromInt)]
 #[repr(u8)]
 pub enum PageState {
     /// `Uninit` indicates a new allocated page which content has not been initialized.
@@ -555,31 +554,14 @@ pub enum PageState {
     Dirty = 2,
 }
 
-/// A page state with atomic operations.
-#[derive(Debug)]
-pub struct AtomicPageState {
-    state: AtomicU8,
-}
+define_atomic_version_of_integer_like_type!(PageState, try_from = true, {
+    #[derive(Debug)]
+    pub struct AtomicPageState(AtomicU8);
+});
 
-impl AtomicPageState {
-    pub fn new(state: PageState) -> Self {
-        Self {
-            state: AtomicU8::new(state as _),
-        }
-    }
-
-    pub fn load(&self, order: Ordering) -> PageState {
-        let val = self.state.load(order);
-        match val {
-            0 => PageState::Uninit,
-            1 => PageState::UpToDate,
-            2 => PageState::Dirty,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn store(&self, val: PageState, order: Ordering) {
-        self.state.store(val as u8, order);
+impl From<PageState> for u8 {
+    fn from(value: PageState) -> Self {
+        value as _
     }
 }
 
