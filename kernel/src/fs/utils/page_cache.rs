@@ -3,7 +3,9 @@
 #![expect(dead_code)]
 
 use core::{
-    iter, ops::Range, sync::atomic::{AtomicU8, Ordering}
+    iter,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use align_ext::AlignExt;
@@ -21,6 +23,7 @@ use crate::{
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
 
+/// A cache of pages used by file-systems. In most cases, a separate `PageCache` is created for each file.
 pub struct PageCache {
     pages: Vmo<Full>,
     manager: Arc<PageCacheManager>,
@@ -29,12 +32,7 @@ pub struct PageCache {
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
     pub fn new(backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        let manager = Arc::new(PageCacheManager::new(backend));
-        let pages = VmoOptions::<Full>::new(0)
-            .flags(VmoFlags::RESIZABLE)
-            .pager(manager.clone())
-            .alloc()?;
-        Ok(Self { pages, manager })
+        Self::with_capacity(0, backend)
     }
 
     /// Creates a page cache associated with an existing backend.
@@ -42,7 +40,7 @@ impl PageCache {
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
     pub fn with_capacity(capacity: usize, backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        let manager = Arc::new(PageCacheManager::new(backend));
+        let manager = PageCacheManager::new(backend);
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -186,6 +184,11 @@ impl ReadaheadWindow {
     }
 }
 
+/// A management object which tracks the state of the prefetcher, including asynchronous read handles
+/// ([`waiter`](`ReadaheadState::waiter`)).
+/// 
+/// This implements a simple policy where pages are prefetched if there are sequential reads. The number of pages to
+/// prefetch increases as more sequential reads happen.
 struct ReadaheadState {
     /// Current readahead window.
     ra_window: Option<ReadaheadWindow>,
@@ -286,7 +289,8 @@ impl ReadaheadState {
         }
     }
 
-    /// Setup the new readahead window.
+    /// Setup the new readahead window. This expands the readahead window of creates a new one with size
+    /// [`Self::INIT_WINDOW_SIZE`].
     pub fn setup_window(&mut self, idx: usize, max_page: usize) {
         let new_window = if let Some(cur_window) = &self.ra_window {
             cur_window.next(self.max_size, max_page)
@@ -310,16 +314,28 @@ impl ReadaheadState {
             return_errno!(Errno::EINVAL)
         };
         for async_idx in window.readahead_range() {
-            let mut async_page = CachePage::alloc_uninit()?;
-            let pg_waiter = backend.read_page_async(async_idx, &async_page)?;
-            if pg_waiter.nreqs() > 0 {
-                self.waiter.concat(pg_waiter);
-            } else {
-                // Some backends (e.g. RamFS) do not issue requests, but fill the page directly.
-                async_page.store_state(PageState::UpToDate);
-            }
-            pages.put(async_idx, async_page);
+            self.readahead_page(pages, &backend, async_idx)?;
         }
+        Ok(())
+    }
+
+    /// Readahead (prefetch) a page. This will cause the page to be asynchronously be loaded. Future loads will use the
+    /// results if it is available, or wait for this load to complete to use it.
+    fn readahead_page(
+        &mut self,
+        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
+        backend: &Arc<dyn PageCacheBackend>,
+        idx: usize,
+    ) -> Result<()> {
+        let mut async_page = CachePage::alloc_uninit()?;
+        let pg_waiter = backend.read_page_async(idx, &async_page)?;
+        if pg_waiter.nreqs() > 0 {
+            self.waiter.concat(pg_waiter);
+        } else {
+            // Some backends (e.g. RamFS) do not issue requests, but fill the page directly.
+            async_page.store_state(PageState::UpToDate);
+        }
+        pages.put(idx, async_page);
         Ok(())
     }
 
@@ -329,26 +345,42 @@ impl ReadaheadState {
     }
 }
 
+/// The page cache including both the cached pages and the readahead state and a reference to the backend to perform the
+/// actual loads. This references the backend weakly.
+/// 
+/// ## Locking Discipline
+/// 
+/// The lock ordering is: `pages`, `ra_state`.
 struct PageCacheManager {
     pages: Mutex<LruCache<usize, CachePage>>,
     backend: Weak<dyn PageCacheBackend>,
+    // TODO: This seems to be locked only when `pages` is also locked. So we could combine them into a struct within a
+    // single `Mutex`. This would eliminate the need for the locking discipline listed above.
     ra_state: Mutex<ReadaheadState>,
 }
 
+static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
+
 impl PageCacheManager {
-    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Self {
-        Self {
+    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Arc<Self> {
+        let ret = Arc::new(Self {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
             ra_state: Mutex::new(ReadaheadState::new()),
-        }
+        });
+        // TODO: Register ret with a manager service which will send prefetch requests.
+        ret
     }
 
     pub fn backend(&self) -> Arc<dyn PageCacheBackend> {
+        // TODO: This assumes the backend is still available which is not locally guaranteed. It is only true because
+        // PageCacheManagers never outlive the backend used to create them. For example, see
+        // kernel/src/fs/ext2/block_group.rs BlockGroup. Users of this should probably no-op and log if there is no
+        // backend.
         self.backend.upgrade().unwrap()
     }
 
-    // Discard pages without writing them back to disk.
+    /// Discard pages without writing them back to disk.
     pub fn discard_range(&self, range: Range<usize>) {
         let page_idx_range = get_page_idx_range(&range);
         let mut pages = self.pages.lock();
@@ -387,6 +419,8 @@ impl PageCacheManager {
         Ok(())
     }
 
+    /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
+    /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
@@ -432,6 +466,14 @@ impl PageCacheManager {
         }
         ra_state.set_prev_page(idx);
         Ok(frame.into())
+    }
+
+    /// Readahead (prefetch) a page. This will cause the page to be asynchronously be loaded. Future loads will use the
+    /// results if it is available, or wait for this load to complete to use it.
+    fn readahead_page(&self, idx: usize) -> Result<()> {
+        let mut pages = self.pages.lock();
+        let mut ra_state = self.ra_state.lock();
+        ra_state.readahead_page(&mut pages, &self.backend(), idx)
     }
 }
 
