@@ -2,6 +2,7 @@
 // mod callable_service;
 pub(crate) mod generic_benchmarks;
 pub(crate) mod generic_test;
+pub mod registry;
 pub mod spsc;
 pub mod locking;
 
