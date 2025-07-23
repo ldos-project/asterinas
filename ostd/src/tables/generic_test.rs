@@ -4,7 +4,7 @@
 
 use alloc::sync::Arc;
 
-use crate::tables::{Consumer, Producer, StrongObserver, Table, WeakObserver};
+use crate::{prelude::*, tables::{Consumer, Producer, StrongObserver, Table, WeakObserver}};
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub(crate) struct TestMessage {
@@ -25,7 +25,7 @@ pub(crate) fn test_produce_consume<T: Table<TestMessage>>(table: Arc<T>) {
     assert_eq!(producer.try_put(test_message), None);
 }
 
-pub(crate) fn test_produce_strong_observe<T: Table<TestMessage>>(table: Arc<T>) {
+pub(crate) fn test_produce_strong_observe(table: Arc<dyn Table<TestMessage>>) {
     let producer = table.attach_producer().unwrap();
     let consumer = table.attach_consumer().unwrap();
     let test_message = TestMessage { x: 42 };

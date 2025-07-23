@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     benchmark::{BenchmarkReporter, Timer},
     sync::WaitQueue,
-    tables::{Consumer as _, Producer as _, Table},
+    tables::Table,
     task::{Task, TaskOptions},
 };
 

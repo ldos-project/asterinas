@@ -24,7 +24,13 @@
 // TODO: It might be a good idea to disable preemption during some of the lock-free operations. The
 // reason is it would reduce the risk be contention since only threads on other cores could contend.
 
-use alloc::{borrow::ToOwned, boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::type_name,
     cell::{Cell, UnsafeCell},
@@ -156,6 +162,8 @@ pub struct SpscTableCustom<
     const STRONG_OBSERVERS: bool = true,
     const WEAK_OBSERVERS: bool = true,
 > {
+    this: Weak<Self>,
+
     // INVARIANTS:
     //
     // * All reading occurs within `[min(heads) % len, tail_index % len)` where `heads` is the set of head indices
@@ -241,7 +249,8 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         } else {
             None
         };
-        let ret = SpscTableCustom {
+        Arc::new_cyclic(|this| SpscTableCustom {
+            this: this.clone(),
             buffer: (0..size).map(|_| Element::uninit()).collect(),
             head_index: Default::default(),
             strong_observer_heads: (0..max_strong_observers)
@@ -260,11 +269,12 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
             }),
             put_wait_queue,
             read_wait_queue,
-        };
-        Arc::new(ret)
+        })
     }
 
-    fn new(size: usize, max_strong_observers: usize, max_weak_observers: usize) -> Arc<Self>
+    /// Create a new [`SpscTable`] with a specific size and numbers of supported observers. This will use default wake
+    /// mechanisms.
+    pub fn new(size: usize, max_strong_observers: usize, max_weak_observers: usize) -> Arc<Self>
     where
         WQ: Default,
     {
@@ -489,7 +499,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         //
         // This read is relaxed ordering since it only narrows an ABA window and does not need to be precise.
         let tail_index = self.tail_index.load(Ordering::Relaxed); // <-- ABA window starts here.
-        if index < tail_index.saturating_sub(self.len) || tail_index < index {
+        if index < tail_index.saturating_sub(self.len) || index > tail_index {
             return None;
         }
 
@@ -528,21 +538,28 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         // of the data in the buffer.
         Some(unsafe { data.assume_init() })
     }
+
+    fn get_this(
+        &self,
+    ) -> Result<Arc<SpscTableCustom<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>>, TableAttachError>
+    {
+        self.this
+            .upgrade()
+            .ok_or_else(|| TableAttachError::Whatever {
+                message: "self was removed from original Arc".to_owned(),
+                source: None,
+            })
+    }
 }
 
 impl<
-        T: Copy + Sync + Send,
-        WQ: WaitMechanism,
+        T: Copy + Send + 'static,
+        WQ: WaitMechanism + 'static,
         const STRONG_OBSERVERS: bool,
         const WEAK_OBSERVERS: bool,
     > Table<T> for SpscTableCustom<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
-    type Producer = SpscProducer<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>;
-    type Consumer = SpscConsumer<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>;
-    type StrongObserver = SpscStrongObserver<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>;
-    type WeakObserver = SpscWeakObserver<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>;
-
-    fn attach_producer(self: &Arc<Self>) -> Result<Self::Producer, TableAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, TableAttachError> {
         let mut state = self.attachment_state.lock();
         if state.has_producer {
             Err(TableAttachError::AllocationFailed {
@@ -551,14 +568,14 @@ impl<
             })
         } else {
             state.has_producer = true;
-            Ok(SpscProducer {
-                table: self.clone(),
+            Ok(Box::new(SpscProducer {
+                table: self.get_this()?,
                 _phantom: PhantomData,
-            })
+            }) as _)
         }
     }
 
-    fn attach_consumer(self: &Arc<Self>) -> Result<Self::Consumer, TableAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, TableAttachError> {
         let mut state = self.attachment_state.lock();
         if state.has_consumer {
             Err(TableAttachError::AllocationFailed {
@@ -567,24 +584,24 @@ impl<
             })
         } else {
             state.has_consumer = true;
-            Ok(SpscConsumer {
-                table: self.clone(),
+            Ok(Box::new(SpscConsumer {
+                table: self.get_this()?,
                 _phantom: PhantomData,
-            })
+            }) as _)
         }
     }
 
-    fn attach_strong_observer(self: &Arc<Self>) -> Result<Self::StrongObserver, TableAttachError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, TableAttachError> {
         let mut state = self.attachment_state.lock();
         let free_list = &mut state.free_strong_observer_heads;
         if let Some(slot) = free_list.pop() {
             self.strong_observer_heads[slot]
                 .store(self.head_index.load(Ordering::Relaxed), Ordering::Release);
-            Ok(SpscStrongObserver {
-                table: self.clone(),
+            Ok(Box::new(SpscStrongObserver {
+                table: self.get_this()?,
                 observer_index: slot,
                 _phantom: PhantomData,
-            })
+            }) as _)
         } else {
             Err(TableAttachError::AllocationFailed {
                 table_type: type_name::<Self>().to_owned(),
@@ -596,15 +613,15 @@ impl<
         }
     }
 
-    fn attach_weak_observer(self: &Arc<Self>) -> Result<Self::WeakObserver, TableAttachError> {
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, TableAttachError> {
         let mut state = self.attachment_state.lock();
         let free_list = &mut state.free_weak_observer_bits;
         if let Some(slot) = free_list.pop() {
-            Ok(SpscWeakObserver {
-                table: self.clone(),
+            Ok(Box::new(SpscWeakObserver {
+                table: self.get_this()?,
                 observer_index: slot,
                 _phantom: PhantomData,
-            })
+            }) as _)
         } else {
             Err(TableAttachError::AllocationFailed {
                 table_type: type_name::<Self>().to_owned(),
