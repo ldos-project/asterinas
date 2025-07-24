@@ -473,11 +473,3 @@ pub mod benchmark {
         }
     }
 }
-
-// "down payment"
-// ...282
-//
-// ETFs. Muni bonds. ESC mostly.
-
-// Individual retirement.
-// ...

@@ -3,9 +3,7 @@
 #![expect(dead_code)]
 
 use core::{
-    iter,
-    ops::Range,
-    sync::atomic::{AtomicU8, Ordering},
+    cell::OnceCell, iter, ops::Range, sync::atomic::{AtomicU8, Ordering}
 };
 
 use align_ext::AlignExt;
@@ -16,9 +14,15 @@ use lru::LruCache;
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
+    path,
+    tables::{
+        registry::get_global_table_registry, spsc::SpscTable, Producer, Table
+    },
+    task::TaskOptions,
 };
 
 use crate::{
+    fs::utils::page_prefetch_policy::{AccessType, PageAccessEvent, PageCacheRegistration, PrefetchCommand},
     prelude::*,
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
@@ -186,7 +190,7 @@ impl ReadaheadWindow {
 
 /// A management object which tracks the state of the prefetcher, including asynchronous read handles
 /// ([`waiter`](`ReadaheadState::waiter`)).
-/// 
+///
 /// This implements a simple policy where pages are prefetched if there are sequential reads. The number of pages to
 /// prefetch increases as more sequential reads happen.
 struct ReadaheadState {
@@ -347,9 +351,9 @@ impl ReadaheadState {
 
 /// The page cache including both the cached pages and the readahead state and a reference to the backend to perform the
 /// actual loads. This references the backend weakly.
-/// 
+///
 /// ## Locking Discipline
-/// 
+///
 /// The lock ordering is: `pages`, `ra_state`.
 struct PageCacheManager {
     pages: Mutex<LruCache<usize, CachePage>>,
@@ -357,6 +361,7 @@ struct PageCacheManager {
     // TODO: This seems to be locked only when `pages` is also locked. So we could combine them into a struct within a
     // single `Mutex`. This would eliminate the need for the locking discipline listed above.
     ra_state: Mutex<ReadaheadState>,
+    access_producer: Mutex<OnceCell<Box<dyn Producer<PageAccessEvent>>>>
 }
 
 static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
@@ -367,9 +372,52 @@ impl PageCacheManager {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
             ra_state: Mutex::new(ReadaheadState::new()),
+            access_producer: Mutex::new(OnceCell::new()),
         });
-        // TODO: Register ret with a manager service which will send prefetch requests.
+
+        error_result!(ret.setup_prefetcher(), "prefetcher could not be started; this page cache will not prefetch");
+
         ret
+    }
+
+    fn setup_prefetcher(self: &Arc<PageCacheManager>) -> Result<()> {
+        let registry: &'static ostd::tables::registry::TableRegistry = get_global_table_registry();
+
+        // Create a page cache specific prefetching table. This will accept `PrefetchCommand`s which will trigger
+        // prefetches in this cache.
+        let prefetch_table = SpscTable::<PrefetchCommand>::new(8, 4, 40);
+        registry.register(path!(pagecache.prefetch.{?}), prefetch_table.clone());
+        let access_table = SpscTable::<PageAccessEvent>::new(64, 4, 40);
+        registry.register(path!(pagecache.access.{?}), access_table.clone());
+
+        // Now, temporarily attach to the page cache policy manager and notify it that we exist. It will start sending
+        // prefetches to us.
+        if let Some(table) =
+            registry.lookup::<PageCacheRegistration>(&path!(pagecache.policy.register_manager))
+            && let Ok(producer) = table.attach_producer()
+        {
+            producer.put(PageCacheRegistration {
+                prefetch_command_producer: prefetch_table.attach_producer()?,
+                access_observer: access_table.attach_weak_observer()?,
+            });
+        }
+
+        let Ok(()) = self.access_producer.lock().set(access_table.attach_producer()?) else {
+            return Err(Error::new(Errno::EALREADY));
+        };
+
+        let prefetch_consumer = prefetch_table.attach_consumer()?;
+        let this = self.clone();
+
+        TaskOptions::new(move || loop {
+            if let Some(cmd) = prefetch_consumer.try_take() {
+                this.readahead_page(cmd.page);
+                continue;
+            }
+        })
+        .spawn()?;
+
+        Ok(())
     }
 
     pub fn backend(&self) -> Arc<dyn PageCacheBackend> {
@@ -422,6 +470,12 @@ impl PageCacheManager {
     /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
+        {
+            let access_producer = self.access_producer.lock();            
+            if let Some(access_producer) = access_producer.get() {
+                access_producer.put(PageAccessEvent { timestamp: 0, page: idx, access_type: AccessType::Read });
+            }
+        }
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
         let backend = self.backend();

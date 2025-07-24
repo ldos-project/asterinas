@@ -40,6 +40,7 @@ mod random_test;
 mod range_lock;
 mod status_flags;
 mod xattr;
+pub mod page_prefetch_policy;
 
 use core::{
     borrow::Borrow,
