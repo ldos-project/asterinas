@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(dead_code)]
-
-/// Error number. 
-/// 
+/// Error number.
+///
 /// This should match the Linux error numbers as defined in `errno.h` and similar.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -288,10 +286,10 @@ pub enum Errno {
 }
 
 /// Error used in this crate.
-/// 
+///
 /// This wraps an [`Errno`] and potentally provides additional information. The error number is returned to the
 /// userspace from the syscall if the error reaches syscall invocation.
-/// 
+///
 /// This type is convertable to and from various other error types.
 #[derive(Debug, Clone, Copy)]
 pub struct Error {
@@ -316,6 +314,18 @@ impl Error {
     }
 }
 
+impl core::error::Error for Error {}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self.errno)?;
+        if let Some(msg) = self.msg {
+            f.write_str(msg)?;
+        }
+        Ok(())
+    }
+}
+
 impl From<Errno> for Error {
     fn from(errno: Errno) -> Self {
         Error::new(errno)
@@ -325,6 +335,22 @@ impl From<Errno> for Error {
 impl AsRef<Error> for Error {
     fn as_ref(&self) -> &Error {
         self
+    }
+}
+
+impl From<ostd::tables::TableAttachError> for Error {
+    fn from(value: ostd::tables::TableAttachError) -> Self {
+        match value {
+            ostd::tables::TableAttachError::Unsupported { .. } => {
+                Error::with_message(Errno::EPERM, "table feature unsupported")
+            }
+            ostd::tables::TableAttachError::AllocationFailed { .. } => {
+                Error::with_message(Errno::EBUSY, "table cannot be attached to")
+            }
+            ostd::tables::TableAttachError::Whatever { .. } => {
+                Error::with_message(Errno::EINVAL, "unknown error")
+            }
+        }
     }
 }
 
