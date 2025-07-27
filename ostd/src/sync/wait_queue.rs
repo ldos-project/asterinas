@@ -130,6 +130,10 @@ impl WaitMechanism for WaitQueue {
         self.wait_until(cond)
     }
 
+    fn enqueue(&self, waker: Arc<Waker>) {
+        self.enqueue(waker);
+    }
+
     fn wake_one(&self) {
         self.wake_one();
     }

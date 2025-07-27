@@ -43,7 +43,7 @@ use core::{
 use crossbeam_utils::CachePadded;
 
 use crate::{
-    sync::{Mutex, WaitByYield, WaitMechanism, WaitQueue},
+    sync::{Mutex, WaitByYield, WaitMechanism, WaitQueue, Waker},
     tables::{Consumer, Cursor, Producer, StrongObserver, Table, TableAttachError, WeakObserver},
 };
 
@@ -335,7 +335,6 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
 
     /// SAFETY: Must only be called from a single thread at a time. E.i., no object calling this can be Sync, but it may
     /// be Send.
-    #[inline(always)]
     unsafe fn try_put(&self, data: T) -> Option<T>
     where
         T: Send,
@@ -385,7 +384,6 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     ///
     /// SAFETY: Must only be called from a single thread at a time. E.i., no object calling this can be Sync, but it may
     /// be Send.
-    #[inline(always)]
     unsafe fn try_take(&self) -> Option<T>
     where
         T: Copy + Send,
@@ -397,7 +395,6 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     ///
     /// SAFETY: Must only be called from a single thread at a time with a given observer index. E.i., no object calling
     /// this can be Sync, but it may be Send.
-    #[inline(always)]
     unsafe fn try_strong_observe(&self, observer_index: usize) -> Option<T>
     where
         T: Copy + Send,
@@ -666,22 +663,24 @@ impl<
     fn put(&self, data: T) {
         // let mut i = 0;
         let mut d = Some(data);
-        self.table.put_wait_queue.wait_until(|| {
-            // SAFETY: SpscProducer is Send, but not Sync, so this can only ever be called from a single thread at a time.
-            match self.try_put(d.take().unwrap()) {
+        self.table
+            .put_wait_queue
+            .wait_until(|| match self.try_put(d.take().unwrap()) {
                 Some(returned) => {
                     d = Some(returned);
                     None
                 }
                 None => Some(()),
-            }
-        });
-        self.table.read_wait_queue.wake_all();
+            });
     }
-    #[inline(never)]
+
     fn try_put(&self, data: T) -> Option<T> {
         // SAFETY: SpscProducer is Send, but not Sync, so this can only ever be called from a single thread at a time.
-        unsafe { self.table.try_put(data) }
+        let res = unsafe { self.table.try_put(data) };
+        if res.is_none() {
+            self.table.read_wait_queue.wake_all();
+        }
+        res
     }
 }
 
@@ -697,8 +696,18 @@ pub struct SpscConsumer<
     _phantom: PhantomData<Cell<()>>,
 }
 
+// impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
+//     SpscConsumer<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>
+//     where Self: Consumer<T>
+// {
+//     fn try_take_wait(&self, waker: Arc<Waker>) -> Option<T> {
+//         self.table.read_wait_queue.insert(waker);
+//         self.try_take()
+//     }
+// }
+
 // Sanity checks because `PhantomData<Cell<()>>` does not overtly specify the expected auto-trait implementations.
-static_assertions::assert_impl_any!(SpscConsumer<(), WaitQueue, true, true>: Send);
+static_assertions::assert_impl_all!(SpscConsumer<(), WaitQueue, true, true>: Send);
 static_assertions::assert_not_impl_any!(SpscConsumer<(), WaitQueue, true, true>: Sync);
 
 impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
@@ -718,14 +727,20 @@ impl<
     > Consumer<T> for SpscConsumer<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn take(&self) -> T {
-        let r = self.table.read_wait_queue.wait_until(|| self.try_take());
-        self.table.put_wait_queue.wake_one();
-        r
+        self.table.read_wait_queue.wait_until(|| self.try_take())
     }
 
     fn try_take(&self) -> Option<T> {
         // SAFETY: SpscConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
-        unsafe { self.table.try_take() }
+        let res = unsafe { self.table.try_take() };
+        if res.is_some() {
+            self.table.put_wait_queue.wake_one();
+        }
+        res
+    }
+
+    fn enqueue_for_take(&self, waker: Arc<crate::sync::Waker>) {
+        self.table.read_wait_queue.enqueue(waker);
     }
 }
 
@@ -754,19 +769,23 @@ impl<
     > StrongObserver<T> for SpscStrongObserver<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn strong_observe(&self) -> T {
-        let r = self
-            .table
+        self.table
             .read_wait_queue
-            .wait_until(|| self.try_strong_observe());
-        self.table.put_wait_queue.wake_one();
-        r
+            .wait_until(|| self.try_strong_observe())
     }
 
     fn try_strong_observe(&self) -> Option<T> {
         // SAFETY: SpscConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
-        unsafe { self.table.try_strong_observe(self.observer_index) }
+        let res = unsafe { self.table.try_strong_observe(self.observer_index) };
+        if res.is_some() {
+            self.table.put_wait_queue.wake_one();
+        }
+        res
     }
-}
+
+    fn enqueue_for_strong_observe(&self, waker: Arc<crate::sync::Waker>) {
+        self.table.read_wait_queue.enqueue(waker);
+    }}
 
 impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
     for SpscStrongObserver<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>

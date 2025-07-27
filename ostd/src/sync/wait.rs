@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::task::{scheduler, Task};
 
@@ -79,6 +78,16 @@ impl Waiter {
         self.waker.do_wait();
     }
 
+    /// Wait on a number of waiters and return the index of the one which was awakened. This will return immediately if
+    /// a waiter has been woken since the last call to wait. See [`Waiter::wait()`].
+    ///
+    /// The type of the waiters argument allows for the caller to extract the waiters from some other data structure
+    /// without allocation. The iterator needs to be `Clone` because it will be iterated repeatedly. Maps over many data
+    /// structures meet these requirements.
+    pub fn wait_many_iter<'a>(waiters: impl Iterator<Item = &'a Waiter> + Clone) -> usize {
+        Waker::do_wait_many(waiters.map(|w| w.waker.as_ref()))
+    }
+
     /// Waits until some condition is met or the cancel condition becomes true.
     ///
     /// This method will return `Ok(_)` if the condition returns `Some(_)`, and will stop waiting
@@ -150,7 +159,35 @@ impl Waker {
     #[track_caller]
     fn do_wait(&self) {
         while !self.has_woken.swap(false, Ordering::Acquire) {
+            // TODO: It's not clear why this needs to be acquire instead of relaxed. On x86, it doesn't matter though.
             scheduler::park_current(|| self.has_woken.load(Ordering::Acquire));
+        }
+    }
+
+    /// Wait for a number of wakers to trigger. Return the index in the `wakers` slice of the waker that was actually
+    /// triggered.
+    ///
+    /// The type of wakers allows the caller to extract the wakers from some other data structure.
+    fn do_wait_many<'a>(wakers: impl Iterator<Item = &'a Waker> + Clone) -> usize {
+        loop {
+            // Check for a waker that can transition from has_woken=true to false meaning we could pick up the "wake"
+            // event. `position` is short cutting so this will never swap more than "true" out.
+            let awoken_index = wakers
+                .clone()
+                .position(|w| w.has_woken.swap(false, Ordering::Acquire));
+            if let Some(i) = awoken_index {
+                // We found a waker what was awoken. Other wakers are left unchanged and those wakes may be detected by
+                // a future call.
+                return i;
+            } else {
+                // Park this thread waiting for any waker to be awoken.
+                //
+                // TODO: It's not clear why this needs to be acquire instead of relaxed. On x86, it doesn't matter
+                // though.
+                scheduler::park_current(|| {
+                    wakers.clone().any(|w| w.has_woken.load(Ordering::Acquire))
+                });
+            }
         }
     }
 
@@ -235,6 +272,41 @@ mod test {
         assert!(cond.load(Ordering::Relaxed));
 
         waiter2.wait();
+        assert!(cond2.load(Ordering::Relaxed));
+    }
+
+    #[ktest]
+    fn wait_many() {
+        let (waiter, waker) = Waiter::new_pair();
+
+        let cond = Arc::new(AtomicBool::new(false));
+        let cond_cloned = cond.clone();
+
+        let (waiter2, waker2) = Waiter::new_pair();
+
+        let cond2 = Arc::new(AtomicBool::new(false));
+        let cond2_cloned = cond2.clone();
+
+        TaskOptions::new(move || {
+            Task::yield_now();
+
+            cond_cloned.store(true, Ordering::Relaxed);
+            assert!(waker.wake_up());
+
+            Task::yield_now();
+
+            cond2_cloned.store(true, Ordering::Relaxed);
+            assert!(waker2.wake_up());
+        })
+        .data(())
+        .spawn()
+        .unwrap();
+
+        assert_eq!(Waiter::wait_many_iter([&waiter, &waiter2].into_iter()), 0);
+        assert!(cond.load(Ordering::Relaxed));
+        assert!(!cond2.load(Ordering::Relaxed));
+
+        assert_eq!(Waiter::wait_many_iter([&waiter, &waiter2].into_iter()), 1);
         assert!(cond2.load(Ordering::Relaxed));
     }
 }

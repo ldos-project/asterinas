@@ -6,10 +6,12 @@ pub mod registry;
 pub mod spsc;
 pub mod locking;
 
-use alloc::{borrow::ToOwned, boxed::Box, format, string::String};
+use alloc::{borrow::ToOwned, boxed::Box, format, string::String, sync::Arc};
 use core::{
     any::Any, error::Error, fmt::Display, iter::Step, ops::{Add, Sub}
 };
+
+use crate::sync::Waker;
 
 /// A reference to a specific row in a table. This refers to an element over the full history of a table, not based on
 /// some implementation defined buffer.
@@ -76,7 +78,12 @@ pub trait Consumer<T>: Send {
 
     /// Take/dequeue an element from the table if it is immediately available.
     fn try_take(&self) -> Option<T>;
+
+    /// Register waker to be woken when there is something to be taken. After the waiter is woken, it is required to
+    /// eventually call `try_take` (or `take`).
+    fn enqueue_for_take(&self, waker: Arc<Waker>);
 }
+
 
 /// A strong-observer handle to a table. This allows receiving every value from a table without preventing other
 /// consumers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
@@ -90,7 +97,10 @@ pub trait StrongObserver<T>: Send {
 
     /// Observe an element from the table if it is immediately available.
     fn try_strong_observe(&self) -> Option<T>;
-}
+
+    /// Register waker to be woken when there is something to be observed. After the waiter is woken, it is required to
+    /// eventually call `try_strong_observe` (or `strong_observe`).
+    fn enqueue_for_strong_observe(&self, waker: Arc<Waker>);}
 
 /// A weak-observer handle to a table. This allows looking at the history of the table without affecting any other
 /// producers, consumers, or observers. Weak-observers are not guaranteed to observe every element, so they never block

@@ -3,7 +3,10 @@
 #![expect(dead_code)]
 
 use core::{
-    cell::OnceCell, iter, ops::Range, sync::atomic::{AtomicU8, Ordering}
+    cell::OnceCell,
+    iter,
+    ops::Range,
+    sync::atomic::{AtomicU8, Ordering},
 };
 
 use align_ext::AlignExt;
@@ -15,14 +18,14 @@ use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     path,
-    tables::{
-        registry::get_global_table_registry, spsc::SpscTable, Producer, Table
-    },
+    tables::{registry::get_global_table_registry, spsc::SpscTable, Producer, Table},
     task::TaskOptions,
 };
 
 use crate::{
-    fs::utils::page_prefetch_policy::{AccessType, PageAccessEvent, PageCacheRegistration, PrefetchCommand},
+    fs::utils::page_prefetch_policy::{
+        AccessType, PageAccessEvent, PageCacheRegistration, PrefetchCommand,
+    },
     prelude::*,
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
@@ -361,7 +364,7 @@ struct PageCacheManager {
     // TODO: This seems to be locked only when `pages` is also locked. So we could combine them into a struct within a
     // single `Mutex`. This would eliminate the need for the locking discipline listed above.
     ra_state: Mutex<ReadaheadState>,
-    access_producer: Mutex<OnceCell<Box<dyn Producer<PageAccessEvent>>>>
+    access_producer: Mutex<OnceCell<Box<dyn Producer<PageAccessEvent>>>>,
 }
 
 static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
@@ -375,7 +378,10 @@ impl PageCacheManager {
             access_producer: Mutex::new(OnceCell::new()),
         });
 
-        error_result!(ret.setup_prefetcher(), "prefetcher could not be started; this page cache will not prefetch");
+        error_result!(
+            ret.setup_prefetcher(),
+            "prefetcher could not be started; this page cache will not prefetch"
+        );
 
         ret
     }
@@ -402,7 +408,11 @@ impl PageCacheManager {
             });
         }
 
-        let Ok(()) = self.access_producer.lock().set(access_table.attach_producer()?) else {
+        let Ok(()) = self
+            .access_producer
+            .lock()
+            .set(access_table.attach_producer()?)
+        else {
             return Err(Error::new(Errno::EALREADY));
         };
 
@@ -411,7 +421,11 @@ impl PageCacheManager {
 
         TaskOptions::new(move || loop {
             if let Some(cmd) = prefetch_consumer.try_take() {
-                this.readahead_page(cmd.page);
+                error_result!(
+                    this.readahead_page(cmd.page),
+                    "readahead failed of page {}, continuing",
+                    cmd.page
+                );
                 continue;
             }
         })
@@ -471,9 +485,13 @@ impl PageCacheManager {
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
         {
-            let access_producer = self.access_producer.lock();            
+            let access_producer = self.access_producer.lock();
             if let Some(access_producer) = access_producer.get() {
-                access_producer.put(PageAccessEvent { timestamp: 0, page: idx, access_type: AccessType::Read });
+                access_producer.put(PageAccessEvent {
+                    timestamp: 0,
+                    page: idx,
+                    access_type: AccessType::Read,
+                });
             }
         }
         let mut pages = self.pages.lock();

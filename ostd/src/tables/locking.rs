@@ -314,6 +314,10 @@ impl<T: Send> Consumer<T> for LockingConsumer<T> {
         }
         res
     }
+
+    fn enqueue_for_take(&self, waker: Arc<crate::sync::Waker>) {
+        self.table.read_wait_queue.enqueue(waker);
+    }
 }
 
 /// A consumer for a locking table which does support observers. This clones values as they are taken out of the table,
@@ -334,6 +338,10 @@ impl<T: Send + Clone> Consumer<T> for CloningLockingConsumer<T> {
             self.table.put_wait_queue.wake_one();
         }
         res
+    }
+
+    fn enqueue_for_take(&self, waker: Arc<crate::sync::Waker>) {
+        self.table.read_wait_queue.enqueue(waker);
     }
 }
 
@@ -366,6 +374,10 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
             self.table.put_wait_queue.wake_one();
         }
         res
+    }
+
+    fn enqueue_for_strong_observe(&self, waker: Arc<crate::sync::Waker>) {
+        self.table.read_wait_queue.enqueue(waker);
     }
 }
 

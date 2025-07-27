@@ -2,7 +2,9 @@
 
 use core::marker::PhantomData;
 
-use crate::task::Task;
+use alloc::sync::Arc;
+
+use crate::{sync::Waker, task::Task};
 
 /// Mechanisms for waiting for other threads. The most obvious implementation of this is [`WaitQueue`], however
 /// [simply spinning](`WaitBySpin`) is also a valid implementation.
@@ -21,9 +23,21 @@ pub trait WaitMechanism {
     where
         F: FnMut() -> Option<R>;
 
+
+    fn enqueue(&self, waker: Arc<Waker>);
+
     /// Wakes up one waiting thread, if there is one at the point of time when this method is
     /// called.
     fn wake_one(&self);
+    // XXX: Not returning a flag as to whether something was woken makes it impossible for the waker to know if the
+    // waiter is still waiting. If it is not, then wake could be lost, i.e., no thread woken at all. This can
+    // potentially deadlock since an actual waiting thread may stay parked forever. This is closely related to some very
+    // very complex issues that come up with async future "cancelation" (when a future is dropped after calling
+    // `Waker::wake` but without calling `Future::poll`). See:
+    // * https://users.rust-lang.org/t/is-async-wake-one-safe-in-a-multithreaded-runtime/127550
+    // * https://tomaka.medium.com/a-look-back-at-asynchronous-rust-d54d63934a1c
+    // * https://smallcultfollowing.com/babysteps/blog/2022/06/13/async-cancellation-a-case-study-of-pub-sub-in-mini-redis/
+    // and many others. AsyncDrop also seems to be related.
 
     /// Wakes up all waiting threads.
     fn wake_all(&self);
@@ -92,6 +106,11 @@ impl<SF: SpinFunc, W: WaitMechanism, const HAS_NEXT: bool> WaitMechanism
         }
     }
 
+    fn enqueue(&self, waker: Arc<Waker>) {
+        SF::spin_hint();
+        waker.wake_up();        
+    }
+
     fn wake_one(&self) {
         if let Some(next) = &self.next {
             next.wake_one();
@@ -144,7 +163,7 @@ pub type WaitBySpin = WaitByLoopThen<BusySpinFunc, KeepGoing, false>;
 /// A "null" wait mechanism used to reduce the duplication in the implementations of the spinning
 /// wait mechanisms. This should never be constructed.
 #[doc(hidden)]
-pub struct KeepGoing(());
+pub enum KeepGoing {}
 
 impl WaitMechanism for KeepGoing {
     fn wait_until<F, R>(&self, _: F) -> R
@@ -159,6 +178,10 @@ impl WaitMechanism for KeepGoing {
     }
 
     fn wake_all(&self) {
+        unreachable!()
+    }
+    
+    fn enqueue(&self, _waker: Arc<Waker>) {
         unreachable!()
     }
 }
