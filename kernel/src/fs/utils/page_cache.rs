@@ -18,15 +18,25 @@ use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     path,
-    tables::{registry::get_global_table_registry, spsc::SpscTable, Producer, Table},
-    task::TaskOptions,
+    sync::WaitQueue,
+    tables::{
+        registry::get_global_table_registry,
+        spsc::{SpscTable, SpscTableCustom},
+        Producer, Table,
+    },
+    task::{Task, TaskOptions},
 };
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        AccessType, PageAccessEvent, PageCacheRegistration, PrefetchCommand,
+        AccessType, PageAccessEvent, PageCacheRegistration, PageCacheRegistrationCommand,
+        PrefetchCommand,
     },
     prelude::*,
+    process::posix_thread::AsPosixThread as _,
+    sched::{RealTimePolicy, SchedPolicy},
+    thread::{kernel_thread::ThreadOptions, work_queue::WorkQueue, AsThread as _},
+    time::clocks::MonotonicClock,
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
 
@@ -38,16 +48,20 @@ pub struct PageCache {
 
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
-    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        Self::with_capacity(0, backend)
+    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetch: bool) -> Result<Self> {
+        Self::with_capacity(0, backend, prefetch)
     }
 
     /// Creates a page cache associated with an existing backend.
     ///
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
-    pub fn with_capacity(capacity: usize, backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        let manager = PageCacheManager::new(backend);
+    pub fn with_capacity(
+        capacity: usize,
+        backend: Weak<dyn PageCacheBackend>,
+        prefetch: bool,
+    ) -> Result<Self> {
+        let manager = PageCacheManager::new(backend, prefetch);
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -312,19 +326,19 @@ impl ReadaheadState {
 
     /// Conducts the new readahead.
     /// Sends the relevant read request and sets the relevant page in the page cache to `Uninit`.
-    pub fn conduct_readahead(
-        &mut self,
-        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
-        backend: Arc<dyn PageCacheBackend>,
-    ) -> Result<()> {
-        let Some(window) = &self.ra_window else {
-            return_errno!(Errno::EINVAL)
-        };
-        for async_idx in window.readahead_range() {
-            self.readahead_page(pages, &backend, async_idx)?;
-        }
-        Ok(())
-    }
+    // pub fn conduct_readahead(
+    //     &mut self,
+    //     pages: &mut MutexGuard<LruCache<usize, CachePage>>,
+    //     backend: Arc<dyn PageCacheBackend>,
+    // ) -> Result<()> {
+    //     let Some(window) = &self.ra_window else {
+    //         return_errno!(Errno::EINVAL)
+    //     };
+    //     for async_idx in window.readahead_range() {
+    //         self.readahead_page(pages, &backend, async_idx)?;
+    //     }
+    //     Ok(())
+    // }
 
     /// Readahead (prefetch) a page. This will cause the page to be asynchronously be loaded. Future loads will use the
     /// results if it is available, or wait for this load to complete to use it.
@@ -370,7 +384,7 @@ struct PageCacheManager {
 static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
 
 impl PageCacheManager {
-    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Arc<Self> {
+    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetch: bool) -> Arc<Self> {
         let ret = Arc::new(Self {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
@@ -378,10 +392,13 @@ impl PageCacheManager {
             access_producer: Mutex::new(OnceCell::new()),
         });
 
-        error_result!(
-            ret.setup_prefetcher(),
-            "prefetcher could not be started; this page cache will not prefetch"
-        );
+        if prefetch {
+            error_result!(crate::fs::utils::page_prefetch_policy::start_prefetch_policy());
+            error_result!(
+                ret.setup_prefetcher(),
+                "prefetcher could not be started; this page cache will not prefetch"
+            );
+        }
 
         ret
     }
@@ -391,21 +408,31 @@ impl PageCacheManager {
 
         // Create a page cache specific prefetching table. This will accept `PrefetchCommand`s which will trigger
         // prefetches in this cache.
-        let prefetch_table = SpscTable::<PrefetchCommand>::new(8, 4, 40);
-        registry.register(path!(pagecache.prefetch.{?}), prefetch_table.clone());
-        let access_table = SpscTable::<PageAccessEvent>::new(64, 4, 40);
+        let prefetch_command_table = SpscTableCustom::<PrefetchCommand, WaitQueue>::new(8, 4, 40);
+        registry.register(
+            path!(pagecache.prefetch.{?}),
+            prefetch_command_table.clone(),
+        );
+        let access_table = SpscTableCustom::<PageAccessEvent, WaitQueue>::new(64, 4, 40);
         registry.register(path!(pagecache.access.{?}), access_table.clone());
 
-        // Now, temporarily attach to the page cache policy manager and notify it that we exist. It will start sending
-        // prefetches to us.
-        if let Some(table) =
-            registry.lookup::<PageCacheRegistration>(&path!(pagecache.policy.register_manager))
-            && let Ok(producer) = table.attach_producer()
         {
-            producer.put(PageCacheRegistration {
-                prefetch_command_producer: prefetch_table.attach_producer()?,
-                access_observer: access_table.attach_weak_observer()?,
+            let table = registry
+                .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
+                .ok_or_else(|| {
+                    Error::with_message(
+                        Errno::ENOENT,
+                        "could not find prefetcher registration table",
+                    )
+                })?;
+            // Now, temporarily attach to the page cache policy manager and notify it that we exist. It will start sending
+            // prefetches to us.
+            let producer = table.attach_producer()?;
+            producer.put(PageCacheRegistrationCommand {
+                prefetch_command_table: prefetch_command_table.clone(),
+                access_table: access_table.clone(),
             });
+            //Err(Error::with_message(Errno::ENOENT, "could not register with prefetcher"))
         }
 
         let Ok(()) = self
@@ -413,23 +440,32 @@ impl PageCacheManager {
             .lock()
             .set(access_table.attach_producer()?)
         else {
-            return Err(Error::new(Errno::EALREADY));
+            return Err(Error::with_message(
+                Errno::EALREADY,
+                "access table producer already set",
+            ));
         };
 
-        let prefetch_consumer = prefetch_table.attach_consumer()?;
-        let this = self.clone();
+        let prefetch_consumer = prefetch_command_table.attach_consumer()?;
+        let weak_this = Arc::downgrade(self);
 
-        TaskOptions::new(move || loop {
-            if let Some(cmd) = prefetch_consumer.try_take() {
-                error_result!(
-                    this.readahead_page(cmd.page),
-                    "readahead failed of page {}, continuing",
-                    cmd.page
-                );
-                continue;
-            }
+        ThreadOptions::new(move || loop {
+            let Some(this) = weak_this.upgrade() else {
+                break;
+            };
+            let cmd = prefetch_consumer.take();
+            info!("Received prefetch {cmd:?}. doing it.");
+            error_result!(
+                this.readahead_page(cmd.page),
+                "readahead failed of page {}, continuing",
+                cmd.page
+            );
         })
-        .spawn()?;
+        .sched_policy(SchedPolicy::RealTime {
+            rt_prio: 80.try_into().unwrap(),
+            rt_policy: RealTimePolicy::default(),
+        })
+        .spawn();
 
         Ok(())
     }
@@ -488,7 +524,13 @@ impl PageCacheManager {
             let access_producer = self.access_producer.lock();
             if let Some(access_producer) = access_producer.get() {
                 access_producer.put(PageAccessEvent {
-                    timestamp: 0,
+                    timestamp: MonotonicClock::get().read_time(),
+                    thread: (|| {
+                        let current_task = Task::current()?;
+                        let current_thread = current_task.as_thread()?;
+                        let current_posix_thread = current_thread.as_posix_thread()?;
+                        Some(current_posix_thread.tid())
+                    })(),
                     page: idx,
                     access_type: AccessType::Read,
                 });
@@ -534,7 +576,7 @@ impl PageCacheManager {
         };
         if ra_state.should_readahead(idx, backend.npages()) {
             ra_state.setup_window(idx, backend.npages());
-            ra_state.conduct_readahead(&mut pages, backend)?;
+            // ra_state.conduct_readahead(&mut pages, backend)?;
         }
         ra_state.set_prev_page(idx);
         Ok(frame.into())
@@ -700,6 +742,7 @@ impl dyn PageCacheBackend {
     }
     /// Writes a page to the backend synchronously.
     fn write_page(&self, idx: usize, frame: &CachePage) -> Result<()> {
+        info!("write page {idx}");
         let waiter = self.write_page_async(idx, frame)?;
         match waiter.wait() {
             Some(BioStatus::Complete) => Ok(()),

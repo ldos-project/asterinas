@@ -320,6 +320,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}", self.errno)?;
         if let Some(msg) = self.msg {
+            f.write_str(": ")?;
             f.write_str(msg)?;
         }
         Ok(())

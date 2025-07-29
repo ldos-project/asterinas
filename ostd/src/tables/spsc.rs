@@ -43,7 +43,7 @@ use core::{
 use crossbeam_utils::CachePadded;
 
 use crate::{
-    sync::{Mutex, WaitByYield, WaitMechanism, WaitQueue, Waker},
+    sync::{Mutex, WaitMechanism, WaitQueue},
     tables::{Consumer, Cursor, Producer, StrongObserver, Table, TableAttachError, WeakObserver},
 };
 
@@ -158,7 +158,7 @@ pub type SpscTable<T> = SpscTableCustom<T>;
 /// long as there are no attached observers, so leaving them enabled provides more dynamic flexibility.
 pub struct SpscTableCustom<
     T,
-    WQ: WaitMechanism = WaitByYield,
+    WQ: WaitMechanism = WaitQueue,
     const STRONG_OBSERVERS: bool = true,
     const WEAK_OBSERVERS: bool = true,
 > {
@@ -252,7 +252,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         Arc::new_cyclic(|this| SpscTableCustom {
             this: this.clone(),
             buffer: (0..size).map(|_| Element::uninit()).collect(),
-            head_index: Default::default(),
+            head_index: CachePadded::new(AtomicUsize::new(usize::MAX)),
             strong_observer_heads: (0..max_strong_observers)
                 .map(|_| CachePadded::new(AtomicUsize::new(usize::MAX)))
                 .collect(),
@@ -319,7 +319,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         // faster since it can amortize the cost of atomic reads which may contend with consumers and observers. See
         // https://www.linuxjournal.com/content/lock-free-multi-producer-multi-consumer-queue-ring-buffer.
         let next_tail_slot = self.mod_len(current_tail + 1);
-        if next_tail_slot == current_head_slot
+        if (current_head != usize::MAX && next_tail_slot == current_head_slot)
             || (STRONG_OBSERVERS
                 && self.strong_observer_heads.iter().any(|h| {
                     let current_h = h.load(Ordering::Acquire);
@@ -411,6 +411,8 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
         // Read the head. This is relaxed because there is no other writer to the head.
         let current_head = head.load(Ordering::Relaxed);
         let current_head_slot = self.mod_len(current_head);
+        // Check that the index is not the sentinel for detached.
+        assert!(current_head != usize::MAX);
         // Read the tail. This must be acquire ordering to guarantee that the read from the buffer below will observe
         // fully written data.
         let current_tail = self.tail_index.load(Ordering::Acquire);
@@ -581,6 +583,10 @@ impl<
             })
         } else {
             state.has_consumer = true;
+            self.head_index.store(
+                self.tail_index.load(Ordering::Relaxed),
+                Ordering::Release,
+            );
             Ok(Box::new(SpscConsumer {
                 table: self.get_this()?,
                 _phantom: PhantomData,
@@ -592,8 +598,10 @@ impl<
         let mut state = self.attachment_state.lock();
         let free_list = &mut state.free_strong_observer_heads;
         if let Some(slot) = free_list.pop() {
-            self.strong_observer_heads[slot]
-                .store(self.head_index.load(Ordering::Relaxed), Ordering::Release);
+            self.strong_observer_heads[slot].store(
+                self.tail_index.load(Ordering::Relaxed),
+                Ordering::Release,
+            );
             Ok(Box::new(SpscStrongObserver {
                 table: self.get_this()?,
                 observer_index: slot,
@@ -696,16 +704,6 @@ pub struct SpscConsumer<
     _phantom: PhantomData<Cell<()>>,
 }
 
-// impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
-//     SpscConsumer<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>
-//     where Self: Consumer<T>
-// {
-//     fn try_take_wait(&self, waker: Arc<Waker>) -> Option<T> {
-//         self.table.read_wait_queue.insert(waker);
-//         self.try_take()
-//     }
-// }
-
 // Sanity checks because `PhantomData<Cell<()>>` does not overtly specify the expected auto-trait implementations.
 static_assertions::assert_impl_all!(SpscConsumer<(), WaitQueue, true, true>: Send);
 static_assertions::assert_not_impl_any!(SpscConsumer<(), WaitQueue, true, true>: Sync);
@@ -715,6 +713,7 @@ impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
 {
     fn drop(&mut self) {
         let mut state = self.table.attachment_state.lock();
+        self.table.head_index.store(usize::MAX, Ordering::Relaxed);
         state.has_consumer = false;
     }
 }
@@ -785,7 +784,8 @@ impl<
 
     fn enqueue_for_strong_observe(&self, waker: Arc<crate::sync::Waker>) {
         self.table.read_wait_queue.enqueue(waker);
-    }}
+    }
+}
 
 impl<T, WQ: WaitMechanism, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
     for SpscStrongObserver<T, WQ, STRONG_OBSERVERS, WEAK_OBSERVERS>

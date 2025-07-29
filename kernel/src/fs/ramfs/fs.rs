@@ -127,7 +127,7 @@ impl Inner {
     }
 
     pub fn new_file(this: Weak<RamInode>) -> Self {
-        Self::File(PageCache::new(this).unwrap())
+        Self::File(PageCache::new(this, false).unwrap())
     }
 
     pub fn new_symlink() -> Self {

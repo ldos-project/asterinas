@@ -86,7 +86,7 @@ impl BlockGroup {
         };
 
         let raw_inodes_cache =
-            PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _)?;
+            PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _, true)?;
 
         Ok(Self {
             idx,
@@ -126,6 +126,7 @@ impl BlockGroup {
     ///
     /// This method may load the raw inode metadata from block device.
     fn load_inode(&self, inode_idx: u32) -> Result<Arc<Inode>> {
+        info!("load_inode {inode_idx}");
         let fs = self.fs();
         let raw_inode = {
             let offset = (inode_idx as usize) * fs.inode_size();

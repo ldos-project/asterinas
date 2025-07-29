@@ -378,7 +378,7 @@ macro_rules! log_syscall_entry {
                 use $crate::process::posix_thread::AsPosixThread;
                 $crate::current_thread!().as_posix_thread().unwrap().tid()
             };
-            log::info!(
+            log::debug!(
                 "[pid={}][tid={}][id={}][{}]",
                 pid,
                 tid,

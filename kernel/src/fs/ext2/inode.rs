@@ -963,6 +963,7 @@ impl InodeInner {
             page_cache: PageCache::with_capacity(
                 num_page_bytes,
                 Arc::downgrade(&inode_impl.block_manager) as _,
+                true,
             )
             .unwrap(),
             inode_impl,

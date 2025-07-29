@@ -65,6 +65,8 @@ pub struct ObservableLockingTable<T> {
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
     // wrapping the table.
 
+    // TODO: Because of the above the outer layer can get collected even if the inner is kept alive by an attachment.
+
     /// The underlying table used. This can be used to implement the more general observable table because it actually
     /// does support the required features, but only if `T: Clone` and this type is required to guarantee that during
     /// attachment and handle construction.

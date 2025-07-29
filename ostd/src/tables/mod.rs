@@ -2,16 +2,20 @@
 // mod callable_service;
 pub(crate) mod generic_benchmarks;
 pub(crate) mod generic_test;
+pub mod locking;
 pub mod registry;
 pub mod spsc;
-pub mod locking;
 
 use alloc::{borrow::ToOwned, boxed::Box, format, string::String, sync::Arc};
 use core::{
-    any::Any, error::Error, fmt::Display, iter::Step, ops::{Add, Sub}
+    any::Any,
+    error::Error,
+    fmt::Display,
+    iter::Step,
+    ops::{Add, Sub},
 };
 
-use crate::sync::Waker;
+use crate::{mm::frame::meta::ReservedMemoryMeta, sync::Waker};
 
 /// A reference to a specific row in a table. This refers to an element over the full history of a table, not based on
 /// some implementation defined buffer.
@@ -42,19 +46,20 @@ impl Cursor {
     }
 }
 
-impl Add<isize> for Cursor {
+impl Add<usize> for Cursor {
     type Output = Self;
 
-    fn add(self, rhs: isize) -> Self::Output {
+    fn add(self, rhs: usize) -> Self::Output {
         let Cursor(i) = self;
-        Cursor(i.checked_add_signed(rhs).unwrap())
+        Cursor(i.checked_add(rhs).unwrap())
     }
 }
 
-impl Sub<isize> for Cursor {
+impl Sub<usize> for Cursor {
     type Output = Self;
-    fn sub(self, rhs: isize) -> Self::Output {
-        self + -rhs
+    fn sub(self, rhs: usize) -> Self::Output {
+        let Cursor(i) = self;
+        Cursor(i.saturating_sub(rhs))
     }
 }
 
@@ -84,7 +89,6 @@ pub trait Consumer<T>: Send {
     fn enqueue_for_take(&self, waker: Arc<Waker>);
 }
 
-
 /// A strong-observer handle to a table. This allows receiving every value from a table without preventing other
 /// consumers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
 /// behind on observing elements it will cause the table to block producers, so strong observers must make sure they
@@ -100,7 +104,8 @@ pub trait StrongObserver<T>: Send {
 
     /// Register waker to be woken when there is something to be observed. After the waiter is woken, it is required to
     /// eventually call `try_strong_observe` (or `strong_observe`).
-    fn enqueue_for_strong_observe(&self, waker: Arc<Waker>);}
+    fn enqueue_for_strong_observe(&self, waker: Arc<Waker>);
+}
 
 /// A weak-observer handle to a table. This allows looking at the history of the table without affecting any other
 /// producers, consumers, or observers. Weak-observers are not guaranteed to observe every element, so they never block
@@ -119,6 +124,16 @@ pub trait WeakObserver<T>: Send {
     /// Return a cursor pointing to the oldest value still in the table. This has very relaxed consistency, the element
     /// may no longer be the oldest or even no longer be available.
     fn oldest_cursor(&self) -> Cursor;
+
+    fn weak_observer_range(&self, start: Cursor, end: Cursor) -> alloc::vec::Vec<T> {
+        let mut res = alloc::vec::Vec::default();
+        for i in start..end {
+            if let Some(v) = self.weak_observe(i) {
+                res.push(v);
+            }
+        }
+        res
+    }
 }
 
 /// An error for attaching a handle to a [`Table`].
@@ -139,7 +154,7 @@ pub enum TableAttachError {
     },
 
     /// Unknown error.
-    /// 
+    ///
     /// TODO: This will be setup to integrate with snafu eventually.
     Whatever {
         /// A message describing the error.
@@ -225,4 +240,3 @@ pub trait Table<T>: Any + Sync + Send {
 //         self.table.clone().downcast().ok()
 //     }
 // }
-

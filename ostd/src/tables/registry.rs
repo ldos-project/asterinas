@@ -16,18 +16,23 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    any::Any,
+    any::{type_name, Any},
     borrow::Borrow,
     fmt::Display,
+    intrinsics::type_id,
     num::NonZeroUsize,
     str::FromStr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use hashbrown::HashMap;
+use log::{error, info, warn};
 use spin::Once;
 
-use crate::{sync::Mutex, tables::Table};
+use crate::{
+    sync::Mutex,
+    tables::{locking::LockingTable, spsc::SpscTable, Table},
+};
 
 /// A path, or identifier, in a table registry.
 ///
@@ -116,6 +121,8 @@ macro_rules! path {
         path
     }};
 }
+// TODO: Support subpaths interpolation.
+// TODO: Make this const to allow const global paths.
 
 /// **INTERNAL USE ONLY**
 ///
@@ -174,7 +181,9 @@ impl TableRegistry {
     /// Look up a table in the registry and return it if the contained type is the same as the registered type.
     pub fn lookup<T: 'static>(&self, path: &Path) -> Option<Arc<dyn Table<T>>> {
         let guard = self.inner.lock();
-        Self::lookup_by_guard(&guard, *guard.path_to_id_map.get(path)?)
+        let id = *guard.path_to_id_map.get(path)?;
+        info!("Looking up table {path} {id:?}");
+        Self::lookup_by_guard(&guard, id)
     }
 
     /// Look up a table by ID and return it if the contained type is the same as the registered type.
@@ -189,7 +198,20 @@ impl TableRegistry {
         id: TableId,
     ) -> Option<Arc<dyn Table<T>>> {
         let any = guard.map.get(&id)?;
-        any.downcast_ref::<Weak<dyn Table<T>>>()?.upgrade()
+        // TODO: Return Error instead of Option.
+        let Some(weak) = any.downcast_ref::<Weak<dyn Table<T>>>() else {
+            error!(
+                "Table {id:?} type is incorrect, requested {}, actual {:#?}",
+                type_name::<T>(),
+                any.as_ref().type_id()
+            );
+            return None;
+        };
+        let Some(strong) = weak.upgrade() else {
+            error!("Table {id:?} type {}, was deallocated", type_name::<T>(),);
+            return None;
+        };
+        Some(strong)
     }
 
     /// Look up the ID for a path.
@@ -202,14 +224,25 @@ impl TableRegistry {
         self.inner.lock().id_to_path_map.get(&id).cloned()
     }
 
+    // TODO: Tables are never removed. We should have a cleaning pass every so often to remove dead references.
+
     /// Add a table to the registry.
     pub fn register<T: 'static>(&self, path: Path, table: Arc<dyn Table<T>>) -> TableId {
         let mut inner = self.inner.lock();
         let id = TableId(inner.next_id);
-        inner.next_id = inner.next_id.checked_add(1).expect("there were more than 2^64-1 tables created");
+        inner.next_id = inner
+            .next_id
+            .checked_add(1)
+            .expect("there were more than 2^64-1 tables created");
         inner.id_to_path_map.insert(id, path.clone());
-        inner.path_to_id_map.insert(path, id);
-        inner.map.insert(id, Box::new(table));
+        inner.path_to_id_map.insert(path.clone(), id);
+        let erased_table = Box::new(Arc::downgrade(&table));
+        info!(
+            "Registering table {path} (assigned id {id:?}) with type {} ({:#?})",
+            type_name::<T>(),
+            erased_table.as_ref().type_id()
+        );
+        inner.map.insert(id, erased_table);
         id
     }
 }

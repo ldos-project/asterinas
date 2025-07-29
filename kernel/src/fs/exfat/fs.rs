@@ -77,7 +77,7 @@ impl ExfatFS {
             fat_cache: RwLock::new(LruCache::<ClusterID, ClusterID>::new(
                 NonZeroUsize::new(FAT_LRU_CACHE_SIZE).unwrap(),
             )),
-            meta_cache: PageCache::with_capacity(fs_size, weak_self.clone() as _).unwrap(),
+            meta_cache: PageCache::with_capacity(fs_size, weak_self.clone() as _, true).unwrap(),
             mutex: Mutex::new(()),
         });
 

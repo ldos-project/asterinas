@@ -145,6 +145,8 @@ fn init_thread() {
 
     print_banner();
 
+    info!("Logging enabled");
+
     // FIXME: CI fails due to suspected performance issues with the framebuffer console.
     // Additionally, userspace program may render GUIs using the framebuffer,
     // so we disable the framebuffer console here.

@@ -674,7 +674,7 @@ impl ExfatInode {
                 is_deleted: false,
                 parent_hash: 0,
                 fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                page_cache: PageCache::with_capacity(size, weak_self.clone() as _, true).unwrap(),
             }),
             extension: Extension::new(),
         });
@@ -784,7 +784,7 @@ impl ExfatInode {
                 is_deleted: false,
                 parent_hash,
                 fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                page_cache: PageCache::with_capacity(size, weak_self.clone() as _, true).unwrap(),
             }),
             extension: Extension::new(),
         });
