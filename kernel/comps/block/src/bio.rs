@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::fmt::Display;
+
 use align_ext::AlignExt;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
@@ -145,6 +147,14 @@ pub enum BioEnqueueError {
     /// Too big bio
     TooBig,
 }
+
+impl Display for BioEnqueueError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl core::error::Error for BioEnqueueError {}
 
 impl From<BioEnqueueError> for ostd::Error {
     fn from(_error: BioEnqueueError) -> Self {
