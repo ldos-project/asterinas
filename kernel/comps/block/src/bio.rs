@@ -8,7 +8,7 @@ use ostd::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
-    sync::{SpinLock, WaitQueue},
+    sync::{LocalIrqDisabled, SpinLock, WaitQueue},
     Error,
 };
 use spin::Once;
@@ -539,7 +539,7 @@ struct BioSegmentPool {
     pool: DmaStream,
     total_blocks: usize,
     direction: BioDirection,
-    manager: SpinLock<PoolSlotManager>,
+    manager: SpinLock<PoolSlotManager, LocalIrqDisabled>,
 }
 
 /// Manages the free slots in the pool.
