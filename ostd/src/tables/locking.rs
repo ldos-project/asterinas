@@ -37,7 +37,8 @@ impl<T> LockingTable<T> {
             buffer_size,
             inner: Mutex::new(LockingTableInner {
                 buffer: (0..buffer_size).map(|_| None).collect(),
-                head_index: 0,
+                n_consumers: 0,
+                head_index: usize::MAX,
                 tail_index: 0,
                 free_strong_observer_heads: (0..max_strong_observers).collect(),
                 strong_observer_heads: (0..max_strong_observers).map(|_| usize::MAX).collect(),
@@ -66,7 +67,6 @@ pub struct ObservableLockingTable<T> {
     // wrapping the table.
 
     // TODO: Because of the above the outer layer can get collected even if the inner is kept alive by an attachment.
-
     /// The underlying table used. This can be used to implement the more general observable table because it actually
     /// does support the required features, but only if `T: Clone` and this type is required to guarantee that during
     /// attachment and handle construction.
@@ -88,10 +88,13 @@ struct LockingTableInner<T> {
     /// The buffer.
     buffer: Box<[Option<T>]>,
 
+    /// The number of attached consumers.
+    n_consumers: usize,
     /// The index from which the next element will be read. Used by consumers.
     head_index: usize,
     /// The index of the next element to write in the buffer. Used by producers.
     tail_index: usize,
+
     /// The heads used by strong observers.
     strong_observer_heads: Box<[usize]>,
 
@@ -108,7 +111,7 @@ impl<T> LockingTableInner<T> {
         let head_slot = self.mod_len(self.head_index);
 
         let next_tail_slot = self.mod_len(self.tail_index + 1);
-        if next_tail_slot == head_slot
+        if (self.n_consumers > 0 && next_tail_slot == head_slot)
             || (self
                 .strong_observer_heads
                 .iter()
@@ -136,6 +139,20 @@ impl<T> LockingTableInner<T> {
         self.tail_index += 1;
 
         None
+    }
+
+    fn drop_consumer(&mut self) {
+        self.n_consumers -= 1;
+        if self.n_consumers == 0 {
+            self.head_index = usize::MAX;
+        }
+    }
+
+    fn attach_consumer(&mut self) {
+        if self.n_consumers == 0 {
+            self.head_index = self.tail_index;
+        }
+        self.n_consumers += 1;
     }
 
     fn try_take_for_head(&mut self, head_index: usize) -> Option<&mut Option<T>> {
@@ -202,6 +219,7 @@ impl<T: Clone + Send + 'static> Table<T> for ObservableLockingTable<T> {
 
     fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::TableAttachError> {
         let this = self.inner.get_this()?;
+        this.inner.lock().attach_consumer();
         Ok(Box::new(CloningLockingConsumer { table: this }))
     }
 
@@ -219,8 +237,8 @@ impl<T: Clone + Send + 'static> Table<T> for ObservableLockingTable<T> {
                     ),
                 }
             })?;
-            // Start the observer at the current position of the consumer.
-            inner.strong_observer_heads[index] = inner.head_index;
+            // Start the observer at the current position of the producer.
+            inner.strong_observer_heads[index] = inner.tail_index;
             index
         };
         let this = self.inner.get_this()?;
@@ -243,6 +261,7 @@ impl<T: Send + 'static> Table<T> for LockingTable<T> {
 
     fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::TableAttachError> {
         let this = self.get_this()?;
+        this.inner.lock().attach_consumer();
         Ok(Box::new(LockingConsumer { table: this }))
     }
 
@@ -284,7 +303,9 @@ impl<T: Send> Producer<T> for LockingProducer<T> {
 
     fn try_put(&self, data: T) -> Option<T> {
         let res = {
-            let mut guard = self.table.inner.lock();
+            let Some(mut guard) = self.table.inner.try_lock() else {
+                return Some(data);
+            };
             guard.try_put(data)
         };
         // If the value was put into the table, wake up the readers.
@@ -303,13 +324,21 @@ struct LockingConsumer<T> {
     table: Arc<LockingTable<T>>,
 }
 
+impl<T> Drop for LockingConsumer<T> {
+    fn drop(&mut self) {
+        if let Ok(this) = self.table.get_this() {
+            this.inner.lock().drop_consumer();
+        }
+    }
+}
+
 impl<T: Send> Consumer<T> for LockingConsumer<T> {
     fn take(&self) -> T {
         self.table.read_wait_queue.wait_until(|| self.try_take())
     }
 
     fn try_take(&self) -> Option<T> {
-        let res = self.table.inner.lock().try_take();
+        let res = self.table.inner.try_lock()?.try_take();
         // If a value was taken, wake up a producer.
         if res.is_some() {
             self.table.put_wait_queue.wake_one();
@@ -328,13 +357,21 @@ struct CloningLockingConsumer<T> {
     table: Arc<LockingTable<T>>,
 }
 
+impl<T> Drop for CloningLockingConsumer<T> {
+    fn drop(&mut self) {
+        if let Ok(this) = self.table.get_this() {
+            this.inner.lock().drop_consumer();
+        }
+    }
+}
+
 impl<T: Send + Clone> Consumer<T> for CloningLockingConsumer<T> {
     fn take(&self) -> T {
         self.table.read_wait_queue.wait_until(|| self.try_take())
     }
 
     fn try_take(&self) -> Option<T> {
-        let res = self.table.inner.lock().try_take_clone();
+        let res = self.table.inner.try_lock()?.try_take_clone();
         // If a value was taken, wake up a producer.
         if res.is_some() {
             self.table.put_wait_queue.wake_one();
@@ -364,14 +401,13 @@ impl<T> Drop for LockingStrongObserver<T> {
 
 impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
     fn strong_observe(&self) -> T {
-        self
-            .table
+        self.table
             .read_wait_queue
             .wait_until(|| self.try_strong_observe())
     }
 
     fn try_strong_observe(&self) -> Option<T> {
-        let res = self.table.inner.lock().try_strong_observe(self.index);
+        let res = self.table.inner.try_lock()?.try_strong_observe(self.index);
         if res.is_some() {
             self.table.put_wait_queue.wake_one();
         }

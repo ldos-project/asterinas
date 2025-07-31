@@ -1,11 +1,13 @@
-use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::{
-    error::Error,
     mem::{forget, ManuallyDrop},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
+use aster_block::{BlockDevice, SECTOR_SIZE};
+use aster_util::csv::ToCsv;
+use core2::io::Write;
 use log::info;
 use ostd::{
     error_result, path,
@@ -17,9 +19,10 @@ use ostd::{
 };
 
 use crate::{
-    sched::{RealTimePolicy, SchedPolicy},
+    fs::start_block_device,
+    sched::{RealTimePolicy, SchedPolicy, SchedulingEvent},
     thread::{kernel_thread::ThreadOptions, Tid},
-    time::{clocks::MonotonicClock, timer::Timeout},
+    time::{clocks::MonotonicClock, timer::Timeout, Clock},
 };
 
 const REGISTRATION_TABLE_BUFFER_SIZE: usize = 32;
@@ -35,6 +38,18 @@ pub struct PageAccessEvent {
     pub thread: Option<Tid>,
     pub page: usize,
     pub access_type: AccessType,
+}
+
+impl ToCsv for PageAccessEvent {
+    fn to_csv(&self) -> String {
+        format!(
+            "{},{},{},{:?}",
+            self.timestamp.as_secs_f32(),
+            self.thread.unwrap_or_default(),
+            self.page,
+            self.access_type
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,7 +75,7 @@ pub struct PageCacheRegistration {
 
 static_assertions::assert_impl_all!(PageCacheRegistration: Send);
 
-pub fn start_prefetch_policy() -> Result<(), Box<dyn Error>> {
+pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Error>> {
     static ALREADY_STARTED: AtomicBool = AtomicBool::new(false);
     if !ALREADY_STARTED.swap(true, Ordering::Relaxed) {
         info!("Starting prefetch policy");
@@ -74,101 +89,12 @@ pub fn start_prefetch_policy() -> Result<(), Box<dyn Error>> {
             path!(pagecache.policy.registration),
             prefetcher_registration_table.clone(),
         );
-
-        let prefetcher_registration_consumer = prefetcher_registration_table.attach_consumer()?;
-
-        // WE HAVE TO LEAK THIS. SEE TODO IN ObserverableLockingTable
         forget(prefetcher_registration_table);
 
-        let timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
-        let timer_table_producer = Mutex::new(timer_table.attach_producer()?);
-        let timer_table_consumer = timer_table.attach_consumer()?;
+        // start_prefetch_policy()?;
 
-        let prefetch_timer =
-            ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
-                timer_table_producer.lock().try_put(());
-            }));
-        prefetch_timer.set_interval(Duration::from_micros(1));
-        prefetch_timer.set_timeout(Timeout::After(Duration::from_micros(10)));
-
-        info!("Prefetch policy starting");
-        ThreadOptions::new(move || {
-            info!("Prefetch policy started");
-            let mut registrations = Vec::new();
-            let (registration_waiter, _) = Waiter::new_pair();
-            // Start assuming this is ready (to get it registered properly)
-            registration_waiter.waker().wake_up();
-            let (timer_waiter, _) = Waiter::new_pair();
-            timer_waiter.waker().wake_up();
-
-            let mut last_prefetch = (0, 0);
-
-            loop {
-                let wake_index =
-                    Waiter::wait_many_iter([&registration_waiter, &timer_waiter].into_iter());
-                match wake_index {
-                    0 => {
-                        let mut register = || {
-                            prefetcher_registration_consumer
-                                .enqueue_for_take(registration_waiter.waker());
-                            if let Some(reg) = prefetcher_registration_consumer.try_take() {
-                                info!("registered new page cache");
-                                registrations.push(PageCacheRegistration {
-                                    prefetch_command_producer: reg
-                                        .prefetch_command_table
-                                        .attach_producer()?,
-                                    access_observer: reg.access_table.attach_weak_observer()?,
-                                });
-                            }
-                            Ok::<_, Box<dyn Error>>(())
-                        };
-                        error_result!(register())
-                    }
-                    1 => {
-                        timer_table_consumer.enqueue_for_take(timer_waiter.waker());
-                        if let Some(()) = timer_table_consumer.try_take() {
-                            for (
-                                reg_i,
-                                PageCacheRegistration {
-                                    prefetch_command_producer,
-                                    access_observer,
-                                },
-                            ) in registrations.iter().enumerate()
-                            {
-                                // POLICY
-                                let recent = access_observer.recent_cursor();
-                                let observations = (recent - 10..recent)
-                                    .flat_map(|i| access_observer.weak_observe(i))
-                                    .collect::<Vec<_>>();
-                                if observations.len() > 5
-                                    && let Some(max) = observations
-                                        .iter()
-                                        .map(|PageAccessEvent { page, .. }| page)
-                                        .max()
-                                    && last_prefetch != (reg_i, *max)
-                                {
-                                    let put_res = prefetch_command_producer
-                                        .try_put(PrefetchCommand { page: max + 10 });
-                                    info!(
-                                        "Prefetching {max} for {reg_i}: send? {}",
-                                        put_res.is_none()
-                                    );
-                                    last_prefetch = (reg_i, *max);
-                                }
-                            }
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        })
-        .sched_policy(SchedPolicy::RealTime {
-            rt_prio: 1.try_into().unwrap(),
-            rt_policy: RealTimePolicy::default(),
-        })
-        .spawn();
-
-        start_prefetch_data_dumper()?;
+        // start_prefetch_data_dumper()?;
+        start_prefetch_data_logger()?;
 
         Ok(())
     } else {
@@ -176,8 +102,7 @@ pub fn start_prefetch_policy() -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Start a server which collects the page caches and periodically prints their history.
-fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
+fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
     let registry = get_global_table_registry();
     let prefetcher_registration_table = registry
         .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
@@ -185,6 +110,112 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
             message: "missing table".to_owned(),
             source: None,
         })?;
+
+    let prefetcher_registration_consumer = prefetcher_registration_table.attach_consumer()?;
+    let timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
+    let timer_table_producer = Mutex::new(timer_table.attach_producer()?);
+    let timer_table_consumer = timer_table.attach_consumer()?;
+    let prefetch_timer =
+        ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
+            timer_table_producer.lock().try_put(());
+        }));
+    prefetch_timer.set_interval(Duration::from_micros(1));
+    prefetch_timer.set_timeout(Timeout::After(Duration::from_micros(10)));
+    info!("Prefetch policy starting");
+    ThreadOptions::new(move || {
+        info!("Prefetch policy started");
+        let mut registrations = Vec::new();
+        let (registration_waiter, _) = Waiter::new_pair();
+        // Start assuming this is ready (to get it registered properly)
+        registration_waiter.waker().wake_up();
+        let (timer_waiter, _) = Waiter::new_pair();
+        timer_waiter.waker().wake_up();
+
+        let mut last_prefetch = (0, 0);
+
+        loop {
+            let wake_index =
+                Waiter::wait_many_iter([&registration_waiter, &timer_waiter].into_iter());
+            match wake_index {
+                0 => {
+                    let mut register = || {
+                        prefetcher_registration_consumer
+                            .enqueue_for_take(registration_waiter.waker());
+                        if let Some(reg) = prefetcher_registration_consumer.try_take() {
+                            info!("registered new page cache");
+                            registrations.push(PageCacheRegistration {
+                                prefetch_command_producer: reg
+                                    .prefetch_command_table
+                                    .attach_producer()?,
+                                access_observer: reg.access_table.attach_weak_observer()?,
+                            });
+                        }
+                        Ok::<_, Box<dyn core::error::Error>>(())
+                    };
+                    error_result!(register())
+                }
+                1 => {
+                    timer_table_consumer.enqueue_for_take(timer_waiter.waker());
+                    if let Some(()) = timer_table_consumer.try_take() {
+                        for (
+                            reg_i,
+                            PageCacheRegistration {
+                                prefetch_command_producer,
+                                access_observer,
+                            },
+                        ) in registrations.iter().enumerate()
+                        {
+                            // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
+                            // POLICY
+                            let recent = access_observer.recent_cursor();
+                            let observations = (recent - 10..recent)
+                                .flat_map(|i| access_observer.weak_observe(i))
+                                .collect::<Vec<_>>();
+                            if observations.len() > 5
+                                && let Some(max) = observations
+                                    .iter()
+                                    .map(|PageAccessEvent { page, .. }| page)
+                                    .max()
+                                && last_prefetch != (reg_i, *max)
+                            {
+                                let put_res = prefetch_command_producer
+                                    .try_put(PrefetchCommand { page: max + 10 });
+                                info!("Prefetching {max} for {reg_i}: send? {}", put_res.is_none());
+                                last_prefetch = (reg_i, *max);
+                            }
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    })
+    .sched_policy(SchedPolicy::RealTime {
+        rt_prio: 1.try_into().unwrap(),
+        rt_policy: RealTimePolicy::default(),
+    })
+    .spawn();
+    Ok(())
+}
+
+/// Start a server which collects the page caches and periodically prints their history.
+fn start_prefetch_data_dumper() -> Result<(), Box<dyn core::error::Error>> {
+    let registry = get_global_table_registry();
+    let prefetcher_registration_table = registry
+        .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
+        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+            message: "missing table".to_owned(),
+            source: None,
+        })?;
+
+    let scheduling_event_table = registry
+        .lookup::<SchedulingEvent>(&path!(cpu.scheduler.events))
+        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+            message: "missing table".to_owned(),
+            source: None,
+        })?;
+
+    let scheduling_event_observer = scheduling_event_table.attach_weak_observer()?;
 
     let prefetcher_registration_observer =
         prefetcher_registration_table.attach_strong_observer()?;
@@ -197,7 +228,7 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
         ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
             timer_table_producer.lock().try_put(());
         }));
-    prefetch_timer.set_interval(Duration::from_millis(500));
+    prefetch_timer.set_interval(Duration::from_millis(2000));
     prefetch_timer.set_timeout(Timeout::After(Duration::from_millis(1000)));
 
     ThreadOptions::new(move || {
@@ -223,7 +254,7 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
                                 reg.access_table.attach_weak_observer()?,
                             ));
                         }
-                        Ok::<_, Box<dyn Error>>(())
+                        Ok::<_, Box<dyn core::error::Error>>(())
                     };
                     error_result!(register())
                 }
@@ -246,6 +277,13 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
                                 )
                             );
                         }
+                        info!(
+                            "scheduling events: {:?}",
+                            scheduling_event_observer.weak_observer_range(
+                                scheduling_event_observer.oldest_cursor(),
+                                scheduling_event_observer.recent_cursor()
+                            )
+                        );
                     }
                 }
                 _ => unreachable!(),
@@ -259,4 +297,189 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn Error>> {
     .spawn();
 
     Ok(())
+}
+
+/// Start a server which collects the page caches and periodically prints their history.
+fn start_prefetch_data_logger() -> Result<(), Box<dyn core::error::Error>> {
+    let registry = get_global_table_registry();
+    let prefetcher_registration_table = registry
+        .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
+        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+            message: "missing table".to_owned(),
+            source: None,
+        })?;
+
+    let scheduling_event_table = registry
+        .lookup::<SchedulingEvent>(&path!(cpu.scheduler.events))
+        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+            message: "missing table".to_owned(),
+            source: None,
+        })?;
+
+    let scheduling_event_observer = scheduling_event_table.attach_weak_observer()?;
+
+    let prefetcher_registration_observer =
+        prefetcher_registration_table.attach_strong_observer()?;
+
+    let log_block_device = start_block_device("vlog")?;
+
+    let mut access_log = BufferedBlockDeviceWriter::new(log_block_device.clone(), 0);
+    error_result!(access_log.write("timestamp,thread,page,type\n".as_bytes()));
+    let mut scheduler_log = BufferedBlockDeviceWriter::new(log_block_device, 1024 * 1024 * 1024);
+    error_result!(
+        scheduler_log.write("timestamp,current_tid,current_thread_cpu_time,next_tid\n".as_bytes())
+    );
+
+    let scheduler_event_timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
+    let scheduler_event_timer_table_producer =
+        Mutex::new(scheduler_event_timer_table.attach_producer()?);
+    let scheduler_event_timer_table_consumer = scheduler_event_timer_table.attach_consumer()?;
+
+    let scheduler_event_timer =
+        ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
+            scheduler_event_timer_table_producer.lock().try_put(());
+        }));
+    scheduler_event_timer.set_interval(Duration::from_micros(2000));
+    scheduler_event_timer.set_timeout(Timeout::After(Duration::from_millis(1)));
+
+    let mut last_flush = MonotonicClock::get().read_time();
+
+    ThreadOptions::new(move || {
+        let mut access_observer = None;
+        let registration_waiter = new_waiter();
+        let scheduler_event_timer_waiter = new_waiter();
+        let access_waiter = new_waiter();
+        let mut last_scheduler_event = scheduling_event_observer.recent_cursor();
+
+        loop {
+            let wake_index = Waiter::wait_many_iter(
+                [
+                    &registration_waiter,
+                    &access_waiter,
+                    &scheduler_event_timer_waiter,
+                ]
+                .into_iter(),
+            );
+            match wake_index {
+                0 => {
+                    let mut register = || {
+                        prefetcher_registration_observer
+                            .enqueue_for_strong_observe(registration_waiter.waker());
+                        if let Some(reg) = prefetcher_registration_observer.try_strong_observe() {
+                            info!("start_prefetch_data_logger: registered new page cache (discarding the old one)");
+                            access_waiter.waker().wake_up();
+                            access_observer = Some(reg.access_table.attach_strong_observer()?);
+                        }
+                        Ok::<_, Box<dyn core::error::Error>>(())
+                    };
+                    error_result!(register())
+                }
+                1 => {
+                    if let Some(access_observer) = &access_observer {
+                        access_observer.enqueue_for_strong_observe(access_waiter.waker());
+                        if let Some(event) = access_observer.try_strong_observe() {
+                            let mut buf = Vec::new();
+                            error_result!(buf.write(event.to_csv().as_bytes()));
+                            buf.push(b'\n');
+                            error_result!(access_log.write(&buf));
+                        }
+                    }
+                }
+                2 => {
+                    scheduler_event_timer_table_consumer
+                        .enqueue_for_take(scheduler_event_timer_waiter.waker());
+                    if let Some(()) = scheduler_event_timer_table_consumer.try_take() {
+                        let next = scheduling_event_observer.recent_cursor();
+                        let mut buf = Vec::new();
+                        let events = scheduling_event_observer
+                            .weak_observer_range(last_scheduler_event, next);
+                        // debug!("collected {} scheduler events.", events.len());
+                        for event in events
+                        {
+                            buf.extend_from_slice(event.to_csv().as_bytes());
+                            buf.push(b'\n');
+                        }
+                        error_result!(scheduler_log.write(&buf));
+                        last_scheduler_event = next;
+
+                        let now = MonotonicClock::get().read_time();
+
+                        if now - last_flush > Duration::from_secs(5) {
+                            info!("Flushing collected data.");
+                            error_result!(scheduler_log.flush());
+                            error_result!(access_log.flush());
+                            last_flush = now;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    })
+    .sched_policy(SchedPolicy::RealTime {
+        rt_prio: 1.try_into().unwrap(),
+        rt_policy: RealTimePolicy::default(),
+    })
+    .spawn();
+
+    Ok(())
+}
+
+fn new_waiter() -> Waiter {
+    let (waiter, _) = Waiter::new_pair();
+    waiter.waker().wake_up();
+    waiter
+}
+
+pub struct BufferedBlockDeviceWriter {
+    device: Arc<dyn BlockDevice>,
+    offset: usize,
+    buffer: Vec<u8>,
+}
+
+impl Write for BufferedBlockDeviceWriter {
+    fn write(&mut self, buf: &[u8]) -> core2::io::Result<usize> {
+        // TODO: A bunch of error information is discarded.
+        self.buffer.extend_from_slice(buf);
+        self.write_available()
+            .map_err(|_| core2::io::Error::new(core2::io::ErrorKind::InvalidInput, "Unknown"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> core2::io::Result<()> {
+        // TODO: A bunch of error information is discarded.
+        self.write_available()
+            .map_err(|_| core2::io::Error::new(core2::io::ErrorKind::InvalidInput, "Unknown"))?;
+        self.buffer.extend(
+            (0..(SECTOR_SIZE - (self.buffer.len() % SECTOR_SIZE)) % SECTOR_SIZE).map(|_| 0),
+        );
+        assert!(self.buffer.len() % SECTOR_SIZE == 0);
+        let _ = self
+            .device
+            .write_bytes_async(self.offset, &self.buffer)
+            .map_err(|_| core2::io::Error::new(core2::io::ErrorKind::InvalidInput, "Unknown"))?;
+        Ok(())
+    }
+}
+
+impl BufferedBlockDeviceWriter {
+    pub fn new(device: Arc<dyn BlockDevice>, offset: usize) -> Self {
+        Self {
+            device,
+            offset,
+            buffer: Default::default(),
+        }
+    }
+
+    fn write_available(&mut self) -> ostd::Result<()> {
+        let available_bytes = self.buffer.len() - (self.buffer.len() % SECTOR_SIZE);
+        if available_bytes == 0 {
+            return Ok(());
+        }
+        let buf = &self.buffer[0..available_bytes];
+        let _ = self.device.write_bytes_async(self.offset, buf)?;
+        self.offset += buf.len();
+        self.buffer.drain(0..buf.len());
+        Ok(())
+    }
 }

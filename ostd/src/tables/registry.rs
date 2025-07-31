@@ -19,19 +19,18 @@ use core::{
     any::{type_name, Any},
     borrow::Borrow,
     fmt::Display,
-    intrinsics::type_id,
     num::NonZeroUsize,
     str::FromStr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use hashbrown::HashMap;
-use log::{error, info, warn};
+use log::{error, info};
 use spin::Once;
 
 use crate::{
     sync::Mutex,
-    tables::{locking::LockingTable, spsc::SpscTable, Table},
+    tables::Table,
 };
 
 /// A path, or identifier, in a table registry.
@@ -164,6 +163,8 @@ struct TableRegistryInner {
     next_id: NonZeroUsize,
 }
 
+// TODO: Use Result instead of Option.
+
 impl TableRegistry {
     /// Create a new registry. This should rarely be used, since sharing a registry is the point, having a few widely
     /// shared registry is desireable. See [`get_global_registry`].
@@ -244,6 +245,27 @@ impl TableRegistry {
         );
         inner.map.insert(id, erased_table);
         id
+    }
+
+    /// Lookup a table or use the provided closure to create and register it.
+    /// 
+    /// This will return None if there is a registered table, but it is the wrong time.
+    pub fn lookup_or_register<T: 'static>(
+        &self,
+        path: Path,
+        table_fn: impl FnOnce() -> Arc<dyn Table<T>>,
+    ) -> Option<Arc<dyn Table<T>>> {
+        let key_exists = {
+            let guard = self.inner.lock();
+            guard.path_to_id_map.contains_key(&path)
+        };
+        if key_exists {
+            self.lookup::<T>(&path)
+        } else {
+            let t = table_fn();
+            self.register(path, t.clone());
+            Some(t)
+        }
     }
 }
 

@@ -15,7 +15,7 @@ use core::{
     ops::{Add, Sub},
 };
 
-use crate::{mm::frame::meta::ReservedMemoryMeta, sync::Waker};
+use crate::sync::Waker;
 
 /// A reference to a specific row in a table. This refers to an element over the full history of a table, not based on
 /// some implementation defined buffer.
@@ -125,6 +125,7 @@ pub trait WeakObserver<T>: Send {
     /// may no longer be the oldest or even no longer be available.
     fn oldest_cursor(&self) -> Cursor;
 
+    /// Return all available values in the range provided.
     fn weak_observer_range(&self, start: Cursor, end: Cursor) -> alloc::vec::Vec<T> {
         let mut res = alloc::vec::Vec::default();
         for i in start..end {

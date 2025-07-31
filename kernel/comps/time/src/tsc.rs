@@ -20,6 +20,7 @@ use crate::{
 /// A instance of TSC clocksource.
 pub static CLOCK: Once<Arc<ClockSource>> = Once::new();
 
+// XXX: Why does this limit exist
 const MAX_DELAY_SECS: u64 = 100;
 
 /// Init tsc clocksource module.

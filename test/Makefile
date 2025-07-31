@@ -17,6 +17,7 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
+LOG_IMAGE := $(BUILD_DIR)/log.img
 INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/root \
 	$(INITRAMFS)/tmp \
@@ -181,8 +182,11 @@ $(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS)
 endif
 	@(cd $(INITRAMFS); find . -printf "%T@ %p\n") > $(INITRAMFS_FILELIST)
 
+$(LOG_IMAGE):
+	@dd if=/dev/zero of=$(LOG_IMAGE) bs=2G count=1
+
 $(EXT2_IMAGE):
-	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
+	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=6G count=1
 	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
@@ -190,7 +194,7 @@ $(EXFAT_IMAGE):
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LOG_IMAGE)
 
 .PHONY: format
 format:

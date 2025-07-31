@@ -2,13 +2,16 @@
 
 #![warn(unused)]
 
-use alloc::{boxed::Box, sync::Arc};
-use core::{fmt, sync::atomic::Ordering};
+use alloc::{boxed::Box, format, string::String, sync::Arc};
+use core::{fmt, sync::atomic::Ordering, time::Duration};
 
+use aster_util::csv::ToCsv;
 use ostd::{
     arch::read_tsc as sched_clock,
     cpu::{all_cpus, CpuId, PinCurrentCpu},
+    path,
     sync::SpinLock,
+    tables::{locking::ObservableLockingTable, registry::get_global_table_registry, Producer},
     task::{
         scheduler::{
             info::CommonSchedInfo, inject_scheduler, EnqueueFlags, LocalRunQueue, Scheduler,
@@ -23,7 +26,11 @@ use super::{
     nice::Nice,
     stats::{set_stats_from_scheduler, SchedulerStats},
 };
-use crate::thread::{AsThread, Thread};
+use crate::{
+    process::posix_thread::{AsPosixThread as _, PosixThread},
+    thread::{AsThread, Thread, Tid},
+    time::{clocks::MonotonicClock, Clock},
+};
 
 mod policy;
 mod time;
@@ -61,10 +68,46 @@ pub struct ClassScheduler {
     last_chosen_cpu: AtomicCpuId,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ThreadInfo {
+    pub tid: Tid,
+    pub cpu_time: Duration,
+}
+
+impl ThreadInfo {
+    pub fn new(thread: &PosixThread) -> Self {
+        Self {
+            tid: thread.tid(),
+            cpu_time: thread.prof_clock().read_time(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SchedulingEvent {
+    pub timestamp: Duration,
+    pub current: Option<ThreadInfo>,
+    pub next: Option<ThreadInfo>,
+}
+
+impl ToCsv for SchedulingEvent {
+    fn to_csv(&self) -> String {
+        format!(
+            "{},{},{},{},{}",
+            self.timestamp.as_secs_f32(),
+            self.current.unwrap_or_default().tid,
+            self.current.unwrap_or_default().cpu_time.as_secs_f32(),
+            self.next.unwrap_or_default().tid,
+            self.next.unwrap_or_default().cpu_time.as_secs_f32(),
+        )
+    }
+}
+
 /// Represents the run queue for each CPU core. It stores a list of run queues for
 /// scheduling classes in its corresponding CPU core. The current task of this CPU
 /// core is also stored in this structure.
 struct PerCpuClassRqSet {
+    scheduling_event_producer: Option<Box<dyn Producer<SchedulingEvent>>>,
     stop: stop::StopClassRq,
     real_time: real_time::RealTimeClassRq,
     fair: fair::FairClassRq,
@@ -241,13 +284,28 @@ impl Scheduler for ClassScheduler {
 
 impl ClassScheduler {
     pub fn new() -> Self {
+        // TODO: This should not be allowed to have consumers either because having those causes unpark to be called
+        // from the scheduler which is not allowed (and seems to cause a deadlock). This would ideally be a special
+        // implementation that is a free running ring buffer where there can be multiple producers, but no consumers or
+        // strong observers.
+        let scheduling_event_table =
+            get_global_table_registry().lookup_or_register(path!(cpu.scheduler.events), || {
+                let t = ObservableLockingTable::<SchedulingEvent>::new(256, 0);
+                // XXX: Forget the table due to the issues with ObservableLockingTable and the nested Arcs.
+                core::mem::forget(t.clone());
+                t
+            });
         let class_rq = |cpu| {
+            let scheduling_event_producer = scheduling_event_table
+                .clone()
+                .and_then(|t| t.attach_producer().ok());
             SpinLock::new(PerCpuClassRqSet {
                 stop: stop::StopClassRq::new(),
                 real_time: real_time::RealTimeClassRq::new(cpu),
                 fair: fair::FairClassRq::new(cpu),
                 idle: idle::IdleClassRq::new(),
                 current: None,
+                scheduling_event_producer,
             })
         };
         ClassScheduler {
@@ -331,6 +389,19 @@ impl LocalRunQueue for PerCpuClassRqSet {
 
     fn pick_next_current(&mut self) -> Option<&Arc<Task>> {
         self.pick_next_entity().and_then(|next| {
+            if let Some(p) = &self.scheduling_event_producer {
+                // We only try to put the output. This means that updates can be lost. As of writing this uses a
+                // LockingTable which is likely to drop a LOT of data if there is any contention.
+                let current = PosixThread::current().map(|t| ThreadInfo::new(&t));
+                let next = next.1.as_posix_thread().map(ThreadInfo::new);
+                if current.is_some() || next.is_some() {
+                    p.try_put(SchedulingEvent {
+                        timestamp: MonotonicClock::get().read_time(),
+                        current,
+                        next,
+                    });
+                }
+            }
             // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
             // as the current task here.
             if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new())) {

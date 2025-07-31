@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    ops::Deref,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use aster_rights::{ReadDupOp, ReadOp, WriteOp};
-use ostd::sync::{RoArc, Waker};
+use ostd::{
+    sync::{RoArc, Waker},
+    task::{CurrentTask, Task},
+};
 
 use super::{
     kill::SignalSenderIds,
@@ -22,7 +28,7 @@ use crate::{
     fs::{file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::signal::constants::SIGCONT,
-    thread::{Thread, Tid},
+    thread::{AsThread as _, Thread, Tid},
     time::{clocks::ProfClock, Timer, TimerManager},
 };
 
@@ -307,6 +313,28 @@ impl PosixThread {
             self
         ));
         self.credentials.dup().restrict()
+    }
+}
+
+pub struct CurrentPosixThread {
+    task: CurrentTask,
+}
+
+impl Deref for CurrentPosixThread {
+    type Target = PosixThread;
+
+    fn deref(&self) -> &Self::Target {
+        let current_thread = self.task.as_thread().expect("the task must be a thread, because it was when self was constructed");
+        current_thread.as_posix_thread().expect("the task must be a POSIX thread, because it was when self was constructed")
+    }
+}
+
+impl PosixThread {
+    pub fn current() -> Option<CurrentPosixThread> {
+        let current_task = Task::current()?;
+        let current_thread = current_task.as_thread()?;
+        current_thread.as_posix_thread()?;
+        Some(CurrentPosixThread { task: current_task })
     }
 }
 

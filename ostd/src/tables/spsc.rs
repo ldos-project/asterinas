@@ -24,6 +24,11 @@
 // TODO: It might be a good idea to disable preemption during some of the lock-free operations. The
 // reason is it would reduce the risk be contention since only threads on other cores could contend.
 
+// TODO: CHECK THAT ATTACHING AS PUT IS HAPPENING IS SAFE!!!
+
+// XXX: There is a race somewhere in here, probably related to strong observers. The producer was also being used from
+// multiple threads (inside a mutex). Could it somehow not be send?
+
 use alloc::{
     borrow::ToOwned,
     boxed::Box,

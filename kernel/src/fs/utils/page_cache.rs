@@ -20,22 +20,19 @@ use ostd::{
     path,
     sync::WaitQueue,
     tables::{
-        registry::get_global_table_registry,
-        spsc::{SpscTable, SpscTableCustom},
-        Producer, Table,
+        locking::ObservableLockingTable, registry::get_global_table_registry, spsc::SpscTableCustom, Producer, Table
     },
-    task::{Task, TaskOptions},
 };
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        AccessType, PageAccessEvent, PageCacheRegistration, PageCacheRegistrationCommand,
+        AccessType, PageAccessEvent, PageCacheRegistrationCommand,
         PrefetchCommand,
     },
     prelude::*,
-    process::posix_thread::AsPosixThread as _,
+    process::posix_thread::PosixThread,
     sched::{RealTimePolicy, SchedPolicy},
-    thread::{kernel_thread::ThreadOptions, work_queue::WorkQueue, AsThread as _},
+    thread::kernel_thread::ThreadOptions,
     time::clocks::MonotonicClock,
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
@@ -326,19 +323,19 @@ impl ReadaheadState {
 
     /// Conducts the new readahead.
     /// Sends the relevant read request and sets the relevant page in the page cache to `Uninit`.
-    // pub fn conduct_readahead(
-    //     &mut self,
-    //     pages: &mut MutexGuard<LruCache<usize, CachePage>>,
-    //     backend: Arc<dyn PageCacheBackend>,
-    // ) -> Result<()> {
-    //     let Some(window) = &self.ra_window else {
-    //         return_errno!(Errno::EINVAL)
-    //     };
-    //     for async_idx in window.readahead_range() {
-    //         self.readahead_page(pages, &backend, async_idx)?;
-    //     }
-    //     Ok(())
-    // }
+    pub fn conduct_readahead(
+        &mut self,
+        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
+        backend: Arc<dyn PageCacheBackend>,
+    ) -> Result<()> {
+        let Some(window) = &self.ra_window else {
+            return_errno!(Errno::EINVAL)
+        };
+        for async_idx in window.readahead_range() {
+            self.readahead_page(pages, &backend, async_idx)?;
+        }
+        Ok(())
+    }
 
     /// Readahead (prefetch) a page. This will cause the page to be asynchronously be loaded. Future loads will use the
     /// results if it is available, or wait for this load to complete to use it.
@@ -393,7 +390,7 @@ impl PageCacheManager {
         });
 
         if prefetch {
-            error_result!(crate::fs::utils::page_prefetch_policy::start_prefetch_policy());
+            error_result!(crate::fs::utils::page_prefetch_policy::start_prefetch_policy_subsystem());
             error_result!(
                 ret.setup_prefetcher(),
                 "prefetcher could not be started; this page cache will not prefetch"
@@ -413,7 +410,7 @@ impl PageCacheManager {
             path!(pagecache.prefetch.{?}),
             prefetch_command_table.clone(),
         );
-        let access_table = SpscTableCustom::<PageAccessEvent, WaitQueue>::new(64, 4, 40);
+        let access_table = ObservableLockingTable::<PageAccessEvent>::new(64, 4);
         registry.register(path!(pagecache.access.{?}), access_table.clone());
 
         {
@@ -432,7 +429,6 @@ impl PageCacheManager {
                 prefetch_command_table: prefetch_command_table.clone(),
                 access_table: access_table.clone(),
             });
-            //Err(Error::with_message(Errno::ENOENT, "could not register with prefetcher"))
         }
 
         let Ok(()) = self
@@ -449,6 +445,7 @@ impl PageCacheManager {
         let prefetch_consumer = prefetch_command_table.attach_consumer()?;
         let weak_this = Arc::downgrade(self);
 
+        // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
         ThreadOptions::new(move || loop {
             let Some(this) = weak_this.upgrade() else {
                 break;
@@ -520,17 +517,13 @@ impl PageCacheManager {
     /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
+        // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
         {
             let access_producer = self.access_producer.lock();
             if let Some(access_producer) = access_producer.get() {
                 access_producer.put(PageAccessEvent {
                     timestamp: MonotonicClock::get().read_time(),
-                    thread: (|| {
-                        let current_task = Task::current()?;
-                        let current_thread = current_task.as_thread()?;
-                        let current_posix_thread = current_thread.as_posix_thread()?;
-                        Some(current_posix_thread.tid())
-                    })(),
+                    thread: PosixThread::current().map(|t| t.tid()),
                     page: idx,
                     access_type: AccessType::Read,
                 });
@@ -742,7 +735,6 @@ impl dyn PageCacheBackend {
     }
     /// Writes a page to the backend synchronously.
     fn write_page(&self, idx: usize, frame: &CachePage) -> Result<()> {
-        info!("write page {idx}");
         let waiter = self.write_page_async(idx, frame)?;
         match waiter.wait() {
             Some(BioStatus::Complete) => Ok(()),

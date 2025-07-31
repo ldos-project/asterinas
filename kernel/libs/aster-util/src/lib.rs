@@ -13,3 +13,4 @@ pub mod safe_ptr;
 pub mod segment_slice;
 pub mod slot_vec;
 pub mod union_read_ptr;
+pub mod csv;
