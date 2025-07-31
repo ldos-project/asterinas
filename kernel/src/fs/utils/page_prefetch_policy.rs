@@ -1,14 +1,14 @@
 use alloc::{borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use hashbrown::HashMap;
 use core::{
-    mem::{forget, ManuallyDrop},
-    sync::atomic::{AtomicBool, Ordering},
-    time::Duration,
+    hash::Hash, mem::{forget, ManuallyDrop}, sync::atomic::{AtomicBool, Ordering}, time::Duration
 };
 
 use aster_block::{BlockDevice, SECTOR_SIZE};
 use aster_util::csv::ToCsv;
 use core2::io::Write;
-use log::info;
+use itertools::Itertools;
+use log::{error, info};
 use ostd::{
     error_result, path,
     sync::{Mutex, WaitQueue, Waiter},
@@ -22,7 +22,7 @@ use crate::{
     fs::start_block_device,
     sched::{RealTimePolicy, SchedPolicy, SchedulingEvent},
     thread::{kernel_thread::ThreadOptions, Tid},
-    time::{clocks::MonotonicClock, timer::Timeout, Clock},
+    time::{clocks::{BootTimeClock, MonotonicClock}, timer::Timeout, Clock},
 };
 
 const REGISTRATION_TABLE_BUFFER_SIZE: usize = 32;
@@ -91,10 +91,10 @@ pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Erro
         );
         forget(prefetcher_registration_table);
 
-        // start_prefetch_policy()?;
+        start_prefetch_policy()?;
 
         // start_prefetch_data_dumper()?;
-        start_prefetch_data_logger()?;
+        // start_prefetch_data_logger()?;
 
         Ok(())
     } else {
@@ -121,6 +121,7 @@ fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
         }));
     prefetch_timer.set_interval(Duration::from_micros(1));
     prefetch_timer.set_timeout(Timeout::After(Duration::from_micros(10)));
+
     info!("Prefetch policy starting");
     ThreadOptions::new(move || {
         info!("Prefetch policy started");
@@ -131,7 +132,7 @@ fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
         let (timer_waiter, _) = Waiter::new_pair();
         timer_waiter.waker().wake_up();
 
-        let mut last_prefetch = (0, 0);
+        let mut last_prefetch_for_thread = HashMap::new();
 
         loop {
             let wake_index =
@@ -165,23 +166,97 @@ fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
                             },
                         ) in registrations.iter().enumerate()
                         {
-                            // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
                             // POLICY
+
+                            // TODO: This allocates a bunch. That should be removed.
+
+                            // The maximum time between a read on a thread and a prefetch.
+                            let maximum_prefetch_delay = Duration::from_micros(10);
+                            // number of events to look at. If this is higher than the number of event available, this
+                            // will operate on the data that is available.
+                            let history_len = 64;
+                            let min_observation_for_prefetch = 8;
+
                             let recent = access_observer.recent_cursor();
-                            let observations = (recent - 10..recent)
+                            let observations = (recent - history_len..recent)
                                 .flat_map(|i| access_observer.weak_observe(i))
                                 .collect::<Vec<_>>();
-                            if observations.len() > 5
-                                && let Some(max) = observations
+                            let oldest_for_prefetch =
+                                BootTimeClock::get().read_time() - maximum_prefetch_delay;
+
+                            if observations.is_empty() {
+                                continue;
+                            }
+
+                            // if observations.len() > 40{
+                            //                                 info!("Attempting prefetch with {} events", observations.len());}
+
+                            let mut observations_by_tid: HashMap<u32, Vec<_>> = HashMap::new();
+                            for observation in observations.iter() {
+                                if let Some(tid) = observation.thread {
+                                let entry = observations_by_tid.entry(tid);
+                                entry.or_default().push(observation);
+                            }}
+
+                            for (tid, observations) in observations_by_tid {
+                                if observations.len() < min_observation_for_prefetch {
+                                    // this thread doesn't have enough observations.
+                                    continue;
+                                }
+
+                                let Some(last_event) =                                  observations.last() else {
+                                        error!("There are no events for this thread: {}. This should be unreachable.", tid);
+                                        continue;
+                                    };
+
+                                // if last_event.timestamp > oldest_for_prefetch {
+                                //     // last observation is too old.
+                                //     continue;
+                                // }
+
+                                fn counts<T: Eq + core::hash::Hash>(this: impl Iterator<Item = T>) -> HashMap<T, usize>
+                                {
+                                    let mut counts = HashMap::new();
+                                    this.for_each(|item| *counts.entry(item).or_default() += 1);
+                                    counts
+                                }
+    
+                                let counted_strides = counts(observations
+                                    .windows(2)
+                                    .map(|w| {
+                                        let [a, b] = w else {
+                                            unreachable!("Incorrect window length.");
+                                        };
+                                        b.page - a.page
+                                    })
+                                    );
+
+                                let Some((most_common_stride, _)) = counted_strides
                                     .iter()
-                                    .map(|PageAccessEvent { page, .. }| page)
-                                    .max()
-                                && last_prefetch != (reg_i, *max)
-                            {
+                                    .max_by_key(|e| e.1)
+                                else {
+                                    // This thread has very view observations. This will be very rare.
+                                    continue;
+                                };
+
+                                let prefetch_page = last_event.page + most_common_stride * 10;
+                                
+                                let last_prefetch_page = last_prefetch_for_thread.entry(tid).or_default();
+                                if prefetch_page == *last_prefetch_page {
+                                    // Don't prefetch the same page twice in a row.
+                                    continue;
+                                }
+
+                                info!("Attempting prefetch for thread {tid} (cache {reg_i}) with {} events: {last_event:?} {oldest_for_prefetch:?} {counted_strides:?} {most_common_stride} {last_prefetch_page} {prefetch_page}", observations.len());
+
+                                // Update our state and send the prefetch
+                                *last_prefetch_page = prefetch_page;
                                 let put_res = prefetch_command_producer
-                                    .try_put(PrefetchCommand { page: max + 10 });
-                                info!("Prefetching {max} for {reg_i}: send? {}", put_res.is_none());
-                                last_prefetch = (reg_i, *max);
+                                    .try_put(PrefetchCommand { page: prefetch_page });
+                                info!(
+                                    "Prefetching {prefetch_page} for thread {tid} and page cache {reg_i}: send? {}",
+                                    put_res.is_none()
+                                );
                             }
                         }
                     }

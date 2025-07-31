@@ -13,14 +13,19 @@ fi
 
 # Due to current Asterinas limitations, it seems that files greater than 1GB don't work.
 
-COUNT=512
+COUNT=$((8 * 1024))
 
 KB=1024
 MB=$(( 1024 * 1024 ))
 GB=$(( 1024 * 1024 * 1024 ))
 
-/test/prefetch-microbench/stream -v /ext2/largefile \
-    0,$KB,$((16 * $KB)),$COUNT,1000 \
-    $((100 * $MB)),$KB,$KB,$COUNT,100000 \
-    $((200 * $MB)),$KB,$((2 * KB)),$COUNT,100000 \
-    $((300 * $MB)),$MB,$((1500 * KB)),$COUNT,1000000 \
+SLEEP=100
+
+CMD="/test/prefetch-microbench/stream /ext2/largefile \
+    0,$KB,$((1 * $KB)),$COUNT,$SLEEP \
+    $((100 * $MB)),$KB,$((8 * $KB)),$COUNT,$SLEEP \
+    $((200 * $MB)),$KB,$((16 * $KB)),$COUNT,$SLEEP \
+    $((300 * $MB)),$KB,$((100 * $KB)),$COUNT,$SLEEP"
+
+echo $CMD
+command time $CMD

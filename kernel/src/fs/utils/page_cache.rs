@@ -37,7 +37,7 @@ use crate::{
     process::posix_thread::PosixThread,
     sched::{RealTimePolicy, SchedPolicy},
     thread::kernel_thread::ThreadOptions,
-    time::clocks::MonotonicClock,
+    time::clocks::{BootTimeClock, MonotonicClock},
     vm::vmo::{get_page_idx_range, Pager, Vmo, VmoFlags, VmoOptions},
 };
 
@@ -65,7 +65,7 @@ impl PageCache {
         let manager = PageCacheManager::new(
             backend,
             if prefetch {
-                PrefetcherMode::Server
+                PrefetcherMode::Builtin
             } else {
                 PrefetcherMode::None
             },
@@ -525,7 +525,7 @@ impl PageCacheManager {
             );
         })
         .sched_policy(SchedPolicy::RealTime {
-            rt_prio: 80.try_into().unwrap(),
+            rt_prio: 2.try_into().unwrap(),
             rt_policy: RealTimePolicy::default(),
         })
         .spawn();
@@ -583,6 +583,22 @@ impl PageCacheManager {
     /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
+        {
+            let access_producer = self.access_producer.lock();
+            if let Some(access_producer) = access_producer.get() {
+                let event = PageAccessEvent {
+                    timestamp: BootTimeClock::get().read_time(),
+                    thread: PosixThread::current().map(|t| t.tid()),
+                    page: idx,
+                    access_type: AccessType::Read,
+                };
+                info!("Sending access event: {event:?}");
+                if access_producer.try_put(event).is_some() {
+                    warn!("couldn't put access event");
+                }
+            }
+        }
+        
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
         let backend = self.backend();
@@ -604,6 +620,7 @@ impl PageCacheManager {
                 pages.get(&idx).unwrap().clone()
             } else {
                 // Cond 1.
+                info!("Cache hit for {idx}");
                 page.clone()
             }
         } else {
@@ -625,17 +642,6 @@ impl PageCacheManager {
 
         // Notify prefetcher of read.
         ra_state.set_prev_page(idx);
-        {
-            let access_producer = self.access_producer.lock();
-            if let Some(access_producer) = access_producer.get() {
-                access_producer.put(PageAccessEvent {
-                    timestamp: MonotonicClock::get().read_time(),
-                    thread: PosixThread::current().map(|t| t.tid()),
-                    page: idx,
-                    access_type: AccessType::Read,
-                });
-            }
-        }
 
         Ok(frame.into())
     }

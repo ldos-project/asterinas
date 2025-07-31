@@ -35,7 +35,7 @@ macro_rules! error_result {
 #[macro_export]
 macro_rules! warn_result {
     ($($args:tt)+) => {
-        log_result!(log::Level::Warn, $($args)+)
+        $crate::log_result!(log::Level::Warn, $($args)+)
     };
 }
 
@@ -43,7 +43,7 @@ macro_rules! warn_result {
 #[macro_export]
 macro_rules! info_result {
     ($($args:tt)+) => {
-        log_result!(log::Level::Info, $($args)+)
+        $crate::log_result!(log::Level::Info, $($args)+)
     };
 }
 
