@@ -2,6 +2,10 @@
 
 #![expect(dead_code)]
 
+// TODO: This file contains an entire, hardcoded, kind of bad, prefetcher ("readahead" as they call it). This should be
+// entirely removed once we have a reliable prefetcher of our own. Currently it is left in place, mostly in hopes of
+// providing a fall back in case of new bugs.
+
 use core::{
     cell::OnceCell,
     iter,
@@ -20,14 +24,14 @@ use ostd::{
     path,
     sync::WaitQueue,
     tables::{
-        locking::ObservableLockingTable, registry::get_global_table_registry, spsc::SpscTableCustom, Producer, Table
+        locking::ObservableLockingTable, registry::get_global_table_registry,
+        spsc::SpscTableCustom, Producer, Table,
     },
 };
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        AccessType, PageAccessEvent, PageCacheRegistrationCommand,
-        PrefetchCommand,
+        AccessType, PageAccessEvent, PageCacheRegistrationCommand, PrefetchCommand,
     },
     prelude::*,
     process::posix_thread::PosixThread,
@@ -58,7 +62,14 @@ impl PageCache {
         backend: Weak<dyn PageCacheBackend>,
         prefetch: bool,
     ) -> Result<Self> {
-        let manager = PageCacheManager::new(backend, prefetch);
+        let manager = PageCacheManager::new(
+            backend,
+            if prefetch {
+                PrefetcherMode::Server
+            } else {
+                PrefetcherMode::None
+            },
+        );
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -210,24 +221,30 @@ impl ReadaheadWindow {
 struct ReadaheadState {
     /// Current readahead window.
     ra_window: Option<ReadaheadWindow>,
+    /// The outstanding requests which are not related to the window.
+    outstanding_requests: Vec<usize>,
     /// Maximum window size.
     max_size: usize,
     /// The last page visited, used to determine sequential I/O.
     prev_page: Option<usize>,
     /// Readahead requests waiter.
     waiter: BioWaiter,
+    /// The kind of prefetcher we are
+    mode: PrefetcherMode,
 }
 
 impl ReadaheadState {
     const INIT_WINDOW_SIZE: usize = 4;
     const DEFAULT_MAX_SIZE: usize = 32;
 
-    pub fn new() -> Self {
+    pub fn new(mode: PrefetcherMode) -> Self {
         Self {
             ra_window: None,
+            outstanding_requests: Vec::new(),
             max_size: Self::DEFAULT_MAX_SIZE,
             prev_page: None,
             waiter: BioWaiter::new(),
+            mode,
         }
     }
 
@@ -246,14 +263,14 @@ impl ReadaheadState {
 
     /// The number of bio requests in waiter.
     /// This number will be zero if there are no previous readahead.
-    pub fn request_number(&self) -> usize {
+    pub fn n_ongoing_requests(&self) -> usize {
         self.waiter.nreqs()
     }
 
     /// Checks for the previous readahead.
     /// Returns true if the previous readahead has been completed.
     pub fn prev_readahead_is_completed(&self) -> bool {
-        let nreqs = self.request_number();
+        let nreqs = self.n_ongoing_requests();
         if nreqs == 0 {
             return false;
         }
@@ -266,20 +283,28 @@ impl ReadaheadState {
         true
     }
 
+    fn get_outstanding_requests(&self) -> Vec<usize> {
+        let mut res: Vec<usize> = self
+            .ra_window
+            .as_ref()
+            .map(|window| window.readahead_range().collect())
+            .unwrap_or_default();
+        res.extend(self.outstanding_requests.iter());
+        res
+    }
+
     /// Waits for the previous readahead.
     pub fn wait_for_prev_readahead(
         &mut self,
         pages: &mut MutexGuard<LruCache<usize, CachePage>>,
     ) -> Result<()> {
         if matches!(self.waiter.wait(), Some(BioStatus::Complete)) {
-            let Some(window) = &self.ra_window else {
-                return_errno!(Errno::EINVAL)
-            };
-            for idx in window.readahead_range() {
+            for idx in self.get_outstanding_requests() {
                 if let Some(page) = pages.get_mut(&idx) {
                     page.store_state(PageState::UpToDate);
                 }
             }
+            self.outstanding_requests.clear();
             self.waiter.clear();
         } else {
             return_errno!(Errno::EIO)
@@ -288,11 +313,27 @@ impl ReadaheadState {
         Ok(())
     }
 
+    pub fn maybe_readahead(
+        &mut self,
+        idx: usize,
+        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
+        backend: Arc<dyn PageCacheBackend>,
+    ) -> Result<()> {
+        if self.should_readahead(idx, backend.npages()) {
+            self.setup_window(idx, backend.npages());
+            self.conduct_readahead(pages, backend)?;
+        };
+        Ok(())
+    }
+
     /// Determines whether a new readahead should be performed.
     /// We only consider readahead for sequential I/O now.
     /// There should be at most one in-progress readahead.
     pub fn should_readahead(&self, idx: usize, max_page: usize) -> bool {
-        if self.request_number() == 0 && self.is_sequential(idx) {
+        if self.mode == PrefetcherMode::Builtin
+            && self.n_ongoing_requests() == 0
+            && self.is_sequential(idx)
+        {
             if let Some(cur_window) = &self.ra_window {
                 let trigger_readahead =
                     idx == cur_window.lookahead_index() || idx == cur_window.readahead_index();
@@ -310,15 +351,17 @@ impl ReadaheadState {
     /// Setup the new readahead window. This expands the readahead window of creates a new one with size
     /// [`Self::INIT_WINDOW_SIZE`].
     pub fn setup_window(&mut self, idx: usize, max_page: usize) {
-        let new_window = if let Some(cur_window) = &self.ra_window {
-            cur_window.next(self.max_size, max_page)
-        } else {
-            let start_idx = idx + 1;
-            let init_size = Self::INIT_WINDOW_SIZE.min(self.max_size);
-            let end_idx = (start_idx + init_size).min(max_page);
-            ReadaheadWindow::new(start_idx..end_idx)
-        };
-        self.ra_window = Some(new_window);
+        if self.mode == PrefetcherMode::Builtin {
+            let new_window = if let Some(cur_window) = &self.ra_window {
+                cur_window.next(self.max_size, max_page)
+            } else {
+                let start_idx = idx + 1;
+                let init_size = Self::INIT_WINDOW_SIZE.min(self.max_size);
+                let end_idx = (start_idx + init_size).min(max_page);
+                ReadaheadWindow::new(start_idx..end_idx)
+            };
+            self.ra_window = Some(new_window);
+        }
     }
 
     /// Conducts the new readahead.
@@ -328,12 +371,25 @@ impl ReadaheadState {
         pages: &mut MutexGuard<LruCache<usize, CachePage>>,
         backend: Arc<dyn PageCacheBackend>,
     ) -> Result<()> {
-        let Some(window) = &self.ra_window else {
-            return_errno!(Errno::EINVAL)
-        };
-        for async_idx in window.readahead_range() {
-            self.readahead_page(pages, &backend, async_idx)?;
+        if self.mode == PrefetcherMode::Builtin {
+            let Some(window) = &self.ra_window else {
+                return_errno!(Errno::EINVAL)
+            };
+            for async_idx in window.readahead_range() {
+                self.readahead_page(pages, &backend, async_idx)?;
+            }
         }
+        Ok(())
+    }
+
+    pub fn force_readahead_page(
+        &mut self,
+        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
+        backend: &Arc<dyn PageCacheBackend>,
+        idx: usize,
+    ) -> Result<()> {
+        self.readahead_page(pages, backend, idx)?;
+        self.outstanding_requests.push(idx);
         Ok(())
     }
 
@@ -376,21 +432,32 @@ struct PageCacheManager {
     // single `Mutex`. This would eliminate the need for the locking discipline listed above.
     ra_state: Mutex<ReadaheadState>,
     access_producer: Mutex<OnceCell<Box<dyn Producer<PageAccessEvent>>>>,
+    prefetcher_mode: PrefetcherMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefetcherMode {
+    None,
+    Builtin,
+    Server,
 }
 
 static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
 
 impl PageCacheManager {
-    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetch: bool) -> Arc<Self> {
+    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetcher_mode: PrefetcherMode) -> Arc<Self> {
         let ret = Arc::new(Self {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
-            ra_state: Mutex::new(ReadaheadState::new()),
+            ra_state: Mutex::new(ReadaheadState::new(prefetcher_mode)),
             access_producer: Mutex::new(OnceCell::new()),
+            prefetcher_mode,
         });
 
-        if prefetch {
-            error_result!(crate::fs::utils::page_prefetch_policy::start_prefetch_policy_subsystem());
+        if prefetcher_mode == PrefetcherMode::Server {
+            error_result!(
+                crate::fs::utils::page_prefetch_policy::start_prefetch_policy_subsystem()
+            );
             error_result!(
                 ret.setup_prefetcher(),
                 "prefetcher could not be started; this page cache will not prefetch"
@@ -445,7 +512,6 @@ impl PageCacheManager {
         let prefetch_consumer = prefetch_command_table.attach_consumer()?;
         let weak_this = Arc::downgrade(self);
 
-        // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
         ThreadOptions::new(move || loop {
             let Some(this) = weak_this.upgrade() else {
                 break;
@@ -453,7 +519,7 @@ impl PageCacheManager {
             let cmd = prefetch_consumer.take();
             info!("Received prefetch {cmd:?}. doing it.");
             error_result!(
-                this.readahead_page(cmd.page),
+                this.force_readahead_page(cmd.page),
                 "readahead failed of page {}, continuing",
                 cmd.page
             );
@@ -517,18 +583,6 @@ impl PageCacheManager {
     /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
-        // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx
-        {
-            let access_producer = self.access_producer.lock();
-            if let Some(access_producer) = access_producer.get() {
-                access_producer.put(PageAccessEvent {
-                    timestamp: MonotonicClock::get().read_time(),
-                    thread: PosixThread::current().map(|t| t.tid()),
-                    page: idx,
-                    access_type: AccessType::Read,
-                });
-            }
-        }
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
         let backend = self.backend();
@@ -545,7 +599,7 @@ impl PageCacheManager {
             if let PageState::Uninit = page.load_state() {
                 // Cond 2: We should wait for the previous readahead.
                 // If there is no previous readahead, an error must have occurred somewhere.
-                assert!(ra_state.request_number() != 0);
+                assert!(ra_state.n_ongoing_requests() != 0);
                 ra_state.wait_for_prev_readahead(&mut pages)?;
                 pages.get(&idx).unwrap().clone()
             } else {
@@ -567,20 +621,31 @@ impl PageCacheManager {
             pages.put(idx, page);
             frame
         };
-        if ra_state.should_readahead(idx, backend.npages()) {
-            ra_state.setup_window(idx, backend.npages());
-            // ra_state.conduct_readahead(&mut pages, backend)?;
-        }
+        ra_state.maybe_readahead(idx, &mut pages, backend)?;
+
+        // Notify prefetcher of read.
         ra_state.set_prev_page(idx);
+        {
+            let access_producer = self.access_producer.lock();
+            if let Some(access_producer) = access_producer.get() {
+                access_producer.put(PageAccessEvent {
+                    timestamp: MonotonicClock::get().read_time(),
+                    thread: PosixThread::current().map(|t| t.tid()),
+                    page: idx,
+                    access_type: AccessType::Read,
+                });
+            }
+        }
+
         Ok(frame.into())
     }
 
     /// Readahead (prefetch) a page. This will cause the page to be asynchronously be loaded. Future loads will use the
     /// results if it is available, or wait for this load to complete to use it.
-    fn readahead_page(&self, idx: usize) -> Result<()> {
+    pub fn force_readahead_page(&self, idx: usize) -> Result<()> {
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
-        ra_state.readahead_page(&mut pages, &self.backend(), idx)
+        ra_state.force_readahead_page(&mut pages, &self.backend(), idx)
     }
 }
 
