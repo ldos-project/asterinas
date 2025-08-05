@@ -225,6 +225,7 @@ dependencies = [
  "inherit-methods-macro",
  "int-to-c-enum",
  "intrusive-collections",
+ "itertools",
  "keyable-arc",
  "lending-iterator",
  "libflate",

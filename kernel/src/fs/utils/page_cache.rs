@@ -31,7 +31,8 @@ use ostd::{
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        AccessType, PageAccessEvent, PageCacheRegistrationCommand, PrefetchCommand,
+        start_prefetch_policy, AccessType, PageAccessEvent, PageCacheRegistrationCommand,
+        PrefetchCommand,
     },
     prelude::*,
     process::posix_thread::PosixThread,
@@ -49,8 +50,8 @@ pub struct PageCache {
 
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
-    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetch: bool) -> Result<Self> {
-        Self::with_capacity(0, backend, prefetch)
+    pub fn new(backend: Weak<dyn PageCacheBackend>, fully_initialized: bool) -> Result<Self> {
+        Self::with_capacity(0, backend, fully_initialized)
     }
 
     /// Creates a page cache associated with an existing backend.
@@ -60,16 +61,9 @@ impl PageCache {
     pub fn with_capacity(
         capacity: usize,
         backend: Weak<dyn PageCacheBackend>,
-        prefetch: bool,
+        fully_initialized: bool,
     ) -> Result<Self> {
-        let manager = PageCacheManager::new(
-            backend,
-            if prefetch {
-                PrefetcherMode::Builtin
-            } else {
-                PrefetcherMode::None
-            },
-        );
+        let manager = PageCacheManager::new(backend, fully_initialized);
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -401,6 +395,14 @@ impl ReadaheadState {
         backend: &Arc<dyn PageCacheBackend>,
         idx: usize,
     ) -> Result<()> {
+        if pages.contains(&idx) {
+            warn!("Ignored prefetch request for cached page");
+            return Ok(());
+        }
+        if idx >= backend.npages() {
+            warn!("Ignored prefetch request page beyond the end of the backend");
+            return Ok(());
+        }
         let mut async_page = CachePage::alloc_uninit()?;
         let pg_waiter = backend.read_page_async(idx, &async_page)?;
         if pg_waiter.nreqs() > 0 {
@@ -445,7 +447,12 @@ pub enum PrefetcherMode {
 static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
 
 impl PageCacheManager {
-    pub fn new(backend: Weak<dyn PageCacheBackend>, prefetcher_mode: PrefetcherMode) -> Arc<Self> {
+    pub fn new(backend: Weak<dyn PageCacheBackend>, fully_initialized: bool) -> Arc<Self> {
+        let prefetcher_mode: PrefetcherMode = if fully_initialized {
+            PrefetcherMode::Server
+        } else {
+            PrefetcherMode::None
+        };
         let ret = Arc::new(Self {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
@@ -454,20 +461,25 @@ impl PageCacheManager {
             prefetcher_mode,
         });
 
-        if prefetcher_mode == PrefetcherMode::Server {
+        if fully_initialized {
             error_result!(
                 crate::fs::utils::page_prefetch_policy::start_prefetch_policy_subsystem()
             );
             error_result!(
-                ret.setup_prefetcher(),
+                ret.setup_prefetcher(prefetcher_mode),
                 "prefetcher could not be started; this page cache will not prefetch"
             );
+
+            error_result!(crate::fs::utils::page_prefetch_policy::start_page_hit_rate_monitor());
         }
 
         ret
     }
 
-    fn setup_prefetcher(self: &Arc<PageCacheManager>) -> Result<()> {
+    fn setup_prefetcher(
+        self: &Arc<PageCacheManager>,
+        prefetcher_mode: PrefetcherMode,
+    ) -> Result<()> {
         let registry: &'static ostd::tables::registry::TableRegistry = get_global_table_registry();
 
         // Create a page cache specific prefetching table. This will accept `PrefetchCommand`s which will trigger
@@ -477,8 +489,17 @@ impl PageCacheManager {
             path!(pagecache.prefetch.{?}),
             prefetch_command_table.clone(),
         );
+
+        let registry: &'static ostd::tables::registry::TableRegistry = get_global_table_registry();
         let access_table = ObservableLockingTable::<PageAccessEvent>::new(64, 4);
         registry.register(path!(pagecache.access.{?}), access_table.clone());
+
+        self.access_producer
+            .lock()
+            .set(access_table.attach_producer()?)
+            .map_err(|_| {
+                Error::with_message(Errno::EBUSY, "Could not set access table in prefetcher")
+            })?;
 
         {
             let table = registry
@@ -498,37 +519,30 @@ impl PageCacheManager {
             });
         }
 
-        let Ok(()) = self
-            .access_producer
-            .lock()
-            .set(access_table.attach_producer()?)
-        else {
-            return Err(Error::with_message(
-                Errno::EALREADY,
-                "access table producer already set",
-            ));
-        };
+        if prefetcher_mode == PrefetcherMode::Server {
+            error_result!(start_prefetch_policy());
 
-        let prefetch_consumer = prefetch_command_table.attach_consumer()?;
-        let weak_this = Arc::downgrade(self);
+            let prefetch_consumer = prefetch_command_table.attach_consumer()?;
+            let weak_this = Arc::downgrade(self);
 
-        ThreadOptions::new(move || loop {
-            let Some(this) = weak_this.upgrade() else {
-                break;
-            };
-            let cmd = prefetch_consumer.take();
-            info!("Received prefetch {cmd:?}. doing it.");
-            error_result!(
-                this.force_readahead_page(cmd.page),
-                "readahead failed of page {}, continuing",
-                cmd.page
-            );
-        })
-        .sched_policy(SchedPolicy::RealTime {
-            rt_prio: 2.try_into().unwrap(),
-            rt_policy: RealTimePolicy::default(),
-        })
-        .spawn();
+            ThreadOptions::new(move || loop {
+                let Some(this) = weak_this.upgrade() else {
+                    break;
+                };
+                let cmd = prefetch_consumer.take();
+                info!("Received prefetch {cmd:?}. doing it.");
+                error_result!(
+                    this.force_readahead_page(cmd.page),
+                    "readahead failed of page {}, continuing",
+                    cmd.page
+                );
+            })
+            .sched_policy(SchedPolicy::RealTime {
+                rt_prio: 2.try_into().unwrap(),
+                rt_policy: RealTimePolicy::default(),
+            })
+            .spawn();
+        }
 
         Ok(())
     }
@@ -583,22 +597,6 @@ impl PageCacheManager {
     /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache or read
     /// synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
-        {
-            let access_producer = self.access_producer.lock();
-            if let Some(access_producer) = access_producer.get() {
-                let event = PageAccessEvent {
-                    timestamp: BootTimeClock::get().read_time(),
-                    thread: PosixThread::current().map(|t| t.tid()),
-                    page: idx,
-                    access_type: AccessType::Read,
-                };
-                info!("Sending access event: {event:?}");
-                if access_producer.try_put(event).is_some() {
-                    warn!("couldn't put access event");
-                }
-            }
-        }
-        
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
         let backend = self.backend();
@@ -606,6 +604,28 @@ impl PageCacheManager {
         if ra_state.prev_readahead_is_completed() {
             ra_state.wait_for_prev_readahead(&mut pages)?;
         }
+
+        {
+            let is_cache_hit = pages
+                .get(&idx)
+                .is_some_and(|page| page.load_state() != PageState::Uninit);
+
+            let access_producer = self.access_producer.lock();
+            if let Some(access_producer) = access_producer.get() {
+                let event = PageAccessEvent {
+                    timestamp: BootTimeClock::get().read_time(),
+                    thread: PosixThread::current().map(|t| t.tid()),
+                    page: idx,
+                    access_type: AccessType::Read,
+                    is_cache_hit,
+                };
+                info!("Sending access event: {event:?}");
+                if access_producer.try_put(event).is_some() {
+                    warn!("couldn't put access event");
+                }
+            }
+        }
+
         // There are three possible conditions that could be encountered upon reaching here.
         // 1. The requested page is ready for read in page cache.
         // 2. The requested page is in previous readahead range, not ready for now.
@@ -620,12 +640,12 @@ impl PageCacheManager {
                 pages.get(&idx).unwrap().clone()
             } else {
                 // Cond 1.
-                info!("Cache hit for {idx}");
                 page.clone()
             }
         } else {
             // Cond 3.
             // Conducts the sync read operation.
+            info!("Cache full-miss for {idx}");
             let page = if idx < backend.npages() {
                 let mut page = CachePage::alloc_uninit()?;
                 backend.read_page(idx, &page)?;

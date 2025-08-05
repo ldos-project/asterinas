@@ -1,20 +1,21 @@
 use alloc::{borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, vec::Vec};
-use hashbrown::HashMap;
 use core::{
-    hash::Hash, mem::{forget, ManuallyDrop}, sync::atomic::{AtomicBool, Ordering}, time::Duration
+    mem::{forget, ManuallyDrop},
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use aster_block::{BlockDevice, SECTOR_SIZE};
 use aster_util::csv::ToCsv;
 use core2::io::Write;
-use itertools::Itertools;
+use hashbrown::HashMap;
 use log::{error, info};
 use ostd::{
     error_result, path,
+    prelude::println,
     sync::{Mutex, WaitQueue, Waiter},
     tables::{
-        locking::ObservableLockingTable, registry::get_global_table_registry,
-        spsc::SpscTableCustom, Producer, Table, WeakObserver,
+        locking::ObservableLockingTable, registry::get_global_table_registry, spsc::SpscTableCustom, Consumer, Producer, StrongObserver, Table, WeakObserver
     },
 };
 
@@ -22,7 +23,11 @@ use crate::{
     fs::start_block_device,
     sched::{RealTimePolicy, SchedPolicy, SchedulingEvent},
     thread::{kernel_thread::ThreadOptions, Tid},
-    time::{clocks::{BootTimeClock, MonotonicClock}, timer::Timeout, Clock},
+    time::{
+        clocks::{BootTimeClock, MonotonicClock},
+        timer::Timeout,
+        Clock,
+    },
 };
 
 const REGISTRATION_TABLE_BUFFER_SIZE: usize = 32;
@@ -38,16 +43,18 @@ pub struct PageAccessEvent {
     pub thread: Option<Tid>,
     pub page: usize,
     pub access_type: AccessType,
+    pub is_cache_hit: bool,
 }
 
 impl ToCsv for PageAccessEvent {
     fn to_csv(&self) -> String {
         format!(
-            "{},{},{},{:?}",
+            "{},{},{},{:?},{}",
             self.timestamp.as_secs_f32(),
             self.thread.unwrap_or_default(),
             self.page,
-            self.access_type
+            self.access_type,
+            self.is_cache_hit
         )
     }
 }
@@ -91,18 +98,22 @@ pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Erro
         );
         forget(prefetcher_registration_table);
 
-        start_prefetch_policy()?;
+        // start_prefetch_policy()?;
 
         // start_prefetch_data_dumper()?;
         // start_prefetch_data_logger()?;
-
         Ok(())
     } else {
         Ok(())
     }
 }
 
-fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
+pub fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
+    // The interval between prefetch policy runs. This should be short enough to allow the prefetcher to act fast enough
+    // to perform timely prefetches, but not so short that the overhead is high. A future implementation could be
+    // triggered or the time could be modulated based I/O events.
+    let prefetch_interval = Duration::from_micros(1);
+
     let registry = get_global_table_registry();
     let prefetcher_registration_table = registry
         .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
@@ -119,130 +130,167 @@ fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
         ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
             timer_table_producer.lock().try_put(());
         }));
-    prefetch_timer.set_interval(Duration::from_micros(1));
-    prefetch_timer.set_timeout(Timeout::After(Duration::from_micros(10)));
+    prefetch_timer.set_interval(prefetch_interval);
+    prefetch_timer.set_timeout(Timeout::After(prefetch_interval));
 
-    info!("Prefetch policy starting");
     ThreadOptions::new(move || {
-        info!("Prefetch policy started");
-        let mut registrations = Vec::new();
-        let (registration_waiter, _) = Waiter::new_pair();
-        // Start assuming this is ready (to get it registered properly)
-        registration_waiter.waker().wake_up();
-        let (timer_waiter, _) = Waiter::new_pair();
-        timer_waiter.waker().wake_up();
+        policy_thread_fn(prefetcher_registration_consumer, timer_table_consumer)
+    })
+    .sched_policy(SchedPolicy::RealTime {
+        rt_prio: 1.try_into().unwrap(),
+        rt_policy: RealTimePolicy::default(),
+    })
+    .spawn();
+    Ok(())
+}
 
-        let mut last_prefetch_for_thread = HashMap::new();
+/// The body of the prefetch policy thread. This is spawned in [`start_prefetch_policy`].
+fn policy_thread_fn(
+    prefetcher_registration_consumer: Box<dyn Consumer<PageCacheRegistrationCommand>>,
+    timer_table_consumer: Box<dyn Consumer<()>>,
+) {
+    info!("Prefetch policy started");
 
-        loop {
-            let wake_index =
-                Waiter::wait_many_iter([&registration_waiter, &timer_waiter].into_iter());
-            match wake_index {
-                0 => {
-                    let mut register = || {
-                        prefetcher_registration_consumer
-                            .enqueue_for_take(registration_waiter.waker());
-                        if let Some(reg) = prefetcher_registration_consumer.try_take() {
-                            info!("registered new page cache");
-                            registrations.push(PageCacheRegistration {
-                                prefetch_command_producer: reg
-                                    .prefetch_command_table
-                                    .attach_producer()?,
-                                access_observer: reg.access_table.attach_weak_observer()?,
-                            });
+    // The maximum time between a read on a thread and a prefetch.
+    let maximum_prefetch_delay = Duration::from_micros(100000);
+    // number of events to look at. If this is higher than the number of event available, this will operate on the data
+    // that is available.
+    let history_len = 16;
+    // The minimum number of observations to see for a given thread before trying to prefetch.
+    let min_observation_for_prefetch = 8;
+    // The number of strides ahead of the most recent access to prefetch. This is needed to make sure the prefetch can
+    // usefully complete before the reader actually reaches it.
+    let strides_ahead_to_prefetch = &(4..32);
+
+    // The terrible mess of waiters and tables and that horrific `match` works as follows:
+    //
+    // 1. Setup a waiter for each attachment and trigger an initial wake so that we get registered with the table
+    //    correctly. (We could also do an explicit initial enqueue on the attachment, but this seemed less duplicitive.)
+    // 2. Use `wait_many_iter` to wait on all the waiters at the same time. This returns an index into the iterator it
+    //    was passed.
+    // 3. Match on the index to select the code to execute based on what actually waked.
+    // 4. For whatever attachment waked us, enqueue our waker again (done first to avoid a "missed wake" race) and then
+    //    `try_take` the message.
+    // 5. Process the message appropriately and then start from step 2.
+    //
+    // This is abjectly terrible and needs to be abstracted away with some form of event handling construct similar to
+    // `select!` from tokio, or maybe a more abstract event driven programming thing that encapsulates the loop as well.
+    //
+    // NOTE: There may be a case here where our waker ends up registered more than once. It shouldn't hurt anything, but
+    // might be wasteful and should definitely avoided in an abstraction for general use.
+
+    let mut registrations = Vec::new();
+    let (registration_waiter, _) = Waiter::new_pair();
+    registration_waiter.waker().wake_up();
+    let (timer_waiter, _) = Waiter::new_pair();
+    timer_waiter.waker().wake_up();
+
+    // The last prefetched page for each thread. This is used to avoid performing the same prefetch repeatedly.
+    let mut last_prefetch_for_thread = HashMap::new();
+
+    loop {
+        let wake_index = Waiter::wait_many_iter([&registration_waiter, &timer_waiter].into_iter());
+        match wake_index {
+            0 => {
+                // Consume the page cache registrations and put them into a vec so the policy can handle each.
+                let mut register = || {
+                    prefetcher_registration_consumer.enqueue_for_take(registration_waiter.waker());
+                    if let Some(reg) = prefetcher_registration_consumer.try_take() {
+                        info!("registered new page cache");
+                        registrations.push(PageCacheRegistration {
+                            prefetch_command_producer: reg
+                                .prefetch_command_table
+                                .attach_producer()?,
+                            access_observer: reg.access_table.attach_weak_observer()?,
+                        });
+                    }
+                    Ok::<_, Box<dyn core::error::Error>>(())
+                };
+                error_result!(register())
+            }
+            1 => {
+                // Then the timer elapses execute the policy for every registered page cache.
+                timer_table_consumer.enqueue_for_take(timer_waiter.waker());
+                if let Some(()) = timer_table_consumer.try_take() {
+                    for (
+                        reg_i,
+                        PageCacheRegistration {
+                            prefetch_command_producer,
+                            access_observer,
+                        },
+                    ) in registrations.iter().enumerate()
+                    {
+                        // POLICY
+
+                        // TODO: This allocates a bunch (Vecs and HashMaps). That should be removed.
+
+                        let recent = access_observer.recent_cursor();
+                        let observations = (recent - history_len..recent)
+                            .flat_map(|i| access_observer.weak_observe(i))
+                            .collect::<Vec<_>>();
+                        let oldest_for_prefetch =
+                            BootTimeClock::get().read_time() - maximum_prefetch_delay;
+
+                        if observations.is_empty() {
+                            continue;
                         }
-                        Ok::<_, Box<dyn core::error::Error>>(())
-                    };
-                    error_result!(register())
-                }
-                1 => {
-                    timer_table_consumer.enqueue_for_take(timer_waiter.waker());
-                    if let Some(()) = timer_table_consumer.try_take() {
-                        for (
-                            reg_i,
-                            PageCacheRegistration {
-                                prefetch_command_producer,
-                                access_observer,
-                            },
-                        ) in registrations.iter().enumerate()
-                        {
-                            // POLICY
 
-                            // TODO: This allocates a bunch. That should be removed.
+                        // Spiritually: observations.filter(|o| o.thread.is_some()).group_by(|o| o.thread.unwrap())
+                        // However, itertools doesn't support what that requires without std.
+                        let mut observations_by_tid: HashMap<u32, Vec<_>> = HashMap::new();
+                        for observation in observations.iter() {
+                            if let Some(tid) = observation.thread {
+                                let entry = observations_by_tid.entry(tid);
+                                entry.or_default().push(observation);
+                            }
+                        }
 
-                            // The maximum time between a read on a thread and a prefetch.
-                            let maximum_prefetch_delay = Duration::from_micros(10);
-                            // number of events to look at. If this is higher than the number of event available, this
-                            // will operate on the data that is available.
-                            let history_len = 64;
-                            let min_observation_for_prefetch = 8;
-
-                            let recent = access_observer.recent_cursor();
-                            let observations = (recent - history_len..recent)
-                                .flat_map(|i| access_observer.weak_observe(i))
-                                .collect::<Vec<_>>();
-                            let oldest_for_prefetch =
-                                BootTimeClock::get().read_time() - maximum_prefetch_delay;
-
-                            if observations.is_empty() {
+                        for (tid, observations) in observations_by_tid {
+                            if observations.len() < min_observation_for_prefetch {
+                                // this thread doesn't have enough observations.
                                 continue;
                             }
 
-                            // if observations.len() > 40{
-                            //                                 info!("Attempting prefetch with {} events", observations.len());}
+                            let Some(last_event) = observations.last() else {
+                                error!("There are no events for this thread: {}. This should be unreachable.", tid);
+                                continue;
+                            };
 
-                            let mut observations_by_tid: HashMap<u32, Vec<_>> = HashMap::new();
-                            for observation in observations.iter() {
-                                if let Some(tid) = observation.thread {
-                                let entry = observations_by_tid.entry(tid);
-                                entry.or_default().push(observation);
-                            }}
+                            // if last_event.timestamp < oldest_for_prefetch {
+                            //     // last observation is too old.
+                            //     continue;
+                            // }
 
-                            for (tid, observations) in observations_by_tid {
-                                if observations.len() < min_observation_for_prefetch {
-                                    // this thread doesn't have enough observations.
-                                    continue;
-                                }
+                            fn counts<T: Eq + core::hash::Hash>(
+                                this: impl Iterator<Item = T>,
+                            ) -> HashMap<T, usize> {
+                                let mut counts = HashMap::new();
+                                this.for_each(|item| *counts.entry(item).or_default() += 1);
+                                counts
+                            }
 
-                                let Some(last_event) =                                  observations.last() else {
-                                        error!("There are no events for this thread: {}. This should be unreachable.", tid);
-                                        continue;
-                                    };
-
-                                // if last_event.timestamp > oldest_for_prefetch {
-                                //     // last observation is too old.
-                                //     continue;
-                                // }
-
-                                fn counts<T: Eq + core::hash::Hash>(this: impl Iterator<Item = T>) -> HashMap<T, usize>
-                                {
-                                    let mut counts = HashMap::new();
-                                    this.for_each(|item| *counts.entry(item).or_default() += 1);
-                                    counts
-                                }
-    
-                                let counted_strides = counts(observations
-                                    .windows(2)
-                                    .map(|w| {
-                                        let [a, b] = w else {
-                                            unreachable!("Incorrect window length.");
-                                        };
-                                        b.page - a.page
-                                    })
-                                    );
-
-                                let Some((most_common_stride, _)) = counted_strides
-                                    .iter()
-                                    .max_by_key(|e| e.1)
-                                else {
-                                    // This thread has very view observations. This will be very rare.
-                                    continue;
+                            let counted_strides = counts(observations.windows(2).map(|w| {
+                                let [a, b] = w else {
+                                    unreachable!("Incorrect window length.");
                                 };
+                                b.page - a.page
+                            }));
 
-                                let prefetch_page = last_event.page + most_common_stride * 10;
-                                
-                                let last_prefetch_page = last_prefetch_for_thread.entry(tid).or_default();
-                                if prefetch_page == *last_prefetch_page {
+                            let Some((most_common_stride, _)) =
+                                counted_strides.iter().max_by_key(|e| e.1)
+                            else {
+                                // This thread has very view observations. This will be very rare.
+                                continue;
+                            };
+
+                            let last_prefetch_page =
+                                last_prefetch_for_thread.entry(tid).or_default();
+
+                            for strides_ahead_to_prefetch in strides_ahead_to_prefetch.clone() {
+                                let prefetch_page = last_event.page
+                                    + most_common_stride * strides_ahead_to_prefetch;
+
+                                if prefetch_page <= *last_prefetch_page {
                                     // Don't prefetch the same page twice in a row.
                                     continue;
                                 }
@@ -251,26 +299,20 @@ fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
 
                                 // Update our state and send the prefetch
                                 *last_prefetch_page = prefetch_page;
-                                let put_res = prefetch_command_producer
-                                    .try_put(PrefetchCommand { page: prefetch_page });
-                                info!(
-                                    "Prefetching {prefetch_page} for thread {tid} and page cache {reg_i}: send? {}",
-                                    put_res.is_none()
-                                );
+                                let put_res = prefetch_command_producer.try_put(PrefetchCommand {
+                                    page: prefetch_page,
+                                });
+                                if put_res.is_some() {
+                                    info!("Prefetching {prefetch_page} for thread {tid} and page cache {reg_i} failed to send");
+                                }
                             }
                         }
                     }
                 }
-                _ => unreachable!(),
             }
+            _ => unreachable!(),
         }
-    })
-    .sched_policy(SchedPolicy::RealTime {
-        rt_prio: 1.try_into().unwrap(),
-        rt_policy: RealTimePolicy::default(),
-    })
-    .spawn();
-    Ok(())
+    }
 }
 
 /// Start a server which collects the page caches and periodically prints their history.
@@ -399,7 +441,7 @@ fn start_prefetch_data_logger() -> Result<(), Box<dyn core::error::Error>> {
     let log_block_device = start_block_device("vlog")?;
 
     let mut access_log = BufferedBlockDeviceWriter::new(log_block_device.clone(), 0);
-    error_result!(access_log.write("timestamp,thread,page,type\n".as_bytes()));
+    error_result!(access_log.write("timestamp,thread,page,type,is_cache_hit\n".as_bytes()));
     let mut scheduler_log = BufferedBlockDeviceWriter::new(log_block_device, 1024 * 1024 * 1024);
     error_result!(
         scheduler_log.write("timestamp,current_tid,current_thread_cpu_time,next_tid\n".as_bytes())
@@ -498,6 +540,107 @@ fn start_prefetch_data_logger() -> Result<(), Box<dyn core::error::Error>> {
     .spawn();
 
     Ok(())
+}
+
+/// Start a server that monitors the page hit rate and pariodically prints it.
+pub fn start_page_hit_rate_monitor() -> Result<(), Box<dyn core::error::Error>> {
+    static ALREADY_STARTED: AtomicBool = AtomicBool::new(false);
+    if !ALREADY_STARTED.swap(true, Ordering::Relaxed) {
+        let registry = get_global_table_registry();
+        let prefetcher_registration_table = registry
+            .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
+            .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+                message: "missing table".to_owned(),
+                source: None,
+            })?;
+
+        let prefetcher_registration_observer =
+            prefetcher_registration_table.attach_strong_observer()?;
+
+        let print_timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
+        let print_timer_table_producer = Mutex::new(print_timer_table.attach_producer()?);
+        let print_timer_table_consumer = print_timer_table.attach_consumer()?;
+
+        let print_timer =
+            ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
+                print_timer_table_producer.lock().try_put(());
+            }));
+        print_timer.set_interval(Duration::from_millis(2000));
+        print_timer.set_timeout(Timeout::After(Duration::from_millis(1000)));
+
+        ThreadOptions::new(move || {
+            page_hit_rate_monitor_thread_fn(
+                prefetcher_registration_observer,
+                print_timer_table_consumer,
+            )
+        })
+        .sched_policy(SchedPolicy::RealTime {
+            rt_prio: 1.try_into().unwrap(),
+            rt_policy: RealTimePolicy::default(),
+        })
+        .spawn();
+    }
+    Ok(())
+}
+
+fn page_hit_rate_monitor_thread_fn(
+    prefetcher_registration_observer: Box<dyn StrongObserver<PageCacheRegistrationCommand>>,
+    print_timer_table_consumer: Box<dyn Consumer<()>>,
+) -> ! {
+    let mut access_observer = None;
+    let registration_waiter = new_waiter();
+    let print_timer_waiter = new_waiter();
+    let access_waiter = new_waiter();
+
+    let mut hit_count: u64 = 0;
+    let mut total_count: u64 = 0;
+
+    loop {
+        let wake_index = Waiter::wait_many_iter(
+            [&registration_waiter, &access_waiter, &print_timer_waiter].into_iter(),
+        );
+        match wake_index {
+            0 => {
+                let mut register = || {
+                    prefetcher_registration_observer
+                        .enqueue_for_strong_observe(registration_waiter.waker());
+                    if let Some(reg) = prefetcher_registration_observer.try_strong_observe() {
+                        println!("start_page_hit_rate_monitor: registered new page cache (discarding the old one)");
+                        access_waiter.waker().wake_up();
+                        access_observer = Some(reg.access_table.attach_strong_observer()?);
+                        hit_count = 0;
+                        total_count = 0;
+                    }
+                    Ok::<_, Box<dyn core::error::Error>>(())
+                };
+                error_result!(register())
+            }
+            1 => {
+                if let Some(access_observer) = &access_observer {
+                    access_observer.enqueue_for_strong_observe(access_waiter.waker());
+                    if let Some(event) = access_observer.try_strong_observe() {
+                        if event.is_cache_hit {
+                            hit_count += 1;
+                        }
+                        total_count += 1;
+                    }
+                }
+            }
+            2 => {
+                print_timer_table_consumer.enqueue_for_take(print_timer_waiter.waker());
+                if let Some(()) = print_timer_table_consumer.try_take() {
+                    let hit_count: fixed::types::U64F64 = hit_count.into();
+                    let total_count: fixed::types::U64F64 = total_count.into();
+                    if total_count > 0 {
+                        println!("Page cache hit rate: {}", hit_count / total_count);
+                    } else {
+                        println!("Page cache hit rate: no events");
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn new_waiter() -> Waiter {
