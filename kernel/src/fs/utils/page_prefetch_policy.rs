@@ -15,7 +15,8 @@ use ostd::{
     prelude::println,
     sync::{Mutex, WaitQueue, Waiter},
     tables::{
-        locking::ObservableLockingTable, registry::get_global_table_registry, spsc::SpscTableCustom, Consumer, Producer, StrongObserver, Table, WeakObserver
+        locking::ObservableLockingTable, registry::get_global_table_registry,
+        spsc::SpscTableCustom, Consumer, Producer, StrongObserver, Table, WeakObserver,
     },
 };
 
@@ -89,7 +90,7 @@ pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Erro
         let prefetcher_registration_table =
             ObservableLockingTable::<PageCacheRegistrationCommand>::new(
                 REGISTRATION_TABLE_BUFFER_SIZE,
-                1,
+                16,
             );
         let registry = get_global_table_registry();
         registry.register(
@@ -97,11 +98,6 @@ pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Erro
             prefetcher_registration_table.clone(),
         );
         forget(prefetcher_registration_table);
-
-        // start_prefetch_policy()?;
-
-        // start_prefetch_data_dumper()?;
-        // start_prefetch_data_logger()?;
         Ok(())
     } else {
         Ok(())
@@ -244,6 +240,10 @@ fn policy_thread_fn(
                                 entry.or_default().push(observation);
                             }
                         }
+
+                        // if observations_by_tid.len() > 1 {
+                        //     info!("Threads {:?}", observations_by_tid.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>())
+                        // }
 
                         for (tid, observations) in observations_by_tid {
                             if observations.len() < min_observation_for_prefetch {
@@ -417,129 +417,148 @@ fn start_prefetch_data_dumper() -> Result<(), Box<dyn core::error::Error>> {
 }
 
 /// Start a server which collects the page caches and periodically prints their history.
-fn start_prefetch_data_logger() -> Result<(), Box<dyn core::error::Error>> {
-    let registry = get_global_table_registry();
-    let prefetcher_registration_table = registry
-        .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
-        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
-            message: "missing table".to_owned(),
-            source: None,
-        })?;
+pub fn start_prefetch_data_logger() -> Result<(), Box<dyn core::error::Error>> {
+    static ALREADY_STARTED: AtomicBool = AtomicBool::new(false);
+    if !ALREADY_STARTED.swap(true, Ordering::Relaxed) {
+        let registry = get_global_table_registry();
+        let prefetcher_registration_table = registry
+            .lookup::<PageCacheRegistrationCommand>(&path!(pagecache.policy.registration))
+            .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+                message: "missing table".to_owned(),
+                source: None,
+            })?;
 
-    let scheduling_event_table = registry
-        .lookup::<SchedulingEvent>(&path!(cpu.scheduler.events))
-        .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
-            message: "missing table".to_owned(),
-            source: None,
-        })?;
+        let scheduling_event_table = registry
+            .lookup::<SchedulingEvent>(&path!(cpu.scheduler.events))
+            .ok_or_else(|| ostd::tables::TableAttachError::Whatever {
+                message: "missing table".to_owned(),
+                source: None,
+            })?;
 
-    let scheduling_event_observer = scheduling_event_table.attach_weak_observer()?;
+        let scheduling_event_observer = scheduling_event_table.attach_weak_observer()?;
 
-    let prefetcher_registration_observer =
-        prefetcher_registration_table.attach_strong_observer()?;
+        let prefetcher_registration_observer =
+            prefetcher_registration_table.attach_strong_observer()?;
 
-    let log_block_device = start_block_device("vlog")?;
+        let log_block_device = start_block_device("vlog")?;
 
-    let mut access_log = BufferedBlockDeviceWriter::new(log_block_device.clone(), 0);
-    error_result!(access_log.write("timestamp,thread,page,type,is_cache_hit\n".as_bytes()));
-    let mut scheduler_log = BufferedBlockDeviceWriter::new(log_block_device, 1024 * 1024 * 1024);
-    error_result!(
-        scheduler_log.write("timestamp,current_tid,current_thread_cpu_time,next_tid\n".as_bytes())
-    );
+        let mut access_log = BufferedBlockDeviceWriter::new(log_block_device.clone(), 0);
+        error_result!(access_log.write("timestamp,thread,page,type,is_cache_hit\n".as_bytes()));
+        let mut scheduler_log =
+            BufferedBlockDeviceWriter::new(log_block_device, 1024 * 1024 * 1024);
+        error_result!(scheduler_log
+            .write("timestamp,current_tid,current_thread_cpu_time,next_tid\n".as_bytes()));
 
-    let scheduler_event_timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
-    let scheduler_event_timer_table_producer =
-        Mutex::new(scheduler_event_timer_table.attach_producer()?);
-    let scheduler_event_timer_table_consumer = scheduler_event_timer_table.attach_consumer()?;
+        let scheduler_event_timer_table = SpscTableCustom::<_, WaitQueue>::new(2, 0, 0);
+        let scheduler_event_timer_table_producer =
+            Mutex::new(scheduler_event_timer_table.attach_producer()?);
+        let scheduler_event_timer_table_consumer = scheduler_event_timer_table.attach_consumer()?;
 
-    let scheduler_event_timer =
-        ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
-            scheduler_event_timer_table_producer.lock().try_put(());
-        }));
-    scheduler_event_timer.set_interval(Duration::from_micros(2000));
-    scheduler_event_timer.set_timeout(Timeout::After(Duration::from_millis(1)));
+        let scheduler_event_timer =
+            ManuallyDrop::new(MonotonicClock::timer_manager().create_timer(move || {
+                scheduler_event_timer_table_producer.lock().try_put(());
+            }));
+        scheduler_event_timer.set_interval(Duration::from_micros(2000));
+        scheduler_event_timer.set_timeout(Timeout::After(Duration::from_millis(1)));
 
-    let mut last_flush = MonotonicClock::get().read_time();
+        let last_flush = MonotonicClock::get().read_time();
 
-    ThreadOptions::new(move || {
-        let mut access_observer = None;
-        let registration_waiter = new_waiter();
-        let scheduler_event_timer_waiter = new_waiter();
-        let access_waiter = new_waiter();
-        let mut last_scheduler_event = scheduling_event_observer.recent_cursor();
-
-        loop {
-            let wake_index = Waiter::wait_many_iter(
-                [
-                    &registration_waiter,
-                    &access_waiter,
-                    &scheduler_event_timer_waiter,
-                ]
-                .into_iter(),
-            );
-            match wake_index {
-                0 => {
-                    let mut register = || {
-                        prefetcher_registration_observer
-                            .enqueue_for_strong_observe(registration_waiter.waker());
-                        if let Some(reg) = prefetcher_registration_observer.try_strong_observe() {
-                            info!("start_prefetch_data_logger: registered new page cache (discarding the old one)");
-                            access_waiter.waker().wake_up();
-                            access_observer = Some(reg.access_table.attach_strong_observer()?);
-                        }
-                        Ok::<_, Box<dyn core::error::Error>>(())
-                    };
-                    error_result!(register())
-                }
-                1 => {
-                    if let Some(access_observer) = &access_observer {
-                        access_observer.enqueue_for_strong_observe(access_waiter.waker());
-                        if let Some(event) = access_observer.try_strong_observe() {
-                            let mut buf = Vec::new();
-                            error_result!(buf.write(event.to_csv().as_bytes()));
-                            buf.push(b'\n');
-                            error_result!(access_log.write(&buf));
-                        }
-                    }
-                }
-                2 => {
-                    scheduler_event_timer_table_consumer
-                        .enqueue_for_take(scheduler_event_timer_waiter.waker());
-                    if let Some(()) = scheduler_event_timer_table_consumer.try_take() {
-                        let next = scheduling_event_observer.recent_cursor();
-                        let mut buf = Vec::new();
-                        let events = scheduling_event_observer
-                            .weak_observer_range(last_scheduler_event, next);
-                        // debug!("collected {} scheduler events.", events.len());
-                        for event in events
-                        {
-                            buf.extend_from_slice(event.to_csv().as_bytes());
-                            buf.push(b'\n');
-                        }
-                        error_result!(scheduler_log.write(&buf));
-                        last_scheduler_event = next;
-
-                        let now = MonotonicClock::get().read_time();
-
-                        if now - last_flush > Duration::from_secs(5) {
-                            info!("Flushing collected data.");
-                            error_result!(scheduler_log.flush());
-                            error_result!(access_log.flush());
-                            last_flush = now;
-                        }
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-    })
-    .sched_policy(SchedPolicy::RealTime {
-        rt_prio: 1.try_into().unwrap(),
-        rt_policy: RealTimePolicy::default(),
-    })
-    .spawn();
+        ThreadOptions::new(move || {
+            prefetch_data_logger_thread_fn(
+                scheduling_event_observer,
+                prefetcher_registration_observer,
+                access_log,
+                scheduler_log,
+                scheduler_event_timer_table_consumer,
+                last_flush,
+            )
+        })
+        .sched_policy(SchedPolicy::RealTime {
+            rt_prio: 1.try_into().unwrap(),
+            rt_policy: RealTimePolicy::default(),
+        })
+        .spawn();
+    }
 
     Ok(())
+}
+
+fn prefetch_data_logger_thread_fn(
+    scheduling_event_observer: Box<dyn WeakObserver<SchedulingEvent>>,
+    prefetcher_registration_observer: Box<dyn StrongObserver<PageCacheRegistrationCommand>>,
+    mut access_log: BufferedBlockDeviceWriter,
+    mut scheduler_log: BufferedBlockDeviceWriter,
+    scheduler_event_timer_table_consumer: Box<dyn Consumer<()>>,
+    mut last_flush: Duration,
+) {
+    let mut access_observer = None;
+    let registration_waiter = new_waiter();
+    let scheduler_event_timer_waiter = new_waiter();
+    let access_waiter = new_waiter();
+    let mut last_scheduler_event = scheduling_event_observer.recent_cursor();
+    loop {
+        let wake_index = Waiter::wait_many_iter(
+            [
+                &registration_waiter,
+                &access_waiter,
+                &scheduler_event_timer_waiter,
+            ]
+            .into_iter(),
+        );
+        match wake_index {
+            0 => {
+                let mut register = || {
+                    prefetcher_registration_observer
+                        .enqueue_for_strong_observe(registration_waiter.waker());
+                    if let Some(reg) = prefetcher_registration_observer.try_strong_observe() {
+                        info!("start_prefetch_data_logger: registered new page cache (discarding the old one)");
+                        access_waiter.waker().wake_up();
+                        access_observer = Some(reg.access_table.attach_strong_observer()?);
+                    }
+                    Ok::<_, Box<dyn core::error::Error>>(())
+                };
+                error_result!(register())
+            }
+            1 => {
+                if let Some(access_observer) = &access_observer {
+                    access_observer.enqueue_for_strong_observe(access_waiter.waker());
+                    if let Some(event) = access_observer.try_strong_observe() {
+                        let mut buf = Vec::new();
+                        error_result!(buf.write(event.to_csv().as_bytes()));
+                        buf.push(b'\n');
+                        error_result!(access_log.write(&buf));
+                    }
+                }
+            }
+            2 => {
+                scheduler_event_timer_table_consumer
+                    .enqueue_for_take(scheduler_event_timer_waiter.waker());
+                if let Some(()) = scheduler_event_timer_table_consumer.try_take() {
+                    let next = scheduling_event_observer.recent_cursor();
+                    let mut buf = Vec::new();
+                    let events =
+                        scheduling_event_observer.weak_observer_range(last_scheduler_event, next);
+                    // debug!("collected {} scheduler events.", events.len());
+                    for event in events {
+                        buf.extend_from_slice(event.to_csv().as_bytes());
+                        buf.push(b'\n');
+                    }
+                    error_result!(scheduler_log.write(&buf));
+                    last_scheduler_event = next;
+
+                    let now = MonotonicClock::get().read_time();
+
+                    if now - last_flush > Duration::from_secs(5) {
+                        info!("Flushing collected data.");
+                        error_result!(scheduler_log.flush());
+                        error_result!(access_log.flush());
+                        last_flush = now;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// Start a server that monitors the page hit rate and pariodically prints it.

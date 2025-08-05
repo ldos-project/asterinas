@@ -25,7 +25,7 @@ use ostd::{
     sync::WaitQueue,
     tables::{
         locking::ObservableLockingTable, registry::get_global_table_registry,
-        spsc::SpscTableCustom, Producer, Table,
+        spsc::{SpscTable, SpscTableCustom}, Producer, Table,
     },
 };
 
@@ -465,6 +465,9 @@ impl PageCacheManager {
             error_result!(
                 crate::fs::utils::page_prefetch_policy::start_prefetch_policy_subsystem()
             );
+            // error_result!(
+            //     crate::fs::utils::page_prefetch_policy::start_prefetch_data_logger()
+            // );
             error_result!(
                 ret.setup_prefetcher(prefetcher_mode),
                 "prefetcher could not be started; this page cache will not prefetch"
@@ -491,7 +494,7 @@ impl PageCacheManager {
         );
 
         let registry: &'static ostd::tables::registry::TableRegistry = get_global_table_registry();
-        let access_table = ObservableLockingTable::<PageAccessEvent>::new(64, 4);
+        let access_table = SpscTable::<PageAccessEvent>::new(64, 4, 16);
         registry.register(path!(pagecache.access.{?}), access_table.clone());
 
         self.access_producer

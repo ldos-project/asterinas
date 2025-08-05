@@ -86,6 +86,11 @@ ifneq ($(BENCHMARK), none)
 CARGO_OSDK_BUILD_ARGS += --init-args="/benchmark/common/bench_runner.sh $(BENCHMARK) asterinas"
 endif
 
+ifneq ($(INITARGS), none)
+CARGO_OSDK_BUILD_ARGS += --init-args="$(INITARGS)"
+endif
+
+
 ifeq ($(INTEL_TDX), 1)
 BOOT_METHOD = grub-qcow2
 BOOT_PROTOCOL = linux-efi-handover64
