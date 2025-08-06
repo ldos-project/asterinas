@@ -31,6 +31,8 @@ use crate::{
     },
 };
 
+pub mod reactive_prefetch;
+
 const REGISTRATION_TABLE_BUFFER_SIZE: usize = 32;
 
 #[derive(Clone, Copy, Debug)]
@@ -86,7 +88,7 @@ static_assertions::assert_impl_all!(PageCacheRegistration: Send);
 pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Error>> {
     static ALREADY_STARTED: AtomicBool = AtomicBool::new(false);
     if !ALREADY_STARTED.swap(true, Ordering::Relaxed) {
-        info!("Starting prefetch policy");
+        info!("Starting prefetch policy subsystem");
         let prefetcher_registration_table =
             ObservableLockingTable::<PageCacheRegistrationCommand>::new(
                 REGISTRATION_TABLE_BUFFER_SIZE,
@@ -104,7 +106,7 @@ pub fn start_prefetch_policy_subsystem() -> Result<(), Box<dyn core::error::Erro
     }
 }
 
-pub fn start_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
+pub fn start_periodic_prefetch_policy() -> Result<(), Box<dyn core::error::Error>> {
     // The interval between prefetch policy runs. This should be short enough to allow the prefetcher to act fast enough
     // to perform timely prefetches, but not so short that the overhead is high. A future implementation could be
     // triggered or the time could be modulated based I/O events.
