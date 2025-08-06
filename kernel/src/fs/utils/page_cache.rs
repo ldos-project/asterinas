@@ -24,16 +24,19 @@ use ostd::{
     path,
     sync::WaitQueue,
     tables::{
-        locking::ObservableLockingTable, registry::get_global_table_registry,
-        spsc::{SpscTable, SpscTableCustom}, Producer, Table,
+        locking::ObservableLockingTable,
+        registry::get_global_table_registry,
+        spsc::{SpscTable, SpscTableCustom},
+        Producer, Table,
     },
 };
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        start_prefetch_policy, AccessType, PageAccessEvent, PageCacheRegistrationCommand,
-        PrefetchCommand,
+        reactive_prefetch::start_reactive_prefetch_policy, start_periodic_prefetch_policy,
+        AccessType, PageAccessEvent, PageCacheRegistrationCommand, PrefetchCommand,
     },
+    kcmdline::get_kernel_cmd_line,
     prelude::*,
     process::posix_thread::PosixThread,
     sched::{RealTimePolicy, SchedPolicy},
@@ -448,11 +451,20 @@ static_assertions::assert_impl_all!(PageCacheManager: Sync, Send);
 
 impl PageCacheManager {
     pub fn new(backend: Weak<dyn PageCacheBackend>, fully_initialized: bool) -> Arc<Self> {
-        let prefetcher_mode: PrefetcherMode = if fully_initialized {
-            PrefetcherMode::Server
+        let prefetcher_mode: PrefetcherMode = if fully_initialized
+            && let Some(cmd_line) = get_kernel_cmd_line()
+        {
+            match cmd_line.get_module_arg_by_name("page_cache", "prefetcher_type") {
+                Some(Some(val)) if val.as_bytes() == "builtin".as_bytes() => {
+                    PrefetcherMode::Builtin
+                }
+                Some(Some(val)) if val.as_bytes() == "server".as_bytes() => PrefetcherMode::Server,
+                _ => PrefetcherMode::None,
+            }
         } else {
             PrefetcherMode::None
         };
+        info!("Using prefetcher: {prefetcher_mode:?}");
         let ret = Arc::new(Self {
             pages: Mutex::new(LruCache::unbounded()),
             backend,
@@ -523,7 +535,20 @@ impl PageCacheManager {
         }
 
         if prefetcher_mode == PrefetcherMode::Server {
-            error_result!(start_prefetch_policy());
+            let server_prefetcher_arg = get_kernel_cmd_line()
+                .and_then(|c| c.get_module_arg_by_name("page_cache", "server_prefetcher"));
+            match &server_prefetcher_arg {
+                Some(Some(val)) if val.as_bytes() == "periodic".as_bytes() => {
+                    error_result!(start_periodic_prefetch_policy())
+                }
+                Some(Some(val)) if val.as_bytes() == "reactive".as_bytes() => {
+                    error_result!(start_reactive_prefetch_policy())
+                }
+                v => {
+                    error!("server_prefetcher not specified: {v:?}");
+                }
+            };
+            info!("Using server prefetcher: {server_prefetcher_arg:?}");
 
             let prefetch_consumer = prefetch_command_table.attach_consumer()?;
             let weak_this = Arc::downgrade(self);

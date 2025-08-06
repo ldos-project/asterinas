@@ -86,10 +86,18 @@ ifneq ($(BENCHMARK), none)
 CARGO_OSDK_BUILD_ARGS += --init-args="/benchmark/common/bench_runner.sh $(BENCHMARK) asterinas"
 endif
 
+INITARGS ?= none
 ifneq ($(INITARGS), none)
 CARGO_OSDK_BUILD_ARGS += --init-args="$(INITARGS)"
 endif
 
+# KCMDARGS ?= none
+# ifneq ($(KCMDARGS), none)
+# CARGO_OSDK_BUILD_ARGS += --kcmd-args="$(KCMDARGS)"
+# endif
+
+KCMDARGS ?=
+CARGO_OSDK_BUILD_ARGS += $(foreach SEGMENT, $(KCMDARGS), --kcmd-args="$(SEGMENT)")
 
 ifeq ($(INTEL_TDX), 1)
 BOOT_METHOD = grub-qcow2

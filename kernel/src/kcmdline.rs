@@ -18,7 +18,9 @@ use alloc::{
     vec::Vec,
 };
 
-#[derive(PartialEq, Debug)]
+use spin::Once;
+
+#[derive(PartialEq, Debug, Clone)]
 struct InitprocArgs {
     path: Option<String>,
     argv: Vec<CString>,
@@ -35,7 +37,7 @@ pub enum ModuleArg {
 }
 
 /// The struct to store the parsed kernel command-line arguments.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KCmdlineArg {
     initproc: InitprocArgs,
     module_args: BTreeMap<String, Vec<ModuleArg>>,
@@ -58,6 +60,23 @@ impl KCmdlineArg {
     /// Gets the argument vector of a kernel module.
     pub fn get_module_args(&self, module: &str) -> Option<&Vec<ModuleArg>> {
         self.module_args.get(module)
+    }
+
+    /// Return the value of of an argument for a specific module. This returns `None` if the argument doesn't exist,
+    /// `Some(None)` if the argument exists, but doesn't have a value, and `Some(Some(val))` if there is a value.
+    pub fn get_module_arg_by_name(&self, module: &str, arg_name: &str) -> Option<Option<CString>> {
+        if let Some(module_args) = self.get_module_args(module) {
+            return module_args.iter().find_map(|arg| {
+                match arg {
+                    ModuleArg::Arg(name) if name.as_bytes() == arg_name.as_bytes() => Some(None),
+                    ModuleArg::KeyVal(name, val) if name.as_bytes() == arg_name.as_bytes() => {
+                        Some(Some(val.clone()))
+                    }
+                    _ => None,
+                }
+            });
+        }
+        return None;
     }
 }
 
@@ -180,4 +199,14 @@ impl From<&str> for KCmdlineArg {
 
         result
     }
+}
+
+static KERNEL_CMD_LINE: Once<KCmdlineArg> = Once::new();
+
+pub fn set_kernel_cmd_line(cmd_line: KCmdlineArg) {
+    KERNEL_CMD_LINE.call_once(|| cmd_line);
+}
+
+pub fn get_kernel_cmd_line() -> Option<&'static KCmdlineArg> {
+    KERNEL_CMD_LINE.get()
 }
