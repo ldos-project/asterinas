@@ -755,8 +755,7 @@ impl LevelBuilder {
         new_mht_nodes
     }
 
-    // Building last MHT node of the level can be complicated, since
-    // the last node may be incomplete
+    /// Building last MHT node of the level can be complicated, since the last node may be incomplete
     fn build_last_node(&self, entries: &[&MhtNodeEntry]) -> Arc<MhtNode> {
         let num_data_nodes = {
             let max_data_nodes = MhtNode::max_num_data_nodes(self.height);

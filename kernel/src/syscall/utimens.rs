@@ -179,8 +179,8 @@ fn do_utimes(
     vfs_utimes(&dentry, times)
 }
 
-// Sets the access and modification times for a file,
-// specified by a pathname relative to the directory file descriptor `dirfd`.
+/// Sets the access and modification times for a file, specified by a pathname relative to the directory file descriptor
+/// `dirfd`.
 fn do_futimesat(
     dirfd: FileDesc,
     pathname_ptr: Vaddr,

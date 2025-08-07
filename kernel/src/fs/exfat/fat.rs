@@ -196,9 +196,8 @@ impl ExfatChain {
         )
     }
 
-    // If current capacity is 0 (no start_cluster), this means we can choose a allocation type
-    // We first try continuous allocation
-    // If no continuous allocation available, turn to fat allocation
+    /// If current capacity is 0 (no start_cluster), this means we can choose a allocation type We first try continuous
+    /// allocation If no continuous allocation available, turn to fat allocation
     fn alloc_cluster_from_empty(
         &mut self,
         num_to_be_allocated: u32,
@@ -288,9 +287,8 @@ pub trait ClusterAllocator {
 }
 
 impl ClusterAllocator for ExfatChain {
-    // Append clusters at the end of the chain, return the first allocated cluster
-    // Caller should update size_allocated accordingly.
-    // The file system must be locked before calling.
+    /// Append clusters at the end of the chain, return the first allocated cluster Caller should update size_allocated
+    /// accordingly. The file system must be locked before calling.
     fn extend_clusters(&mut self, num_to_be_allocated: u32, sync: bool) -> Result<ClusterID> {
         let fs = self.fs();
 

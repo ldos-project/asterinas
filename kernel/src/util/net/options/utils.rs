@@ -32,7 +32,7 @@ pub trait ReadFromUser: Sized {
 /// if we call `read_from_user` and `write_from_user` for the same type, the read value
 /// and write value in user space should be of same type.
 pub trait WriteToUser {
-    // Write a struct to user space by writing its C counterpart.
+    /// Write a struct to user space by writing its C counterpart.
     fn write_to_user(&self, addr: Vaddr, max_len: u32) -> Result<usize>;
 }
 

@@ -57,6 +57,8 @@ impl Timer {
 
     /// Set the interval time for this timer.
     /// The timer will be reset with the interval time upon expiration.
+    ///
+    /// You must call `set_timeout` to register the timer for the first time otherwise interval does nothing.
     pub fn set_interval(&self, interval: Duration) {
         *self.interval.disable_irq().lock() = interval;
     }
