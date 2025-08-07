@@ -86,6 +86,15 @@ ifneq ($(BENCHMARK), none)
 CARGO_OSDK_BUILD_ARGS += --init-args="/benchmark/common/bench_runner.sh $(BENCHMARK) asterinas"
 endif
 
+# If INITARGS is set, it will be passed as arguments to the init process in the VM. By default it is a command to be
+# launched instead of the shell.
+INITARGS ?=
+CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(INITARGS), --init-args="$(ARG)")
+
+# If KCMDARGS is set, it will be passed as kernel command line args. In the kernel you can access these via KCmdlineArg.
+KCMDARGS ?=
+CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(KCMDARGS), --kcmd-args="$(ARG)")
+
 ifeq ($(INTEL_TDX), 1)
 BOOT_METHOD = grub-qcow2
 BOOT_PROTOCOL = linux-efi-handover64
