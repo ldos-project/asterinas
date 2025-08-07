@@ -33,7 +33,7 @@ use ostd::{
 
 use crate::{
     fs::utils::page_prefetch_policy::{
-        reactive_prefetch::start_reactive_prefetch_policy, start_periodic_prefetch_policy,
+        reactive_prefetch::{start_reactive_prefetch_policy}, start_periodic_prefetch_policy,
         AccessType, PageAccessEvent, PageCacheRegistrationCommand, PrefetchCommand,
     },
     kcmdline::get_kernel_cmd_line,
@@ -543,6 +543,12 @@ impl PageCacheManager {
                 }
                 Some(Some(val)) if val.as_bytes() == "reactive".as_bytes() => {
                     error_result!(start_reactive_prefetch_policy())
+                }
+                Some(Some(val)) if val.as_bytes() == "nn".as_bytes() => {
+                    error_result!(crate::fs::utils::page_prefetch_policy::reactive_prefetch::start_nn_model_prefetch_policy())
+                }
+                Some(Some(val)) if val.as_bytes() == "regression".as_bytes() => {
+                    error_result!(crate::fs::utils::page_prefetch_policy::reactive_prefetch::start_regression_model_prefetch_policy())
                 }
                 v => {
                     error!("server_prefetcher not specified: {v:?}");
