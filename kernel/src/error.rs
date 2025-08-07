@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(dead_code)]
+use core::fmt::Display;
 
 /// Error number.
 #[repr(i32)]
@@ -154,7 +154,12 @@ pub enum Errno {
     ERESTARTSYS = 512, /* Restart of an interrupted system call. For kernel internal use only. */
 }
 
-/// error used in this crate
+/// Error used in this crate.
+///
+/// This wraps an [`Errno`] and potentially provides additional information. The error number is returned to the
+/// userspace from the syscall if the error reaches syscall invocation.
+///
+/// This type is convertible to and from various other error types.
 #[derive(Debug, Clone, Copy)]
 pub struct Error {
     errno: Errno,
@@ -175,6 +180,19 @@ impl Error {
 
     pub const fn error(&self) -> Errno {
         self.errno
+    }
+}
+
+impl core::error::Error for Error {}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self.errno)?;
+        if let Some(msg) = self.msg {
+            f.write_str(": ")?;
+            f.write_str(msg)?;
+        }
+        Ok(())
     }
 }
 
