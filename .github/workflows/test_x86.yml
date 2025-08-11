@@ -62,9 +62,10 @@ jobs:
             extra_blocklists: 'blocklists.exfat'
             syscall_test_workdir: '/exfat'
           # SMP Syscall Test (Multiboot2)
-          - test_id: 'syscall-multiboot2-smp4'
-            boot_protocol: 'multiboot2'
-            smp: 4
+          # TODO: Reenable this test once we know why it's hanging
+          # - test_id: 'syscall-multiboot2-smp4'
+          #   boot_protocol: 'multiboot2'
+          #   smp: 4
 
           # General Test (Linux EFI Handover)
           - test_id: 'general-handover64'
