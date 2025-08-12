@@ -52,6 +52,16 @@ runs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/
+          target/
+          test/build/
+          osdk/src/commands/build/
+          osdk/target/release/build/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ inputs.arch }}-release${{ inputs.release }}-${{ matrix.id }}-${{ inputs.auto_test }}
+
     - name: Setup environment
       shell: bash
       run: |

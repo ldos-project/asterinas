@@ -2,7 +2,9 @@ name: "Test riscv64  "
 
 on:
   workflow_dispatch:
-  pull_request:
+  # Only run RISCV tests on main so we track it but don't use resources on every PR since we don't really care 
+  # right now.
+  # pull_request:
   push:
     branches:
       - main
