@@ -52,6 +52,21 @@ runs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    # Use two caches, one for the downloads and one for the incremental build artifacts.
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/
+          ~/.rustup/
+        key: ${{ runner.os }}-cargo-${{ inputs.arch }}-${{ matrix.id }}-${{ hashFiles('**/Cargo.lock') }}-${{ inputs.intel_tdx }}
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ./test/build
+          ./target
+        key: ${{ runner.os }}-build-${{ inputs.arch }}-${{ matrix.id }}-${{ hashFiles('**/Cargo.lock') }}-${{ inputs.release }}-${{ inputs.intel_tdx }}
+
     - name: Setup environment
       shell: bash
       run: |
@@ -60,6 +75,7 @@ runs:
           echo "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static" >> $GITHUB_ENV
           echo "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup" >> $GITHUB_ENV
         fi
+        echo "CARGO_INCREMENTAL=1" >> $GITHUB_ENV
         
     - name: Run basic tests
       if: ${{ inputs.auto_test == 'general' }}
