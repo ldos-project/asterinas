@@ -38,7 +38,7 @@ use ostd::{
 use process::{spawn_init_process, Process};
 use sched::SchedPolicy;
 
-use crate::{prelude::*, thread::kernel_thread::ThreadOptions};
+use crate::{kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions};
 
 extern crate alloc;
 extern crate lru;
@@ -132,6 +132,10 @@ fn init_thread() {
     // Work queue should be initialized before interrupt is enabled,
     // in case any irq handler uses work queue as bottom half
     thread::work_queue::init();
+
+    let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
+    set_kernel_cmd_line(karg.clone());
+
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
     fs::lazy_init();
@@ -151,8 +155,6 @@ fn init_thread() {
     if let Some(console) = FRAMEBUFFER_CONSOLE.get() {
         console.disable();
     };
-
-    let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
 
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),
