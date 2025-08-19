@@ -57,8 +57,11 @@ runs:
       run: |
         # Set common environment variables using GitHub's environment files
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
-          echo "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static" >> $GITHUB_ENV
-          echo "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup" >> $GITHUB_ENV
+          echo "TDX not supported"
+          exit 1
+          # Some kind of special mirror appears to be required.
+          # echo "RUSTUP_DIST_SERVER=" >> $GITHUB_ENV
+          # echo "RUSTUP_UPDATE_ROOT=" >> $GITHUB_ENV
         fi
         
     - name: Run basic tests
