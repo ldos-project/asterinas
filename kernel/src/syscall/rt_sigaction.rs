@@ -66,16 +66,16 @@ pub fn sys_rt_sigaction(
 /// Discard signals if the new action is to ignore the signal.
 ///
 /// Ref: <https://elixir.bootlin.com/linux/v6.13/source/kernel/signal.c#L4323>
-//
-// POSIX 3.3.1.3:
-// Setting a signal action to SIG_IGN for a signal that is
-// pending shall cause the pending signal to be discarded,
-// whether or not it is blocked.
-//
-// Setting a signal action to SIG_DFL for a signal that is
-// pending and whose default action is to ignore the signal
-// (for example, SIGCHLD), shall cause the pending signal to
-// be discarded, whether or not it is blocked
+///
+/// POSIX 3.3.1.3:
+/// Setting a signal action to SIG_IGN for a signal that is
+/// pending shall cause the pending signal to be discarded,
+/// whether or not it is blocked.
+///
+/// Setting a signal action to SIG_DFL for a signal that is
+/// pending and whose default action is to ignore the signal
+/// (for example, SIGCHLD), shall cause the pending signal to
+/// be discarded, whether or not it is blocked
 fn discard_signals_if_ignored(ctx: &Context, signum: SigNum, sig_action: &SigAction) {
     if !sig_action.will_ignore(signum) {
         return;

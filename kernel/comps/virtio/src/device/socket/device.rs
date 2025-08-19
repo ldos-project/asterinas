@@ -90,12 +90,12 @@ impl SocketDevice {
             transport,
         };
 
-        // Interrupt handler if vsock device config space changes
+        /// Interrupt handler if vsock device config space changes
         fn config_space_change(_: &TrapFrame) {
             debug!("vsock device config space change");
         }
 
-        // Interrupt handler if vsock device receives some packet.
+        /// Interrupt handler if vsock device receives some packet.
         fn handle_vsock_event(_: &TrapFrame) {
             handle_recv_irq(super::DEVICE_NAME);
         }

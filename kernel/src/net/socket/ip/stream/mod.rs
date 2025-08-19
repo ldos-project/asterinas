@@ -182,8 +182,8 @@ impl StreamSocket {
         state
     }
 
-    // Returns `None` to block the task and wait for the connection to be established, and returns
-    // `Some(_)` if blocking is not necessary or not allowed.
+    /// Returns `None` to block the task and wait for the connection to be established, and returns `Some(_)` if
+    /// blocking is not necessary or not allowed.
     fn start_connect(&self, remote_endpoint: &IpEndpoint) -> Option<Result<()>> {
         let is_nonblocking = self.is_nonblocking();
 

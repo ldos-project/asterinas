@@ -70,9 +70,8 @@ impl<'a> FutexIter<'a> {
         }
     }
 
-    // The `self.count` is normally a positive value used to iterate the list
-    // to avoid excessively long or circular list, we use a special value -1
-    // to represent the end of the Iterator.
+    /// The `self.count` is normally a positive value used to iterate the list to avoid excessively long or circular
+    /// list, we use a special value -1 to represent the end of the Iterator.
     fn set_end(&mut self) {
         self.count = -1;
     }

@@ -21,7 +21,7 @@ pub trait Pager: Send + Sync {
     /// `Pager` should not rely on this behavior for its correctness;
     /// instead, it should returns the _same_ frame.
     ///
-    /// If a VMO page has been previously committed and decommited,
+    /// If a VMO page has been previously committed and decommitted,
     /// and is to be committed again, then the pager is free to return
     /// whatever frame that may or may not be the same as the last time.
     ///

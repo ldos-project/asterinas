@@ -510,7 +510,7 @@ impl OverlayInode {
 }
 
 impl OverlayInode {
-    // Returns the top valid inode who must exist.
+    /// Returns the top valid inode who must exist.
     fn get_top_valid_inode(&self) -> Arc<dyn Inode> {
         if let Some(upper) = self.upper() {
             return upper;

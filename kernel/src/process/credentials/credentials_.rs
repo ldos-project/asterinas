@@ -192,8 +192,7 @@ impl Credentials_ {
         self.suid.store(suid, Ordering::Release);
     }
 
-    // For `setreuid`, ruid can *NOT* be set to old suid,
-    // while for `setresuid`, ruid can be set to old suid.
+    /// For `setreuid`, ruid can *NOT* be set to old suid, while for `setresuid`, ruid can be set to old suid.
     fn check_uid_perm(
         &self,
         ruid: Option<&Uid>,
@@ -353,8 +352,7 @@ impl Credentials_ {
             .store(keep_capabilities, Ordering::Relaxed);
     }
 
-    // For `setregid`, rgid can *NOT* be set to old sgid,
-    // while for `setresgid`, ruid can be set to old sgid.
+    /// For `setregid`, rgid can *NOT* be set to old sgid, while for `setresgid`, ruid can be set to old sgid.
     fn check_gid_perm(
         &self,
         rgid: Option<&Gid>,
