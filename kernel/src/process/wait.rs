@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::{
+    ExitCode, Pid, Process,
     process_filter::ProcessFilter,
     signal::{constants::SIGCHLD, with_sigmask_changed},
-    ExitCode, Pid, Process,
 };
 use crate::{
     prelude::*,
     process::{
-        posix_thread::{thread_table, AsPosixThread},
+        posix_thread::{AsPosixThread, thread_table},
         process_table,
         signal::sig_num::SigNum,
         status::StopWaitStatus,

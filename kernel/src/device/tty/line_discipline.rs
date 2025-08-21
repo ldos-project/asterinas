@@ -3,8 +3,8 @@
 use ostd::const_assert;
 
 use super::{
-    termio::{CCtrlCharId, CTermios, CWinSize},
     PushCharError,
+    termio::{CCtrlCharId, CTermios, CWinSize},
 };
 use crate::{
     prelude::*,

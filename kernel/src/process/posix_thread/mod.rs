@@ -6,16 +6,16 @@ use aster_rights::{ReadDupOp, ReadOp, WriteOp};
 use ostd::sync::{RoArc, Waker};
 
 use super::{
+    Credentials, Process,
     kill::SignalSenderIds,
     signal::{
+        SigEvents, SigEventsFilter,
         sig_disposition::SigDispositions,
         sig_mask::{AtomicSigMask, SigMask, SigSet},
         sig_num::SigNum,
         sig_queues::SigQueues,
         signals::Signal,
-        SigEvents, SigEventsFilter,
     },
-    Credentials, Process,
 };
 use crate::{
     events::Observer,
@@ -23,7 +23,7 @@ use crate::{
     prelude::*,
     process::signal::constants::SIGCONT,
     thread::{Thread, Tid},
-    time::{clocks::ProfClock, Timer, TimerManager},
+    time::{Timer, TimerManager, clocks::ProfClock},
 };
 
 mod builder;
@@ -37,7 +37,7 @@ pub mod thread_table;
 
 pub use builder::PosixThreadBuilder;
 pub use exit::{do_exit, do_exit_group};
-pub use name::{ThreadName, MAX_THREAD_NAME_LEN};
+pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};

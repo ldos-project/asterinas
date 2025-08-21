@@ -7,8 +7,8 @@ use alloc::{
 };
 
 use ostd::{
-    cpu::context::{cpuid, CpuException, CpuExceptionInfo, RawGeneralRegs, UserContext},
     Pod,
+    cpu::context::{CpuException, CpuExceptionInfo, RawGeneralRegs, UserContext, cpuid},
 };
 
 use crate::{cpu::LinuxAbi, thread::exception::PageFaultInfo, vm::perms::VmPerms};

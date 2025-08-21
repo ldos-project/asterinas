@@ -7,7 +7,7 @@ use ostd::cpu::context::UserContext;
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{clone_child, signal::sig_num::SigNum, CloneArgs, CloneFlags},
+    process::{CloneArgs, CloneFlags, clone_child, signal::sig_num::SigNum},
 };
 
 // The order of arguments for clone differs in different architecture.
@@ -22,7 +22,10 @@ pub fn sys_clone(
     parent_context: &UserContext,
 ) -> Result<SyscallReturn> {
     let args = CloneArgs::for_clone(clone_flags, parent_tidptr, child_tidptr, tls, new_sp)?;
-    debug!("flags = {:?}, child_stack_ptr = 0x{:x}, parent_tid_ptr = 0x{:x?}, child tid ptr = 0x{:x}, tls = 0x{:x}", args.flags, args.stack, args.parent_tid, args.child_tid, args.tls);
+    debug!(
+        "flags = {:?}, child_stack_ptr = 0x{:x}, parent_tid_ptr = 0x{:x?}, child tid ptr = 0x{:x}, tls = 0x{:x}",
+        args.flags, args.stack, args.parent_tid, args.child_tid, args.tls
+    );
     let child_pid = clone_child(ctx, parent_context, args).unwrap();
     Ok(SyscallReturn::Return(child_pid as _))
 }
@@ -35,8 +38,7 @@ pub fn sys_clone3(
 ) -> Result<SyscallReturn> {
     trace!(
         "clone args addr = 0x{:x}, size = 0x{:x}",
-        clong_args_addr,
-        size
+        clong_args_addr, size
     );
     if size != core::mem::size_of::<Clone3Args>() {
         return_errno_with_message!(Errno::EINVAL, "invalid size");

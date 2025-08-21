@@ -8,7 +8,7 @@ use int_to_c_enum::TryFromInt;
 
 use super::IrtEntryHandle;
 use crate::{
-    mm::{FrameAllocOptions, Segment, UntypedMem, PAGE_SIZE},
+    mm::{FrameAllocOptions, PAGE_SIZE, Segment, UntypedMem},
     sync::{LocalIrqDisabled, SpinLock},
 };
 
@@ -147,6 +147,7 @@ pub enum SourceIdQualifier {
     IgnoreLeastThree = 0b11,
 }
 
+#[expect(unused)]
 #[derive(Debug, TryFromInt)]
 #[repr(u32)]
 enum DeliveryMode {

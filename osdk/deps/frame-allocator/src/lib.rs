@@ -32,7 +32,7 @@ use core::alloc::Layout;
 
 use ostd::{
     cpu::PinCurrentCpu,
-    mm::{frame::GlobalFrameAllocator, Paddr},
+    mm::{Paddr, frame::GlobalFrameAllocator},
     trap,
 };
 

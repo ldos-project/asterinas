@@ -34,9 +34,9 @@ use crate::{
     cpu::context::{CpuException, CpuExceptionInfo, PageFaultErrorCode},
     cpu_local_cell,
     mm::{
+        MAX_USERSPACE_VADDR, PAGE_SIZE, PageFlags, PrivilegedPageFlags as PrivFlags,
         kspace::{KERNEL_PAGE_TABLE, LINEAR_MAPPING_BASE_VADDR, LINEAR_MAPPING_VADDR_RANGE},
         page_prop::{CachePolicy, PageProperty},
-        PageFlags, PrivilegedPageFlags as PrivFlags, MAX_USERSPACE_VADDR, PAGE_SIZE,
     },
     task::disable_preempt,
     trap::call_irq_callback_functions,
@@ -60,7 +60,7 @@ cpu_local_cell! {
 /// You need to define a handler function like this:
 ///
 /// ```
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// extern "sysv64" fn trap_handler(tf: &mut TrapFrame) {
 ///     match tf.trap_num {
 ///         3 => {
@@ -223,7 +223,7 @@ pub fn is_kernel_interrupted() -> bool {
 }
 
 /// Handle traps (only from kernel).
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "sysv64" fn trap_handler(f: &mut TrapFrame) {
     fn enable_local_if(cond: bool) {
         if cond {

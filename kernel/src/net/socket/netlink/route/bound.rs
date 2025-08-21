@@ -7,10 +7,10 @@ use crate::{
     events::IoEvents,
     net::socket::{
         netlink::{
-            common::BoundNetlink, message::ProtocolSegment,
-            route::kernel::get_netlink_route_kernel, NetlinkSocketAddr,
+            NetlinkSocketAddr, common::BoundNetlink, message::ProtocolSegment,
+            route::kernel::get_netlink_route_kernel,
         },
-        util::{datagram_common, SendRecvFlags},
+        util::{SendRecvFlags, datagram_common},
     },
     prelude::*,
     util::{MultiRead, MultiWrite},

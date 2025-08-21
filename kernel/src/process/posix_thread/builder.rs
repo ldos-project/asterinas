@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use ostd::{
-    cpu::{context::UserContext, CpuSet},
+    cpu::{CpuSet, context::UserContext},
     sync::RwArc,
     task::Task,
 };
 
-use super::{thread_table, PosixThread, ThreadLocal};
+use super::{PosixThread, ThreadLocal, thread_table};
 use crate::{
     fs::{file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
     process::{
+        Credentials, Process,
         posix_thread::name::ThreadName,
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
-        Credentials, Process,
     },
     sched::{Nice, SchedPolicy},
-    thread::{task, Thread, Tid},
-    time::{clocks::ProfClock, TimerManager},
+    thread::{Thread, Tid, task},
+    time::{TimerManager, clocks::ProfClock},
 };
 
 /// The builder to build a posix thread

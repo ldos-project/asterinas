@@ -4,7 +4,7 @@ use super::read_socket_addr_from_user;
 use crate::{
     net::socket::util::SocketAddr,
     prelude::*,
-    util::{net::write_socket_addr_with_max_len, VmReaderArray, VmWriterArray},
+    util::{VmReaderArray, VmWriterArray, net::write_socket_addr_with_max_len},
 };
 
 /// Standard well-defined IP protocols.

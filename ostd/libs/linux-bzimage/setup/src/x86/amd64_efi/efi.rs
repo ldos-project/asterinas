@@ -2,7 +2,7 @@
 
 use core::{ffi::CStr, mem::MaybeUninit};
 
-use boot::{open_protocol_exclusive, AllocateType};
+use boot::{AllocateType, open_protocol_exclusive};
 use linux_boot_params::BootParams;
 use uefi::{boot::exit_boot_services, mem::memory_map::MemoryMap, prelude::*};
 use uefi_raw::table::system::SystemTable;
@@ -12,7 +12,7 @@ use crate::x86::amd64_efi::alloc::alloc_pages;
 
 pub(super) const PAGE_SIZE: u64 = 4096;
 
-#[export_name = "main_efi_common64"]
+#[unsafe(export_name = "main_efi_common64")]
 extern "sysv64" fn main_efi_common64(
     handle: Handle,
     system_table: *const SystemTable,
@@ -224,7 +224,7 @@ fn load_initrd() -> Option<&'static [u8]> {
 }
 
 fn find_rsdp_addr() -> Option<*const ()> {
-    use uefi::table::cfg::{ACPI2_GUID, ACPI_GUID};
+    use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 
     // Prefer ACPI2 over ACPI.
     for acpi_guid in [ACPI2_GUID, ACPI_GUID] {

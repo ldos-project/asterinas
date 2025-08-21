@@ -67,8 +67,7 @@ fn log_trap_info(trap_info: &CpuExceptionInfo) {
     if let Ok(page_fault_info) = PageFaultInfo::try_from(trap_info) {
         trace!(
             "[Trap][PAGE_FAULT][page fault addr = 0x{:x}, err = {}]",
-            trap_info.page_fault_addr,
-            trap_info.error_code
+            trap_info.page_fault_addr, trap_info.error_code
         );
     } else {
         let exception = trap_info.cpu_exception();

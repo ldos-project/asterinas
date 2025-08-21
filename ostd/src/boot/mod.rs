@@ -117,8 +117,8 @@ pub(crate) fn init_after_heap() {
 pub(crate) fn call_ostd_main() -> ! {
     // The entry point of kernel code, which should be defined by the package that
     // uses OSTD.
-    extern "Rust" {
-        fn __ostd_main() -> !;
+    unsafe extern "Rust" {
+        unsafe fn __ostd_main() -> !;
     }
 
     // SAFETY: The function is called only once on the BSP.

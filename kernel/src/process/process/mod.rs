@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     prelude::*,
-    process::{status::StopWaitStatus, WaitOptions},
+    process::{WaitOptions, status::StopWaitStatus},
     sched::{AtomicNice, Nice},
     thread::{AsThread, Thread},
     time::clocks::ProfClock,

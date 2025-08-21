@@ -6,8 +6,8 @@ use aster_rights::{Dup, Exec, Full, Read, Signal, TRightSet, TRights, Write};
 use aster_rights_proc::require;
 use inherit_methods_macro::inherit_methods;
 use ostd::{
-    mm::{Daddr, DmaStream, HasDaddr, HasPaddr, Paddr, PodOnce, VmIo, VmIoOnce},
     Pod, Result,
+    mm::{Daddr, DmaStream, HasDaddr, HasPaddr, Paddr, PodOnce, VmIo, VmIoOnce},
 };
 
 /// Safe pointers.

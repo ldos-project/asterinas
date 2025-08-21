@@ -13,9 +13,8 @@ use crate::{
     },
     prelude::*,
     process::{
-        broadcast_signal_async,
+        JobControl, Terminal, broadcast_signal_async,
         signal::{PollHandle, Pollable, Pollee},
-        JobControl, Terminal,
     },
 };
 

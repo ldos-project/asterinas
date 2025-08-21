@@ -7,7 +7,7 @@ use core::{fmt::Debug, mem::size_of};
 
 use aster_bigtcp::device::{Checksum, DeviceCapabilities, Medium};
 use aster_network::{
-    AnyNetworkDevice, EthernetAddr, RxBuffer, TxBuffer, VirtioNetError, RX_BUFFER_POOL,
+    AnyNetworkDevice, EthernetAddr, RX_BUFFER_POOL, RxBuffer, TxBuffer, VirtioNetError,
 };
 use aster_softirq::BottomHalfDisabled;
 use aster_util::slot_vec::SlotVec;
@@ -16,7 +16,7 @@ use ostd::{mm::DmaStream, sync::SpinLock, trap::TrapFrame};
 
 use super::{config::VirtioNetConfig, header::VirtioNetHdr};
 use crate::{
-    device::{network::config::NetworkFeatures, VirtioDeviceError},
+    device::{VirtioDeviceError, network::config::NetworkFeatures},
     queue::{QueueError, VirtQueue},
     transport::{ConfigManager, VirtioTransport},
 };

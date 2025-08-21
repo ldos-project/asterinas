@@ -7,18 +7,18 @@ use core::arch::global_asm;
 
 use spin::Once;
 use x86_64::{
-    instructions::tables::lidt,
-    structures::{idt::Entry, DescriptorTablePointer},
     PrivilegeLevel, VirtAddr,
+    instructions::tables::lidt,
+    structures::{DescriptorTablePointer, idt::Entry},
 };
 
 global_asm!(include_str!("trap.S"));
 
 const NUM_INTERRUPTS: usize = 256;
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "trap_handler_table"]
-    static VECTORS: [usize; NUM_INTERRUPTS];
+    unsafe static VECTORS: [usize; NUM_INTERRUPTS];
 }
 
 static GLOBAL_IDT: Once<&'static [Entry<()>]> = Once::new();

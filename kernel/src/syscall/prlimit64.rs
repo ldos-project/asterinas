@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{rlimit::RawRLimit64, Pid, ResourceType},
+    process::{Pid, ResourceType, rlimit::RawRLimit64},
 };
 
 pub fn sys_getrlimit(resource: u32, rlim_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {

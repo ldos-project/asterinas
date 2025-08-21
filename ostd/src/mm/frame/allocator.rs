@@ -6,12 +6,12 @@ use core::{alloc::Layout, ops::Range};
 
 use align_ext::AlignExt;
 
-use super::{meta::AnyFrameMeta, segment::Segment, Frame};
+use super::{Frame, meta::AnyFrameMeta, segment::Segment};
 use crate::{
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{paddr_to_vaddr, Paddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr},
     prelude::*,
     util::ops::range_difference,
 };
@@ -175,10 +175,10 @@ pub trait GlobalFrameAllocator: Sync {
     fn add_free_memory(&self, addr: Paddr, size: usize);
 }
 
-extern "Rust" {
+unsafe extern "Rust" {
     /// The global frame allocator's reference exported by
     /// [`crate::global_frame_allocator`].
-    static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn GlobalFrameAllocator;
+    unsafe static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn GlobalFrameAllocator;
 }
 
 pub(super) fn get_global_frame_allocator() -> &'static dyn GlobalFrameAllocator {
@@ -205,14 +205,14 @@ pub(crate) unsafe fn init() {
 
     for region in regions.iter() {
         if region.typ() == MemoryRegionType::Usable {
-            debug_assert!(region.base() % PAGE_SIZE == 0);
-            debug_assert!(region.len() % PAGE_SIZE == 0);
+            debug_assert!(region.base().is_multiple_of(PAGE_SIZE));
+            debug_assert!(region.len().is_multiple_of(PAGE_SIZE));
 
             // Add global free pages to the frame allocator.
             // Truncate the early allocated frames if there is an overlap.
             for r1 in range_difference(&(region.base()..region.end()), &range_1) {
                 for r2 in range_difference(&r1, &range_2) {
-                    log::info!("Adding free frames to the allocator: {:x?}", r2);
+                    log::info!("Adding free frames to the allocator: {r2:x?}");
                     get_global_frame_allocator().add_free_memory(r2.start, r2.len());
                 }
             }
@@ -277,12 +277,9 @@ impl EarlyFrameAllocator {
             }
         }
 
-        log::debug!(
-            "Early frame allocator (below 4G) at: {:#x?}",
-            under_4g_range
-        );
+        log::debug!("Early frame allocator (below 4G) at: {under_4g_range:#x?}");
         if !max_range.is_empty() {
-            log::debug!("Early frame allocator (above 4G) at: {:#x?}", max_range);
+            log::debug!("Early frame allocator (above 4G) at: {max_range:#x?}");
         }
 
         Self {

@@ -30,7 +30,6 @@
 #![deny(unsafe_code)]
 #![feature(fn_traits)]
 #![feature(step_trait)]
-#![feature(trait_upcasting)]
 
 extern crate alloc;
 
@@ -40,7 +39,7 @@ mod impl_block_device;
 mod prelude;
 pub mod request_queue;
 
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use ostd::sync::SpinLock;
 use spin::Once;
 

@@ -6,10 +6,10 @@ use crate::{
     events::IoEvents,
     net::socket::{
         netlink::{
+            GroupIdSet, NetlinkSocketAddr,
             common::bound::BoundNetlink,
             receiver::{MessageQueue, MessageReceiver},
             table::SupportedNetlinkProtocol,
-            GroupIdSet, NetlinkSocketAddr,
         },
         util::datagram_common,
     },

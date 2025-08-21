@@ -172,9 +172,9 @@ fn match_and_call(
     info!("Components initializing...");
 
     for i in infos {
-        info!("Component initializing:{:?}", i);
+        info!("Component initializing:{i:?}");
         if let Err(res) = i.function.unwrap().call(()) {
-            error!("Component initialize error:{:?}", res);
+            error!("Component initialize error:{res:?}");
         } else {
             info!("Component initialize complete");
         }

@@ -50,7 +50,7 @@ pub use addr::{GroupIdSet, NetlinkSocketAddr};
 pub use kobject_uevent::NetlinkUeventSocket;
 pub use options::{AddMembership, DropMembership};
 pub use route::NetlinkRouteSocket;
-pub use table::{is_valid_protocol, StandardNetlinkProtocol};
+pub use table::{StandardNetlinkProtocol, is_valid_protocol};
 
 pub(in crate::net) fn init() {
     table::init();

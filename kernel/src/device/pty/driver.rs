@@ -5,7 +5,7 @@ use ostd::sync::SpinLock;
 use crate::{
     device::tty::{PushCharError, Tty, TtyDriver},
     events::IoEvents,
-    prelude::{return_errno_with_message, Errno, Result},
+    prelude::{Errno, Result, return_errno_with_message},
     process::signal::Pollee,
     util::ring_buffer::RingBuffer,
 };

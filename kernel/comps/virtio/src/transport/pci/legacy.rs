@@ -7,8 +7,8 @@ use aster_util::safe_ptr::SafePtr;
 use log::{info, warn};
 use ostd::{
     bus::{
-        pci::{capability::CapabilityData, cfg_space::Bar, common_device::PciCommonDevice},
         BusProbeError,
+        pci::{capability::CapabilityData, cfg_space::Bar, common_device::PciCommonDevice},
     },
     io::IoMem,
     mm::{DmaCoherent, HasDaddr, PAGE_SIZE},
@@ -16,12 +16,12 @@ use ostd::{
 };
 
 use crate::{
+    DeviceStatus, VirtioDeviceType,
     queue::UsedElem,
     transport::{
-        pci::msix::VirtioMsixManager, AvailRing, ConfigManager, Descriptor, UsedRing,
-        VirtioTransport, VirtioTransportError,
+        AvailRing, ConfigManager, Descriptor, UsedRing, VirtioTransport, VirtioTransportError,
+        pci::msix::VirtioMsixManager,
     },
-    DeviceStatus, VirtioDeviceType,
 };
 
 // When used through the legacy interface, the virtio common configuration structure looks as follows:

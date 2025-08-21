@@ -45,18 +45,16 @@
 //! ```
 //!
 
-#![feature(let_chains)]
 #![feature(proc_macro_diagnostic)]
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, quote_spanned};
 use syn::{
-    braced,
+    Error, Fields, Ident, ItemStruct, LitBool, Result, Token, Type, braced,
     parse::{Parse, ParseStream},
     parse_macro_input,
     spanned::Spanned,
-    Error, Fields, Ident, ItemStruct, LitBool, Result, Token, Type,
 };
 
 struct Input {
@@ -77,7 +75,7 @@ impl Parse for Input {
             if key != "try_from" {
                 return Err(Error::new(
                     key.span(),
-                    format!(r#"Expected "try_from", found "{}""#, key),
+                    format!(r#"Expected "try_from", found "{key}""#),
                 ));
             }
             input.parse::<Token![=]>()?;

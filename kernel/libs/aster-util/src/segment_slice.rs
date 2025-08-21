@@ -8,11 +8,11 @@ use alloc::sync::Arc;
 use core::ops::Range;
 
 use ostd::{
-    mm::{
-        FallibleVmRead, FallibleVmWrite, Infallible, Paddr, UFrame, USegment, UntypedMem, VmIo,
-        VmReader, VmWriter, PAGE_SIZE,
-    },
     Error, Result,
+    mm::{
+        FallibleVmRead, FallibleVmWrite, Infallible, PAGE_SIZE, Paddr, UFrame, USegment,
+        UntypedMem, VmIo, VmReader, VmWriter,
+    },
 };
 
 /// A reference to a slice of a [`USegment`].

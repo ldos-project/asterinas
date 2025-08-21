@@ -20,27 +20,27 @@ use log::debug;
 use spin::Once;
 use status::GlobalStatus;
 use volatile::{
-    access::{ReadOnly, ReadWrite, WriteOnly},
     VolatileRef,
+    access::{ReadOnly, ReadWrite, WriteOnly},
 };
 
 use super::{
-    dma_remapping::RootTable, interrupt_remapping::IntRemappingTable, invalidate::queue::Queue,
-    IommuError,
+    IommuError, dma_remapping::RootTable, interrupt_remapping::IntRemappingTable,
+    invalidate::queue::Queue,
 };
 use crate::{
     arch::{
         iommu::{
             fault,
             invalidate::{
-                descriptor::{InterruptEntryCache, InvalidationWait},
                 QUEUE,
+                descriptor::{InterruptEntryCache, InvalidationWait},
             },
         },
         kernel::acpi::dmar::{Dmar, Remapping},
     },
     io::IoMemAllocatorBuilder,
-    mm::{paddr_to_vaddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, paddr_to_vaddr},
     sync::{LocalIrqDisabled, SpinLock},
 };
 
@@ -125,10 +125,11 @@ impl IommuRegisters {
 
     /// Enables Interrupt Remapping with IntRemappingTable
     pub(super) fn enable_interrupt_remapping(&mut self, table: &'static IntRemappingTable) {
-        assert!(self
-            .read_extended_capability()
-            .flags()
-            .contains(ExtendedCapabilityFlags::IR));
+        assert!(
+            self.read_extended_capability()
+                .flags()
+                .contains(ExtendedCapabilityFlags::IR)
+        );
         // Set interrupt remapping table address
         self.interrupt_remapping_table_addr
             .as_mut_ptr()
@@ -174,10 +175,11 @@ impl IommuRegisters {
     }
 
     pub(super) fn enable_queued_invalidation(&mut self, queue: &Queue) {
-        assert!(self
-            .read_extended_capability()
-            .flags()
-            .contains(ExtendedCapabilityFlags::QI));
+        assert!(
+            self.read_extended_capability()
+                .flags()
+                .contains(ExtendedCapabilityFlags::QI)
+        );
         self.invalidate.queue_tail.as_mut_ptr().write(0);
 
         let mut write_value = queue.base_paddr() as u64;
@@ -254,7 +256,7 @@ impl IommuRegisters {
     /// Creates an instance from base address
     fn new(io_mem_builder: &IoMemAllocatorBuilder) -> Option<Self> {
         let dmar = Dmar::new()?;
-        debug!("DMAR: {:#x?}", dmar);
+        debug!("DMAR: {dmar:#x?}");
 
         let base_address = dmar
             .remapping_iter()
@@ -273,7 +275,7 @@ impl IommuRegisters {
             })
             .expect("no DRHD structure found in the DMAR table");
         assert_ne!(base_address, 0, "IOMMU address should not be zero");
-        debug!("IOMMU base address: {:#x?}", base_address);
+        debug!("IOMMU base address: {base_address:#x?}");
 
         io_mem_builder.remove(base_address as usize..(base_address as usize + PAGE_SIZE));
         let base = NonNull::new(paddr_to_vaddr(base_address as usize) as *mut u8).unwrap();
@@ -304,7 +306,7 @@ impl IommuRegisters {
             }
         };
 
-        debug!("IOMMU registers:{:#x?}", iommu_regs);
+        debug!("IOMMU registers:{iommu_regs:#x?}");
         debug!("IOMMU capability:{:#x?}", iommu_regs.read_capability());
         debug!(
             "IOMMU extend capability:{:#x?}",

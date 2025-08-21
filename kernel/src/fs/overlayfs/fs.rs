@@ -21,8 +21,8 @@ use crate::{
         path::Dentry,
         utils::{
             DirentVisitor, FallocMode, FileSystem, FsFlags, Inode, InodeMode, InodeType, IoctlCmd,
-            Metadata, MknodType, SuperBlock, XattrName, XattrNamespace, XattrSetFlags, NAME_MAX,
-            XATTR_VALUE_MAX_LEN,
+            Metadata, MknodType, NAME_MAX, SuperBlock, XATTR_VALUE_MAX_LEN, XattrName,
+            XattrNamespace, XattrSetFlags,
         },
     },
     prelude::*,

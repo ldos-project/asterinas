@@ -10,12 +10,9 @@
 #![feature(btree_extract_if)]
 #![feature(debug_closure_helpers)]
 #![feature(extend_one)]
-#![feature(extract_if)]
 #![feature(fn_traits)]
 #![feature(format_args_nl)]
 #![feature(int_roundings)]
-#![feature(integer_sign_cast)]
-#![feature(let_chains)]
 #![feature(linked_list_cursors)]
 #![feature(linked_list_remove)]
 #![feature(linked_list_retain)]
@@ -24,18 +21,22 @@
 #![feature(register_tool)]
 #![feature(step_trait)]
 #![feature(trait_alias)]
-#![feature(trait_upcasting)]
 #![feature(associated_type_defaults)]
 #![register_tool(component_access_control)]
+// TODO: Explicitly showing that a lifetime was propagated is better:
+//   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
+//   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
+// However, there are >300 cases of this issue and I can't figure out a way to script it.
+#![allow(mismatched_lifetime_syntaxes)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
-    arch::qemu::{exit_qemu, QemuExitCode},
+    arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
 };
-use process::{spawn_init_process, Process};
+use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
 
 use crate::{kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions};

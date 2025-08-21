@@ -14,7 +14,7 @@ use aster_rights::Rights;
 use ostd::{
     cpu::CpuId,
     mm::{
-        tlb::TlbFlushOp, vm_space::CursorMut, PageFlags, PageProperty, VmSpace, MAX_USERSPACE_VADDR,
+        MAX_USERSPACE_VADDR, PageFlags, PageProperty, VmSpace, tlb::TlbFlushOp, vm_space::CursorMut,
     },
     sync::RwMutexReadGuard,
     task::disable_preempt,
@@ -1030,7 +1030,10 @@ where
         })?;
 
         // Allocates a free region.
-        trace!("allocate free region, map_size = 0x{:x}, offset = {:x?}, align = 0x{:x}, can_overwrite = {}", map_size, offset, align, can_overwrite);
+        trace!(
+            "allocate free region, map_size = 0x{:x}, offset = {:x?}, align = 0x{:x}, can_overwrite = {}",
+            map_size, offset, align, can_overwrite
+        );
         let map_to_addr = if can_overwrite {
             // If can overwrite, the offset is ensured not to be `None`.
             let offset = offset.ok_or(Error::with_message(

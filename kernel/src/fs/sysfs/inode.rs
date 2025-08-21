@@ -15,6 +15,7 @@ use aster_systree::{
 use ostd::sync::RwLock;
 
 use crate::{
+    Errno, Error, Result,
     events::IoEvents,
     fs::{
         device::Device,
@@ -24,10 +25,9 @@ use crate::{
         },
     },
     prelude::{VmReader, VmWriter},
-    process::{signal::PollHandle, Gid, Uid},
+    process::{Gid, Uid, signal::PollHandle},
     return_errno_with_message,
-    time::{clocks::RealTimeCoarseClock, Clock},
-    Errno, Error, Result,
+    time::{Clock, clocks::RealTimeCoarseClock},
 };
 
 type Ino = u64;
@@ -235,7 +235,7 @@ impl SysFsInode {
                     return Err(Error::with_message(
                         Errno::EIO,
                         "lookup_node_or_attr called on non-branch inode",
-                    ))
+                    ));
                 }
             };
 
@@ -262,7 +262,7 @@ impl SysFsInode {
                 return Err(Error::with_message(
                     Errno::EIO,
                     "lookup_attr called on non-leaf inode",
-                ))
+                ));
             }
         };
 

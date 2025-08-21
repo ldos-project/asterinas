@@ -4,14 +4,14 @@ use crate::{
     events::IoEvents,
     fs::utils::{Endpoint, EndpointState},
     net::socket::{
-        unix::{addr::UnixSocketAddrBound, cred::SocketCred, UnixSocketAddr},
+        unix::{UnixSocketAddr, addr::UnixSocketAddrBound, cred::SocketCred},
         util::SockShutdownCmd,
     },
     prelude::*,
     process::signal::Pollee,
     util::{
-        ring_buffer::{RbConsumer, RbProducer, RingBuffer},
         MultiRead, MultiWrite,
+        ring_buffer::{RbConsumer, RbProducer, RingBuffer},
     },
 };
 

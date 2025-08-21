@@ -12,7 +12,7 @@ use crate::{
         tsc_freq,
     },
     task::disable_preempt,
-    trap::{irq::IrqLine, TrapFrame},
+    trap::{TrapFrame, irq::IrqLine},
 };
 
 /// Initializes APIC with TSC-deadline mode or periodic mode.
@@ -39,7 +39,7 @@ pub(super) fn init_ap(timer_irq: &IrqLine) {
 
 /// A callback that needs to be called on timer interrupt.
 pub(super) fn timer_callback() {
-    use x86::msr::{wrmsr, IA32_TSC_DEADLINE};
+    use x86::msr::{IA32_TSC_DEADLINE, wrmsr};
 
     match CONFIG.get().expect("ACPI timer config is not initialized") {
         Config::DeadlineMode { tsc_interval } => {
@@ -162,8 +162,7 @@ fn init_periodic_mode_config() {
         let apic_first_count = APIC_FIRST_COUNT.load(Ordering::Relaxed);
         let apic_init_count = (apic_current_count - apic_first_count) / CALLBACK_TIMES;
         info!(
-            "APIC timer: first {:#x}, current {:#x}, init {:#x}",
-            apic_first_count, apic_current_count, apic_init_count,
+            "APIC timer: first {apic_first_count:#x}, current {apic_current_count:#x}, init {apic_init_count:#x}",
         );
         CONFIG.call_once(|| Config::PeriodicMode {
             init_count: apic_init_count,

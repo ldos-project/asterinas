@@ -4,7 +4,7 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file_table::{FdFlags, FileDesc},
-        fs_resolver::{FsPath, AT_FDCWD},
+        fs_resolver::{AT_FDCWD, FsPath},
         utils::{AccessMode, CreationFlags},
     },
     prelude::*,

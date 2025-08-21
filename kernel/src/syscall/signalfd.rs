@@ -15,19 +15,19 @@ use crate::{
     events::{IoEvents, Observer},
     fs::{
         file_handle::FileLike,
-        file_table::{get_file_fast, FdFlags, FileDesc},
+        file_table::{FdFlags, FileDesc, get_file_fast},
         utils::{CreationFlags, InodeMode, InodeType, Metadata, StatusFlags},
     },
     prelude::*,
     process::{
+        Gid, Uid,
         posix_thread::AsPosixThread,
         signal::{
+            PollHandle, Pollable, Pollee, SigEvents, SigEventsFilter,
             constants::{SIGKILL, SIGSTOP},
             sig_mask::{AtomicSigMask, SigMask},
             signals::Signal,
-            PollHandle, Pollable, Pollee, SigEvents, SigEventsFilter,
         },
-        Gid, Uid,
     },
     time::clocks::RealTimeClock,
 };

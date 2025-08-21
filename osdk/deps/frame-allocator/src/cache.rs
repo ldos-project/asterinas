@@ -6,7 +6,7 @@ use core::{alloc::Layout, cell::RefCell};
 
 use ostd::{
     cpu_local,
-    mm::{Paddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr},
     trap::irq::DisabledLocalIrqGuard,
 };
 

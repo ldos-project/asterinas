@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use log::warn;
-use tdx_guest::{tdcall::accept_page, tdvmcall::map_gpa, TdxTrapFrame};
+use tdx_guest::{TdxTrapFrame, tdcall::accept_page, tdvmcall::map_gpa};
 
 use crate::{
     mm::{
+        PAGE_SIZE,
         kspace::KERNEL_PAGE_TABLE,
         paddr_to_vaddr,
         page_prop::{PageProperty, PrivilegedPageFlags as PrivFlags},
         page_table::boot_pt,
-        PAGE_SIZE,
     },
     prelude::Paddr,
     trap::TrapFrame,
@@ -43,7 +43,7 @@ pub enum PageConvertError {
 pub unsafe fn unprotect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), PageConvertError> {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
     if gpa & PAGE_MASK != 0 {
-        warn!("Misaligned address: {:x}", gpa);
+        warn!("Misaligned address: {gpa:x}");
     }
 
     // Protect the page in the boot page table if in the boot phase.
@@ -97,7 +97,7 @@ pub unsafe fn unprotect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), Pag
 pub unsafe fn protect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), PageConvertError> {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
     if gpa & !PAGE_MASK == 0 {
-        warn!("Misaligned address: {:x}", gpa);
+        warn!("Misaligned address: {gpa:x}");
     }
 
     // Protect the page in the boot page table if in the boot phase.

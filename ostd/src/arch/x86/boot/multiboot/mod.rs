@@ -4,10 +4,10 @@ use core::arch::global_asm;
 
 use crate::{
     boot::{
-        memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
         BootloaderAcpiArg, BootloaderFramebufferArg,
+        memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
     },
-    mm::{kspace::paddr_to_vaddr, Paddr},
+    mm::{Paddr, kspace::paddr_to_vaddr},
 };
 
 global_asm!(include_str!("header.S"));
@@ -363,13 +363,13 @@ impl Iterator for MemoryEntryIter {
 }
 
 /// The entry point of Rust code called by inline asm.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "sysv64" fn __multiboot_entry(boot_magic: u32, boot_params: u64) -> ! {
     assert_eq!(boot_magic, MULTIBOOT_ENTRY_MAGIC);
     let mb1_info =
         unsafe { &*(paddr_to_vaddr(boot_params as usize) as *const MultibootLegacyInfo) };
 
-    use crate::boot::{call_ostd_main, EarlyBootInfo, EARLY_INFO};
+    use crate::boot::{EARLY_INFO, EarlyBootInfo, call_ostd_main};
 
     EARLY_INFO.call_once(|| EarlyBootInfo {
         bootloader_name: parse_bootloader_name(mb1_info).unwrap_or("Unknown Multiboot Loader"),

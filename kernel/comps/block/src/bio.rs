@@ -6,17 +6,17 @@ use align_ext::AlignExt;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 use ostd::{
+    Error,
     mm::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
     sync::{SpinLock, WaitQueue},
-    Error,
 };
 use spin::Once;
 
-use super::{id::Sid, BlockDevice};
-use crate::{prelude::*, BLOCK_SIZE, SECTOR_SIZE};
+use super::{BlockDevice, id::Sid};
+use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
 
 /// The unit for block I/O.
 ///
@@ -718,7 +718,7 @@ impl From<BioDirection> for DmaDirection {
 
 /// Checks if the given offset is aligned to sector.
 pub fn is_sector_aligned(offset: usize) -> bool {
-    offset % SECTOR_SIZE == 0
+    offset.is_multiple_of(SECTOR_SIZE)
 }
 
 /// An aligned unsigned integer number.
@@ -755,7 +755,7 @@ pub struct AlignedUsize<const N: u16>(usize);
 impl<const N: u16> AlignedUsize<N> {
     /// Constructs a new instance of aligned integer if the given value is aligned.
     pub fn new(val: usize) -> Option<Self> {
-        if val % (N as usize) == 0 {
+        if val.is_multiple_of(N as usize) {
             Some(Self(val))
         } else {
             None

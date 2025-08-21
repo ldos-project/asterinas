@@ -3,7 +3,7 @@
 use ostd::cpu::context::{CpuException, CpuExceptionInfo, UserContext};
 
 use crate::process::signal::{
-    constants::*, sig_num::SigNum, signals::fault::FaultSignal, SignalContext,
+    SignalContext, constants::*, sig_num::SigNum, signals::fault::FaultSignal,
 };
 
 impl SignalContext for UserContext {

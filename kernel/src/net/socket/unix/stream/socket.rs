@@ -8,26 +8,26 @@ use takeable::Takeable;
 use super::{
     connected::Connected,
     init::Init,
-    listener::{get_backlog, Backlog, Listener},
+    listener::{Backlog, Listener, get_backlog},
 };
 use crate::{
     events::IoEvents,
     fs::{file_handle::FileLike, utils::EndpointState},
     match_sock_option_mut,
     net::socket::{
+        Socket,
         options::{PeerCred, PeerGroups, SocketOption},
         private::SocketPrivate,
-        unix::{cred::SocketCred, CUserCred, UnixSocketAddr},
+        unix::{CUserCred, UnixSocketAddr, cred::SocketCred},
         util::{
-            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
             MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
+            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
         },
-        Socket,
     },
     prelude::*,
     process::{
-        signal::{PollHandle, Pollable, Pollee},
         Gid,
+        signal::{PollHandle, Pollable, Pollee},
     },
     util::{MultiRead, MultiWrite},
 };

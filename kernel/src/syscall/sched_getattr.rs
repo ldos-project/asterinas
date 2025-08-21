@@ -3,8 +3,8 @@
 use core::mem;
 
 use super::{
-    sched_get_priority_max::{rt_to_static, static_to_rt, SCHED_PRIORITY_RANGE},
     SyscallReturn,
+    sched_get_priority_max::{SCHED_PRIORITY_RANGE, rt_to_static, static_to_rt},
 };
 use crate::{
     prelude::*,
@@ -87,7 +87,7 @@ impl TryFrom<SchedPolicy> for LinuxSchedAttr {
                 return Err(Error::with_message(
                     Errno::EACCES,
                     "attr for idle tasks are not accessible",
-                ))
+                ));
             }
         })
     }
@@ -113,7 +113,7 @@ impl TryFrom<LinuxSchedAttr> for SchedPolicy {
                 return Err(Error::with_message(
                     Errno::EINVAL,
                     "Invalid scheduling priority",
-                ))
+                ));
             }
 
             SCHED_NORMAL => SchedPolicy::Fair(Nice::new(
@@ -131,7 +131,7 @@ impl TryFrom<LinuxSchedAttr> for SchedPolicy {
                 return Err(Error::with_message(
                     Errno::EINVAL,
                     "Invalid scheduling policy",
-                ))
+                ));
             }
         })
     }

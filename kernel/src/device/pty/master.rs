@@ -4,7 +4,7 @@ use alloc::format;
 
 use ostd::task::Task;
 
-use super::{driver::PtyDriver, PtySlave};
+use super::{PtySlave, driver::PtyDriver};
 use crate::{
     current_userspace,
     events::IoEvents,
@@ -17,9 +17,9 @@ use crate::{
     },
     prelude::*,
     process::{
+        Terminal,
         posix_thread::{AsPosixThread, AsThreadLocal},
         signal::{PollHandle, Pollable},
-        Terminal,
     },
 };
 

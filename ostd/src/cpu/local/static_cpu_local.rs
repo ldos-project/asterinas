@@ -4,7 +4,7 @@
 
 use core::marker::PhantomData;
 
-use super::{AnyStorage, CpuLocal, __cpu_local_end, __cpu_local_start};
+use super::{__cpu_local_end, __cpu_local_start, AnyStorage, CpuLocal};
 use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 
 /// Defines a statically-allocated CPU-local variable.
@@ -43,7 +43,7 @@ use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 macro_rules! cpu_local {
     ($( $(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; )*) => {
         $(
-            #[link_section = ".cpu_local"]
+            #[unsafe(link_section = ".cpu_local")]
             $(#[$attr])* $vis static $name: $crate::cpu::local::StaticCpuLocal<$t> = {
                 let val = $init;
                 // SAFETY: The per-CPU variable instantiated is statically

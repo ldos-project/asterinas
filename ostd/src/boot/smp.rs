@@ -9,8 +9,9 @@ use spin::Once;
 use crate::{
     arch::{boot::smp::bringup_all_aps, irq::HwCpuId},
     mm::{
-        frame::{meta::KernelMeta, Segment},
-        paddr_to_vaddr, FrameAllocOptions, PAGE_SIZE,
+        FrameAllocOptions, PAGE_SIZE,
+        frame::{Segment, meta::KernelMeta},
+        paddr_to_vaddr,
     },
     sync::SpinLock,
     task::Task,
@@ -123,7 +124,7 @@ pub fn register_ap_entry(entry: fn()) {
     AP_LATE_ENTRY.call_once(|| entry);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn ap_early_entry(cpu_id: u32) -> ! {
     // SAFETY: `cpu_id` is the correct value of the CPU ID.
     unsafe { crate::cpu::init_on_ap(cpu_id) };
@@ -145,7 +146,7 @@ fn ap_early_entry(cpu_id: u32) -> ! {
     // Mark the AP as started.
     report_online_and_hw_cpu_id(cpu_id);
 
-    log::info!("Processor {} started. Spinning for tasks.", cpu_id);
+    log::info!("Processor {cpu_id} started. Spinning for tasks.");
 
     let ap_late_entry = AP_LATE_ENTRY.wait();
     ap_late_entry();

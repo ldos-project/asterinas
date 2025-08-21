@@ -5,7 +5,7 @@ use crate::{
     fs::{
         exfat::{ExfatFS, ExfatMountOptions},
         ext2::Ext2,
-        fs_resolver::{FsPath, AT_FDCWD},
+        fs_resolver::{AT_FDCWD, FsPath},
         overlayfs::OverlayFS,
         path::Dentry,
         utils::{FileSystem, InodeType},

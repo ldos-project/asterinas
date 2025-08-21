@@ -5,11 +5,11 @@ use alloc::str;
 use ostd::task::Task;
 
 use super::{
-    file_table::{get_file_fast, FileDesc},
+    file_table::{FileDesc, get_file_fast},
     inode_handle::InodeHandle,
     path::Dentry,
     rootfs::root_mount,
-    utils::{AccessMode, CreationFlags, InodeMode, InodeType, StatusFlags, PATH_MAX, SYMLINKS_MAX},
+    utils::{AccessMode, CreationFlags, InodeMode, InodeType, PATH_MAX, SYMLINKS_MAX, StatusFlags},
 };
 use crate::{prelude::*, process::posix_thread::AsThreadLocal};
 

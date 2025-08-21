@@ -2,7 +2,7 @@
 
 use ostd::{
     impl_frame_meta_for,
-    mm::{frame::linked_list::Link, Paddr, UniqueFrame, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr, UniqueFrame, frame::linked_list::Link},
 };
 
 /// The order of a buddy chunk.
@@ -46,8 +46,8 @@ pub(crate) fn split_to_chunks(
     addr: Paddr,
     size: usize,
 ) -> impl Iterator<Item = (Paddr, BuddyOrder)> {
-    assert!(addr % PAGE_SIZE == 0);
-    assert!(size % PAGE_SIZE == 0);
+    assert!(addr.is_multiple_of(PAGE_SIZE));
+    assert!(size.is_multiple_of(PAGE_SIZE));
 
     struct SplitChunks {
         addr: Paddr,
@@ -159,8 +159,8 @@ impl FreeChunk {
         #[cfg(debug_assertions)]
         {
             use ostd::mm::{
-                frame::meta::{AnyFrameMeta, GetFrameError},
                 Frame,
+                frame::meta::{AnyFrameMeta, GetFrameError},
             };
 
             let end = addr + size_of_order(order);

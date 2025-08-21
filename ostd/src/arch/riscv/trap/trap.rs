@@ -69,7 +69,7 @@ pub unsafe fn init() {
 /// You need to define a handler function like this:
 ///
 /// ```no_run
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
 ///     println!("TRAP! tf: {:#x?}", tf);
 /// }

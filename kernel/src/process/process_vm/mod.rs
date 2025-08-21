@@ -19,9 +19,9 @@ use ostd::{sync::MutexGuard, task::disable_preempt};
 pub use self::{
     heap::USER_HEAP_SIZE_LIMIT,
     init_stack::{
+        INIT_STACK_SIZE, InitStack, InitStackReader, MAX_ARG_LEN, MAX_ARGV_NUMBER, MAX_ENV_LEN,
+        MAX_ENVP_NUMBER,
         aux_vec::{AuxKey, AuxVec},
-        InitStack, InitStackReader, INIT_STACK_SIZE, MAX_ARGV_NUMBER, MAX_ARG_LEN, MAX_ENVP_NUMBER,
-        MAX_ENV_LEN,
     },
 };
 use crate::{prelude::*, vm::vmar::Vmar};

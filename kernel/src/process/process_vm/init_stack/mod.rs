@@ -21,7 +21,7 @@ use core::{
 use align_ext::AlignExt;
 use aster_rights::Full;
 use ostd::{
-    mm::{UntypedMem, VmIo, MAX_USERSPACE_VADDR},
+    mm::{MAX_USERSPACE_VADDR, UntypedMem, VmIo},
     task::disable_preempt,
 };
 

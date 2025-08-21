@@ -7,5 +7,5 @@ mod stream;
 
 pub use addr::UnixSocketAddr;
 pub use cred::CUserCred;
-pub use stream::UnixStreamSocket;
 pub(super) use stream::UNIX_STREAM_DEFAULT_BUF_SIZE;
+pub use stream::UnixStreamSocket;

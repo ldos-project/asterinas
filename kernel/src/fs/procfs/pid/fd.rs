@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::{
+    Process,
     fs::{
         file_handle::FileLike,
         file_table::FileDesc,
         inode_handle::InodeHandle,
         procfs::{
-            pid::FdEvents, DirOps, Observer, ProcDir, ProcDirBuilder, ProcSymBuilder, SymOps,
+            DirOps, Observer, ProcDir, ProcDirBuilder, ProcSymBuilder, SymOps, pid::FdEvents,
         },
         utils::{DirEntryVecExt, Inode},
     },
     prelude::*,
     process::posix_thread::AsPosixThread,
-    Process,
 };
 
 /// Represents the inode at `/proc/[pid]/fd`.

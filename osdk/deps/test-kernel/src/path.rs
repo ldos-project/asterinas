@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{
-    collections::{vec_deque, BTreeMap, VecDeque},
+    collections::{BTreeMap, VecDeque, vec_deque},
     string::{String, ToString},
 };
 use core::{fmt::Display, iter::zip, ops::Deref};
@@ -108,7 +108,7 @@ impl Display for KtestPath {
             } else {
                 write!(f, "::")?;
             }
-            write!(f, "{}", e)?;
+            write!(f, "{e}")?;
         }
         Ok(())
     }

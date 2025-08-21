@@ -4,25 +4,25 @@
 #![feature(alloc_error_handler)]
 #![feature(allocator_api)]
 #![feature(btree_cursors)]
-#![feature(const_ptr_sub_ptr)]
 #![feature(const_trait_impl)]
 #![feature(core_intrinsics)]
 #![feature(coroutines)]
 #![feature(fn_traits)]
 #![feature(iter_advance_by)]
 #![feature(iter_from_coroutine)]
-#![feature(let_chains)]
 #![feature(linkage)]
 #![feature(min_specialization)]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
-#![feature(ptr_sub_ptr)]
 #![feature(sync_unsafe_cell)]
-#![feature(trait_upcasting)]
-#![feature(unbounded_shifts)]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
+// TODO: Explicitly showing that a lifetime was propagated is better:
+//   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
+//   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
+// However, there are >300 cases of this issue and I can't figure out a way to script it.
+#![allow(mismatched_lifetime_syntaxes)]
 
 extern crate alloc;
 
@@ -141,9 +141,9 @@ pub(crate) static IN_BOOTSTRAP_CONTEXT: AtomicBool = AtomicBool::new(true);
 /// The component system uses this function to call the initialization functions of
 /// the components.
 fn invoke_ffi_init_funcs() {
-    extern "C" {
-        fn __sinit_array();
-        fn __einit_array();
+    unsafe extern "C" {
+        unsafe fn __sinit_array();
+        unsafe fn __einit_array();
     }
     let call_len = (__einit_array as usize - __sinit_array as usize) / 8;
     for i in 0..call_len {

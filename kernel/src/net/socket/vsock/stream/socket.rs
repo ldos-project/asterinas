@@ -7,10 +7,10 @@ use crate::{
     events::IoEvents,
     fs::file_handle::FileLike,
     net::socket::{
+        Socket,
         private::SocketPrivate,
         util::{MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr},
-        vsock::{addr::VsockSocketAddr, VSOCK_GLOBAL},
-        Socket,
+        vsock::{VSOCK_GLOBAL, addr::VsockSocketAddr},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Poller},

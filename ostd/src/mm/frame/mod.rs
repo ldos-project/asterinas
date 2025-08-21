@@ -51,11 +51,11 @@ use core::{
 };
 
 pub use allocator::GlobalFrameAllocator;
-use meta::{mapping, AnyFrameMeta, GetFrameError, MetaSlot, REF_COUNT_UNUSED};
+use meta::{AnyFrameMeta, GetFrameError, MetaSlot, REF_COUNT_UNUSED, mapping};
 pub use segment::Segment;
 use untyped::{AnyUFrameMeta, UFrame};
 
-use super::{PagingLevel, PAGE_SIZE};
+use super::{PAGE_SIZE, PagingLevel};
 use crate::mm::{Paddr, PagingConsts, Vaddr};
 
 static MAX_PADDR: AtomicUsize = AtomicUsize::new(0);
@@ -323,7 +323,7 @@ impl TryFrom<Frame<dyn AnyFrameMeta>> for UFrame {
 ///  1. The physical address must represent a valid frame;
 ///  2. The caller must have already held a reference to the frame.
 pub(in crate::mm) unsafe fn inc_frame_ref_count(paddr: Paddr) {
-    debug_assert!(paddr % PAGE_SIZE == 0);
+    debug_assert!(paddr.is_multiple_of(PAGE_SIZE));
     debug_assert!(paddr < max_paddr());
 
     let vaddr: Vaddr = mapping::frame_to_meta::<PagingConsts>(paddr);

@@ -3,10 +3,9 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{
-    braced,
+    Attribute, Expr, Ident, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Attribute, Expr, Ident, Token, Type, Visibility,
 };
 
 /// The content inside typeflag macro
@@ -97,7 +96,7 @@ impl TypeFlagDef {
     }
 
     /// return the items iter
-    pub fn items_iter(&self) -> syn::punctuated::Iter<TypeFlagItem> {
+    pub fn items_iter(&self) -> syn::punctuated::Iter<'_, TypeFlagItem> {
         self.items.iter()
     }
 

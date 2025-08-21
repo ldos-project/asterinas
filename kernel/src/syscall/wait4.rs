@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{getrusage::rusage_t, SyscallReturn};
+use super::{SyscallReturn, getrusage::rusage_t};
 use crate::{
     prelude::*,
-    process::{do_wait, ProcessFilter, WaitOptions},
+    process::{ProcessFilter, WaitOptions, do_wait},
 };
 
 pub fn sys_wait4(

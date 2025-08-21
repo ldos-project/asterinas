@@ -5,9 +5,9 @@ use alloc::sync::Arc;
 use aster_systree::singleton as systree_singleton;
 
 use crate::fs::{
+    Result,
     sysfs::inode::SysFsInode,
     utils::{FileSystem, FsFlags, Inode, SuperBlock},
-    Result,
 };
 
 /// A file system for exposing kernel information to the user space.

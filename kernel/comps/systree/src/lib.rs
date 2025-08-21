@@ -31,7 +31,7 @@ mod utils;
 
 use alloc::{borrow::Cow, sync::Arc};
 
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use spin::Once;
 
 pub use self::{

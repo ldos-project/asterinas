@@ -20,12 +20,12 @@ use core::arch::global_asm;
 
 use x86::cpuid::CpuId;
 use x86_64::{
+    VirtAddr,
     registers::{
         control::{Cr4, Cr4Flags},
         model_specific::{Efer, EferFlags, LStar, SFMask},
         rflags::RFlags,
     },
-    VirtAddr,
 };
 
 use super::UserContext;
@@ -43,10 +43,12 @@ global_asm!(
 pub(super) unsafe fn init() {
     let cpuid = CpuId::new();
 
-    assert!(cpuid
-        .get_extended_processor_and_feature_identifiers()
-        .unwrap()
-        .has_syscall_sysret());
+    assert!(
+        cpuid
+            .get_extended_processor_and_feature_identifiers()
+            .unwrap()
+            .has_syscall_sysret()
+    );
     assert!(cpuid.get_extended_feature_info().unwrap().has_fsgsbase());
 
     // Flags to clear on syscall.
@@ -78,9 +80,9 @@ pub(super) unsafe fn init() {
     };
 }
 
-extern "sysv64" {
-    fn syscall_entry();
-    fn syscall_return(regs: &mut UserContext);
+unsafe extern "sysv64" {
+    unsafe fn syscall_entry();
+    unsafe fn syscall_return(regs: &mut UserContext);
 }
 
 impl UserContext {

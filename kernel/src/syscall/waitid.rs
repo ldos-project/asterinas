@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{do_wait, ProcessFilter, WaitOptions},
+    process::{ProcessFilter, WaitOptions, do_wait},
 };
 
 pub fn sys_waitid(

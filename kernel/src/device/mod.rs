@@ -13,12 +13,12 @@ mod tdxguest;
 
 use alloc::format;
 
-pub use pty::{new_pty_pair, PtyMaster, PtySlave};
+pub use pty::{PtyMaster, PtySlave, new_pty_pair};
 pub use random::Random;
 pub use urandom::Urandom;
 
 use crate::{
-    fs::device::{add_node, Device, DeviceId, DeviceType},
+    fs::device::{Device, DeviceId, DeviceType, add_node},
     prelude::*,
 };
 

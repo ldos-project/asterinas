@@ -8,7 +8,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    arch::pci::{construct_remappable_msix_address, MSIX_DEFAULT_MSG_ADDR},
+    arch::pci::{MSIX_DEFAULT_MSG_ADDR, construct_remappable_msix_address},
     bus::pci::{
         cfg_space::{Bar, Command, MemoryBar},
         common_device::PciCommonDevice,
@@ -168,7 +168,7 @@ impl CapabilityMsixData {
                 .unwrap();
         }
 
-        let _old_irq = core::mem::replace(&mut self.irqs[index as usize], Some(irq));
+        let _old_irq = self.irqs[index as usize].replace(irq);
         // Enable this msix vector
         self.table_bar
             .io_mem()

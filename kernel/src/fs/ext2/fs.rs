@@ -7,7 +7,7 @@ use super::{
     block_ptr::Ext2Bid,
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     prelude::*,
-    super_block::{RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
+    super_block::{RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
 };
 
 /// The root inode number.
@@ -125,7 +125,7 @@ impl Ext2 {
     }
 
     /// Returns the super block.
-    pub fn super_block(&self) -> RwMutexReadGuard<Dirty<SuperBlock>> {
+    pub fn super_block(&self) -> RwMutexReadGuard<'_, Dirty<SuperBlock>> {
         self.super_block.read()
     }
 

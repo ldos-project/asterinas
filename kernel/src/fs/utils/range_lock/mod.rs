@@ -7,7 +7,7 @@ use ostd::sync::{RwMutexWriteGuard, WaitQueue, Waiter, Waker};
 use self::range::FileRangeChange;
 pub use self::{
     builder::RangeLockItemBuilder,
-    range::{FileRange, OverlapWith, OFFSET_MAX},
+    range::{FileRange, OFFSET_MAX, OverlapWith},
 };
 use crate::{prelude::*, process::Pid};
 

@@ -6,7 +6,7 @@ use core::ops::Deref;
 
 use align_ext::AlignExt;
 
-use crate::mm::{kspace::kernel_loaded_offset, Paddr, Vaddr, PAGE_SIZE};
+use crate::mm::{PAGE_SIZE, Paddr, Vaddr, kspace::kernel_loaded_offset};
 
 /// The type of initial memory regions that are needed for the kernel.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -62,9 +62,9 @@ impl MemoryRegion {
     /// we need to explicitly construct and append this memory region.
     pub fn kernel() -> Self {
         // These are physical addresses provided by the linker script.
-        extern "C" {
-            fn __kernel_start();
-            fn __kernel_end();
+        unsafe extern "C" {
+            unsafe fn __kernel_start();
+            unsafe fn __kernel_end();
         }
         MemoryRegion {
             base: __kernel_start as usize - kernel_loaded_offset(),

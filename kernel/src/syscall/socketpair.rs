@@ -5,7 +5,7 @@ use crate::{
     fs::file_table::{FdFlags, FileDesc},
     net::socket::unix::UnixStreamSocket,
     prelude::*,
-    util::net::{CSocketAddrFamily, Protocol, SockFlags, SockType, SOCK_TYPE_MASK},
+    util::net::{CSocketAddrFamily, Protocol, SOCK_TYPE_MASK, SockFlags, SockType},
 };
 
 pub fn sys_socketpair(

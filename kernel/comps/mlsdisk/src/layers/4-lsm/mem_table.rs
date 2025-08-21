@@ -3,7 +3,7 @@
 //! MemTable.
 use core::ops::Range;
 
-use super::{tx_lsm_tree::OnDropRecodeFn, AsKV, RangeQueryCtx, RecordKey, RecordValue, SyncId};
+use super::{AsKV, RangeQueryCtx, RecordKey, RecordValue, SyncId, tx_lsm_tree::OnDropRecodeFn};
 use crate::{
     os::{BTreeMap, Condvar, CvarMutex, Mutex, RwLock, RwLockReadGuard},
     prelude::*,
@@ -136,7 +136,7 @@ impl<K: RecordKey<K>, V: RecordValue> MemTableManager<K, V> {
     }
 
     /// Gets the immutable `MemTable` instance (read-only).
-    pub fn immutable_memtable(&self) -> RwLockReadGuard<MemTable<K, V>> {
+    pub fn immutable_memtable(&self) -> RwLockReadGuard<'_, MemTable<K, V>> {
         self.immutable.read()
     }
 }

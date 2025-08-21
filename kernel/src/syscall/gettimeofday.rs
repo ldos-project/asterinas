@@ -3,7 +3,7 @@
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    time::{timeval_t, SystemTime},
+    time::{SystemTime, timeval_t},
 };
 
 // The use of the timezone structure is obsolete.

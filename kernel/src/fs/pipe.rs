@@ -10,8 +10,8 @@ use crate::{
     events::IoEvents,
     prelude::*,
     process::{
-        signal::{PollHandle, Pollable},
         Gid, Uid,
+        signal::{PollHandle, Pollable},
     },
     time::clocks::RealTimeCoarseClock,
     util::ring_buffer::{RbConsumer, RbProducer, RingBuffer},
@@ -289,7 +289,7 @@ mod test {
     use ostd::prelude::*;
 
     use super::*;
-    use crate::thread::{kernel_thread::ThreadOptions, Thread};
+    use crate::thread::{Thread, kernel_thread::ThreadOptions};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Ordering {
@@ -415,11 +415,11 @@ mod test {
         );
     }
 
-    fn reader_from(buf: &[u8]) -> VmReader {
+    fn reader_from(buf: &[u8]) -> VmReader<'_> {
         VmReader::from(buf).to_fallible()
     }
 
-    fn writer_from(buf: &mut [u8]) -> VmWriter {
+    fn writer_from(buf: &mut [u8]) -> VmWriter<'_> {
         VmWriter::from(buf).to_fallible()
     }
 }

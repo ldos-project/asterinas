@@ -10,9 +10,9 @@ mod console;
 mod framebuffer;
 mod pixel;
 
-use component::{init_component, ComponentInitError};
-pub use console::{FramebufferConsole, CONSOLE_NAME, FRAMEBUFFER_CONSOLE};
-pub use framebuffer::{FrameBuffer, FRAMEBUFFER};
+use component::{ComponentInitError, init_component};
+pub use console::{CONSOLE_NAME, FRAMEBUFFER_CONSOLE, FramebufferConsole};
+pub use framebuffer::{FRAMEBUFFER, FrameBuffer};
 pub use pixel::{Pixel, PixelFormat, RenderedPixel};
 
 #[init_component]

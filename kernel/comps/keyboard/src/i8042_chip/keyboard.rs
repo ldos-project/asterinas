@@ -5,12 +5,12 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ostd::{
-    arch::kernel::{MappedIrqLine, IRQ_CHIP},
-    trap::{irq::IrqLine, TrapFrame},
+    arch::kernel::{IRQ_CHIP, MappedIrqLine},
+    trap::{TrapFrame, irq::IrqLine},
 };
 use spin::Once;
 
-use super::controller::{I8042Controller, I8042ControllerError, I8042_CONTROLLER};
+use super::controller::{I8042_CONTROLLER, I8042Controller, I8042ControllerError};
 use crate::{InputKey, KEYBOARD_CALLBACKS};
 
 /// IRQ line for i8042 keyboard.

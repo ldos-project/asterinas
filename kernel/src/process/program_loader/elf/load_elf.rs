@@ -16,16 +16,16 @@ use xmas_elf::program::{self, ProgramHeader64};
 use super::elf_file::Elf;
 use crate::{
     fs::{
-        fs_resolver::{FsPath, FsResolver, AT_FDCWD},
+        fs_resolver::{AT_FDCWD, FsPath, FsResolver},
         path::Dentry,
     },
     prelude::*,
     process::{
+        TermStatus,
         posix_thread::do_exit_group,
         process_vm::{AuxKey, AuxVec, ProcessVm},
-        TermStatus,
     },
-    vdso::{vdso_vmo, VDSO_VMO_SIZE},
+    vdso::{VDSO_VMO_SIZE, vdso_vmo},
     vm::{
         perms::VmPerms,
         util::duplicate_frame,

@@ -9,20 +9,20 @@ use alloc::{
 use core::{fmt::Debug, iter, mem};
 
 use aster_input::{
-    key::{Key, KeyStatus},
     InputEvent,
+    key::{Key, KeyStatus},
 };
 use aster_util::{field_ptr, safe_ptr::SafePtr};
 use bitflags::bitflags;
 use log::{debug, info};
 use ostd::{
     io::IoMem,
-    mm::{DmaDirection, DmaStream, FrameAllocOptions, HasDaddr, VmIo, PAGE_SIZE},
+    mm::{DmaDirection, DmaStream, FrameAllocOptions, HasDaddr, PAGE_SIZE, VmIo},
     sync::{LocalIrqDisabled, RwLock, SpinLock},
     trap::TrapFrame,
 };
 
-use super::{InputConfigSelect, VirtioInputConfig, VirtioInputEvent, QUEUE_EVENT, QUEUE_STATUS};
+use super::{InputConfigSelect, QUEUE_EVENT, QUEUE_STATUS, VirtioInputConfig, VirtioInputEvent};
 use crate::{
     device::VirtioDeviceError, dma_buf::DmaBuf, queue::VirtQueue, transport::VirtioTransport,
 };

@@ -30,7 +30,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{signal::PollHandle, Gid, Uid},
+    process::{Gid, Uid, signal::PollHandle},
     time::clocks::RealTimeCoarseClock,
     vm::vmo::Vmo,
 };

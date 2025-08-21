@@ -3,8 +3,8 @@
 use alloc::{format, string::String};
 
 use ostd::{
-    cpu::context::{CpuExceptionInfo, RawGeneralRegs, UserContext},
     Pod,
+    cpu::context::{CpuExceptionInfo, RawGeneralRegs, UserContext},
 };
 
 use crate::{cpu::LinuxAbi, thread::exception::PageFaultInfo, vm::perms::VmPerms};

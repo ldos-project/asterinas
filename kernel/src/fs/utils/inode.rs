@@ -16,7 +16,7 @@ use crate::{
     events::IoEvents,
     fs::device::{Device, DeviceType},
     prelude::*,
-    process::{posix_thread::AsPosixThread, signal::PollHandle, Gid, Uid},
+    process::{Gid, Uid, posix_thread::AsPosixThread, signal::PollHandle},
     time::clocks::RealTimeCoarseClock,
     vm::vmo::Vmo,
 };
@@ -569,7 +569,7 @@ impl dyn Inode {
         (self as &dyn Any).downcast_ref::<T>()
     }
 
-    pub fn writer(&self, from_offset: usize) -> InodeWriter {
+    pub fn writer(&self, from_offset: usize) -> InodeWriter<'_> {
         InodeWriter {
             inner: self,
             offset: from_offset,

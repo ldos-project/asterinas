@@ -6,13 +6,13 @@ use bit_field::BitField;
 use cfg_if::cfg_if;
 use log::info;
 use volatile::{
-    access::{ReadWrite, WriteOnly},
     VolatileRef,
+    access::{ReadWrite, WriteOnly},
 };
 
 use crate::{
-    arch::if_tdx_enabled, io::IoMemAllocatorBuilder, mm::paddr_to_vaddr, trap::irq::IrqLine, Error,
-    Result,
+    Error, Result, arch::if_tdx_enabled, io::IoMemAllocatorBuilder, mm::paddr_to_vaddr,
+    trap::irq::IrqLine,
 };
 
 cfg_if! {
@@ -149,8 +149,7 @@ impl IoApicAccess {
             assert_eq!(
                 base_address % crate::mm::PAGE_SIZE,
                 0,
-                "[IOAPIC]: I/O memory is not page aligned, which cannot be unprotected in TDX: {:#x}",
-                base_address,
+                "[IOAPIC]: I/O memory is not page aligned, which cannot be unprotected in TDX: {base_address:#x}",
             );
             // SAFETY:
             //  - The address range is page aligned, as we've checked above.

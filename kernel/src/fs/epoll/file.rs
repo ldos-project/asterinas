@@ -7,14 +7,14 @@ use keyable_arc::KeyableWeak;
 use ostd::sync::Mutex;
 
 use super::{
-    entry::{Entry, EntryKey, ReadySet},
     EpollCtl, EpollEvent, EpollFlags,
+    entry::{Entry, EntryKey, ReadySet},
 };
 use crate::{
     events::IoEvents,
     fs::{
         file_handle::FileLike,
-        file_table::{get_file_fast, FileDesc},
+        file_table::{FileDesc, get_file_fast},
         utils::{InodeMode, IoctlCmd, Metadata},
     },
     prelude::*,

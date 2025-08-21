@@ -5,16 +5,16 @@ use core::ops::Deref;
 
 use cfg_if::cfg_if;
 
-use super::{check_and_insert_dma_mapping, remove_dma_mapping, DmaError, HasDaddr};
+use super::{DmaError, HasDaddr, check_and_insert_dma_mapping, remove_dma_mapping};
 use crate::{
     arch::iommu,
     mm::{
-        dma::{dma_type, Daddr, DmaType},
+        HasPaddr, Infallible, PAGE_SIZE, Paddr, PodOnce, USegment, UntypedMem, VmIo, VmReader,
+        VmWriter,
+        dma::{Daddr, DmaType, dma_type},
         io::VmIoOnce,
-        kspace::{paddr_to_vaddr, KERNEL_PAGE_TABLE},
+        kspace::{KERNEL_PAGE_TABLE, paddr_to_vaddr},
         page_prop::CachePolicy,
-        HasPaddr, Infallible, Paddr, PodOnce, USegment, UntypedMem, VmIo, VmReader, VmWriter,
-        PAGE_SIZE,
     },
     prelude::*,
 };

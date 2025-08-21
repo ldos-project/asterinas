@@ -3,17 +3,17 @@
 use ostd::task::{CurrentTask, Task};
 
 use super::{
-    futex::futex_wake, robust_list::wake_robust_futex, thread_table, AsPosixThread, AsThreadLocal,
-    ThreadLocal,
+    AsPosixThread, AsThreadLocal, ThreadLocal, futex::futex_wake, robust_list::wake_robust_futex,
+    thread_table,
 };
 use crate::{
     current_userspace,
     prelude::*,
     process::{
+        TermStatus,
         exit::exit_process,
         signal::{constants::SIGKILL, signals::kernel::KernelSignal},
         task_set::TaskSet,
-        TermStatus,
     },
     thread::{AsThread, Tid},
 };

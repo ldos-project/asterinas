@@ -10,7 +10,7 @@ use aster_bigtcp::{
 use aster_softirq::BottomHalfDisabled;
 use spin::Once;
 
-use super::{poll::poll_ifaces, Iface};
+use super::{Iface, poll::poll_ifaces};
 use crate::{net::iface::sched::PollScheduler, prelude::*};
 
 static IFACES: Once<Vec<Arc<Iface>>> = Once::new();

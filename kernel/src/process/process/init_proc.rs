@@ -7,17 +7,17 @@ use ostd::{cpu::context::UserContext, task::Task, user::UserContextApi};
 use super::{Process, Terminal};
 use crate::{
     fs::{
-        fs_resolver::{FsPath, AT_FDCWD},
+        fs_resolver::{AT_FDCWD, FsPath},
         thread_info::ThreadFsInfo,
     },
     prelude::*,
     process::{
-        posix_thread::{allocate_posix_tid, PosixThreadBuilder, ThreadName},
+        Credentials, ProgramToLoad,
+        posix_thread::{PosixThreadBuilder, ThreadName, allocate_posix_tid},
         process_table,
         process_vm::ProcessVm,
         rlimit::ResourceLimits,
         signal::sig_disposition::SigDispositions,
-        Credentials, ProgramToLoad,
     },
     sched::Nice,
     thread::Tid,

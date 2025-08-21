@@ -15,9 +15,9 @@ use ostd::{
 };
 
 use super::{
-    impl_cast_methods_for_branch, impl_cast_methods_for_symlink, Error, Result, SysAttrFlags,
-    SysAttrSet, SysAttrSetBuilder, SysBranchNode, SysBranchNodeFields, SysNode, SysNodeId,
-    SysNodeType, SysObj, SysStr, SysSymlink, SysTree,
+    Error, Result, SysAttrFlags, SysAttrSet, SysAttrSetBuilder, SysBranchNode, SysBranchNodeFields,
+    SysNode, SysNodeId, SysNodeType, SysObj, SysStr, SysSymlink, SysTree,
+    impl_cast_methods_for_branch, impl_cast_methods_for_symlink,
 };
 
 #[derive(Debug)]

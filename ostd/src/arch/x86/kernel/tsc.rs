@@ -9,10 +9,10 @@ use x86::cpuid::cpuid;
 
 use crate::{
     arch::timer::{
-        pit::{self, OperatingMode},
         TIMER_FREQ,
+        pit::{self, OperatingMode},
     },
-    trap::{irq::IrqLine, TrapFrame},
+    trap::{TrapFrame, irq::IrqLine},
 };
 
 /// The frequency of TSC(Hz)
@@ -22,7 +22,7 @@ pub fn init_tsc_freq() {
     let tsc_freq =
         determine_tsc_freq_via_cpuid().map_or_else(determine_tsc_freq_via_pit, |freq| freq);
     TSC_FREQ.store(tsc_freq, Ordering::Relaxed);
-    info!("TSC frequency:{:?} Hz", tsc_freq);
+    info!("TSC frequency:{tsc_freq:?} Hz");
 }
 
 /// Determines TSC frequency via CPUID. If the CPU does not support calculating TSC frequency by

@@ -6,11 +6,11 @@ use core::time::Duration;
 use log::trace;
 use ostd::timer::Jiffies;
 
-use super::{iter_all_ifaces, Iface};
+use super::{Iface, iter_all_ifaces};
 use crate::{
+    WaitTimeout,
     sched::{Nice, SchedPolicy},
     thread::kernel_thread::ThreadOptions,
-    WaitTimeout,
 };
 
 pub fn lazy_init() {

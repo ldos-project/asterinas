@@ -11,9 +11,9 @@ use ostd::{
     trap::TrapFrame,
 };
 
-use super::{config::VirtioConsoleConfig, DEVICE_NAME};
+use super::{DEVICE_NAME, config::VirtioConsoleConfig};
 use crate::{
-    device::{console::config::ConsoleFeatures, VirtioDeviceError},
+    device::{VirtioDeviceError, console::config::ConsoleFeatures},
     queue::VirtQueue,
     transport::{ConfigManager, VirtioTransport},
 };

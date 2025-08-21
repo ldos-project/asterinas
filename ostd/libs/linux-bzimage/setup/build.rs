@@ -11,7 +11,7 @@ fn main() {
     let def = match target_arch.as_str() {
         "x86_64-unknown-none" => "-DCFG_TARGET_ARCH_X86_64=1",
         "x86_64-i386_pm-none" => "-DCFG_TARGET_ARCH_X86_64=0",
-        other => panic!("unsupported target: {}", other),
+        other => panic!("unsupported target: {other}"),
     };
 
     let out_lds = out_dir.join("linker.ld");

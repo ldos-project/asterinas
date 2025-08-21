@@ -4,16 +4,16 @@ use alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 
 use ostd::{
-    sync::{non_null::NonNullPtr, SpinGuardian, SpinLockGuard},
+    sync::{SpinGuardian, SpinLockGuard, non_null::NonNullPtr},
     task::atomic_mode::{AsAtomicModeGuard, InAtomicMode},
     util::Either,
 };
 
 use crate::{
+    SLOT_SIZE, XArray, XLockGuard,
     entry::NodeEntryRef,
     mark::{NoneMark, XMark},
     node::{Height, XNode},
-    XArray, XLockGuard, SLOT_SIZE,
 };
 
 /// A type representing the state of a [`Cursor`] or a [`CursorMut`].
@@ -271,7 +271,7 @@ impl<'a, P: NonNullPtr + Send + Sync, M> CursorMut<'a, P, M> {
     }
 
     /// Returns an `XLockGuard` that marks the `XArray` is locked.
-    fn lock_guard(&self) -> XLockGuard {
+    fn lock_guard(&self) -> XLockGuard<'_> {
         // Having a `CursorMut` means that the `XArray` is locked.
         XLockGuard(self.guard)
     }

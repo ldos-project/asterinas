@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use super::{select::do_sys_select, SyscallReturn};
+use super::{SyscallReturn, select::do_sys_select};
 use crate::{
     fs::file_table::FileDesc,
     prelude::*,

@@ -4,8 +4,9 @@ use ostd::{
     cpu_local_cell,
     sync::{GuardTransfer, SpinGuardian},
     task::{
+        DisabledPreemptGuard,
         atomic_mode::{AsAtomicModeGuard, InAtomicMode},
-        disable_preempt, DisabledPreemptGuard,
+        disable_preempt,
     },
     trap::{in_interrupt_context, irq::disable_local},
 };

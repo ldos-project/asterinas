@@ -47,13 +47,13 @@ use align_ext::AlignExt;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
+    Error, Pod,
     arch::mm::{__memcpy_fallible, __memset_fallible},
     mm::{
-        kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
         MAX_USERSPACE_VADDR,
+        kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
     },
     prelude::*,
-    Error, Pod,
 };
 
 /// A trait that enables reading/writing data from/to a VM object,
@@ -787,7 +787,7 @@ impl<'a> VmWriter<'a, Infallible> {
         assert!(cursor.is_aligned());
 
         let avail = self.avail();
-        assert!(avail % core::mem::size_of::<T>() == 0);
+        assert!(avail.is_multiple_of(core::mem::size_of::<T>()));
         let written_num = avail / core::mem::size_of::<T>();
 
         for i in 0..written_num {

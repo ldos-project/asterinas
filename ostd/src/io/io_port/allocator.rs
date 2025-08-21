@@ -45,7 +45,7 @@ impl IoPortAllocator {
     ///
     /// The caller must have ownership of the PIO region through the `IoPortAllocator::acquire` interface.
     pub(in crate::io) unsafe fn recycle(&self, range: Range<u16>) {
-        debug!("Recycling MMIO range: {:#x?}", range);
+        debug!("Recycling MMIO range: {range:#x?}");
 
         self.allocator
             .lock()
@@ -70,13 +70,13 @@ pub(crate) unsafe fn init() {
     // SAFETY: `MAX_IO_PORT` is guaranteed not to exceed the maximum value specified by architecture.
     let mut allocator = IdAlloc::with_capacity(crate::arch::io::MAX_IO_PORT as usize);
 
-    extern "C" {
-        fn __sensitive_io_ports_start();
-        fn __sensitive_io_ports_end();
+    unsafe extern "C" {
+        unsafe fn __sensitive_io_ports_start();
+        unsafe fn __sensitive_io_ports_end();
     }
     let start = __sensitive_io_ports_start as usize;
     let end = __sensitive_io_ports_end as usize;
-    assert!((end - start) % size_of::<RawIoPortRange>() == 0);
+    assert!((end - start).is_multiple_of(size_of::<RawIoPortRange>()));
 
     // Iterate through the sensitive I/O port ranges and remove them from the allocator.
     let io_port_range_count = (end - start) / size_of::<RawIoPortRange>();
@@ -86,7 +86,7 @@ pub(crate) unsafe fn init() {
         let port_range = unsafe { *(range_base_addr as *const RawIoPortRange) };
 
         assert!(port_range.begin < port_range.end);
-        debug!("Removing sensitive I/O port range: {:#x?}", port_range);
+        debug!("Removing sensitive I/O port range: {port_range:#x?}");
 
         for i in port_range.begin..port_range.end {
             allocator.alloc_specific(i as usize);

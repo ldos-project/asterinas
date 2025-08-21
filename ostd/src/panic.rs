@@ -7,7 +7,7 @@ use core::ffi::c_void;
 pub use unwinding::panic::{begin_panic, catch_unwind};
 
 use crate::{
-    arch::qemu::{exit_qemu, QemuExitCode},
+    arch::qemu::{QemuExitCode, exit_qemu},
     early_print, early_println,
     sync::SpinLock,
 };
@@ -17,8 +17,8 @@ extern crate gimli;
 
 use gimli::Register;
 use unwinding::abi::{
-    UnwindContext, UnwindReasonCode, _Unwind_Backtrace, _Unwind_FindEnclosingFunction,
-    _Unwind_GetGR, _Unwind_GetIP,
+    _Unwind_Backtrace, _Unwind_FindEnclosingFunction, _Unwind_GetGR, _Unwind_GetIP, UnwindContext,
+    UnwindReasonCode,
 };
 
 /// The default panic handler for OSTD based kernels.
@@ -26,7 +26,7 @@ use unwinding::abi::{
 /// The user can override it by defining their own panic handler with the macro
 /// `#[ostd::panic_handler]`.
 #[linkage = "weak"]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn __ostd_panic_handler(info: &core::panic::PanicInfo) -> ! {
     let _irq_guard = crate::trap::irq::disable_local();
 
@@ -94,7 +94,7 @@ pub fn print_stack_trace() {
                     let reg_name = "unknown";
                 }
             }
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 early_print!("\n    ");
             }
             early_print!(" {} {:#18x};", reg_name, reg_i);

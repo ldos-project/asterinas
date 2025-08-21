@@ -21,12 +21,12 @@ use crate::{
         signal::{constants::SIGALRM, signals::kernel::KernelSignal},
     },
     thread::{
-        work_queue::{submit_work_item, work_item::WorkItem},
         Thread,
+        work_queue::{submit_work_item, work_item::WorkItem},
     },
     time::{
-        clocks::{ProfClock, RealTimeClock},
         Timer, TimerManager,
+        clocks::{ProfClock, RealTimeClock},
     },
 };
 
@@ -100,7 +100,7 @@ pub struct PosixTimerManager {
     posix_timers: Mutex<Vec<Option<Arc<Timer>>>>,
 }
 
-fn create_process_timer_callback(process_ref: &Weak<Process>) -> impl Fn() + Clone {
+fn create_process_timer_callback(process_ref: &Weak<Process>) -> impl Fn() + Clone + 'static {
     let current_process = process_ref.clone();
     let sent_signal = move || {
         let signal = KernelSignal::new(SIGALRM);

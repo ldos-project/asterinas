@@ -28,7 +28,7 @@ pub fn is_kernel_interrupted() -> bool {
 }
 
 /// Handle traps (only from kernel).
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn trap_handler(f: &mut TrapFrame) {
     use riscv::register::scause::Trap;
 

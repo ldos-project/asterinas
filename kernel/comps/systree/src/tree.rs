@@ -11,11 +11,11 @@ use inherit_methods_macro::inherit_methods;
 use ostd::mm::{VmReader, VmWriter};
 
 use super::{
+    Error, Result, SysStr,
     attr::SysAttrSet,
     node::{SysBranchNode, SysNode, SysNodeId, SysNodeType, SysObj},
-    Error, Result, SysStr,
 };
-use crate::{impl_cast_methods_for_branch, SysBranchNodeFields};
+use crate::{SysBranchNodeFields, impl_cast_methods_for_branch};
 
 #[derive(Debug)]
 pub struct SysTree {

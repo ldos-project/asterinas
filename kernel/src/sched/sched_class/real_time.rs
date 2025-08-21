@@ -4,19 +4,19 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::{
     array,
     num::NonZero,
-    sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed},
 };
 
-use bitvec::{bitarr, BitArr};
+use bitvec::{BitArr, bitarr};
 use ostd::{
     cpu::CpuId,
     task::{
-        scheduler::{EnqueueFlags, UpdateFlags},
         Task,
+        scheduler::{EnqueueFlags, UpdateFlags},
     },
 };
 
-use super::{time::base_slice_clocks, CurrentRuntime, SchedAttr, SchedClassRq};
+use super::{CurrentRuntime, SchedAttr, SchedClassRq, time::base_slice_clocks};
 use crate::{sched::nice::RangedU8, thread::AsThread};
 
 pub type RealTimePriority = RangedU8<1, 99>;

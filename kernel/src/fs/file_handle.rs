@@ -9,7 +9,7 @@ use crate::{
     fs::utils::{AccessMode, FallocMode, InodeMode, IoctlCmd, Metadata, SeekFrom, StatusFlags},
     net::socket::Socket,
     prelude::*,
-    process::{signal::Pollable, Gid, Uid},
+    process::{Gid, Uid, signal::Pollable},
 };
 
 /// The basic operations defined on a file

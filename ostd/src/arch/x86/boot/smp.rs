@@ -44,7 +44,7 @@ use crate::{
         memory_region::{MemoryRegion, MemoryRegionType},
         smp::PerApRawInfo,
     },
-    mm::{Paddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr},
     task::disable_preempt,
 };
 
@@ -77,10 +77,7 @@ pub(crate) fn count_processors() -> Option<u32> {
             matches!(e, MadtEntry::LocalX2Apic(e)
                 if e.x2apic_id == id && is_usable(e.flags))
         }) {
-            log::warn!(
-                "Firmware bug: In MADT, APIC ID {} is also listed as an x2APIC ID",
-                id,
-            );
+            log::warn!("Firmware bug: In MADT, APIC ID {id} is also listed as an x2APIC ID",);
             true
         } else {
             false
@@ -92,11 +89,11 @@ pub(crate) fn count_processors() -> Option<u32> {
         .entries()
         .filter(|e| match e {
             MadtEntry::LocalX2Apic(entry) => {
-                log::trace!("Found a local x2APIC entry in MADT: {:?}", entry);
+                log::trace!("Found a local x2APIC entry in MADT: {entry:?}");
                 is_usable(entry.flags)
             }
             MadtEntry::LocalApic(entry) => {
-                log::trace!("Found a local APIC entry in MADT: {:?}", entry);
+                log::trace!("Found a local APIC entry in MADT: {entry:?}");
                 is_usable(entry.flags) && !is_dup_apic(entry.apic_id as u32)
             }
             _ => false,
@@ -174,8 +171,8 @@ unsafe fn copy_ap_boot_code() {
 ///
 /// The caller must ensure the pointer to be filled is valid to write.
 unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
-    extern "C" {
-        static mut __ap_boot_info_array_pointer: *const PerApRawInfo;
+    unsafe extern "C" {
+        unsafe static mut __ap_boot_info_array_pointer: *const PerApRawInfo;
     }
 
     // SAFETY: The safety is upheld by the caller.
@@ -188,8 +185,8 @@ unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
 ///
 /// The caller must ensure the pointer to be filled is valid to write.
 unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
-    extern "C" {
-        static mut __boot_page_table_pointer: u32;
+    unsafe extern "C" {
+        unsafe static mut __boot_page_table_pointer: u32;
     }
 
     let pt_ptr32 = pt_ptr.try_into().unwrap();
@@ -201,9 +198,9 @@ unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
 }
 
 // The symbols are defined in the linker script.
-extern "C" {
-    fn __ap_boot_start();
-    fn __ap_boot_end();
+unsafe extern "C" {
+    unsafe fn __ap_boot_start();
+    unsafe fn __ap_boot_end();
 }
 
 /// Wakes up all application processors via the ACPI multiprocessor mailbox structure.
@@ -218,9 +215,9 @@ unsafe fn wake_up_aps_via_mailbox(num_cpus: u32) {
     use crate::arch::kernel::acpi::AcpiMemoryHandler;
 
     // The symbols are defined in `ap_boot.S`.
-    extern "C" {
-        fn ap_boot_from_real_mode();
-        fn ap_boot_from_long_mode();
+    unsafe extern "C" {
+        unsafe fn ap_boot_from_real_mode();
+        unsafe fn ap_boot_from_long_mode();
     }
 
     let offset = ap_boot_from_long_mode as usize - ap_boot_from_real_mode as usize;
