@@ -24,6 +24,12 @@
 #![feature(associated_type_defaults)]
 #![register_tool(component_access_control)]
 
+// TODO: Explicitly showing that a lifetime was propagated is better:
+//   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
+//   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
+// However, there are >300 cases of this issue and I can't figure out a way to script it.
+#![allow(mismatched_lifetime_syntaxes)]
+
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{

@@ -332,7 +332,7 @@ impl ExfatFS {
         self.super_block.cluster_size as usize * self.super_block.num_clusters as usize
     }
 
-    pub(super) fn lock(&self) -> MutexGuard<()> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, ()> {
         self.mutex.lock()
     }
 

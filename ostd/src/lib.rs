@@ -19,6 +19,12 @@
 #![no_std]
 #![warn(missing_docs)]
 
+// TODO: Explicitly showing that a lifetime was propagated is better:
+//   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
+//   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
+// However, there are >300 cases of this issue and I can't figure out a way to script it.
+#![allow(mismatched_lifetime_syntaxes)]
+
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]

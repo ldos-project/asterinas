@@ -137,7 +137,7 @@ impl StreamSocket {
     /// Ensures that the socket state is up to date and obtains a read lock on it.
     ///
     /// For a description of what "up-to-date" means, see [`Self::write_updated_state`].
-    fn read_updated_state(&self) -> RwLockReadGuard<Takeable<State>, PreemptDisabled> {
+    fn read_updated_state(&self) -> RwLockReadGuard<'_, Takeable<State>, PreemptDisabled> {
         loop {
             let state = self.state.read();
             match state.as_ref() {
