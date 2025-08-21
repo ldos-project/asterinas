@@ -787,7 +787,7 @@ impl<'a> VmWriter<'a, Infallible> {
         assert!(cursor.is_aligned());
 
         let avail = self.avail();
-        assert!(avail % core::mem::size_of::<T>() == 0);
+        assert!(avail.is_multiple_of(core::mem::size_of::<T>()));
         let written_num = avail / core::mem::size_of::<T>();
 
         for i in 0..written_num {

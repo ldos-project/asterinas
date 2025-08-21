@@ -89,7 +89,7 @@ impl CpuSet {
     pub fn is_full(&self) -> bool {
         let num_cpus = num_cpus();
         self.bits.iter().enumerate().all(|(idx, part)| {
-            if idx == self.bits.len() - 1 && num_cpus % BITS_PER_PART != 0 {
+            if idx == self.bits.len() - 1 && !num_cpus.is_multiple_of(BITS_PER_PART) {
                 *part == (1 << (num_cpus % BITS_PER_PART)) - 1
             } else {
                 *part == !0
@@ -134,7 +134,7 @@ impl CpuSet {
 
     fn clear_nonexistent_cpu_bits(&mut self) {
         let num_cpus = num_cpus();
-        if num_cpus % BITS_PER_PART != 0 {
+        if !num_cpus.is_multiple_of(BITS_PER_PART) {
             let num_parts = parts_for_cpus(num_cpus);
             self.bits[num_parts - 1] &= (1 << (num_cpus % BITS_PER_PART)) - 1;
         }
@@ -277,14 +277,14 @@ mod test {
 
             for cpu_id in test_all_iter() {
                 assert!(!atomic_set.contains(cpu_id, Ordering::Relaxed));
-                if cpu_id.as_usize() % 3 == 0 {
+                if cpu_id.as_usize().is_multiple_of(3) {
                     atomic_set.add(cpu_id, Ordering::Relaxed);
                 }
             }
 
             let loaded = atomic_set.load(Ordering::Relaxed);
             for cpu_id in loaded.iter() {
-                if cpu_id.as_usize() % 3 == 0 {
+                if cpu_id.as_usize().is_multiple_of(3) {
                     assert!(loaded.contains(cpu_id));
                 } else {
                     assert!(!loaded.contains(cpu_id));
