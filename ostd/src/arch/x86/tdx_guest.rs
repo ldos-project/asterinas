@@ -43,7 +43,7 @@ pub enum PageConvertError {
 pub unsafe fn unprotect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), PageConvertError> {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
     if gpa & PAGE_MASK != 0 {
-        warn!("Misaligned address: {:x}", gpa);
+        warn!("Misaligned address: {gpa:x}");
     }
 
     // Protect the page in the boot page table if in the boot phase.
@@ -97,7 +97,7 @@ pub unsafe fn unprotect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), Pag
 pub unsafe fn protect_gpa_range(gpa: Paddr, page_num: usize) -> Result<(), PageConvertError> {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
     if gpa & !PAGE_MASK == 0 {
-        warn!("Misaligned address: {:x}", gpa);
+        warn!("Misaligned address: {gpa:x}");
     }
 
     // Protect the page in the boot page table if in the boot phase.

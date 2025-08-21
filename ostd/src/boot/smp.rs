@@ -145,7 +145,7 @@ fn ap_early_entry(cpu_id: u32) -> ! {
     // Mark the AP as started.
     report_online_and_hw_cpu_id(cpu_id);
 
-    log::info!("Processor {} started. Spinning for tasks.", cpu_id);
+    log::info!("Processor {cpu_id} started. Spinning for tasks.");
 
     let ap_late_entry = AP_LATE_ENTRY.wait();
     ap_late_entry();

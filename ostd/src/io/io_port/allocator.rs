@@ -45,7 +45,7 @@ impl IoPortAllocator {
     ///
     /// The caller must have ownership of the PIO region through the `IoPortAllocator::acquire` interface.
     pub(in crate::io) unsafe fn recycle(&self, range: Range<u16>) {
-        debug!("Recycling MMIO range: {:#x?}", range);
+        debug!("Recycling MMIO range: {range:#x?}");
 
         self.allocator
             .lock()
@@ -86,7 +86,7 @@ pub(crate) unsafe fn init() {
         let port_range = unsafe { *(range_base_addr as *const RawIoPortRange) };
 
         assert!(port_range.begin < port_range.end);
-        debug!("Removing sensitive I/O port range: {:#x?}", port_range);
+        debug!("Removing sensitive I/O port range: {port_range:#x?}");
 
         for i in port_range.begin..port_range.end {
             allocator.alloc_specific(i as usize);

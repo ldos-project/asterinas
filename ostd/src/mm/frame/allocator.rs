@@ -212,7 +212,7 @@ pub(crate) unsafe fn init() {
             // Truncate the early allocated frames if there is an overlap.
             for r1 in range_difference(&(region.base()..region.end()), &range_1) {
                 for r2 in range_difference(&r1, &range_2) {
-                    log::info!("Adding free frames to the allocator: {:x?}", r2);
+                    log::info!("Adding free frames to the allocator: {r2:x?}");
                     get_global_frame_allocator().add_free_memory(r2.start, r2.len());
                 }
             }
@@ -278,11 +278,10 @@ impl EarlyFrameAllocator {
         }
 
         log::debug!(
-            "Early frame allocator (below 4G) at: {:#x?}",
-            under_4g_range
+            "Early frame allocator (below 4G) at: {under_4g_range:#x?}"
         );
         if !max_range.is_empty() {
-            log::debug!("Early frame allocator (above 4G) at: {:#x?}", max_range);
+            log::debug!("Early frame allocator (above 4G) at: {max_range:#x?}");
         }
 
         Self {

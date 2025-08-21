@@ -254,7 +254,7 @@ impl IommuRegisters {
     /// Creates an instance from base address
     fn new(io_mem_builder: &IoMemAllocatorBuilder) -> Option<Self> {
         let dmar = Dmar::new()?;
-        debug!("DMAR: {:#x?}", dmar);
+        debug!("DMAR: {dmar:#x?}");
 
         let base_address = dmar
             .remapping_iter()
@@ -273,7 +273,7 @@ impl IommuRegisters {
             })
             .expect("no DRHD structure found in the DMAR table");
         assert_ne!(base_address, 0, "IOMMU address should not be zero");
-        debug!("IOMMU base address: {:#x?}", base_address);
+        debug!("IOMMU base address: {base_address:#x?}");
 
         io_mem_builder.remove(base_address as usize..(base_address as usize + PAGE_SIZE));
         let base = NonNull::new(paddr_to_vaddr(base_address as usize) as *mut u8).unwrap();
@@ -304,7 +304,7 @@ impl IommuRegisters {
             }
         };
 
-        debug!("IOMMU registers:{:#x?}", iommu_regs);
+        debug!("IOMMU registers:{iommu_regs:#x?}");
         debug!("IOMMU capability:{:#x?}", iommu_regs.read_capability());
         debug!(
             "IOMMU extend capability:{:#x?}",

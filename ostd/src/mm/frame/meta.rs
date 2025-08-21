@@ -461,8 +461,7 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
     };
 
     info!(
-        "Initializing frame metadata for physical memory up to {:x}",
-        max_paddr
+        "Initializing frame metadata for physical memory up to {max_paddr:x}"
     );
 
     add_temp_linear_mapping(max_paddr);

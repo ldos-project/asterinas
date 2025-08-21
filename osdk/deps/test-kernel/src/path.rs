@@ -108,7 +108,7 @@ impl Display for KtestPath {
             } else {
                 write!(f, "::")?;
             }
-            write!(f, "{}", e)?;
+            write!(f, "{e}")?;
         }
         Ok(())
     }

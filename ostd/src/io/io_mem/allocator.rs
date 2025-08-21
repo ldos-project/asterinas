@@ -74,8 +74,7 @@ impl IoMemAllocatorBuilder {
     /// User must ensure the range doesn't belong to physical memory.
     pub(crate) unsafe fn new(ranges: Vec<Range<usize>>) -> Self {
         info!(
-            "Creating new I/O memory allocator builder, ranges: {:#x?}",
-            ranges
+            "Creating new I/O memory allocator builder, ranges: {ranges:#x?}"
         );
         let mut allocators = Vec::with_capacity(ranges.len());
         for range in ranges {

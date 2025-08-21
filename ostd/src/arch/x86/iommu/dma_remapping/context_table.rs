@@ -301,10 +301,7 @@ impl ContextTable {
         }
 
         trace!(
-            "Mapping Daddr: {:x?} to Paddr: {:x?} for device: {:x?}",
-            daddr,
-            paddr,
-            device
+            "Mapping Daddr: {daddr:x?} to Paddr: {paddr:x?} for device: {device:x?}"
         );
 
         let from = daddr..daddr + PAGE_SIZE;
@@ -329,7 +326,7 @@ impl ContextTable {
             return Err(ContextTableError::InvalidDeviceId);
         }
 
-        trace!("Unmapping Daddr: {:x?} for device: {:x?}", daddr, device);
+        trace!("Unmapping Daddr: {daddr:x?} for device: {device:x?}");
 
         let pt = self.get_or_create_page_table(device);
         let preempt_guard = disable_preempt();

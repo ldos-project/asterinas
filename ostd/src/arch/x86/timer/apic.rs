@@ -162,8 +162,7 @@ fn init_periodic_mode_config() {
         let apic_first_count = APIC_FIRST_COUNT.load(Ordering::Relaxed);
         let apic_init_count = (apic_current_count - apic_first_count) / CALLBACK_TIMES;
         info!(
-            "APIC timer: first {:#x}, current {:#x}, init {:#x}",
-            apic_first_count, apic_current_count, apic_init_count,
+            "APIC timer: first {apic_first_count:#x}, current {apic_current_count:#x}, init {apic_init_count:#x}",
         );
         CONFIG.call_once(|| Config::PeriodicMode {
             init_count: apic_init_count,

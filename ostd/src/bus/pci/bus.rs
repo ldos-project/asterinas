@@ -48,7 +48,7 @@ pub struct PciBus {
 impl PciBus {
     /// Registers a PCI driver to the PCI bus.
     pub fn register_driver(&mut self, driver: Arc<dyn PciDriver>) {
-        debug!("Register driver:{:#x?}", driver);
+        debug!("Register driver:{driver:#x?}");
         let length = self.common_devices.len();
         for i in (0..length).rev() {
             let common_device = self.common_devices.pop_front().unwrap();
@@ -61,7 +61,7 @@ impl PciBus {
                 }
                 Err((err, common_device)) => {
                     if err != BusProbeError::DeviceNotMatch {
-                        error!("PCI device construction failed, reason: {:?}", err);
+                        error!("PCI device construction failed, reason: {err:?}");
                     }
                     debug_assert!(device_id == *common_device.device_id());
                     common_device
@@ -73,7 +73,7 @@ impl PciBus {
     }
 
     pub(super) fn register_common_device(&mut self, mut common_device: PciCommonDevice) {
-        debug!("Find pci common devices:{:x?}", common_device);
+        debug!("Find pci common devices:{common_device:x?}");
         let device_id = *common_device.device_id();
         for driver in self.drivers.iter() {
             common_device = match driver.probe(common_device) {
@@ -84,7 +84,7 @@ impl PciBus {
                 }
                 Err((err, common_device)) => {
                     if err != BusProbeError::DeviceNotMatch {
-                        error!("PCI device construction failed, reason: {:?}", err);
+                        error!("PCI device construction failed, reason: {err:?}");
                     }
                     debug_assert!(device_id == *common_device.device_id());
                     common_device

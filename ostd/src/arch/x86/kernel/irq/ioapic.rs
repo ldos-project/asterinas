@@ -149,8 +149,7 @@ impl IoApicAccess {
             assert_eq!(
                 base_address % crate::mm::PAGE_SIZE,
                 0,
-                "[IOAPIC]: I/O memory is not page aligned, which cannot be unprotected in TDX: {:#x}",
-                base_address,
+                "[IOAPIC]: I/O memory is not page aligned, which cannot be unprotected in TDX: {base_address:#x}",
             );
             // SAFETY:
             //  - The address range is page aligned, as we've checked above.

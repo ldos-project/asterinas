@@ -37,8 +37,7 @@ fn impl_try_from(
         format_ident!("{}", valid_repr)
     } else {
         panic!(
-            "{} does not have invalid repr to implement TryFromInt.",
-            ident
+            "{ident} does not have invalid repr to implement TryFromInt."
         );
     };
 
