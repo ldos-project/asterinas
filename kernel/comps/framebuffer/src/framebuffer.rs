@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use ostd::{boot::boot_info, io::IoMem, mm::VmIo, Result};
+use ostd::{Result, boot::boot_info, io::IoMem, mm::VmIo};
 use spin::Once;
 
 use crate::{Pixel, PixelFormat, RenderedPixel};

@@ -6,13 +6,13 @@ use aster_console::{AnyConsoleDevice, ConsoleCallback};
 use aster_keyboard::InputKey;
 use font8x8::UnicodeFonts;
 use ostd::{
+    Error, Result,
     mm::VmReader,
     sync::{LocalIrqDisabled, SpinLock},
-    Error, Result,
 };
 use spin::Once;
 
-use crate::{FrameBuffer, Pixel, FRAMEBUFFER};
+use crate::{FRAMEBUFFER, FrameBuffer, Pixel};
 
 /// The font width in pixels when using `font8x8`.
 const FONT_WIDTH: usize = 8;

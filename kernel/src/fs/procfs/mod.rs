@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use filesystems::{FileSystemType, FILESYSTEM_TYPES};
+use filesystems::{FILESYSTEM_TYPES, FileSystemType};
 
 use self::{
     cpuinfo::CpuInfoFileOps,
@@ -18,12 +18,12 @@ use crate::{
     events::Observer,
     fs::{
         procfs::filesystems::FileSystemsFileOps,
-        utils::{DirEntryVecExt, FileSystem, FsFlags, Inode, SuperBlock, NAME_MAX},
+        utils::{DirEntryVecExt, FileSystem, FsFlags, Inode, NAME_MAX, SuperBlock},
     },
     prelude::*,
     process::{
-        process_table::{self, PidEvent},
         Pid,
+        process_table::{self, PidEvent},
     },
 };
 

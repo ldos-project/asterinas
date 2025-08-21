@@ -16,12 +16,12 @@ use std::{
 
 use crate::{
     config::{
-        scheme::{ActionChoice, BootMethod},
         Config,
+        scheme::{ActionChoice, BootMethod},
     },
     error::Errno,
     error_msg,
-    util::{new_command_checked_exists, DirGuard},
+    util::{DirGuard, new_command_checked_exists},
 };
 
 /// The osdk bundle artifact that stores as `bundle` directory.

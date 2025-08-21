@@ -44,7 +44,7 @@ use crate::{
         memory_region::{MemoryRegion, MemoryRegionType},
         smp::PerApRawInfo,
     },
-    mm::{Paddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr},
     task::disable_preempt,
 };
 
@@ -77,9 +77,7 @@ pub(crate) fn count_processors() -> Option<u32> {
             matches!(e, MadtEntry::LocalX2Apic(e)
                 if e.x2apic_id == id && is_usable(e.flags))
         }) {
-            log::warn!(
-                "Firmware bug: In MADT, APIC ID {id} is also listed as an x2APIC ID",
-            );
+            log::warn!("Firmware bug: In MADT, APIC ID {id} is also listed as an x2APIC ID",);
             true
         } else {
             false

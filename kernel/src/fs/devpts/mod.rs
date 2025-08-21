@@ -15,7 +15,7 @@ use crate::{
         device::{Device, DeviceId, DeviceType},
         utils::{
             DirentVisitor, FileSystem, FsFlags, Inode, InodeMode, InodeType, IoctlCmd, Metadata,
-            SuperBlock, NAME_MAX,
+            NAME_MAX, SuperBlock,
         },
     },
     prelude::*,

@@ -79,7 +79,7 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
     // Enable the first PS/2 port.
     controller.wait_and_send_command(Command::EnableFirstPort)?;
     if let Err(err) = super::keyboard::init(&mut controller) {
-        log::warn!("i8042 keyboard initialization failed: {:?}", err);
+        log::warn!("i8042 keyboard initialization failed: {err:?}");
         controller.wait_and_send_command(Command::DisableFirstPort)?;
     } else {
         config.remove(Configuration::FIRST_PORT_CLOCK_DISABLED);

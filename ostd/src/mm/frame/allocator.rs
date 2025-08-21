@@ -6,12 +6,12 @@ use core::{alloc::Layout, ops::Range};
 
 use align_ext::AlignExt;
 
-use super::{meta::AnyFrameMeta, segment::Segment, Frame};
+use super::{Frame, meta::AnyFrameMeta, segment::Segment};
 use crate::{
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{paddr_to_vaddr, Paddr, PAGE_SIZE},
+    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr},
     prelude::*,
     util::ops::range_difference,
 };
@@ -277,9 +277,7 @@ impl EarlyFrameAllocator {
             }
         }
 
-        log::debug!(
-            "Early frame allocator (below 4G) at: {under_4g_range:#x?}"
-        );
+        log::debug!("Early frame allocator (below 4G) at: {under_4g_range:#x?}");
         if !max_range.is_empty() {
             log::debug!("Early frame allocator (above 4G) at: {max_range:#x?}");
         }

@@ -16,7 +16,7 @@ use ostd::{
     trap::irq::DisabledLocalIrqGuard,
 };
 
-use crate::chunk::{greater_order_of, lesser_order_of, size_of_order, split_to_chunks, BuddyOrder};
+use crate::chunk::{BuddyOrder, greater_order_of, lesser_order_of, size_of_order, split_to_chunks};
 
 use super::set::BuddySet;
 
@@ -78,13 +78,14 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
     // the chunk and return the rest part back to the free lists.
     let allocated_size = size_of_order(order);
     if allocated_size > layout.size()
-        && let Some(chunk_addr) = chunk_addr {
-            do_dealloc(
-                &mut local_pool,
-                &mut global_pool,
-                [(chunk_addr + layout.size(), allocated_size - layout.size())].into_iter(),
-            );
-        }
+        && let Some(chunk_addr) = chunk_addr
+    {
+        do_dealloc(
+            &mut local_pool,
+            &mut global_pool,
+            [(chunk_addr + layout.size(), allocated_size - layout.size())].into_iter(),
+        );
+    }
 
     balancing::balance(local_pool.deref_mut(), &mut global_pool);
 

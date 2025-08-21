@@ -30,7 +30,7 @@ impl FromStr for PayloadEncoding {
             "raw" => Ok(Self::Raw),
             "gzip" => Ok(Self::Gzip),
             "zlib" => Ok(Self::Zlib),
-            _ => Err(format!("Invalid encoding format: {}", s)),
+            _ => Err(format!("Invalid encoding format: {s}")),
         }
     }
 }

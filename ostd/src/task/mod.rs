@@ -24,10 +24,10 @@ use spin::Once;
 use utils::ForceSync;
 
 pub use self::{
-    preempt::{disable_preempt, halt_cpu, DisabledPreemptGuard},
+    preempt::{DisabledPreemptGuard, disable_preempt, halt_cpu},
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
-pub(crate) use crate::arch::task::{context_switch, TaskContext};
+pub(crate) use crate::arch::task::{TaskContext, context_switch};
 use crate::{cpu::context::UserContext, prelude::*, trap::in_interrupt_context};
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();

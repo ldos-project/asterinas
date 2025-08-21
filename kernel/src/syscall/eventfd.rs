@@ -26,8 +26,8 @@ use crate::{
     },
     prelude::*,
     process::{
-        signal::{PollHandle, Pollable, Pollee},
         Gid, Uid,
+        signal::{PollHandle, Pollable, Pollee},
     },
     time::clocks::RealTimeClock,
 };

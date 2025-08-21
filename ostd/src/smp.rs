@@ -10,11 +10,11 @@ use alloc::{boxed::Box, collections::VecDeque};
 use spin::Once;
 
 use crate::{
-    arch::irq::{send_ipi, HwCpuId},
+    arch::irq::{HwCpuId, send_ipi},
     cpu::{CpuSet, PinCurrentCpu},
     cpu_local,
     sync::SpinLock,
-    trap::{self, irq::IrqLine, TrapFrame},
+    trap::{self, TrapFrame, irq::IrqLine},
 };
 
 /// Executes a function on other processors.
@@ -83,9 +83,7 @@ fn do_inter_processor_call(_trapframe: &TrapFrame) {
 
     let mut queue = CALL_QUEUES.get_on_cpu(this_cpu_id).lock();
     while let Some(f) = queue.pop_front() {
-        log::trace!(
-            "Performing inter-processor call to {f:#?} on CPU {this_cpu_id:#?}",
-        );
+        log::trace!("Performing inter-processor call to {f:#?} on CPU {this_cpu_id:#?}",);
         f();
     }
 }

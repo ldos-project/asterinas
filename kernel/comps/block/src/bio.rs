@@ -6,17 +6,17 @@ use align_ext::AlignExt;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 use ostd::{
+    Error,
     mm::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
     sync::{SpinLock, WaitQueue},
-    Error,
 };
 use spin::Once;
 
-use super::{id::Sid, BlockDevice};
-use crate::{prelude::*, BLOCK_SIZE, SECTOR_SIZE};
+use super::{BlockDevice, id::Sid};
+use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
 
 /// The unit for block I/O.
 ///

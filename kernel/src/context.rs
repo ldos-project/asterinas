@@ -13,8 +13,8 @@ use ostd::{
 use crate::{
     prelude::*,
     process::{
-        posix_thread::{PosixThread, ThreadLocal},
         Process,
+        posix_thread::{PosixThread, ThreadLocal},
     },
     thread::Thread,
     util::{MultiRead, VmReaderArray},
@@ -359,9 +359,11 @@ mod test {
         let read_str2 = reader.read_cstring().unwrap();
         assert_eq!(read_str2, strs[1]);
 
-        assert!(reader
-            .read_cstring()
-            .is_err_and(|err| err.error() == Errno::EFAULT));
+        assert!(
+            reader
+                .read_cstring()
+                .is_err_and(|err| err.error() == Errno::EFAULT)
+        );
     }
 
     #[ktest]
@@ -390,8 +392,10 @@ mod test {
         let read_str3 = multiread.read_cstring().unwrap();
         assert_eq!(read_str3, strs[2]);
 
-        assert!(multiread
-            .read_cstring()
-            .is_err_and(|err| err.error() == Errno::EFAULT));
+        assert!(
+            multiread
+                .read_cstring()
+                .is_err_and(|err| err.error() == Errno::EFAULT)
+        );
     }
 }

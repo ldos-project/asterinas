@@ -73,9 +73,7 @@ impl IoMemAllocatorBuilder {
     ///
     /// User must ensure the range doesn't belong to physical memory.
     pub(crate) unsafe fn new(ranges: Vec<Range<usize>>) -> Self {
-        info!(
-            "Creating new I/O memory allocator builder, ranges: {ranges:#x?}"
-        );
+        info!("Creating new I/O memory allocator builder, ranges: {ranges:#x?}");
         let mut allocators = Vec::with_capacity(ranges.len());
         for range in ranges {
             allocators.push(RangeAllocator::new(range));
@@ -164,25 +162,37 @@ mod test {
         let allocator =
             unsafe { IoMemAllocator::new(IoMemAllocatorBuilder::new(range).allocators) };
 
-        assert!(allocator
-            .acquire((io_mem_region_a.start - 1)..io_mem_region_a.start)
-            .is_none());
-        assert!(allocator
-            .acquire(io_mem_region_a.start..(io_mem_region_a.start + 1))
-            .is_some());
+        assert!(
+            allocator
+                .acquire((io_mem_region_a.start - 1)..io_mem_region_a.start)
+                .is_none()
+        );
+        assert!(
+            allocator
+                .acquire(io_mem_region_a.start..(io_mem_region_a.start + 1))
+                .is_some()
+        );
 
-        assert!(allocator
-            .acquire((io_mem_region_a.end + 1)..(io_mem_region_b.start - 1))
-            .is_none());
-        assert!(allocator
-            .acquire((io_mem_region_a.end - 1)..(io_mem_region_b.start + 1))
-            .is_none());
+        assert!(
+            allocator
+                .acquire((io_mem_region_a.end + 1)..(io_mem_region_b.start - 1))
+                .is_none()
+        );
+        assert!(
+            allocator
+                .acquire((io_mem_region_a.end - 1)..(io_mem_region_b.start + 1))
+                .is_none()
+        );
 
-        assert!(allocator
-            .acquire((io_mem_region_a.end - 1)..io_mem_region_a.end)
-            .is_some());
-        assert!(allocator
-            .acquire(io_mem_region_a.end..(io_mem_region_a.end + 1))
-            .is_none());
+        assert!(
+            allocator
+                .acquire((io_mem_region_a.end - 1)..io_mem_region_a.end)
+                .is_some()
+        );
+        assert!(
+            allocator
+                .acquire(io_mem_region_a.end..(io_mem_region_a.end + 1))
+                .is_none()
+        );
     }
 }

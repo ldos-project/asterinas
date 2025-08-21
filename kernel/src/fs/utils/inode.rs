@@ -16,7 +16,7 @@ use crate::{
     events::IoEvents,
     fs::device::{Device, DeviceType},
     prelude::*,
-    process::{posix_thread::AsPosixThread, signal::PollHandle, Gid, Uid},
+    process::{Gid, Uid, posix_thread::AsPosixThread, signal::PollHandle},
     time::clocks::RealTimeCoarseClock,
     vm::vmo::Vmo,
 };

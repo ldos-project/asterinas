@@ -9,12 +9,12 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use lock::is_softirq_enabled;
 use ostd::{
     cpu_local_cell,
     trap::{
-        irq::{disable_local, DisabledLocalIrqGuard},
+        irq::{DisabledLocalIrqGuard, disable_local},
         register_bottom_half_handler,
     },
 };

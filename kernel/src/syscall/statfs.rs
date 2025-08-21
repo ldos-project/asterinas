@@ -3,9 +3,9 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::{get_file_fast, FileDesc},
+        file_table::{FileDesc, get_file_fast},
         fs_resolver::FsPath,
-        utils::{SuperBlock, PATH_MAX},
+        utils::{PATH_MAX, SuperBlock},
     },
     prelude::*,
 };

@@ -18,7 +18,7 @@ use core::{any::Any, format_args};
 use ostd::{
     early_print, early_println,
     ktest::{
-        get_ktest_crate_whitelist, get_ktest_test_whitelist, KtestError, KtestItem, KtestIter,
+        KtestError, KtestItem, KtestIter, get_ktest_crate_whitelist, get_ktest_test_whitelist,
     },
 };
 use owo_colors::OwoColorize;
@@ -38,7 +38,7 @@ fn main() {
     let test_task = move || {
         use alloc::string::ToString;
 
-        use ostd::arch::qemu::{exit_qemu, QemuExitCode};
+        use ostd::arch::qemu::{QemuExitCode, exit_qemu};
 
         match run_ktests(
             get_ktest_test_whitelist().map(|s| s.iter().map(|s| s.to_string())),
@@ -106,10 +106,11 @@ where
         crate_whitelist.map(|crates| crates.iter().copied().collect::<BTreeSet<&str>>());
     for crate_ in tree.iter() {
         if let Some(crate_set) = &crate_set
-            && !crate_set.contains(crate_.name()) {
-                early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
-                continue;
-            }
+            && !crate_set.contains(crate_.name())
+        {
+            early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
+            continue;
+        }
         match run_crate_ktests(crate_, &whitelist_trie) {
             KtestResult::Ok => {}
             KtestResult::Failed => return KtestResult::Failed,
@@ -197,7 +198,9 @@ fn run_crate_ktests(crate_: &KtestCrate, whitelist: &Option<SuffixTrie>) -> Ktes
                     early_print!("caught: {}\n", s);
                 }
                 KtestError::Unknown => {
-                    early_print!("[caught panic] unknown panic payload! (fatal panic handling error in ktest)\n");
+                    early_print!(
+                        "[caught panic] unknown panic payload! (fatal panic handling error in ktest)\n"
+                    );
                 }
             }
         }

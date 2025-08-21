@@ -18,7 +18,6 @@
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
-
 // TODO: Explicitly showing that a lifetime was propagated is better:
 //   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
 //   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {

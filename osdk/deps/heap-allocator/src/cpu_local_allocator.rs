@@ -4,13 +4,13 @@ use crate::allocator::CommonSizeClass;
 use alloc::vec::Vec;
 use core::ops::Deref;
 use ostd::{
+    Error,
     cpu::{
-        local::{DynCpuLocalChunk, DynamicCpuLocal},
         CpuId,
+        local::{DynCpuLocalChunk, DynamicCpuLocal},
     },
     prelude::*,
     sync::SpinLock,
-    Error,
 };
 
 /// Allocator for dynamically-allocated CPU-local objects.

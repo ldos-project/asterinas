@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{header::CMsgSegHdr, SegmentBody};
+use super::{SegmentBody, header::CMsgSegHdr};
 use crate::{
     net::socket::netlink::message::attr::Attribute,
     prelude::*,

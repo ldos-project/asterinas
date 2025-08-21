@@ -23,7 +23,6 @@
 #![feature(trait_alias)]
 #![feature(associated_type_defaults)]
 #![register_tool(component_access_control)]
-
 // TODO: Explicitly showing that a lifetime was propagated is better:
 //   -    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
 //   +    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
@@ -33,11 +32,11 @@
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
-    arch::qemu::{exit_qemu, QemuExitCode},
+    arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
 };
-use process::{spawn_init_process, Process};
+use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
 
 use crate::{kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions};

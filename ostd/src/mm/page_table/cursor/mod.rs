@@ -34,14 +34,14 @@ use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range};
 use align_ext::AlignExt;
 
 use super::{
-    page_size, pte_index, Child, ChildRef, Entry, PageTable, PageTableConfig, PageTableError,
-    PageTableGuard, PagingConstsTrait, PagingLevel,
+    Child, ChildRef, Entry, PageTable, PageTableConfig, PageTableError, PageTableGuard,
+    PagingConstsTrait, PagingLevel, page_size, pte_index,
 };
 use crate::{
     mm::{
-        frame::{meta::AnyFrameMeta, Frame},
-        page_table::is_valid_range,
         PageProperty, Vaddr,
+        frame::{Frame, meta::AnyFrameMeta},
+        page_table::is_valid_range,
     },
     task::atomic_mode::InAtomicMode,
 };
@@ -125,7 +125,8 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         if !is_valid_range::<C>(va) || va.is_empty() {
             return Err(PageTableError::InvalidVaddrRange(va.start, va.end));
         }
-        if !va.start.is_multiple_of(C::BASE_PAGE_SIZE) || !va.end.is_multiple_of(C::BASE_PAGE_SIZE) {
+        if !va.start.is_multiple_of(C::BASE_PAGE_SIZE) || !va.end.is_multiple_of(C::BASE_PAGE_SIZE)
+        {
             return Err(PageTableError::UnalignedVaddr);
         }
 

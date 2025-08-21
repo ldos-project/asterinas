@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use ostd::mm::{DmaCoherent, FrameAllocOptions, HasPaddr, VmIo};
-use tdx_guest::tdcall::{get_report, TdCallError};
+use tdx_guest::tdcall::{TdCallError, get_report};
 
 use super::*;
 use crate::{

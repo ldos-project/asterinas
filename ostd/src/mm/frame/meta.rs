@@ -21,7 +21,7 @@ pub(crate) mod mapping {
     use core::mem::size_of;
 
     use super::MetaSlot;
-    use crate::mm::{kspace::FRAME_METADATA_RANGE, Paddr, PagingConstsTrait, Vaddr, PAGE_SIZE};
+    use crate::mm::{PAGE_SIZE, Paddr, PagingConstsTrait, Vaddr, kspace::FRAME_METADATA_RANGE};
 
     /// Converts a physical address of a base frame to the virtual address of the metadata slot.
     pub(crate) const fn frame_to_meta<C: PagingConstsTrait>(paddr: Paddr) -> Vaddr {
@@ -43,7 +43,7 @@ use core::{
     any::Any,
     cell::UnsafeCell,
     fmt::Debug,
-    mem::{size_of, ManuallyDrop, MaybeUninit},
+    mem::{ManuallyDrop, MaybeUninit, size_of},
     result::Result,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -56,12 +56,12 @@ use crate::{
     boot::memory_region::MemoryRegionType,
     const_assert,
     mm::{
+        CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PrivilegedPageFlags,
+        Segment, Vaddr, VmReader,
         frame::allocator::{self, EarlyAllocatedFrameMeta},
         kspace::LINEAR_MAPPING_BASE_VADDR,
         paddr_to_vaddr, page_size,
         page_table::boot_pt,
-        CachePolicy, Infallible, Paddr, PageFlags, PageProperty, PrivilegedPageFlags, Segment,
-        Vaddr, VmReader, PAGE_SIZE,
     },
     panic::abort,
     util::ops::range_difference,
@@ -460,9 +460,7 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
             .unwrap()
     };
 
-    info!(
-        "Initializing frame metadata for physical memory up to {max_paddr:x}"
-    );
+    info!("Initializing frame metadata for physical memory up to {max_paddr:x}");
 
     add_temp_linear_mapping(max_paddr);
 
