@@ -33,7 +33,7 @@ pub struct Context<'a> {
 
 impl Context<'_> {
     /// Gets the userspace of the current task.
-    pub fn user_space(&self) -> CurrentUserSpace {
+    pub fn user_space(&self) -> CurrentUserSpace<'_> {
         CurrentUserSpace(self.thread_local.root_vmar().borrow())
     }
 }
@@ -49,10 +49,9 @@ pub struct CurrentUserSpace<'a>(Ref<'a, Option<Vmar<Full>>>);
 /// If you get the access to the [`Context`].
 #[macro_export]
 macro_rules! current_userspace {
-    () => {{
-        use $crate::context::CurrentUserSpace;
-        CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
-    }};
+    () => {
+        $crate::context::CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
+    };
 }
 
 impl<'a> CurrentUserSpace<'a> {
