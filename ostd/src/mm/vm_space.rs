@@ -155,7 +155,7 @@ impl VmSpace {
             return Err(Error::AccessDenied);
         }
 
-        if vaddr.checked_add(len).unwrap_or(usize::MAX) > MAX_USERSPACE_VADDR {
+        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
             return Err(Error::AccessDenied);
         }
 
@@ -175,7 +175,7 @@ impl VmSpace {
             return Err(Error::AccessDenied);
         }
 
-        if vaddr.checked_add(len).unwrap_or(usize::MAX) > MAX_USERSPACE_VADDR {
+        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
             return Err(Error::AccessDenied);
         }
 

@@ -112,7 +112,7 @@ pub struct KtestItemInfo {
     pub col: usize,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct KtestItem {
     fn_: fn() -> (),
     should_panic: (bool, Option<&'static str>),

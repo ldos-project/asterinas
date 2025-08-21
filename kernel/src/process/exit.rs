@@ -86,7 +86,7 @@ fn move_process_children(
         return Err(());
     }
 
-    for (_, child_process) in current_process.children().lock().extract_if(|_, _| true) {
+    for (_, child_process) in current_process.children().lock().extract_if(.., |_, _| true) {
         let mut parent = child_process.parent.lock();
         reaper_process_children.insert(child_process.pid(), child_process.clone());
         parent.set_process(reaper_process);
