@@ -147,6 +147,7 @@ pub enum SourceIdQualifier {
     IgnoreLeastThree = 0b11,
 }
 
+#[expect(unused)]
 #[derive(Debug, TryFromInt)]
 #[repr(u32)]
 enum DeliveryMode {

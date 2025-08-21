@@ -193,7 +193,7 @@ fn parse_memory_regions(boot_params: &BootParams) -> MemoryRegionArray {
 }
 
 /// The entry point of the Rust code portion of Asterinas.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "sysv64" fn __linux_boot(params_ptr: *const BootParams) -> ! {
     let params = unsafe { &*params_ptr };
     assert_eq!({ params.hdr.header }, LINUX_BOOT_HEADER_MAGIC);

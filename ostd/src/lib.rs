@@ -142,9 +142,9 @@ pub(crate) static IN_BOOTSTRAP_CONTEXT: AtomicBool = AtomicBool::new(true);
 /// The component system uses this function to call the initialization functions of
 /// the components.
 fn invoke_ffi_init_funcs() {
-    extern "C" {
-        fn __sinit_array();
-        fn __einit_array();
+    unsafe extern "C" {
+        unsafe fn __sinit_array();
+        unsafe fn __einit_array();
     }
     let call_len = (__einit_array as usize - __sinit_array as usize) / 8;
     for i in 0..call_len {

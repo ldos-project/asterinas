@@ -16,9 +16,9 @@ global_asm!(include_str!("trap.S"));
 
 const NUM_INTERRUPTS: usize = 256;
 
-extern "C" {
+unsafe extern "C" {
     #[link_name = "trap_handler_table"]
-    static VECTORS: [usize; NUM_INTERRUPTS];
+    unsafe static VECTORS: [usize; NUM_INTERRUPTS];
 }
 
 static GLOBAL_IDT: Once<&'static [Entry<()>]> = Once::new();

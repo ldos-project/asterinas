@@ -8,9 +8,9 @@ struct ExTableItem {
     recovery_inst_addr: Vaddr,
 }
 
-extern "C" {
-    fn __ex_table();
-    fn __ex_table_end();
+unsafe extern "C" {
+    unsafe fn __ex_table();
+    unsafe fn __ex_table_end();
 }
 
 /// A structure representing the usage of exception table (ExTable).

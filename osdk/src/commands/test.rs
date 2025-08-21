@@ -71,9 +71,9 @@ pub fn test_current_crate(config: &Config, args: &TestArgs) {
 
 {}
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static KTEST_TEST_WHITELIST: Option<&[&str]> = {};
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
 
 "#,
@@ -100,7 +100,11 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
         ActionChoice::Test,
         &["--cfg ktest", "-C panic=unwind"],
     );
-    std::env::remove_var("RUSTFLAGS");
+    // SAFETY: This program is single threaded.
+    unsafe {
+        // TODO: Instead cargo_osdk::bundle::Bundle::run should use qemu_cmd.env_remove.
+        std::env::remove_var("RUSTFLAGS");
+    }
     drop(dir_guard);
 
     bundle.run(config, ActionChoice::Test);

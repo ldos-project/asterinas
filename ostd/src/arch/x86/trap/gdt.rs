@@ -94,7 +94,7 @@ pub(super) unsafe fn init() {
 //
 // No other special initialization is required because the kernel stack information is stored in
 // the TSS when we start the userspace program. See `syscall.S` for details.
-#[link_section = ".cpu_local_tss"]
+#[unsafe(link_section = ".cpu_local_tss")]
 static LOCAL_TSS: StaticCpuLocal<TaskStateSegment> = {
     let tss = TaskStateSegment::new();
     // SAFETY: The `.cpu_local_tss` section is part of the CPU-local area.

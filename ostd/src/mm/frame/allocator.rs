@@ -175,10 +175,10 @@ pub trait GlobalFrameAllocator: Sync {
     fn add_free_memory(&self, addr: Paddr, size: usize);
 }
 
-extern "Rust" {
+unsafe extern "Rust" {
     /// The global frame allocator's reference exported by
     /// [`crate::global_frame_allocator`].
-    static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn GlobalFrameAllocator;
+    unsafe static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn GlobalFrameAllocator;
 }
 
 pub(super) fn get_global_frame_allocator() -> &'static dyn GlobalFrameAllocator {

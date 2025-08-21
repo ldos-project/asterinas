@@ -138,7 +138,7 @@ fn parse_memory_regions(mb2_info: &BootInformation) -> MemoryRegionArray {
 }
 
 /// The entry point of Rust code called by inline asm.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "sysv64" fn __multiboot2_entry(boot_magic: u32, boot_params: u64) -> ! {
     assert_eq!(boot_magic, multiboot2::MAGIC);
     let mb2_info =

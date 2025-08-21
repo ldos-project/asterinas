@@ -66,9 +66,9 @@ pub type DynamicCpuLocal<T> = CpuLocal<T, DynamicStorage<T>>;
 pub type StaticCpuLocal<T> = CpuLocal<T, static_cpu_local::StaticStorage<T>>;
 
 // These symbols are provided by the linker script.
-extern "C" {
-    fn __cpu_local_start();
-    fn __cpu_local_end();
+unsafe extern "C" {
+    unsafe fn __cpu_local_start();
+    unsafe fn __cpu_local_end();
 }
 
 /// A trait to abstract any type that can be used as a slot for a CPU-local
@@ -181,7 +181,8 @@ impl<T: 'static, S: AnyStorage<T>> !Clone for CpuLocal<T, S> {}
 
 // In general, it does not make any sense to send instances of static `CpuLocal`
 // to other tasks as they should live on other CPUs to make sending useful.
-impl<T: 'static> !Send for CpuLocal<T, StaticStorage<T>> {}
+static_assertions::assert_not_impl_any!(CpuLocal<u64, StaticStorage<u64>>: Send);
+static_assertions::assert_impl_all!(CpuLocal<u64, DynamicStorage<u64>>: Send);
 
 /// The static CPU-local areas for APs.
 static CPU_LOCAL_STORAGES: Once<&'static [Paddr]> = Once::new();

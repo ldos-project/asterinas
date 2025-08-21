@@ -87,6 +87,6 @@ impl TaskContextApi for TaskContext {
     }
 }
 
-extern "C" {
-    pub(crate) fn context_switch(cur: *mut TaskContext, nxt: *const TaskContext);
+unsafe extern "C" {
+    pub(crate) unsafe fn context_switch(cur: *mut TaskContext, nxt: *const TaskContext);
 }

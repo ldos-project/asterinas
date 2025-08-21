@@ -174,8 +174,8 @@ unsafe fn copy_ap_boot_code() {
 ///
 /// The caller must ensure the pointer to be filled is valid to write.
 unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
-    extern "C" {
-        static mut __ap_boot_info_array_pointer: *const PerApRawInfo;
+    unsafe extern "C" {
+        unsafe static mut __ap_boot_info_array_pointer: *const PerApRawInfo;
     }
 
     // SAFETY: The safety is upheld by the caller.
@@ -188,8 +188,8 @@ unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
 ///
 /// The caller must ensure the pointer to be filled is valid to write.
 unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
-    extern "C" {
-        static mut __boot_page_table_pointer: u32;
+    unsafe extern "C" {
+        unsafe static mut __boot_page_table_pointer: u32;
     }
 
     let pt_ptr32 = pt_ptr.try_into().unwrap();
@@ -201,9 +201,9 @@ unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
 }
 
 // The symbols are defined in the linker script.
-extern "C" {
-    fn __ap_boot_start();
-    fn __ap_boot_end();
+unsafe extern "C" {
+    unsafe fn __ap_boot_start();
+    unsafe fn __ap_boot_end();
 }
 
 /// Wakes up all application processors via the ACPI multiprocessor mailbox structure.
@@ -218,9 +218,9 @@ unsafe fn wake_up_aps_via_mailbox(num_cpus: u32) {
     use crate::arch::kernel::acpi::AcpiMemoryHandler;
 
     // The symbols are defined in `ap_boot.S`.
-    extern "C" {
-        fn ap_boot_from_real_mode();
-        fn ap_boot_from_long_mode();
+    unsafe extern "C" {
+        unsafe fn ap_boot_from_real_mode();
+        unsafe fn ap_boot_from_long_mode();
     }
 
     let offset = ap_boot_from_long_mode as usize - ap_boot_from_real_mode as usize;
