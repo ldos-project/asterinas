@@ -194,7 +194,6 @@ OSDK_CRATES := \
 	kernel/comps/softirq \
 	kernel/comps/systree \
 	kernel/comps/logger \
-	kernel/comps/mlsdisk \
 	kernel/comps/time \
 	kernel/comps/virtio \
 	kernel/libs/aster-util \
