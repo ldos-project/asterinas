@@ -50,6 +50,8 @@ unsafe fn call_aster_entrypoint(entrypoint: *const (), boot_params_ptr: *mut Boo
     }
 }
 
+// #[cfg_attr(not(target_os = "linux"), panic_handler)]
+// #[cfg_attr(target_os = "linux", expect(unused))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::println!("[PANIC]: {}", info);

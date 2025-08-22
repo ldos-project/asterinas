@@ -16,5 +16,6 @@
         "**/.svn": false,
         "**/CVS": false,
         "**/Thumbs.db": false
-    }
+    },
+    "rust-analyzer.check.command": "clippy"
 }

@@ -10,7 +10,7 @@ members = [
     "ostd/libs/id-alloc",
     "ostd/libs/linux-bzimage/builder",
     "ostd/libs/linux-bzimage/boot-params",
-    # "ostd/libs/linux-bzimage/setup",
+    "ostd/libs/linux-bzimage/setup",
     "ostd/libs/ostd-test",
     "kernel",
     "kernel/comps/block",
@@ -37,13 +37,14 @@ members = [
     "kernel/libs/typeflags-util",
     "kernel/libs/atomic-integer-wrapper",
     "kernel/libs/xarray",
-    "osdk"
 ]
+
 exclude = [
     "kernel/libs/comp-sys/cargo-component",
     "kernel/libs/comp-sys/component",
     "kernel/libs/comp-sys/component-macro",
     "kernel/libs/comp-sys/controlled",
+    "osdk",
 ]
 
 [workspace.lints.rust]

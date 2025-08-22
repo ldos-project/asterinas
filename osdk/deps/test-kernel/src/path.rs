@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// Some methods here are used only in some configurations so we need `allow(unused)`.
+#![allow(clippy::allow_attributes)]
+
 use alloc::{
     collections::{vec_deque, BTreeMap, VecDeque},
     string::{String, ToString},
@@ -42,6 +45,7 @@ impl KtestPath {
         self.path.push_back(PathElement::from(s));
     }
 
+    #[allow(dead_code)]
     pub fn pop_back(&mut self) -> Option<PathElement> {
         self.path.pop_back()
     }
@@ -64,6 +68,7 @@ impl KtestPath {
         self.path.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn starts_with(&self, other: &Self) -> bool {
         if self.path.len() < other.path.len() {
             return false;
@@ -76,6 +81,7 @@ impl KtestPath {
         true
     }
 
+    #[allow(dead_code)]
     pub fn ends_with(&self, other: &Self) -> bool {
         if self.path.len() < other.path.len() {
             return false;
@@ -199,6 +205,7 @@ impl SuffixTrie {
     }
 
     /// Find if there is a perfect match in this suffix trie.
+    #[allow(dead_code)]
     pub fn matches<I, P>(&self, path: I) -> bool
     where
         I: DoubleEndedIterator<Item = P>,

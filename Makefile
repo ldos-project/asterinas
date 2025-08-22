@@ -156,8 +156,7 @@ CARGO_OSDK_TEST_ARGS += $(CARGO_OSDK_COMMON_ARGS)
 # Pass make variables to all subdirectory makes
 export
 
-# Basically, non-OSDK crates do not depend on Aster Frame and can be checked
-# or tested without OSDK.
+# Basically, non-OSDK crates do not depend on Aster Frame and can be checked or tested without OSDK.
 NON_OSDK_CRATES := \
 	ostd/libs/align_ext \
 	ostd/libs/id-alloc \
@@ -176,8 +175,8 @@ NON_OSDK_CRATES := \
 	kernel/libs/typeflags-util \
 	kernel/libs/atomic-integer-wrapper
 
-# In contrast, OSDK crates depend on OSTD (or being `ostd` itself)
-# and need to be built or tested with OSDK.
+# In contrast, OSDK crates depend on OSTD (or being `ostd` itself) and should be built or tested with OSDK. Note that
+# these can be checked and clippy'd on std (Linux) targets, but they will not link or run meaning tests will not run.
 OSDK_CRATES := \
 	osdk/deps/frame-allocator \
 	osdk/deps/heap-allocator \
@@ -199,6 +198,11 @@ OSDK_CRATES := \
 	kernel/libs/aster-util \
 	kernel/libs/aster-bigtcp \
 	kernel/libs/xarray
+
+# Some crates are not included in the cargo workspace to allow for normal cargo check and clippy.
+NON_CARGO_WORKSPACE_CRATES := 
+# \
+# 	ostd/libs/linux-bzimage/setup
 
 # OSDK dependencies
 OSDK_SRC_FILES := \
@@ -318,11 +322,11 @@ check: initramfs $(CARGO_OSDK)
 	@
 	@# Check if the combination of STD_CRATES and NON_OSDK_CRATES is the
 	@# same as all workspace members
-	@sed -n '/^\[workspace\]/,/^\[.*\]/{/members = \[/,/\]/p}' Cargo.toml | \
-		grep -v "members = \[" | tr -d '", \]' | \
+	@(sed -n '/^\[workspace\]/,/^\[.*\]/{/members = \[/,/\]/p}' Cargo.toml | \
+		grep -v "members = \[" | tr -d '", \]'; echo -n $(NON_CARGO_WORKSPACE_CRATES)) | \
 		sort > /tmp/all_crates
 	@echo $(NON_OSDK_CRATES) $(OSDK_CRATES) | tr ' ' '\n' | sort > /tmp/combined_crates
-	@diff -B /tmp/all_crates /tmp/combined_crates || \
+	@diff -Bu /tmp/all_crates /tmp/combined_crates || \
 		(echo "Error: The combination of STD_CRATES and NOSTD_CRATES" \
 			"is not the same as all workspace members" && exit 1)
 	@rm /tmp/all_crates /tmp/combined_crates

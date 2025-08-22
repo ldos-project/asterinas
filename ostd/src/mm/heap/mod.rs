@@ -85,7 +85,8 @@ macro_rules! abort_with_message {
     };
 }
 
-#[cfg_attr(not(feature = "std"), alloc_error_handler)]
+#[cfg_attr(not(target_os = "linux"), alloc_error_handler)]
+#[cfg_attr(target_os = "linux", expect(unused))]
 fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
     abort_with_message!("Heap allocation error, layout = {:#x?}", layout);
 }
