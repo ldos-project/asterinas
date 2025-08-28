@@ -215,7 +215,7 @@ install_osdk:
 	@# The `OSDK_LOCAL_DEV` environment variable is used for local development
 	@# without the need to publish the changes of OSDK's self-hosted
 	@# dependencies to `crates.io`.
-	@OSDK_LOCAL_DEV=1 cargo install cargo-osdk --path osdk
+	OSDK_LOCAL_DEV=1 cargo install cargo-osdk --path osdk
 
 # This will install and update OSDK automatically
 $(CARGO_OSDK): $(OSDK_SRC_FILES)
@@ -223,11 +223,11 @@ $(CARGO_OSDK): $(OSDK_SRC_FILES)
 
 .PHONY: check_osdk
 check_osdk:
-	@cd osdk && cargo clippy -- -D warnings
+	cd osdk && cargo clippy -- -D warnings
 
 .PHONY: test_osdk
 test_osdk:
-	@cd osdk && \
+	cd osdk && \
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
@@ -237,15 +237,15 @@ initramfs:
 
 .PHONY: build
 build: initramfs $(CARGO_OSDK)
-	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
+	cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
 .PHONY: tools
 tools:
-	@cd kernel/libs/comp-sys && cargo install --path cargo-component
+	cd kernel/libs/comp-sys && cargo install --path cargo-component
 
 .PHONY: run
 run: initramfs $(CARGO_OSDK)
-	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
+	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), syscall)
 	@tail --lines 100 qemu.log | grep -q "^All syscall tests passed." \
@@ -278,45 +278,72 @@ profile_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk profile $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT) \
 		--samples $(GDB_PROFILE_COUNT) --interval $(GDB_PROFILE_INTERVAL) --format $(GDB_PROFILE_FORMAT)
 
-.PHONY: test
-test:
-	@for dir in $(NON_OSDK_CRATES); do \
-		(cd $$dir && cargo test) || exit 1; \
-	done
+
+
+# For each non-OSDK crate, invoke a rule which runs tests
+NON_OSDK_TEST_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
+
+test_%:
+	cd $(subst @@,/,$*) && cargo test
+
+.PHONY: test_non_osdk
+test: $(addprefix test_, $(NON_OSDK_TEST_TARGETS))
+
+# For each OSDK crate, invoke a rule which runs ktests using OSDK
+OSDK_KTEST_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
+
+ktest_ostd@@libs@@linux-bzimage@@setup:
+	@true
+
+ktest_%: initramfs $(CARGO_OSDK)
+	@dir=$(subst @@,/,$*); \
+	echo "cd $$dir && cargo osdk test $(CARGO_OSDK_TEST_ARGS)"; \
+	(cd $$dir && cargo osdk test $(CARGO_OSDK_TEST_ARGS)) || exit 1; \
+	tail --lines 10 qemu.log | grep -q "^\\[ktest runner\\] All crates tested." \
+		|| (echo "Test failed" && exit 1); \
 
 .PHONY: ktest
-ktest: initramfs $(CARGO_OSDK)
-	@# Exclude linux-bzimage-setup from ktest since it's hard to be unit tested
-	@for dir in $(OSDK_CRATES); do \
-		[ $$dir = "ostd/libs/linux-bzimage/setup" ] && continue; \
-		echo "[make] Testing $$dir"; \
-		(cd $$dir && cargo osdk test $(CARGO_OSDK_TEST_ARGS)) || exit 1; \
-		tail --lines 10 qemu.log | grep -q "^\\[ktest runner\\] All crates tested." \
-			|| (echo "Test failed" && exit 1); \
-	done
+ktest: $(addprefix ktest_, $(OSDK_KTEST_TARGETS))
 
+# For each non-OSDK crate, invoke a rule which runs docs
+NON_OSDK_DOCS_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
+
+docs_non_osdk_%:
+	cd $(subst @@,/,$*) && cargo doc --no-deps
+
+.PHONY: docs_non_osdk
+docs_non_osdk: $(addprefix docs_non_osdk_, $(NON_OSDK_DOCS_TARGETS))
+
+# For each OSDK crate, invoke a rule which runs docs using OSDK
+OSDK_DOCS_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
+
+docs_osdk_%: $(CARGO_OSDK)
+	cd $(subst @@,/,$*) && cargo osdk doc --no-deps
+
+.PHONY: docs_osdk
+docs_osdk: $(addprefix docs_osdk_, $(OSDK_DOCS_TARGETS))
+
+# Combine the two into a single `docs` target and build mdbook
 .PHONY: docs
-docs: $(CARGO_OSDK)
-	@for dir in $(NON_OSDK_CRATES); do \
-		(cd $$dir && cargo doc --no-deps) || exit 1; \
-	done
-	@for dir in $(OSDK_CRATES); do \
-		(cd $$dir && cargo osdk doc --no-deps) || exit 1; \
-	done
-	@echo "" 						# Add a blank line
-	@cd docs && mdbook build 				# Build mdBook
+docs: docs_non_osdk docs_osdk
+	@echo "Building mdBook"
+	cd docs && mdbook build
 
 .PHONY: format
 format:
-	@./tools/format_all.sh
+	./tools/format_all.sh
 	@$(MAKE) --no-print-directory -C test format
 
-.PHONY: check
-# FIXME: Make `make check` arch-aware.
-check: initramfs $(CARGO_OSDK)
+.PHONY: format_check lint_check clippy_check c_code_check typo_check
+
+format_check:
 	@# Check formatting issues of the Rust code
-	@./tools/format_all.sh --check
-	@
+	./tools/format_all.sh --check
+
+
+# Check that the makefile includes all projects.
+.PHONY: workspace_project_lint
+workspace_project_coverage_check:
 	@# Check if the combination of STD_CRATES and NON_OSDK_CRATES is the
 	@# same as all workspace members
 	@sed -n '/^\[workspace\]/,/^\[.*\]/{/members = \[/,/\]/p}' Cargo.toml | \
@@ -327,40 +354,70 @@ check: initramfs $(CARGO_OSDK)
 		(echo "Error: The combination of STD_CRATES and NOSTD_CRATES" \
 			"is not the same as all workspace members" && exit 1)
 	@rm /tmp/all_crates /tmp/combined_crates
-	@
-	@# Check if all workspace members enable workspace lints
-	@for dir in $(NON_OSDK_CRATES) $(OSDK_CRATES); do \
-		if [[ "$$(tail -2 $$dir/Cargo.toml)" != "[lints]"$$'\n'"workspace = true" ]]; then \
-			echo "Error: Workspace lints in $$dir are not enabled"; \
-			exit 1; \
-		fi \
-	done
-	@
-	@# Check compilation of the Rust code
-	@for dir in $(NON_OSDK_CRATES); do \
-		echo "Checking $$dir"; \
-		(cd $$dir && cargo clippy -- -D warnings) || exit 1; \
-	done
-	@for dir in $(OSDK_CRATES); do \
-		echo "Checking $$dir"; \
-		(cd $$dir && cargo osdk clippy -- -- -D warnings) || exit 1; \
-	done
-	@
+
+# The following rules use check a list of subdirectories with the same command. This complex pattern is used instead of
+# a bash level loop because this works correctly with `--keep-going`. The bash loop would exit after the first failure.
+# It also also makes make level parallelism work. The pattern is:
+# 
+# * Depend a set of rules with the names `prefix_escaped_directory_name`
+# * Create a pattern rule `prefix_%` which unescapes the matched suffix (which is available as $*), and performs the
+#   checks.
+
+# TODO: This pattern could be applied to some of the loops above (test, ktest, docs), but checks are by far the most
+# important because it allows showing ALL check failures, not just the first.
+
+# Target names with `/` replaced with `@@` since is `/` is special in make.
+NON_OSDK_CRATE_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
+OSDK_CRATE_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
+
+# For each crate, invoke a rule which checks that it inherits lints from the workspace.
+.PHONY: lint_check
+lint_check: $(addprefix lint_check_, $(NON_OSDK_CRATE_TARGETS) $(OSDK_CRATE_TARGETS))
+
+lint_check_%:
+	@# Convert matched tail back to a proper path by replacing `@@` with `/`
+	@dir=$(subst @@,/,$*); \
+	if [[ "$$(tail -2 $$dir/Cargo.toml)" != "[lints]"$$'\n'"workspace = true" ]]; then \
+		echo "Error: Workspace lints in $$dir are not enabled"; \
+		exit 1; \
+	fi
+
+# For each non-OSDK crate, invoke a rule which runs clippy
+.PHONY: clippy_check_non_osdk 
+clippy_check_non_osdk: $(addprefix clippy_check_non_osdk_, $(NON_OSDK_CRATE_TARGETS))
+
+clippy_check_non_osdk_%:
+	cd $(subst @@,/,$*) && cargo clippy -- -D warnings
+
+# For each OSDK crate, invoke a rule which runs clippy
+.PHONY: clippy_check_osdk
+clippy_check_osdk: $(addprefix clippy_check_osdk_, $(OSDK_CRATE_TARGETS))
+
+clippy_check_osdk_%:  $(CARGO_OSDK)
+	cd $(subst @@,/,$*) && cargo osdk clippy -- -- -D warnings
+
+.PHONY: clippy_check
+clippy_check: clippy_check_non_osdk clippy_check_osdk
+
+c_code_check:
 	@# Check formatting issues of the C code (regression tests)
 	@$(MAKE) --no-print-directory -C test check
-	@
+
+typos_check:
 	@# Check typos
-	@typos
+	typos
+
+check: initramfs format_check workspace_project_coverage_check lint_check clippy_check c_code_check typo_check
 
 .PHONY: clean
 clean:
 	@echo "Cleaning up Asterinas workspace target files"
-	@cargo clean
+	cargo clean
 	@echo "Cleaning up OSDK workspace target files"
-	@cd osdk && cargo clean
+	cd osdk && cargo clean
 	@echo "Cleaning up documentation target files"
-	@cd docs && mdbook clean
+	cd docs && mdbook clean
 	@echo "Cleaning up test target files"
 	@$(MAKE) --no-print-directory -C test clean
 	@echo "Uninstalling OSDK"
-	@rm -f $(CARGO_OSDK)
+	rm -f $(CARGO_OSDK)

@@ -69,7 +69,7 @@ runs:
       shell: bash
       run: |
         CMD=""
-        [[ "${{ matrix.id }}" == "lint" ]] && CMD+="make check"
+        [[ "${{ matrix.id }}" == "lint" ]] && CMD+="make --keep-going check"
         [[ "${{ matrix.id }}" == "compile" ]] && CMD+="make build FEATURES=all"
         [[ "${{ matrix.id }}" == "usermode_test" ]] && CMD+="make test"
         [[ "${{ matrix.id }}" == "ktest" ]] && CMD+="make ktest NETDEV=tap"
@@ -102,7 +102,7 @@ runs:
       if: ${{ inputs.auto_test == 'osdk' }}
       shell: bash
       run: |
-        [[ "${{ !contains(matrix.container, 'osdk') }}" == "true" ]] && make check_osdk
+        [[ "${{ !contains(matrix.container, 'osdk') }}" == "true" ]] && make --keep-going check_osdk
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
           RUSTUP_HOME=/root/.rustup make test_osdk INTEL_TDX=1
         else
