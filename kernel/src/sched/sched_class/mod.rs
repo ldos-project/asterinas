@@ -3,7 +3,7 @@
 #![warn(unused)]
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{fmt, sync::atomic::Ordering};
+use core::{fmt, sync::atomic::Ordering, time::Duration};
 
 use ostd::{
     arch::read_tsc as sched_clock,
@@ -236,6 +236,14 @@ impl Scheduler for ClassScheduler {
     fn local_rq_with(&self, f: &mut dyn FnMut(&dyn LocalRunQueue)) {
         let guard = disable_local();
         f(&*self.rqs[guard.current_cpu().as_usize()].lock())
+    }
+
+    fn idle_time(&self) -> Duration {
+        let mut idle_time = Duration::from_nanos(0);
+        for class_rq in &self.rqs {
+            idle_time += class_rq.lock().idle.get_idle_time();
+        }
+        idle_time + Duration::from_secs(0)
     }
 }
 

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! This module offers `/proc/uptime` file support, which provides
-//! the time since boot. The time is represented in seconds with a 2 digit decimal.
-//!
-//! /proc/uptime should also report the time spent idling summed across all cores. This is currently
-//! unimplemented.
+//! This module offers `/proc/uptime` file support, which provides the time since boot and the time
+//! spent idling summed across all cores. The time is represented in seconds with a 2 digit decimal.
 //!
 //! Reference: <https://man7.org/linux/man-pages/man5/proc_uptime.5.html>
 
+use alloc::format;
+
 use aster_time::read_monotonic_time;
+use ostd::task::scheduler::idle_time;
 
 use crate::{
     alloc::borrow::ToOwned,
@@ -18,8 +18,6 @@ use crate::{
     },
     prelude::*,
 };
-
-use alloc::format;
 
 /// Represents the inode at `/proc/uptime`.
 pub struct UptimeFileOps;
@@ -31,8 +29,9 @@ impl UptimeFileOps {
     }
 
     pub fn get_uptime() -> String {
-        let uptime: f64 = read_monotonic_time().as_secs_f64();
-        format!("{:.2}\n", uptime).to_owned()
+        let total_idle_time = idle_time().as_secs_f64();
+        let uptime = read_monotonic_time().as_secs_f64();
+        format!("{:.2} {:.2}\n", uptime, total_idle_time).to_owned()
     }
 }
 

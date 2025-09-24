@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use core::time::Duration;
 
 use super::{
     info::CommonSchedInfo, inject_scheduler, EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags,
@@ -76,6 +77,11 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
             .disable_irq()
             .lock();
         f(local_rq);
+    }
+
+    fn idle_time(&self) -> Duration {
+        // TODO(aneesh): Replace this with a real implementation.
+        Duration::from_nanos(0)
     }
 }
 
