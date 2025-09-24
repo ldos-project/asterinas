@@ -284,6 +284,7 @@ enum ReschedAction {
     SwitchTo(Arc<Task>),
 }
 
+/// Return the amount of time spent in idle
 pub fn idle_time() -> Duration {
     SCHEDULER.get().unwrap().idle_time()
 }
