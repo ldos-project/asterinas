@@ -13,6 +13,7 @@ use self::{
     sys::SysDirOps,
     template::{DirOps, ProcDir, ProcDirBuilder, ProcSymBuilder, SymOps},
     thread_self::ThreadSelfSymOps,
+    uptime::UptimeFileOps,
 };
 use crate::{
     events::Observer,
@@ -36,6 +37,7 @@ mod self_;
 mod sys;
 mod template;
 mod thread_self;
+mod uptime;
 
 pub(super) fn init() {
     FILESYSTEM_TYPES.call_once(|| {
@@ -134,6 +136,8 @@ impl DirOps for RootDirOps {
             LoadAvgFileOps::new_inode(this_ptr.clone())
         } else if name == "cpuinfo" {
             CpuInfoFileOps::new_inode(this_ptr.clone())
+        } else if name == "uptime" {
+            UptimeFileOps::new_inode(this_ptr.clone())
         } else if let Ok(pid) = name.parse::<Pid>() {
             let process_ref =
                 process_table::get_process(pid).ok_or_else(|| Error::new(Errno::ENOENT))?;
