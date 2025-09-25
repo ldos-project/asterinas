@@ -49,7 +49,7 @@ impl SchedClassRq for IdleClassRq {
     fn enqueue(&mut self, entity: Arc<Task>, _: Option<EnqueueFlags>) {
         self.idle_time += self
             .last_start_time
-            .and_then(|t| Some(read_monotonic_time() - t))
+            .map(|t| read_monotonic_time() - t)
             .unwrap_or(Duration::from_nanos(0));
 
         let old = self.entity.replace(entity);
