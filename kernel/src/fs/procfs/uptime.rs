@@ -29,9 +29,16 @@ impl UptimeFileOps {
     }
 
     pub fn get_uptime() -> String {
-        let total_idle_time = idle_time().as_secs_f64();
-        let uptime = read_monotonic_time().as_secs_f64();
-        format!("{:.2} {:.2}\n", uptime, total_idle_time).to_owned()
+        let uptime = read_monotonic_time();
+        let total_idle_time = idle_time();
+        format!(
+            "{}.{:0>2} {}.{:0>2}\n",
+            uptime.as_secs(),
+            uptime.subsec_millis() / 10,
+            total_idle_time.as_secs(),
+            total_idle_time.subsec_millis() / 10
+        )
+        .to_owned()
     }
 }
 
