@@ -80,7 +80,7 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
     }
 
     fn idle_time(&self) -> Duration {
-        // TODO(aneesh): Replace this with a real implementation.
+        // TODO(#32): Replace this with a real implementation.
         Duration::from_nanos(0)
     }
 }
