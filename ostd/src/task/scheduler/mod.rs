@@ -8,6 +8,8 @@
 mod fifo_scheduler;
 pub mod info;
 
+use core::time::Duration;
+
 use spin::Once;
 
 use super::{preempt::cpu_local, processor, Task};
@@ -50,6 +52,9 @@ pub trait Scheduler<T = Task>: Sync + Send {
 
     /// Gets a mutable access to the local runqueue of the current CPU core.
     fn local_mut_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue<T>));
+
+    /// Return the amount of time spent in idle
+    fn idle_time(&self) -> Duration;
 }
 
 /// The _local_ view of a per-CPU runqueue.
@@ -277,4 +282,9 @@ enum ReschedAction {
     Retry,
     /// Switch to target task.
     SwitchTo(Arc<Task>),
+}
+
+/// Return the amount of time spent in idle
+pub fn idle_time() -> Duration {
+    SCHEDULER.get().unwrap().idle_time()
 }
