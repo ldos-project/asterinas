@@ -44,6 +44,14 @@ NETDEV ?= user
 VHOST ?= off
 # End of network settings
 
+# Docker settings
+# Name that the long-running container will use
+DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
+# End of docker settings
+
+# Rust cache
+DOCKER_RUST_CACHE_LOCATION ?= $(shell pwd)/.cache
+
 # ========================= End of Makefile options. ==========================
 
 SHELL := /bin/bash
@@ -56,14 +64,16 @@ CARGO_OSDK_COMMON_ARGS := --target-arch=$(ARCH)
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
 CARGO_OSDK_TEST_ARGS :=
 
+# Rust Cache
+CARGO_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/cargo
+RUSTUP_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/rustup
+
 # Docker Configs
 DOCKER_TAG := ldosproject/asterinas
 DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
 DOCKER_RUN_ARGS := --privileged --network=host --device=/dev/kvm
-DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas
-# Name that the long-running container will use
-DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
+DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
 
 ifeq ($(AUTO_TEST), syscall)
 BUILD_SYSCALL_TEST := 1
@@ -433,10 +443,19 @@ typos_check:
 
 check: initramfs format_check workspace_project_coverage_check lint_check clippy_check c_code_check typo_check
 
-docker:
+# Here we build our mount cache
+# TODO make this rule depend on the dockerfile version see #34
+${DOCKER_RUST_CACHE_LOCATION}:
+	mkdir $@
+	docker create --name dummy $(DOCKER_IMAGE_TAG)
+	docker cp dummy:/root/.cargo ${CARGO_CACHE}
+	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
+	docker rm dummy
+
+docker: | ${DOCKER_RUST_CACHE_LOCATION}
 	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
-docker_start:
+docker_start: | ${DOCKER_RUST_CACHE_LOCATION}
 	docker ps -a | grep $(DOCKER_CONTAINER_NAME) || \
 		docker run --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
@@ -446,9 +465,7 @@ docker_attach: docker_start
 docker_rm:
 	docker rm $(DOCKER_CONTAINER_NAME)
 
-
-
-.PHONY: clean docker
+.PHONY: clean docker Clean
 clean:
 	@echo "Cleaning up Asterinas workspace target files"
 	cargo clean
@@ -460,3 +477,6 @@ clean:
 	@$(MAKE) --no-print-directory -C test clean
 	@echo "Uninstalling OSDK"
 	rm -f $(CARGO_OSDK)
+
+clean_all: clean
+	rm -rf $(DOCKER_RUST_CACHE_LOCATION)
