@@ -7,9 +7,9 @@ use core::arch::global_asm;
 
 use spin::Once;
 use x86_64::{
-    PrivilegeLevel, VirtAddr,
     instructions::tables::lidt,
-    structures::{DescriptorTablePointer, idt::Entry},
+    structures::{idt::Entry, DescriptorTablePointer},
+    PrivilegeLevel, VirtAddr,
 };
 
 global_asm!(include_str!("trap.S"));

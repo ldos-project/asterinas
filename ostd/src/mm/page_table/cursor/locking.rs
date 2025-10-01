@@ -9,11 +9,12 @@ use align_ext::AlignExt;
 use super::Cursor;
 use crate::{
     mm::{
-        Vaddr, nr_subpage_per_huge, paddr_to_vaddr,
+        nr_subpage_per_huge, paddr_to_vaddr,
         page_table::{
-            ChildRef, PageTable, PageTableConfig, PageTableEntryTrait, PageTableGuard,
-            PageTableNodeRef, PagingConstsTrait, PagingLevel, load_pte, page_size, pte_index,
+            load_pte, page_size, pte_index, ChildRef, PageTable, PageTableConfig,
+            PageTableEntryTrait, PageTableGuard, PageTableNodeRef, PagingConstsTrait, PagingLevel,
         },
+        Vaddr,
     },
     task::atomic_mode::InAtomicMode,
 };

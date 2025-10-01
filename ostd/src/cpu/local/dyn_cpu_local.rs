@@ -4,14 +4,14 @@
 
 use core::{marker::PhantomData, mem::ManuallyDrop, ptr::NonNull};
 
-use bitvec::prelude::{BitVec, bitvec};
+use bitvec::prelude::{bitvec, BitVec};
 
 use super::{AnyStorage, CpuLocal};
 use crate::{
-    Result,
-    cpu::{CpuId, PinCurrentCpu, all_cpus, num_cpus},
-    mm::{FrameAllocOptions, PAGE_SIZE, Segment, Vaddr, paddr_to_vaddr},
+    cpu::{all_cpus, num_cpus, CpuId, PinCurrentCpu},
+    mm::{paddr_to_vaddr, FrameAllocOptions, Segment, Vaddr, PAGE_SIZE},
     trap::irq::DisabledLocalIrqGuard,
+    Result,
 };
 
 /// A dynamically-allocated storage for a CPU-local variable of type `T`.

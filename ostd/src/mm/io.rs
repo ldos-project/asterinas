@@ -47,13 +47,13 @@ use align_ext::AlignExt;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    Error, Pod,
     arch::mm::{__memcpy_fallible, __memset_fallible},
     mm::{
-        MAX_USERSPACE_VADDR,
         kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
+        MAX_USERSPACE_VADDR,
     },
     prelude::*,
+    Error, Pod,
 };
 
 /// A trait that enables reading/writing data from/to a VM object,

@@ -13,8 +13,8 @@ use core::{
 };
 
 use super::{
-    PreemptDisabled,
     guard::{GuardTransfer, SpinGuardian},
+    PreemptDisabled,
 };
 use crate::task::atomic_mode::AsAtomicModeGuard;
 

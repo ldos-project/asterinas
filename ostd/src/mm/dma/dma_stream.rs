@@ -3,13 +3,13 @@
 use alloc::sync::Arc;
 use core::ops::Range;
 
-use super::{DmaError, HasDaddr, check_and_insert_dma_mapping, remove_dma_mapping};
+use super::{check_and_insert_dma_mapping, remove_dma_mapping, DmaError, HasDaddr};
 use crate::{
     arch::iommu,
     error::Error,
     mm::{
-        HasPaddr, Infallible, PAGE_SIZE, Paddr, USegment, UntypedMem, VmIo, VmReader, VmWriter,
-        dma::{Daddr, DmaType, dma_type},
+        dma::{dma_type, Daddr, DmaType},
+        HasPaddr, Infallible, Paddr, USegment, UntypedMem, VmIo, VmReader, VmWriter, PAGE_SIZE,
     },
 };
 

@@ -4,12 +4,12 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::time::Duration;
 
 use super::{
-    EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, info::CommonSchedInfo, inject_scheduler,
+    info::CommonSchedInfo, inject_scheduler, EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags,
 };
 use crate::{
-    cpu::{CpuId, PinCurrentCpu, num_cpus},
+    cpu::{num_cpus, CpuId, PinCurrentCpu},
     sync::SpinLock,
-    task::{Task, disable_preempt},
+    task::{disable_preempt, Task},
 };
 
 pub fn init() {

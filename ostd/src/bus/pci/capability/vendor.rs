@@ -3,8 +3,8 @@
 //! Vendor-specific capability support.
 
 use crate::{
-    Error, Result,
     bus::pci::{common_device::PciCommonDevice, device_info::PciDeviceLocation},
+    Error, Result,
 };
 
 /// Vendor specific capability. Users can access this capability area at will,

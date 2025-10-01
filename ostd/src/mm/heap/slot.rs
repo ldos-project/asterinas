@@ -7,8 +7,8 @@ use core::{alloc::AllocError, ptr::NonNull};
 use crate::{
     impl_frame_meta_for,
     mm::{
-        FrameAllocOptions, PAGE_SIZE, Paddr, Segment, Vaddr, kspace::LINEAR_MAPPING_BASE_VADDR,
-        paddr_to_vaddr,
+        kspace::LINEAR_MAPPING_BASE_VADDR, paddr_to_vaddr, FrameAllocOptions, Paddr, Segment,
+        Vaddr, PAGE_SIZE,
     },
 };
 

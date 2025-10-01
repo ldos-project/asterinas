@@ -4,7 +4,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use super::{LocalIrqDisabled, SpinLock};
-use crate::task::{Task, scheduler};
+use crate::task::{scheduler, Task};
 
 // # Explanation on the memory orders
 //

@@ -7,14 +7,13 @@
 //! the declaration of untyped frames and segments, and the implementation of
 //! extra functionalities (such as [`VmIo`]) for them.
 
-use super::{Frame, Segment, meta::AnyFrameMeta};
+use super::{meta::AnyFrameMeta, Frame, Segment};
 use crate::{
-    Error, Result,
     mm::{
-        Infallible,
         io::{FallibleVmRead, FallibleVmWrite, VmIo, VmReader, VmWriter},
-        paddr_to_vaddr,
+        paddr_to_vaddr, Infallible,
     },
+    Error, Result,
 };
 
 /// The metadata of untyped frame.

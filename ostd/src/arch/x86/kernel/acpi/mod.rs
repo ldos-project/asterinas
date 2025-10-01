@@ -5,7 +5,7 @@ pub mod remapping;
 
 use core::ptr::NonNull;
 
-use acpi::{AcpiHandler, AcpiTables, rsdp::Rsdp};
+use acpi::{rsdp::Rsdp, AcpiHandler, AcpiTables};
 use log::warn;
 
 use crate::{

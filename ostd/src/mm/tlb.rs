@@ -9,8 +9,8 @@ use core::{
 };
 
 use super::{
-    PAGE_SIZE, Vaddr,
-    frame::{Frame, meta::AnyFrameMeta},
+    frame::{meta::AnyFrameMeta, Frame},
+    Vaddr, PAGE_SIZE,
 };
 use crate::{
     arch::irq,

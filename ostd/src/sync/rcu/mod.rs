@@ -18,9 +18,8 @@ use spin::once::Once;
 
 use self::monitor::RcuMonitor;
 use crate::task::{
-    DisabledPreemptGuard,
     atomic_mode::{AsAtomicModeGuard, InAtomicMode},
-    disable_preempt,
+    disable_preempt, DisabledPreemptGuard,
 };
 
 mod monitor;

@@ -3,7 +3,7 @@
 use core::mem::size_of;
 
 use crate::{
-    mm::{FrameAllocOptions, PAGE_SIZE, Segment, VmIo},
+    mm::{FrameAllocOptions, Segment, VmIo, PAGE_SIZE},
     prelude::Paddr,
 };
 
