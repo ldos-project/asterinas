@@ -90,7 +90,7 @@ pub(crate) trait PagingConstsTrait: Clone + Debug + Send + Sync + 'static {
 pub const PAGE_SIZE: usize = page_size::<PagingConsts>(1);
 
 /// The page size at a given level.
-pub(crate) const fn page_size<C: PagingConstsTrait>(level: PagingLevel) -> usize {
+pub const fn page_size<C: PagingConstsTrait>(level: PagingLevel) -> usize {
     C::BASE_PAGE_SIZE << (nr_subpage_per_huge::<C>().ilog2() as usize * (level as usize - 1))
 }
 
