@@ -70,7 +70,7 @@ pub(crate) unsafe fn init() {
     // SAFETY: `MAX_IO_PORT` is guaranteed not to exceed the maximum value specified by architecture.
     let mut allocator = IdAlloc::with_capacity(crate::arch::io::MAX_IO_PORT as usize);
 
-    extern "C" {
+    unsafe extern "C" {
         fn __sensitive_io_ports_start();
         fn __sensitive_io_ports_end();
     }

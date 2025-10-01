@@ -363,7 +363,7 @@ impl Iterator for MemoryEntryIter {
 }
 
 /// The entry point of Rust code called by inline asm.
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "sysv64" fn __multiboot_entry(boot_magic: u32, boot_params: u64) -> ! {
     assert_eq!(boot_magic, MULTIBOOT_ENTRY_MAGIC);
     let mb1_info =

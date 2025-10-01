@@ -3,7 +3,7 @@
 core::arch::global_asm!(include_str!("memcpy_fallible.S"));
 core::arch::global_asm!(include_str!("memset_fallible.S"));
 
-extern "C" {
+unsafe extern "C" {
     /// Copies `size` bytes from `src` to `dst`. This function works with exception handling
     /// and can recover from page fault.
     /// Returns number of bytes that failed to copy.

@@ -43,7 +43,7 @@ use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 macro_rules! cpu_local {
     ($( $(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; )*) => {
         $(
-            #[link_section = ".cpu_local"]
+            #[unsafe(link_section = ".cpu_local")]
             $(#[$attr])* $vis static $name: $crate::cpu::local::StaticCpuLocal<$t> = {
                 let val = $init;
                 // SAFETY: The per-CPU variable instantiated is statically
