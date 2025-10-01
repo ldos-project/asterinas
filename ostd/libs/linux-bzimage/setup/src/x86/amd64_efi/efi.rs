@@ -12,7 +12,7 @@ use crate::x86::amd64_efi::alloc::alloc_pages;
 
 pub(super) const PAGE_SIZE: u64 = 4096;
 
-#[export_name = "main_efi_common64"]
+#[unsafe(export_name = "main_efi_common64")]
 extern "sysv64" fn main_efi_common64(
     handle: Handle,
     system_table: *const SystemTable,

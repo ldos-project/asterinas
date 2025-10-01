@@ -71,9 +71,9 @@ pub fn test_current_crate(config: &Config, args: &TestArgs) {
 
 {}
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static KTEST_TEST_WHITELIST: Option<&[&str]> = {};
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
 
 "#,
