@@ -13,8 +13,8 @@ use ostd::{
 use crate::{
     prelude::*,
     process::{
-        posix_thread::{PosixThread, ThreadLocal},
         Process,
+        posix_thread::{PosixThread, ThreadLocal},
     },
     thread::Thread,
     util::{MultiRead, VmReaderArray},
@@ -49,10 +49,9 @@ pub struct CurrentUserSpace<'a>(Ref<'a, Option<Vmar<Full>>>);
 /// If you get the access to the [`Context`].
 #[macro_export]
 macro_rules! current_userspace {
-    () => {{
-        use $crate::context::CurrentUserSpace;
-        CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
-    }};
+    () => {
+        $crate::context::CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
+    };
 }
 
 impl<'a> CurrentUserSpace<'a> {
@@ -360,9 +359,11 @@ mod test {
         let read_str2 = reader.read_cstring().unwrap();
         assert_eq!(read_str2, strs[1]);
 
-        assert!(reader
-            .read_cstring()
-            .is_err_and(|err| err.error() == Errno::EFAULT));
+        assert!(
+            reader
+                .read_cstring()
+                .is_err_and(|err| err.error() == Errno::EFAULT)
+        );
     }
 
     #[ktest]
@@ -391,8 +392,10 @@ mod test {
         let read_str3 = multiread.read_cstring().unwrap();
         assert_eq!(read_str3, strs[2]);
 
-        assert!(multiread
-            .read_cstring()
-            .is_err_and(|err| err.error() == Errno::EFAULT));
+        assert!(
+            multiread
+                .read_cstring()
+                .is_err_and(|err| err.error() == Errno::EFAULT)
+        );
     }
 }
