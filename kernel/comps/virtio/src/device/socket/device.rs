@@ -6,21 +6,21 @@ use core::{fmt::Debug, hint::spin_loop, mem::size_of};
 use aster_network::{RxBuffer, TxBuffer};
 use aster_util::{field_ptr, slot_vec::SlotVec};
 use log::debug;
-use ostd::{mm::VmWriter, sync::SpinLock, trap::TrapFrame, Pod};
+use ostd::{Pod, mm::VmWriter, sync::SpinLock, trap::TrapFrame};
 
 use super::{
     config::{VirtioVsockConfig, VsockFeatures},
     connect::{ConnectionInfo, VsockEvent},
     error::SocketError,
-    header::{VirtioVsockHdr, VirtioVsockOp, VIRTIO_VSOCK_HDR_LEN},
+    header::{VIRTIO_VSOCK_HDR_LEN, VirtioVsockHdr, VirtioVsockOp},
 };
 use crate::{
     device::{
+        VirtioDeviceError,
         socket::{
             buffer::{RX_BUFFER_POOL, TX_BUFFER_POOL},
             handle_recv_irq, register_device,
         },
-        VirtioDeviceError,
     },
     queue::{QueueError, VirtQueue},
     transport::VirtioTransport,

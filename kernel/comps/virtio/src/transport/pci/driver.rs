@@ -4,19 +4,19 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use ostd::{
     bus::{
+        BusProbeError,
         pci::{
             bus::{PciDevice, PciDriver},
             common_device::PciCommonDevice,
         },
-        BusProbeError,
     },
     sync::SpinLock,
 };
 
 use super::device::VirtioPciModernTransport;
 use crate::transport::{
-    pci::{device::VirtioPciDevice, legacy::VirtioPciLegacyTransport},
     VirtioTransport,
+    pci::{device::VirtioPciDevice, legacy::VirtioPciLegacyTransport},
 };
 
 #[derive(Debug)]

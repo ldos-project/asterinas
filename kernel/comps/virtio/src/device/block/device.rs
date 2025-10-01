@@ -11,24 +11,24 @@ use alloc::{
 use core::{fmt::Debug, hint::spin_loop, mem::size_of};
 
 use aster_block::{
-    bio::{bio_segment_pool_init, BioEnqueueError, BioStatus, BioType, SubmittedBio},
-    request_queue::{BioRequest, BioRequestSingleQueue},
     BlockDeviceMeta,
+    bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
+    request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use id_alloc::IdAlloc;
 use log::{debug, info};
 use ostd::{
+    Pod,
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
     sync::SpinLock,
     trap::TrapFrame,
-    Pod,
 };
 
 use super::{BlockFeatures, VirtioBlockConfig, VirtioBlockFeature};
 use crate::{
     device::{
-        block::{ReqType, RespStatus},
         VirtioDeviceError,
+        block::{ReqType, RespStatus},
     },
     queue::VirtQueue,
     transport::{ConfigManager, VirtioTransport},

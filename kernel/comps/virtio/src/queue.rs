@@ -5,7 +5,7 @@
 use alloc::vec::Vec;
 use core::{
     mem::{offset_of, size_of},
-    sync::atomic::{fence, Ordering},
+    sync::atomic::{Ordering, fence},
 };
 
 use aster_rights::{Dup, TRightSet, TRights, Write};
@@ -13,13 +13,13 @@ use aster_util::{field_ptr, safe_ptr::SafePtr};
 use bitflags::bitflags;
 use log::debug;
 use ostd::{
-    mm::{DmaCoherent, FrameAllocOptions, PodOnce},
     Pod,
+    mm::{DmaCoherent, FrameAllocOptions, PodOnce},
 };
 
 use crate::{
     dma_buf::DmaBuf,
-    transport::{pci::legacy::VirtioPciLegacyTransport, ConfigManager, VirtioTransport},
+    transport::{ConfigManager, VirtioTransport, pci::legacy::VirtioPciLegacyTransport},
 };
 
 #[derive(Debug)]
