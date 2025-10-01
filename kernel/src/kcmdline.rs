@@ -267,7 +267,9 @@ static KERNEL_CMD_LINE: Once<KCmdlineArg> = Once::new();
 // Set the global kernel command line. This call will be ignored if the command line has already been set.
 pub(crate) fn set_kernel_cmd_line(cmd_line: KCmdlineArg) {
     if let Some(first) = KERNEL_CMD_LINE.get() {
-        error!("Kernel command line was set more than once. The first was: {first:?}\nThe second was: {cmd_line:?}");
+        error!(
+            "Kernel command line was set more than once. The first was: {first:?}\nThe second was: {cmd_line:?}"
+        );
     }
     KERNEL_CMD_LINE.call_once(|| cmd_line);
 }

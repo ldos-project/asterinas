@@ -9,12 +9,12 @@ use core::{
 use align_ext::AlignExt;
 use ostd::{
     mm::{
-        tlb::TlbFlushOp, CachePolicy, FrameAllocOptions, PageFlags, PageProperty, UFrame, VmSpace,
+        CachePolicy, FrameAllocOptions, PageFlags, PageProperty, UFrame, VmSpace, tlb::TlbFlushOp,
     },
     task::disable_preempt,
 };
 
-use super::{interval_set::Interval, RssDelta, RssType};
+use super::{RssDelta, RssType, interval_set::Interval};
 use crate::{
     fs::utils::Inode,
     prelude::*,

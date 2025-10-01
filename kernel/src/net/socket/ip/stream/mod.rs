@@ -6,14 +6,14 @@ use aster_bigtcp::{
     socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption},
     wire::IpEndpoint,
 };
-use connected::{close_and_linger, ConnectedStream};
+use connected::{ConnectedStream, close_and_linger};
 use connecting::{ConnResult, ConnectingStream};
 use init::InitStream;
 use listen::ListenStream;
 use observer::StreamObserver;
 use options::{
-    Congestion, DeferAccept, Inq, KeepIdle, MaxSegment, NoDelay, SynCnt, UserTimeout, WindowClamp,
-    KEEPALIVE_INTERVAL,
+    Congestion, DeferAccept, Inq, KEEPALIVE_INTERVAL, KeepIdle, MaxSegment, NoDelay, SynCnt,
+    UserTimeout, WindowClamp,
 };
 use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
 use takeable::Takeable;
@@ -30,13 +30,13 @@ use crate::{
     net::{
         iface::Iface,
         socket::{
+            Socket,
             options::{Error as SocketError, SocketOption},
             private::SocketPrivate,
             util::{
-                options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
                 MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
+                options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
             },
-            Socket,
         },
     },
     prelude::*,
@@ -793,10 +793,10 @@ impl State {
 
     fn iface(&self) -> Option<&Arc<Iface>> {
         match self {
-            &State::Init(_) => None,
-            &State::Connecting(ref connecting_stream) => Some(connecting_stream.iface()),
-            &State::Connected(ref connected_stream) => Some(connected_stream.iface()),
-            &State::Listen(ref listen_stream) => Some(listen_stream.iface()),
+            State::Init(_) => None,
+            State::Connecting(connecting_stream) => Some(connecting_stream.iface()),
+            State::Connected(connected_stream) => Some(connected_stream.iface()),
+            State::Listen(listen_stream) => Some(listen_stream.iface()),
         }
     }
 }

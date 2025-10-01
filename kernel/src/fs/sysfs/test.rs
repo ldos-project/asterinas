@@ -12,10 +12,10 @@ use alloc::{
 use core::fmt::Debug;
 
 use aster_systree::{
-    impl_cast_methods_for_branch, impl_cast_methods_for_node, impl_cast_methods_for_symlink,
-    init_for_ktest, singleton as systree_singleton, Error as SysTreeError, Result as SysTreeResult,
-    SysAttrFlags, SysAttrSet, SysAttrSetBuilder, SysBranchNode, SysBranchNodeFields, SysNode,
-    SysNodeId, SysNodeType, SysNormalNodeFields, SysObj, SysStr, SysSymlink, SysTree,
+    Error as SysTreeError, Result as SysTreeResult, SysAttrFlags, SysAttrSet, SysAttrSetBuilder,
+    SysBranchNode, SysBranchNodeFields, SysNode, SysNodeId, SysNodeType, SysNormalNodeFields,
+    SysObj, SysStr, SysSymlink, SysTree, impl_cast_methods_for_branch, impl_cast_methods_for_node,
+    impl_cast_methods_for_symlink, init_for_ktest, singleton as systree_singleton,
 };
 use inherit_methods_macro::inherit_methods;
 use ostd::{
@@ -25,12 +25,12 @@ use ostd::{
 };
 
 use crate::{
+    Result,
     fs::{
         sysfs::fs::SysFs,
         utils::{DirentVisitor, FileSystem, InodeMode, InodeType},
     },
     time::clocks::init_for_ktest as time_init_for_ktest,
-    Result,
 };
 
 // --- Mock SysTree Components ---

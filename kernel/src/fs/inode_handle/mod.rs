@@ -19,14 +19,14 @@ use crate::{
         path::Dentry,
         utils::{
             AccessMode, DirentVisitor, FallocMode, FileRange, FlockItem, FlockList, InodeMode,
-            InodeType, IoctlCmd, Metadata, RangeLockItem, RangeLockItemBuilder, RangeLockList,
-            RangeLockType, SeekFrom, StatusFlags, OFFSET_MAX,
+            InodeType, IoctlCmd, Metadata, OFFSET_MAX, RangeLockItem, RangeLockItemBuilder,
+            RangeLockList, RangeLockType, SeekFrom, StatusFlags,
         },
     },
     prelude::*,
     process::{
-        signal::{PollHandle, Pollable},
         Gid, Uid,
+        signal::{PollHandle, Pollable},
     },
 };
 

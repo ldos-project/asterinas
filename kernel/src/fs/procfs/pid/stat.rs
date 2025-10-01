@@ -3,12 +3,12 @@
 use core::fmt::Write;
 
 use crate::{
+    Process,
     fs::{
         procfs::template::{FileOps, ProcFileBuilder},
         utils::Inode,
     },
     prelude::*,
-    Process,
 };
 
 /// Represents the inode at `/proc/[pid]/stat`.

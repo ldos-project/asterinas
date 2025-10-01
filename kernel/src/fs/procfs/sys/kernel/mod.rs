@@ -3,9 +3,9 @@
 use crate::{
     fs::{
         procfs::{
+            ProcDir,
             sys::kernel::cap_last_cap::CapLastCapFileOps,
             template::{DirOps, ProcDirBuilder},
-            ProcDir,
         },
         utils::{DirEntryVecExt, Inode},
     },

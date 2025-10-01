@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
 
-use super::{group::AtomicGid, user::AtomicUid, Gid, Uid};
+use super::{Gid, Uid, group::AtomicGid, user::AtomicUid};
 use crate::{
     prelude::*,
     process::credentials::capabilities::{AtomicCapSet, CapSet},

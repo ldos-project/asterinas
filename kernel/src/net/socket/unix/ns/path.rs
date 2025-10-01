@@ -2,7 +2,7 @@
 
 use crate::{
     fs::{
-        fs_resolver::{split_path, FsPath},
+        fs_resolver::{FsPath, split_path},
         path::Dentry,
         utils::{InodeMode, InodeType, Permission},
     },

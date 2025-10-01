@@ -5,8 +5,8 @@ use core::time::Duration;
 
 use aster_time::read_monotonic_time;
 use ostd::task::{
-    scheduler::{EnqueueFlags, UpdateFlags},
     Task,
+    scheduler::{EnqueueFlags, UpdateFlags},
 };
 
 use super::{CurrentRuntime, SchedAttr, SchedClassRq};

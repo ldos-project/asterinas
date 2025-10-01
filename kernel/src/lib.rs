@@ -31,11 +31,11 @@
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
-    arch::qemu::{exit_qemu, QemuExitCode},
+    arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
 };
-use process::{spawn_init_process, Process};
+use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
 
 use crate::{kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions};

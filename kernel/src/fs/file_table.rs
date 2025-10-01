@@ -6,7 +6,7 @@ use aster_util::slot_vec::SlotVec;
 
 use super::{
     file_handle::FileLike,
-    fs_resolver::{FsPath, FsResolver, AT_FDCWD},
+    fs_resolver::{AT_FDCWD, FsPath, FsResolver},
     utils::{AccessMode, InodeMode},
 };
 use crate::{
@@ -14,9 +14,9 @@ use crate::{
     fs::utils::StatusFlags,
     prelude::*,
     process::{
-        posix_thread::FileTableRefMut,
-        signal::{constants::SIGIO, PollAdaptor},
         Pid, Process,
+        posix_thread::FileTableRefMut,
+        signal::{PollAdaptor, constants::SIGIO},
     },
 };
 

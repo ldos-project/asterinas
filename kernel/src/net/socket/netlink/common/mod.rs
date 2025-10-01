@@ -10,14 +10,14 @@ use crate::{
     events::IoEvents,
     match_sock_option_ref,
     net::socket::{
-        netlink::{table::SupportedNetlinkProtocol, AddMembership, DropMembership},
+        Socket,
+        netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
         options::SocketOption,
         private::SocketPrivate,
         util::{
-            datagram_common::{select_remote_and_bind, Bound, Inner},
             MessageHeader, SendRecvFlags, SocketAddr,
+            datagram_common::{Bound, Inner, select_remote_and_bind},
         },
-        Socket,
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
