@@ -11,7 +11,7 @@ use super::{
     fs::ExfatFS,
     inode::FatAttr,
     upcase_table::ExfatUpcaseTable,
-    utils::{calc_checksum_16, DosTimestamp},
+    utils::{DosTimestamp, calc_checksum_16},
 };
 use crate::{
     fs::utils::{InodeMode, InodeType},

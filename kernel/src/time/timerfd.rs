@@ -11,11 +11,11 @@ use crate::{
     },
     prelude::*,
     process::{
-        signal::{PollHandle, Pollable, Pollee},
         Gid, Uid,
+        signal::{PollHandle, Pollable, Pollee},
     },
     syscall::create_timer,
-    time::{clocks::RealTimeClock, Timer},
+    time::{Timer, clocks::RealTimeClock},
 };
 
 /// A file-like object representing a timer that can be used with file descriptors.

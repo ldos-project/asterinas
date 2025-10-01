@@ -18,19 +18,19 @@ use alloc::{boxed::Box, sync::Arc};
 use core::{mem::ManuallyDrop, time::Duration};
 
 use aster_rights::Rights;
-use aster_time::{read_monotonic_time, Instant};
+use aster_time::{Instant, read_monotonic_time};
 use aster_util::coeff::Coeff;
 use ostd::{
-    mm::{UFrame, VmIo, PAGE_SIZE},
-    sync::SpinLock,
     Pod,
+    mm::{PAGE_SIZE, UFrame, VmIo},
+    sync::SpinLock,
 };
 use spin::Once;
 
 use crate::{
-    fs::fs_resolver::{FsPath, FsResolver, AT_FDCWD},
+    fs::fs_resolver::{AT_FDCWD, FsPath, FsResolver},
     syscall::ClockId,
-    time::{clocks::MonotonicClock, timer::Timeout, SystemTime, START_TIME},
+    time::{START_TIME, SystemTime, clocks::MonotonicClock, timer::Timeout},
     vm::vmo::{Vmo, VmoOptions},
 };
 

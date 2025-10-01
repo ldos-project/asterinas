@@ -19,21 +19,21 @@ mod task_set;
 mod term_status;
 mod wait;
 
-pub use clone::{clone_child, CloneArgs, CloneFlags};
+pub use clone::{CloneArgs, CloneFlags, clone_child};
 pub use credentials::{Credentials, Gid, Uid};
 pub use kill::{kill, kill_all, kill_group, tgkill};
 pub use process::{
-    broadcast_signal_async, enqueue_signal_async, spawn_init_process, ExitCode, JobControl, Pgid,
-    Pid, Process, ProcessGroup, Session, Sid, Terminal,
+    ExitCode, JobControl, Pgid, Pid, Process, ProcessGroup, Session, Sid, Terminal,
+    broadcast_signal_async, enqueue_signal_async, spawn_init_process,
 };
 pub use process_filter::ProcessFilter;
 pub use process_vm::{
-    renew_vm_and_map, MAX_ARGV_NUMBER, MAX_ARG_LEN, MAX_ENVP_NUMBER, MAX_ENV_LEN,
+    MAX_ARG_LEN, MAX_ARGV_NUMBER, MAX_ENV_LEN, MAX_ENVP_NUMBER, renew_vm_and_map,
 };
-pub use program_loader::{check_executable_file, ProgramToLoad};
+pub use program_loader::{ProgramToLoad, check_executable_file};
 pub use rlimit::ResourceType;
 pub use term_status::TermStatus;
-pub use wait::{do_wait, WaitOptions};
+pub use wait::{WaitOptions, do_wait};
 
 pub(super) fn init() {
     process::init();

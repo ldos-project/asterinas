@@ -4,12 +4,12 @@ use alloc::format;
 
 use super::*;
 use crate::{
+    Process,
     fs::{
         procfs::template::{DirOps, ProcDir, ProcDirBuilder},
         utils::{DirEntryVecExt, Inode},
     },
     process::posix_thread::AsPosixThread,
-    Process,
 };
 
 /// Represents the inode at `/proc/[pid]/task`.

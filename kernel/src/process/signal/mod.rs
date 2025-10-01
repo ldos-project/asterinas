@@ -20,7 +20,7 @@ use c_types::{siginfo_t, ucontext_t};
 use constants::SIGSEGV;
 pub use events::{SigEvents, SigEventsFilter};
 use ostd::{cpu::context::UserContext, user::UserContextApi};
-pub use pause::{with_sigmask_changed, Pause};
+pub use pause::{Pause, with_sigmask_changed};
 pub use poll::{PollAdaptor, PollHandle, Pollable, Pollee, Poller};
 use sig_action::{SigAction, SigActionFlags, SigDefaultAction};
 use sig_mask::SigMask;
@@ -32,7 +32,7 @@ use crate::{
     cpu::LinuxAbi,
     current_userspace,
     prelude::*,
-    process::{posix_thread::do_exit_group, TermStatus},
+    process::{TermStatus, posix_thread::do_exit_group},
 };
 
 pub trait SignalContext {
