@@ -5,18 +5,18 @@ use core::fmt::Debug;
 
 use aster_util::safe_ptr::SafePtr;
 use ostd::{
+    Pod,
     arch::device::io_port::{PortRead, PortWrite},
     bus::pci::cfg_space::Bar,
     io::IoMem,
     mm::{DmaCoherent, PodOnce},
     trap::irq::IrqCallbackFunction,
-    Pod,
 };
 
 use self::{mmio::virtio_mmio_init, pci::virtio_pci_init};
 use crate::{
-    queue::{AvailRing, Descriptor, UsedRing},
     VirtioDeviceType,
+    queue::{AvailRing, Descriptor, UsedRing},
 };
 
 pub mod mmio;

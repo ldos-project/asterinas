@@ -13,17 +13,17 @@ use alloc::boxed::Box;
 use core::hint::spin_loop;
 
 use bitflags::bitflags;
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use device::{
+    VirtioDeviceType,
     block::device::BlockDevice,
     console::device::ConsoleDevice,
     input::device::InputDevice,
     network::device::NetworkDevice,
     socket::{self, device::SocketDevice},
-    VirtioDeviceType,
 };
 use log::{error, warn};
-use transport::{mmio::VIRTIO_MMIO_DRIVER, pci::VIRTIO_PCI_DRIVER, DeviceStatus};
+use transport::{DeviceStatus, mmio::VIRTIO_MMIO_DRIVER, pci::VIRTIO_PCI_DRIVER};
 
 use crate::transport::VirtioTransport;
 

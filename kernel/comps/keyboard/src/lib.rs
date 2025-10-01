@@ -8,7 +8,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
 
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use ostd::sync::{LocalIrqDisabled, SpinLock};
 
 #[cfg(target_arch = "x86_64")]

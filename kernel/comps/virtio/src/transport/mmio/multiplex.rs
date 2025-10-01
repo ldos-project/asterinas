@@ -9,8 +9,8 @@ use ostd::{
     io::IoMem,
     sync::RwLock,
     trap::{
-        irq::{IrqCallbackFunction, IrqLine},
         TrapFrame,
+        irq::{IrqCallbackFunction, IrqLine},
     },
 };
 
