@@ -4,9 +4,9 @@ use alloc::collections::btree_map::BTreeMap;
 use core::ops::Range;
 
 use crate::{
+    Error,
     prelude::*,
     sync::{PreemptDisabled, SpinLock, SpinLockGuard},
-    Error,
 };
 
 pub struct RangeAllocator {
