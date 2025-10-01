@@ -6,13 +6,13 @@ use bit_field::BitField;
 use cfg_if::cfg_if;
 use log::info;
 use volatile::{
-    VolatileRef,
     access::{ReadWrite, WriteOnly},
+    VolatileRef,
 };
 
 use crate::{
-    Error, Result, arch::if_tdx_enabled, io::IoMemAllocatorBuilder, mm::paddr_to_vaddr,
-    trap::irq::IrqLine,
+    arch::if_tdx_enabled, io::IoMemAllocatorBuilder, mm::paddr_to_vaddr, trap::irq::IrqLine, Error,
+    Result,
 };
 
 cfg_if! {

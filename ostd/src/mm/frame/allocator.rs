@@ -6,12 +6,12 @@ use core::{alloc::Layout, ops::Range};
 
 use align_ext::AlignExt;
 
-use super::{Frame, meta::AnyFrameMeta, segment::Segment};
+use super::{meta::AnyFrameMeta, segment::Segment, Frame};
 use crate::{
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr},
+    mm::{paddr_to_vaddr, Paddr, PAGE_SIZE},
     prelude::*,
     util::ops::range_difference,
 };

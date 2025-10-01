@@ -2,7 +2,7 @@
 
 //! The IOMMU support.
 
-use crate::mm::{Paddr, dma::Daddr};
+use crate::mm::{dma::Daddr, Paddr};
 
 /// An enumeration representing possible errors related to IOMMU.
 #[derive(Debug)]

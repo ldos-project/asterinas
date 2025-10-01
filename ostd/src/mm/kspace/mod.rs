@@ -44,18 +44,18 @@ use spin::Once;
 mod test;
 
 use super::{
-    Frame, Paddr, PagingConstsTrait, Vaddr,
     frame::{
+        meta::{mapping, AnyFrameMeta, MetaPageMeta},
         Segment,
-        meta::{AnyFrameMeta, MetaPageMeta, mapping},
     },
     page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
     page_table::{PageTable, PageTableConfig},
+    Frame, Paddr, PagingConstsTrait, Vaddr,
 };
 use crate::{
     arch::mm::{PageTableEntry, PagingConsts},
     boot::memory_region::MemoryRegionType,
-    mm::{PagingLevel, page_table::largest_pages},
+    mm::{page_table::largest_pages, PagingLevel},
     task::disable_preempt,
 };
 

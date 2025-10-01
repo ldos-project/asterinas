@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use tdx_guest::{
-    TdgVeInfo, TdxTrapFrame, handle_virtual_exception as do_handle_virtual_exception, tdcall,
+    handle_virtual_exception as do_handle_virtual_exception, tdcall, TdgVeInfo, TdxTrapFrame,
 };
 
 use crate::cpu::context::{RawGeneralRegs, UserContext};

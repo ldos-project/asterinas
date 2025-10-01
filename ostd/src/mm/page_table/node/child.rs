@@ -6,7 +6,7 @@ use core::mem::ManuallyDrop;
 
 use super::{PageTableEntryTrait, PageTableNode, PageTableNodeRef};
 use crate::{
-    mm::{Paddr, PagingLevel, page_prop::PageProperty, page_table::PageTableConfig},
+    mm::{page_prop::PageProperty, page_table::PageTableConfig, Paddr, PagingLevel},
     sync::RcuDrop,
 };
 

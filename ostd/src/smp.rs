@@ -10,11 +10,11 @@ use alloc::{boxed::Box, collections::VecDeque};
 use spin::Once;
 
 use crate::{
-    arch::irq::{HwCpuId, send_ipi},
+    arch::irq::{send_ipi, HwCpuId},
     cpu::{CpuSet, PinCurrentCpu},
     cpu_local,
     sync::SpinLock,
-    trap::{self, TrapFrame, irq::IrqLine},
+    trap::{self, irq::IrqLine, TrapFrame},
 };
 
 /// Executes a function on other processors.

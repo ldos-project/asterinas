@@ -5,10 +5,10 @@
 use core::{marker::PhantomData, mem::ManuallyDrop, sync::atomic::Ordering};
 
 use super::{
-    AnyFrameMeta, Frame, MetaSlot,
     meta::{GetFrameError, REF_COUNT_UNIQUE},
+    AnyFrameMeta, Frame, MetaSlot,
 };
-use crate::mm::{PAGE_SIZE, Paddr, PagingConsts, PagingLevel, frame::mapping};
+use crate::mm::{frame::mapping, Paddr, PagingConsts, PagingLevel, PAGE_SIZE};
 
 /// An owning frame pointer.
 ///

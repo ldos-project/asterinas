@@ -44,7 +44,7 @@ use crate::{
         memory_region::{MemoryRegion, MemoryRegionType},
         smp::PerApRawInfo,
     },
-    mm::{PAGE_SIZE, Paddr},
+    mm::{Paddr, PAGE_SIZE},
     task::disable_preempt,
 };
 

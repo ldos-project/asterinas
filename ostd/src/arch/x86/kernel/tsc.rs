@@ -9,10 +9,10 @@ use x86::cpuid::cpuid;
 
 use crate::{
     arch::timer::{
-        TIMER_FREQ,
         pit::{self, OperatingMode},
+        TIMER_FREQ,
     },
-    trap::{TrapFrame, irq::IrqLine},
+    trap::{irq::IrqLine, TrapFrame},
 };
 
 /// The frequency of TSC(Hz)

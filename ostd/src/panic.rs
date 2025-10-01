@@ -7,7 +7,7 @@ use core::ffi::c_void;
 pub use unwinding::panic::{begin_panic, catch_unwind};
 
 use crate::{
-    arch::qemu::{QemuExitCode, exit_qemu},
+    arch::qemu::{exit_qemu, QemuExitCode},
     early_print, early_println,
     sync::SpinLock,
 };
@@ -17,8 +17,8 @@ extern crate gimli;
 
 use gimli::Register;
 use unwinding::abi::{
-    _Unwind_Backtrace, _Unwind_FindEnclosingFunction, _Unwind_GetGR, _Unwind_GetIP, UnwindContext,
-    UnwindReasonCode,
+    UnwindContext, UnwindReasonCode, _Unwind_Backtrace, _Unwind_FindEnclosingFunction,
+    _Unwind_GetGR, _Unwind_GetIP,
 };
 
 /// The default panic handler for OSTD based kernels.

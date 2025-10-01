@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use spin::Once;
 
-use super::{Task, preempt::cpu_local, processor};
+use super::{preempt::cpu_local, processor, Task};
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,

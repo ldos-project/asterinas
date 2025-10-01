@@ -8,12 +8,12 @@ use id_alloc::IdAlloc;
 use spin::Once;
 
 use crate::{
-    Error,
-    arch::irq::{self, IRQ_NUM_MAX, IRQ_NUM_MIN, IrqRemapping},
+    arch::irq::{self, IrqRemapping, IRQ_NUM_MAX, IRQ_NUM_MIN},
     prelude::*,
     sync::{GuardTransfer, RwLock, SpinLock, WriteIrqDisabled},
     task::atomic_mode::InAtomicMode,
     trap::TrapFrame,
+    Error,
 };
 
 /// A type alias for the IRQ callback function.
