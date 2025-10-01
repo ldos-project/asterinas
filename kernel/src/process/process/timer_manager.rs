@@ -100,7 +100,7 @@ pub struct PosixTimerManager {
     posix_timers: Mutex<Vec<Option<Arc<Timer>>>>,
 }
 
-fn create_process_timer_callback(process_ref: &Weak<Process>) -> impl Fn() + Clone {
+fn create_process_timer_callback(process_ref: &Weak<Process>) -> impl Fn() + Clone + 'static {
     let current_process = process_ref.clone();
     let sent_signal = move || {
         let signal = KernelSignal::new(SIGALRM);
