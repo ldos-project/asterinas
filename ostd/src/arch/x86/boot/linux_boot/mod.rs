@@ -10,8 +10,8 @@ use crate::arch::init_cvm_guest;
 use crate::{
     arch::if_tdx_enabled,
     boot::{
-        BootloaderAcpiArg, BootloaderFramebufferArg,
         memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
+        BootloaderAcpiArg, BootloaderFramebufferArg,
     },
     mm::kspace::paddr_to_vaddr,
 };
@@ -198,7 +198,7 @@ unsafe extern "sysv64" fn __linux_boot(params_ptr: *const BootParams) -> ! {
     let params = unsafe { &*params_ptr };
     assert_eq!({ params.hdr.header }, LINUX_BOOT_HEADER_MAGIC);
 
-    use crate::boot::{EARLY_INFO, EarlyBootInfo, call_ostd_main};
+    use crate::boot::{call_ostd_main, EarlyBootInfo, EARLY_INFO};
 
     #[cfg(feature = "cvm_guest")]
     init_cvm_guest();

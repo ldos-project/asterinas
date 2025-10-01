@@ -14,7 +14,7 @@ use crate::{
     arch::kernel,
     cpu::{CpuId, PinCurrentCpu},
     timer::INTERRUPT_CALLBACKS,
-    trap::{self, TrapFrame, irq::IrqLine},
+    trap::{self, irq::IrqLine, TrapFrame},
 };
 
 /// The timer frequency (Hz).

@@ -5,8 +5,8 @@
 use core::ptr::NonNull;
 
 use volatile::{
-    VolatileRef,
     access::{ReadOnly, ReadWrite, WriteOnly},
+    VolatileRef,
 };
 
 use super::ExtendedCapability;

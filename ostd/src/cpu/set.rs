@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use smallvec::SmallVec;
 
-use super::{CpuId, num_cpus};
+use super::{num_cpus, CpuId};
 use crate::const_assert;
 
 /// A subset of all CPUs in the system.

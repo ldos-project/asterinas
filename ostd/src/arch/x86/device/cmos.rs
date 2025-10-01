@@ -14,7 +14,7 @@ use x86_64::instructions::port::{ReadOnlyAccess, WriteOnlyAccess};
 
 use crate::{
     arch::kernel::acpi::get_acpi_tables,
-    io::{IoPort, sensitive_io_port},
+    io::{sensitive_io_port, IoPort},
 };
 
 sensitive_io_port!(unsafe {

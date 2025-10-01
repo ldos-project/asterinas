@@ -11,8 +11,8 @@ use spin::Once;
 
 use crate::{
     boot::{
-        BootloaderAcpiArg, BootloaderFramebufferArg,
         memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
+        BootloaderAcpiArg, BootloaderFramebufferArg,
     },
     early_println,
     mm::paddr_to_vaddr,
@@ -115,7 +115,7 @@ pub extern "C" fn riscv_boot(_hart_id: usize, device_tree_paddr: usize) -> ! {
     let fdt = unsafe { fdt::Fdt::from_ptr(device_tree_ptr).unwrap() };
     DEVICE_TREE.call_once(|| fdt);
 
-    use crate::boot::{EARLY_INFO, EarlyBootInfo, call_ostd_main};
+    use crate::boot::{call_ostd_main, EarlyBootInfo, EARLY_INFO};
 
     EARLY_INFO.call_once(|| EarlyBootInfo {
         bootloader_name: parse_bootloader_name(),

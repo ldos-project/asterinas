@@ -290,7 +290,7 @@ mod linked_list {
 // Segment tests
 mod segment {
     use super::*;
-    use crate::{Error, mm::USegment};
+    use crate::{mm::USegment, Error};
 
     #[ktest]
     fn segment_creation() {

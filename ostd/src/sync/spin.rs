@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use super::{LocalIrqDisabled, PreemptDisabled, guard::SpinGuardian};
+use super::{guard::SpinGuardian, LocalIrqDisabled, PreemptDisabled};
 use crate::task::atomic_mode::AsAtomicModeGuard;
 
 /// A spin lock.

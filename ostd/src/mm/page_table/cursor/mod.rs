@@ -34,14 +34,14 @@ use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range};
 use align_ext::AlignExt;
 
 use super::{
-    Child, ChildRef, Entry, PageTable, PageTableConfig, PageTableError, PageTableGuard,
-    PagingConstsTrait, PagingLevel, page_size, pte_index,
+    page_size, pte_index, Child, ChildRef, Entry, PageTable, PageTableConfig, PageTableError,
+    PageTableGuard, PagingConstsTrait, PagingLevel,
 };
 use crate::{
     mm::{
-        PageProperty, Vaddr,
-        frame::{Frame, meta::AnyFrameMeta},
+        frame::{meta::AnyFrameMeta, Frame},
         page_table::is_valid_range,
+        PageProperty, Vaddr,
     },
     task::atomic_mode::InAtomicMode,
 };
