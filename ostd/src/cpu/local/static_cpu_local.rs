@@ -4,7 +4,7 @@
 
 use core::marker::PhantomData;
 
-use super::{AnyStorage, CpuLocal, __cpu_local_end, __cpu_local_start};
+use super::{__cpu_local_end, __cpu_local_start, AnyStorage, CpuLocal};
 use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 
 /// Defines a statically-allocated CPU-local variable.

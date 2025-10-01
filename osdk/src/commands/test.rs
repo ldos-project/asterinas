@@ -4,12 +4,12 @@ use std::fs;
 
 use super::{build::do_cached_build, util::DEFAULT_TARGET_RELPATH};
 use crate::{
-    base_crate::{new_base_crate, BaseCrateType},
+    base_crate::{BaseCrateType, new_base_crate},
     cli::TestArgs,
-    config::{scheme::ActionChoice, Config},
+    config::{Config, scheme::ActionChoice},
     error::Errno,
     error_msg,
-    util::{get_current_crates, get_target_directory, DirGuard},
+    util::{DirGuard, get_current_crates, get_target_directory},
 };
 
 pub fn execute_test_command(config: &Config, args: &TestArgs) {
@@ -100,7 +100,9 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
         ActionChoice::Test,
         &["--cfg ktest", "-C panic=unwind"],
     );
-    unsafe { std::env::remove_var("RUSTFLAGS"); }
+    unsafe {
+        std::env::remove_var("RUSTFLAGS");
+    }
     drop(dir_guard);
 
     bundle.run(config, ActionChoice::Test);

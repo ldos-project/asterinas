@@ -7,15 +7,15 @@ use core::ops::Range;
 
 use cfg_if::cfg_if;
 pub(crate) use util::{__memcpy_fallible, __memset_fallible};
-use x86_64::{instructions::tlb, structures::paging::PhysFrame, VirtAddr};
+use x86_64::{VirtAddr, instructions::tlb, structures::paging::PhysFrame};
 
 use crate::{
+    Pod,
     mm::{
+        PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
         page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags as PrivFlags},
         page_table::PageTableEntryTrait,
-        Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr, PAGE_SIZE,
     },
-    Pod,
 };
 
 mod util;
