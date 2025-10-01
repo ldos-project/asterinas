@@ -12,7 +12,7 @@ pub mod key;
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, fmt::Debug};
 
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use key::{Key, KeyStatus};
 use ostd::sync::SpinLock;
 use spin::Once;

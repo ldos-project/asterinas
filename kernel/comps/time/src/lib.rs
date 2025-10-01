@@ -12,7 +12,7 @@ use core::time::Duration;
 
 use clocksource::ClockSource;
 pub use clocksource::Instant;
-use component::{init_component, ComponentInitError};
+use component::{ComponentInitError, init_component};
 use ostd::sync::Mutex;
 use rtc::Driver;
 use spin::Once;

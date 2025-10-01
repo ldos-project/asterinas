@@ -7,9 +7,9 @@ use alloc::{collections::BTreeMap, string::String, sync::Arc};
 use ostd::sync::RwLock;
 
 use super::{
+    Error, Result, SysStr,
     attr::SysAttrSet,
     node::{SysNodeId, SysObj},
-    Error, Result, SysStr,
 };
 
 #[derive(Debug)]
