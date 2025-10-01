@@ -5,8 +5,9 @@
 use core::{alloc::Layout, cell::RefCell};
 
 use ostd::{
+    arch::mm::PagingConsts,
     cpu_local,
-    mm::{PAGE_SIZE, Paddr},
+    mm::{PAGE_SIZE, Paddr, page_size},
     trap::irq::DisabledLocalIrqGuard,
 };
 
@@ -15,22 +16,24 @@ cpu_local! {
 }
 
 struct CacheOfSizes {
-    cache1: CacheArray<1, 12>,
-    cache2: CacheArray<2, 6>,
-    cache3: CacheArray<3, 6>,
-    cache4: CacheArray<4, 6>,
+    cache1: CacheArray<1, 12, 1>,
+    cache2: CacheArray<2, 6, 1>,
+    cache3: CacheArray<3, 6, 1>,
+    cache4: CacheArray<4, 6, 1>,
 }
 
 /// A fixed-size local cache for frame allocation.
 ///
 /// Each cache array contains at most `COUNT` segments. Each segment contains
 /// `NR_CONT_FRAMES` contiguous frames.
-struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize> {
+struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: usize> {
     inner: [Option<Paddr>; COUNT],
     size: usize,
 }
 
-impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES, COUNT> {
+impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: usize>
+    CacheArray<NR_CONT_FRAMES, COUNT, LEVEL>
+{
     const fn new() -> Self {
         Self {
             inner: [const { None }; COUNT],
@@ -40,7 +43,7 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
 
     /// The size of the segments that this cache manages.
     const fn segment_size() -> usize {
-        NR_CONT_FRAMES * PAGE_SIZE
+        NR_CONT_FRAMES * page_size::<PagingConsts>(LEVEL)
     }
 
     /// Allocates a segment of frames.
@@ -52,12 +55,19 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
             return Some(frame);
         }
 
+        // Allocate enough frames to fill 2/3rds of the cache
         let nr_to_alloc = COUNT * 2 / 3;
         let allocated = super::pools::alloc(
             guard,
-            Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE).unwrap(),
+            Layout::from_size_align(
+                nr_to_alloc * Self::segment_size(),
+                page_size::<PagingConsts>(LEVEL),
+            )
+            .unwrap(),
         )?;
 
+        // Push all allocated frames except for the one we will return to the requester into the
+        // cache
         for i in 1..nr_to_alloc {
             self.push_front(allocated + i * Self::segment_size());
         }
