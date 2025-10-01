@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::{ptr::NonNull, sync::atomic::Ordering};
 
-use super::{context_switch, Task, TaskContext, POST_SCHEDULE_HANDLER};
+use super::{POST_SCHEDULE_HANDLER, Task, TaskContext, context_switch};
 use crate::{cpu_local_cell, trap::irq::DisabledLocalIrqGuard};
 
 cpu_local_cell! {
