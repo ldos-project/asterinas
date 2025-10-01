@@ -56,12 +56,13 @@ Follow the three simple steps below to get Asterinas up and running.
 
 ```bash
 git clone https://github.com/ldos-project/asterinas
+cd asterinas
 ```
 
 2. Run a Docker container as the development environment.
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.15.2-20250613
+make docker
 ```
 
 3. Inside the container, go to the project folder to build and run Asterinas.
@@ -72,6 +73,7 @@ make run
 ```
 
 If everything goes well, Asterinas is now up and running inside a VM.
+If things are running slow look for `ENABLE_KVM` in the output it should be 1 to make sure KVM was actually turned on.
 
 ## The Book
 

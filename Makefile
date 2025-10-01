@@ -9,6 +9,7 @@ BOOT_METHOD ?= grub-rescue-iso
 BOOT_PROTOCOL ?= multiboot2
 BUILD_SYSCALL_TEST ?= 0
 ENABLE_KVM ?= 1
+KVM_EXISTS = $(shell test -f /dev/kvm && echo 1 || echo 0)
 INTEL_TDX ?= 0
 MEM ?= 8G
 OVMF ?= on
@@ -54,6 +55,15 @@ CARGO_OSDK_COMMON_ARGS := --target-arch=$(ARCH)
 # The build arguments also apply to the `cargo osdk run` command.
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
 CARGO_OSDK_TEST_ARGS :=
+
+# Docker Configs
+DOCKER_TAG := ldosproject/asterinas
+DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
+DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
+DOCKER_RUN_ARGS := --privileged --network=host --device=/dev/kvm
+DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas
+# Name that the long-running container will use
+DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
 
 ifeq ($(AUTO_TEST), syscall)
 BUILD_SYSCALL_TEST := 1
@@ -139,8 +149,10 @@ CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol=$(BOOT_PROTOCOL)
 endif
 
 ifeq ($(ENABLE_KVM), 1)
-	ifeq ($(ARCH), x86_64)
-		CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
+	ifeq ($(KVM_EXISTS), 1)
+		ifeq ($(ARCH), x86_64)
+			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
+		endif
 	endif
 endif
 
@@ -245,6 +257,9 @@ tools:
 
 .PHONY: run
 run: initramfs $(CARGO_OSDK)
+	@[ $(ENABLE_KVM) -eq 1 ] && \
+		([ $(KVM_EXISTS) -eq 1 ] || \
+			echo Warning KVM not present on your system)
 	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), syscall)
@@ -263,14 +278,23 @@ endif
 
 .PHONY: gdb_server
 gdb_server: initramfs $(CARGO_OSDK)
+	@[ $(ENABLE_KVM) -eq 1 ] && \
+		([ $(KVM_EXISTS) -eq 1 ] || \
+			echo Warning KVM not present on your system)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --gdb-server wait-client,vscode,addr=:$(GDB_TCP_PORT)
 
 .PHONY: gdb_client
 gdb_client: initramfs $(CARGO_OSDK)
+	@[ $(ENABLE_KVM) -eq 1 ] && \
+		([ $(KVM_EXISTS) -eq 1 ] || \
+			echo Warning KVM not present on your system)
 	@cd kernel && cargo osdk debug $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT)
 
 .PHONY: profile_server
 profile_server: initramfs $(CARGO_OSDK)
+	@[ $(ENABLE_KVM) -eq 1 ] && \
+		([ $(KVM_EXISTS) -eq 1 ] || \
+			echo Warning KVM not present on your system)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --gdb-server addr=:$(GDB_TCP_PORT)
 
 .PHONY: profile_client
@@ -409,7 +433,22 @@ typos_check:
 
 check: initramfs format_check workspace_project_coverage_check lint_check clippy_check c_code_check typo_check
 
-.PHONY: clean
+docker:
+	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
+
+docker_start:
+	docker ps -a | grep $(DOCKER_CONTAINER_NAME) || \
+		docker run --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
+
+docker_attach: docker_start
+	docker exec $(DOCKER_CONTAINER_NAME) -i /bin/bash
+
+docker_rm:
+	docker rm $(DOCKER_CONTAINER_NAME)
+
+
+
+.PHONY: clean docker
 clean:
 	@echo "Cleaning up Asterinas workspace target files"
 	cargo clean
