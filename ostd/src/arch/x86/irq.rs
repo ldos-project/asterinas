@@ -5,7 +5,7 @@
 use spin::Once;
 use x86_64::registers::rflags::{self, RFlags};
 
-use super::iommu::{alloc_irt_entry, has_interrupt_remapping, IrtEntryHandle};
+use super::iommu::{IrtEntryHandle, alloc_irt_entry, has_interrupt_remapping};
 use crate::cpu::PinCurrentCpu;
 
 // Intel(R) 64 and IA-32 rchitectures Software Developer's Manual,

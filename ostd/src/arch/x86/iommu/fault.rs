@@ -6,12 +6,12 @@ use core::{fmt::Debug, ptr::NonNull};
 use bitflags::bitflags;
 use log::{error, info};
 use spin::Once;
-use volatile::{access::ReadWrite, VolatileRef};
+use volatile::{VolatileRef, access::ReadWrite};
 
 use super::registers::Capability;
 use crate::{
     sync::{LocalIrqDisabled, SpinLock},
-    trap::{irq::IrqLine, TrapFrame},
+    trap::{TrapFrame, irq::IrqLine},
 };
 
 #[derive(Debug)]
