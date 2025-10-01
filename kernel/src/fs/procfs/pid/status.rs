@@ -3,6 +3,7 @@
 use core::fmt::Write;
 
 use crate::{
+    Process,
     fs::{
         procfs::template::{FileOps, ProcFileBuilder},
         utils::Inode,
@@ -10,7 +11,6 @@ use crate::{
     prelude::*,
     process::posix_thread::AsPosixThread,
     vm::vmar::RssType,
-    Process,
 };
 
 /// Represents the inode at `/proc/[pid]/status`.

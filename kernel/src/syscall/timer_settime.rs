@@ -5,7 +5,7 @@ use core::time::Duration;
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    time::{itimerspec_t, timer::Timeout, timespec_t, TIMER_ABSTIME},
+    time::{TIMER_ABSTIME, itimerspec_t, timer::Timeout, timespec_t},
 };
 
 pub fn sys_timer_settime(

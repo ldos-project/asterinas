@@ -3,11 +3,11 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{
+    SigEvents, SigEventsFilter,
     constants::*,
     sig_mask::{SigMask, SigSet},
     sig_num::SigNum,
     signals::Signal,
-    SigEvents, SigEventsFilter,
 };
 use crate::{
     events::{Observer, Subject},

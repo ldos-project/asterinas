@@ -4,7 +4,7 @@ use multicast::MulticastGroup;
 pub(super) use multicast::MulticastMessage;
 use spin::Once;
 
-use super::addr::{GroupIdSet, NetlinkProtocolId, NetlinkSocketAddr, PortNum, MAX_GROUPS};
+use super::addr::{GroupIdSet, MAX_GROUPS, NetlinkProtocolId, NetlinkSocketAddr, PortNum};
 use crate::{
     net::socket::netlink::{
         addr::UNSPECIFIED_PORT, kobject_uevent::UeventMessage, receiver::MessageReceiver,

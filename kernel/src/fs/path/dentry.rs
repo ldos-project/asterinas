@@ -17,8 +17,8 @@ use crate::{
     fs::{
         path::mount::MountNode,
         utils::{
-            FileSystem, Inode, InodeMode, InodeType, Metadata, MknodType, Permission, XattrName,
-            XattrNamespace, XattrSetFlags, NAME_MAX,
+            FileSystem, Inode, InodeMode, InodeType, Metadata, MknodType, NAME_MAX, Permission,
+            XattrName, XattrNamespace, XattrSetFlags,
         },
     },
     prelude::*,

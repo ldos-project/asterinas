@@ -2,7 +2,7 @@
 
 #![expect(unused_variables)]
 
-use rand::{rngs::StdRng, Error as RandError, RngCore};
+use rand::{Error as RandError, RngCore, rngs::StdRng};
 use spin::Once;
 
 use crate::prelude::*;

@@ -8,9 +8,9 @@ use core::{cmp::Ordering, time::Duration};
 
 pub(super) use align_ext::AlignExt;
 use aster_block::{
+    BLOCK_SIZE,
     bio::{BioDirection, BioSegment, BioWaiter},
     id::{Bid, BlockId},
-    BLOCK_SIZE,
 };
 use aster_rights::Full;
 use ostd::mm::{Segment, VmIo};
@@ -18,12 +18,12 @@ use ostd::mm::{Segment, VmIo};
 use super::{
     constants::*,
     dentry::{
-        Checksum, ExfatDentry, ExfatDentrySet, ExfatFileDentry, ExfatName, RawExfatDentry,
-        DENTRY_SIZE,
+        Checksum, DENTRY_SIZE, ExfatDentry, ExfatDentrySet, ExfatFileDentry, ExfatName,
+        RawExfatDentry,
     },
     fat::{ClusterAllocator, ClusterID, ExfatChainPosition, FatChainFlags},
-    fs::{ExfatMountOptions, EXFAT_ROOT_INO},
-    utils::{make_hash_index, DosTimestamp},
+    fs::{EXFAT_ROOT_INO, ExfatMountOptions},
+    utils::{DosTimestamp, make_hash_index},
 };
 use crate::{
     events::IoEvents,
@@ -36,7 +36,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{signal::PollHandle, Gid, Uid},
+    process::{Gid, Uid, signal::PollHandle},
     vm::vmo::Vmo,
 };
 

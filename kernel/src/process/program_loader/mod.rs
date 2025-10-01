@@ -4,13 +4,13 @@ pub mod elf;
 mod shebang;
 
 use self::{
-    elf::{load_elf_to_vm, ElfLoadInfo},
+    elf::{ElfLoadInfo, load_elf_to_vm},
     shebang::parse_shebang_line,
 };
 use super::process_vm::ProcessVm;
 use crate::{
     fs::{
-        fs_resolver::{FsPath, FsResolver, AT_FDCWD},
+        fs_resolver::{AT_FDCWD, FsPath, FsResolver},
         path::Dentry,
         utils::{InodeType, Permission},
     },

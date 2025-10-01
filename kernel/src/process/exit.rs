@@ -2,7 +2,7 @@
 
 use core::sync::atomic::Ordering;
 
-use super::{process_table, Pid, Process};
+use super::{Pid, Process, process_table};
 use crate::{prelude::*, process::signal::signals::kernel::KernelSignal};
 
 /// Exits the current POSIX process.

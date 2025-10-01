@@ -9,7 +9,7 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file_handle::FileLike,
-        file_table::{get_file_fast, FileDesc},
+        file_table::{FileDesc, get_file_fast},
     },
     prelude::*,
     vm::{perms::VmPerms, vmar::is_userspace_vaddr, vmo::VmoOptions},

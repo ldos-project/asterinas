@@ -11,14 +11,14 @@ use crate::{
     events::IoEvents,
     match_sock_option_mut,
     net::socket::{
+        Socket,
         options::{Error as SocketError, SocketOption},
         private::SocketPrivate,
         util::{
-            datagram_common::{select_remote_and_bind, Bound, Inner},
-            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
             MessageHeader, SendRecvFlags, SocketAddr,
+            datagram_common::{Bound, Inner, select_remote_and_bind},
+            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
         },
-        Socket,
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},

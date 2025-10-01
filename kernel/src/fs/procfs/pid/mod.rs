@@ -11,7 +11,7 @@ use crate::{
         utils::{DirEntryVecExt, Inode},
     },
     prelude::*,
-    process::{posix_thread::AsPosixThread, Process},
+    process::{Process, posix_thread::AsPosixThread},
 };
 
 mod cmdline;

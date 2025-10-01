@@ -2,11 +2,11 @@
 
 use alloc::sync::Arc;
 
-use super::{session::SessionGuard, JobControl, Pgid, Process, Session, Sid};
+use super::{JobControl, Pgid, Process, Session, Sid, session::SessionGuard};
 use crate::{
     current_userspace,
     fs::{inode_handle::FileIo, utils::IoctlCmd},
-    prelude::{current, return_errno_with_message, warn, Errno, Error, Result},
+    prelude::{Errno, Error, Result, current, return_errno_with_message, warn},
     process::process_table,
 };
 
