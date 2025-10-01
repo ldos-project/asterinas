@@ -100,7 +100,7 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
         ActionChoice::Test,
         &["--cfg ktest", "-C panic=unwind"],
     );
-    std::env::remove_var("RUSTFLAGS");
+    unsafe { std::env::remove_var("RUSTFLAGS"); }
     drop(dir_guard);
 
     bundle.run(config, ActionChoice::Test);
