@@ -26,7 +26,7 @@ fn load_segment(file: &xmas_elf::ElfFile, program: &xmas_elf::program::ProgramHe
         panic!("[setup] Unexpected segment data type!");
     };
 
-    let dst_slice = crate::x86::alloc_at(program.physical_addr as usize, program.mem_size as usize);
+    let dst_slice = alloc_at(program);
 
     #[cfg(feature = "debug_print")]
     crate::println!(
@@ -38,4 +38,13 @@ fn load_segment(file: &xmas_elf::ElfFile, program: &xmas_elf::program::ProgramHe
     let (left, right) = dst_slice.split_at_mut(program.file_size as usize);
     left.write_copy_of_slice(segment_data);
     MaybeUninit::fill(right, 0);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn alloc_at(program: &xmas_elf::program::ProgramHeader64) -> &'static mut [MaybeUninit<u8>] {
+    crate::x86::alloc_at(program.physical_addr as usize, program.mem_size as usize)
+}
+#[cfg(target_os = "linux")]
+fn alloc_at(program: &xmas_elf::program::ProgramHeader64) -> &'static mut [MaybeUninit<u8>] {
+    panic!("Feature not implemented on Linux")
 }

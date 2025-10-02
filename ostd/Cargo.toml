@@ -33,11 +33,11 @@ ostd-test = { version = "0.15.2", path = "libs/ostd-test" }
 ostd-pod = { git = "https://github.com/ldos-project/ostd-pod", rev = "c4644be", version = "0.1.1" }
 spin = "0.9.4"
 smallvec = "1.13.2"
-unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
+unwinding = { version = "=0.2.5", default-features = false, features = ["hide-trace", "panic", "unwinder"] }
 volatile = "0.6.1"
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
 
-[target.x86_64-unknown-none.dependencies]
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.14.13"
 x86 = "0.52.0"
 acpi = "=5.2.0" # This upstream often bump minor versions with API changes
@@ -49,7 +49,10 @@ iced-x86 = { version = "1.21.0", default-features = false, features = [
 ], optional = true }
 tdx-guest = { version = "0.2.1", optional = true }
 
-[target.riscv64gc-unknown-none-elf.dependencies]
+[target.x86_64-unknown-none.dependencies]
+unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
+
+[target.'cfg(target_arch = "riscv")'.dependencies]
 riscv = { version = "0.11.1", features = ["s-mode"] }
 sbi-rt = "0.0.3"
 fdt = { version = "0.1.5", features = ["pretty-printing"] }
@@ -58,6 +61,8 @@ fdt = { version = "0.1.5", features = ["pretty-printing"] }
 default = ["cvm_guest"]
 # The guest OS support for Confidential VMs (CVMs), e.g., Intel TDX
 cvm_guest = ["dep:tdx-guest", "dep:iced-x86"]
+std = []
+# kernel = []
 
 [lints]
 workspace = true

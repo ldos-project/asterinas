@@ -22,7 +22,6 @@ members = [
     "kernel/comps/softirq",
     "kernel/comps/systree",
     "kernel/comps/logger",
-    "kernel/comps/mlsdisk",
     "kernel/comps/time",
     "kernel/comps/virtio",
     "kernel/libs/cpio-decoder",
@@ -39,6 +38,7 @@ members = [
     "kernel/libs/atomic-integer-wrapper",
     "kernel/libs/xarray",
 ]
+
 exclude = [
     "kernel/libs/comp-sys/cargo-component",
     "kernel/libs/comp-sys/component",

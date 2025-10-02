@@ -30,4 +30,5 @@ mod loader;
 mod sync;
 
 // The entry points are defined in `x86/*/setup.S`.
+#[cfg(not(target_os = "linux"))]
 mod x86;
