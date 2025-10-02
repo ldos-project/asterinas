@@ -75,6 +75,12 @@ make run
 If everything goes well, Asterinas is now up and running inside a VM.
 If things are running slow look for `ENABLE_KVM` in the output it should be 1 to make sure KVM was actually turned on.
 
+Developer docs for LDOS's Asterinas are the [advanced instructions](docs/src/kernel/advanced-instructions.md). They include:
+- Userspace testing
+- Kernelspace testing
+- development environment setup (TODO see #46)
+- GDB setup information
+
 ## The Book
 
 See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.
