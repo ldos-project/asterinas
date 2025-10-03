@@ -48,10 +48,15 @@ exclude = [
 ]
 
 [workspace.lints.rust]
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+missing_crate_level_docs = "warn"
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
+# TODO(arthurp,  #48): Enable once the code can pass it.
+# undocumented_unsafe_blocks = "deny"
+# TODO(arthurp,  #49): Enable once the code can pass it.
+# missing_panics_doc = "deny"
 
 # Cargo only looks at the profile settings 
 # in the Cargo.toml manifest at the root of the workspace
