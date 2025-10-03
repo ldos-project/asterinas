@@ -1,0 +1,22 @@
+[package]
+name = "orpc"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+
+[dependencies]
+orpc-macros = { path = "../orpc-macros" }
+snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
+#traitcast = "*"
+#traitcast_core = "*"
+inventory = "*"
+static_assertions = "*"
+paste = "*"
+fixedvec = "0.2.4"
+assert_matches = "1.5.0"
+hashbrown = "*"
+spin = "*"
+
+[lints]
+workspace = true
