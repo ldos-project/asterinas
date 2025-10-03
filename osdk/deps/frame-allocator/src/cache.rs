@@ -5,9 +5,8 @@
 use core::{alloc::Layout, cell::RefCell};
 
 use ostd::{
-    arch::mm::PagingConsts,
     cpu_local,
-    mm::{PAGE_SIZE, Paddr, page_size},
+    mm::{PAGE_SIZE, Paddr, PagingConsts, PagingLevel, page_size},
     trap::irq::DisabledLocalIrqGuard,
 };
 
@@ -26,12 +25,12 @@ struct CacheOfSizes {
 ///
 /// Each cache array contains at most `COUNT` segments. Each segment contains
 /// `NR_CONT_FRAMES` contiguous frames.
-struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: usize> {
+struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel> {
     inner: [Option<Paddr>; COUNT],
     size: usize,
 }
 
-impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: usize>
+impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
     CacheArray<NR_CONT_FRAMES, COUNT, LEVEL>
 {
     const fn new() -> Self {
