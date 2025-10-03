@@ -25,6 +25,8 @@ struct CacheOfSizes {
 ///
 /// Each cache array contains at most `COUNT` segments. Each segment contains
 /// `NR_CONT_FRAMES` contiguous frames.
+/// The size of each frame is determined by `LEVEL`, with level 1 corresponding to the base page
+/// size, and higher levels being a function of `LEVEL`. See `mm::page_size`.
 struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel> {
     inner: [Option<Paddr>; COUNT],
     size: usize,
