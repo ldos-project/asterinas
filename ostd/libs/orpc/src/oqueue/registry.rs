@@ -1,17 +1,16 @@
-use core::{
-    any::{Any, TypeId},
-};
+use alloc::{boxed::Box, string::String};
+use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
-
 use snafu::Snafu;
-
-use crate::{oqueue::OQueueRef, sync::Mutex};
 use spin::Once;
 
-type Registry = Mutex<HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>>;
+use crate::{oqueue::OQueueRef, sync::mutex::Mutex};
 
-static REGISTRY: Once<Registry> = Once::new();
+type RegistryInner = HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>;
+type Registry<M: MutexImpl<RegistryInner>> = Mutex<RegistryInner, M>;
+
+static REGISTRY: Once<Registry<Box<dyn MutexImpl<RegistryInner>>>> = Once::new();
 
 pub fn initialize_registry() {
     REGISTRY.call_once(|| Registry::default());
@@ -30,7 +29,6 @@ pub fn lookup<T: 'static>(name: &str) -> Option<OQueueRef<T>> {
     let value: &OQueueRef<T> = value.downcast_ref()?;
     Some(value.clone())
 }
-
 
 // #[derive(Debug, Snafu)]
 // pub enum RegistryError {

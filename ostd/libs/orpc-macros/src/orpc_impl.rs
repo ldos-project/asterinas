@@ -24,7 +24,12 @@ pub fn orpc_impl_macro_impl(
                         // check fails. This macro will generate an error later in this function anyway, so dropping the
                         // member is fine.
                         if let Some((_, path, _)) = &input.trait_ {
-                            process_oqueue_method(&mut method_implementations, &mut errors, path, method);
+                            process_oqueue_method(
+                                &mut method_implementations,
+                                &mut errors,
+                                path,
+                                method,
+                            );
                         }
                     }
                     None => {
@@ -134,7 +139,6 @@ fn process_orpc_method(
         }
     });
 }
- 
 
 /// Generate the method implementation for an OQueue access method. The method just extract the OQueueRef from inside
 /// the servers `orpc_internal` struct.

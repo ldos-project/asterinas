@@ -1,7 +1,5 @@
-use syn::Path;
-
 use quote::{format_ident, quote};
-use syn::Type;
+use syn::{Path, Type};
 
 /// The kind of a method in an ORPC trait.
 pub(crate) enum ORPCMethodKind<'a> {
@@ -43,7 +41,7 @@ impl<'a> ORPCMethodKind<'a> {
 
 /// Construct the name of the field holding the OQueues associated with a trait. This field will be in the ORPCInternal
 /// struct for a server.
-/// 
+///
 /// NOTE: These fields break the snail_case requirement of Rust fields, so uses of this need to be marked to prevent the
 /// warning. This is preferable to rewriting the name to match the style introduce more complexity. User code should
 /// NEVER include this name.

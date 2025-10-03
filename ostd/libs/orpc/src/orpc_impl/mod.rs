@@ -1,7 +1,6 @@
-/// The module containing implementations of the ORPC framework.
-
-use core::{panic::RefUnwindSafe};
 use alloc::sync::Arc;
+/// The module containing implementations of the ORPC framework.
+use core::panic::RefUnwindSafe;
 
 use crate::orpc_impl::framework::ServerBase;
 

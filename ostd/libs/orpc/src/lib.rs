@@ -1,3 +1,6 @@
+#![no_std]
+#![feature(thread_local)]
+
 extern crate alloc;
 
 // This declaration exposes the current crate under the name `orpc`. This is required to make the orpc macros work
@@ -8,7 +11,9 @@ pub mod oqueue;
 pub mod orpc_impl;
 pub mod sync;
 
-pub use orpc_impl::{Server, ServerRef};
-pub use orpc_impl::errors::RPCError;
-pub use orpc_impl::framework::{CurrentServer, spawn_thread};
+pub use orpc_impl::{
+    Server, ServerRef,
+    errors::RPCError,
+    framework::{CurrentServer, spawn_thread},
+};
 pub use orpc_macros::{orpc_impl, orpc_server, orpc_trait};

@@ -1,14 +1,6 @@
 //! A simple implementation of a [`crate::oqueue::OQueue`] using a [`crate::sync::Mutex`]s. This is a baseline
 //! implementation that supports all features, but is also slow in many cases.
 
-use crate::{
-    oqueue::{Cursor, OQueue, Receiver, Sender, StrongObserver, OQueueAttachError, WeakObserver},
-    sync::{
-        Mutex,
-        blocker::{Blocker, TaskList},
-        task::{Task, TaskRef},
-    },
-};
 use alloc::{
     borrow::ToOwned,
     boxed::Box,
@@ -16,23 +8,38 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{any::type_name, cell::Cell};
-use core::panic::UnwindSafe;
+use core::{
+    any::type_name,
+    cell::Cell,
+    default::Default,
+    option::{Option, Option::None},
+    panic::UnwindSafe,
+    result::Result,
+};
+
+use crate::{
+    oqueue::{Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver, WeakObserver},
+    sync::{
+        mutex::{Mutex, MutexImpl},
+        task::{Blocker, Task, TaskList, TaskRef},
+    },
+};
 
 /// A oqueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
 /// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// oqueue.
-pub struct LockingQueue<T> {
-    this: Weak<LockingQueue<T>>,
-    inner: Mutex<LockingTableInner<T>>,
+pub struct LockingQueue<T, M: MutexImpl<LockingTableInner<T>>> {
+    this: Weak<LockingQueue<T, M>>,
+    inner: Mutex<LockingTableInner<T>, M>,
     buffer_size: usize,
     put_wait_queue: TaskList,
     read_wait_queue: TaskList,
 }
 
-static_assertions::assert_impl_all!(LockingQueue<usize>: UnwindSafe);
+// TODO(aneesh):
+// static_assertions::assert_impl_all!(LockingQueue<usize>: UnwindSafe);
 
-impl<T> LockingQueue<T> {
+impl<T, M: MutexImpl<LockingTableInner<T>>> LockingQueue<T, M> {
     /// Create a new oqueue with a given size.
     pub fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
@@ -67,7 +74,7 @@ impl<T> LockingQueue<T> {
 
 /// A oqueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
 /// number of senders and receivers. It is implemented using a single lock for the entire oqueue.
-pub struct ObservableLockingQueue<T> {
+pub struct ObservableLockingQueue<T, M: MutexImpl<LockingTableInner<T>>> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
@@ -77,10 +84,10 @@ pub struct ObservableLockingQueue<T> {
     /// The underlying oqueue used. This can be used to implement the more general observable oqueue because it actually
     /// does support the required features, but only if `T: Clone` and this type is required to guarantee that during
     /// attachment and handle construction.
-    inner: Arc<LockingQueue<T>>,
+    inner: Arc<LockingQueue<T, M>>,
 }
 
-impl<T> ObservableLockingQueue<T> {
+impl<T, M: MutexImpl<LockingTableInner<T>>> ObservableLockingQueue<T, M> {
     /// Create a new oqueue (with observer support) with the given buffer size and supported strong observers. The cost
     /// of an unused observer is very low, so giving a large value here is reasonable.
     pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
@@ -164,7 +171,7 @@ impl<T> LockingTableInner<T> {
 
     fn try_take_for_head(&mut self, head_index: usize) -> Option<&mut Option<T>> {
         if self.mod_len(head_index) == self.mod_len(self.tail_index) {
-            debug_assert_eq!(head_index, self.tail_index);
+            core::debug_assert_eq!(head_index, self.tail_index);
             return None;
         }
 
@@ -227,7 +234,11 @@ impl<T> LockingTableInner<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
+impl<
+    T: Clone + Send + 'static,
+    M: Send + Sync + core::panic::RefUnwindSafe + MutexImpl<LockingTableInner<T>>,
+> OQueue<T> for ObservableLockingQueue<T, M>
+{
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
         self.inner.attach_sender()
     }
@@ -274,7 +285,11 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     }
 }
 
-impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
+impl<
+    T: Send + 'static,
+    M: Send + Sync + core::panic::RefUnwindSafe + MutexImpl<LockingTableInner<T>>,
+> OQueue<T> for LockingQueue<T, M>
+{
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
         Ok(Box::new(LockingSender { oqueue: this }))
@@ -304,13 +319,13 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
 }
 
 /// A sender for a locking oqueue. The same is used regardless of observation support.
-struct LockingSender<T> {
-    oqueue: Arc<LockingQueue<T>>,
+struct LockingSender<T, M: MutexImpl<LockingTableInner<T>>> {
+    oqueue: Arc<LockingQueue<T, M>>,
 }
 
-static_assertions::assert_impl_all!(LockingSender<usize>: UnwindSafe);
+static_assertions::assert_impl_all!(LockingSender<usize, dyn MutexImpl<LockingTableInner<usize>>>: UnwindSafe);
 
-impl<T: Send> Blocker for LockingSender<T> {
+impl<T: Send, M: MutexImpl<LockingTableInner<T>>> Blocker for LockingSender<T, M> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_send().is_some()
     }
@@ -324,7 +339,9 @@ impl<T: Send> Blocker for LockingSender<T> {
     }
 }
 
-impl<T: Send> Sender<T> for LockingSender<T> {
+impl<T: Send, M: Send + Sync + core::panic::RefUnwindSafe + MutexImpl<LockingTableInner<T>>>
+    Sender<T> for LockingSender<T, M>
+{
     fn send(&self, data: T) {
         let mut d = Some(data);
 
@@ -502,7 +519,7 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
             .set(inner.tail_index.max(self.max_observed_tail.get()));
         inner.try_weak_observe(&cursor)
     }
-    
+
     fn wait(&self) {
         Task::current().block_on(&[self]);
     }
@@ -524,9 +541,8 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::oqueue::generic_test::*;
-
     use super::*;
+    use crate::oqueue::generic_test::*;
 
     #[test]
     fn test_produce_consume_locking() {

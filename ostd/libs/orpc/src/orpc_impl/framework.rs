@@ -1,28 +1,26 @@
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     cell::RefCell,
     fmt::Display,
+    panic,
     panic::{RefUnwindSafe, UnwindSafe},
+    sync::atomic::{AtomicBool, Ordering},
 };
-
-use alloc::{
-    sync::{
-        Arc, Condvar, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
-};
-
 
 use crate::{
     orpc_impl::{Server, ServerRef, errors::RPCError},
     sync::{
-        Mutex,
+        mutex::Mutex,
         task::{Task, TaskRef},
     },
 };
 
 /// The information and state included in every server. The name comes form it being the "base class" state for all
 /// servers.
-pub struct ServerBase {
+pub struct ServerBase<Condvar> {
     /// True if the server has been aborted. This usually occurs because a method or thread panicked.
     aborted: AtomicBool,
     /// The servers threads. These are used to verify that all treads have reported themselves as attached and to wake
@@ -73,8 +71,8 @@ impl ServerBase {
             s.unpark();
         }
 
-        // TODO: Replace with logging.
-        println!("{}", payload);
+        // TODO(amp): Replace with logging.
+        // println!("{}", payload);
     }
 
     fn attach_task(&self) {
@@ -100,12 +98,12 @@ impl ServerBase {
 
 /// Start a new server thread. This should only be called while spawning a server.
 pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
-    server: std::sync::Arc<T>,
-    body: impl (FnOnce() -> Result<(), Box<dyn std::error::Error>>) + Send + UnwindSafe + 'static,
+    server: Arc<T>,
+    body: impl (FnOnce() -> Result<(), Box<dyn snafu::Error>>) + Send + UnwindSafe + 'static,
 ) {
     std::thread::spawn({
         move || {
-            if let Result::Err(payload) = std::panic::catch_unwind({
+            if let Result::Err(payload) = core::panic::catch_unwind({
                 let server = server.clone();
                 move || {
                     Server::orpc_server_base(server.as_ref()).attach_task();
@@ -121,13 +119,13 @@ pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
     });
 }
 
-thread_local! {
-    // PERFORMANCE: The implementation of `thread_local` relies on LLVM devirtualization to eliminate a function call
-    // during access. A better performing implementation may be needed to eliminate the overhead of internal abort
-    // points (like in blocking implementations). In Mariposa, we could put the current server in the task struct making
-    // the access a couple of pointer steps from a CPU-local (which does not have these performance issues).
-    static CURRENT_SERVER: RefCell<Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>>> = RefCell::new(None);
-}
+// PERFORMANCE: The implementation of `thread_local` relies on LLVM devirtualization to eliminate a function call
+// during access. A better performing implementation may be needed to eliminate the overhead of internal abort
+// points (like in blocking implementations). In Mariposa, we could put the current server in the task struct making
+// the access a couple of pointer steps from a CPU-local (which does not have these performance issues).
+#[thread_local]
+static CURRENT_SERVER: RefCell<Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>>> =
+    RefCell::new(None);
 
 /// Methods to access the current server.
 pub struct CurrentServer {
@@ -166,7 +164,7 @@ pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + RefUnwindSafe
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
-        CURRENT_SERVER.set(std::mem::take(&mut self.0));
+        CURRENT_SERVER.set(core::mem::take(&mut self.0));
     }
 }
 
@@ -181,9 +179,8 @@ mod test {
 
     use snafu::Whatever;
 
-    use crate::{orpc_impl::errors::RPCError, sync::blocker::Blocker};
-
     use super::*;
+    use crate::{orpc_impl::errors::RPCError, sync::blocker::Blocker};
 
     struct InfinitBlocker;
 

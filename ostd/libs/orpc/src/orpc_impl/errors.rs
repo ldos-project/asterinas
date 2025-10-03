@@ -1,9 +1,12 @@
-use core::any::Any;
+use alloc::{boxed::Box, string::String, vec::Vec};
+use core::{
+    any::Any, clone::Clone, fmt::Debug, marker::Copy, prelude::rust_2024::derive, stringify, write,
+};
 
 use snafu::Snafu;
 
 /// An error during an RPC call: failure via panic and the server not running.
-/// 
+///
 /// Any error returned from an ORPC method must implement `From<RPCError>` to allow reporting these errors to the user.
 /// (An easy way to do this us to use `Snafu` and have a [transparent
 /// variant](https://docs.rs/snafu/latest/snafu/derive.Snafu.html#delegating-to-the-underlying-error) for
@@ -45,4 +48,3 @@ impl RPCError {
         }
     }
 }
-
