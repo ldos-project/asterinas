@@ -12,7 +12,7 @@ use crate::{
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr, page_size},
+    mm::{PAGE_SIZE, Paddr, PagingLevel, paddr_to_vaddr, page_size},
     prelude::*,
     util::ops::range_difference,
 };
@@ -20,7 +20,9 @@ use crate::{
 /// Options for allocating physical memory frames.
 pub struct FrameAllocOptions {
     zeroed: bool,
-    level: u8,
+    // Frame level controls the size of the frame - level 1 is typically 4KB, and each level after
+    // is a factor of 512 larger. This is architecture-dependant though.
+    level: PagingLevel,
 }
 
 impl Default for FrameAllocOptions {

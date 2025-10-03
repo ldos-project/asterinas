@@ -42,7 +42,7 @@ pub use self::{
 pub(crate) use self::{
     kspace::paddr_to_vaddr, page_prop::PrivilegedPageFlags, page_table::PageTable,
 };
-use crate::arch::mm::PagingConsts;
+pub use crate::arch::mm::PagingConsts;
 
 /// The level of a page table node or a frame.
 pub type PagingLevel = u8;
