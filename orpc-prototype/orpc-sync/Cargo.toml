@@ -1,0 +1,13 @@
+[package]
+name = "orpc-sync"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+
+[dependencies]
+orpc-macros = { path = "../orpc-macros" }
+ostd = { path = "../../ostd" }
+
+[lints]
+workspace = true

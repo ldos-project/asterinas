@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["orpc", "orpc-macros", "prefetcher_demo", "orpc-sync"]
+
+[workspace.dependencies]
+
+[workspace.lints]

@@ -1,0 +1,17 @@
+[package]
+name = "prefetcher_demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+orpc = { path = "../orpc" }
+snafu = "*"
+rand = "*"
+egui = "0.32"
+eframe = "0.32"
+
+[lints]
+workspace = true
+
+[profile.dev]
+panic = "unwind"

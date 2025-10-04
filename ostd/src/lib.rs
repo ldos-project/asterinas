@@ -41,7 +41,14 @@ pub mod interface;
 pub mod io;
 pub mod logger;
 pub mod mm;
+
+#[cfg(all(target_vendor = "unknown", target_os = "none"))]
 pub mod panic;
+#[cfg(not(all(target_vendor = "unknown", target_os = "none")))]
+pub mod panic {
+    pub fn abort() -> ! { panic!(); }
+}
+
 pub mod prelude;
 pub mod smp;
 pub mod sync;
