@@ -4,21 +4,21 @@ use core::marker::PhantomData;
 
 use crate::task::Task;
 
-enum TaskHandle {
+pub enum TaskHandle {
     Real(Task),
     // In userspace simulations, the harness will need to define a mapping from task_handles to
     // whatever is used to model a task
     Fake(u64),
 }
 
-enum MutexHandle {
+pub enum MutexHandle {
     Real(crate::sync::Mutex<()>),
     // In userspace simulations, the harness will need to define a mapping from task_handles to
     // whatever is used to model a task
     Fake(u64),
 }
 
-enum LockError {
+pub enum LockError {
     WouldBlock,
     OtherError,
 }
@@ -49,22 +49,14 @@ impl<OsI: OsInterface, T: ?Sized> Drop for MutexGuard<'_, OsI, T> {
     }
 }
 
-impl<OsI: OsInterface, T: ?Sized> Deref for MutexGuard_<T, R> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
 pub struct Mutex<OsI: OsInterface, T> {
     m: MutexHandle,
     value: T,
     phantom: PhantomData<OsI>,
 }
 
-pub impl<OsI: OsInterface, T> Mutex<OsI, T> {
-    fn lock(&mut self) -> Result<MutexGuard<OsI, T>, LockError> {
+impl<OsI: OsInterface, T> Mutex<OsI, T> {
+    pub fn lock(&mut self) -> Result<MutexGuard<OsI, T>, LockError> {
         OsI::lock(&self.m)?;
         return Ok(MutexGuard {
             m: &self.m,
