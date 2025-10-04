@@ -37,6 +37,7 @@ pub mod bus;
 pub mod console;
 pub mod cpu;
 mod error;
+pub mod interface;
 pub mod io;
 pub mod logger;
 pub mod mm;
