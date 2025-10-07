@@ -1,17 +1,50 @@
 # Rust Guidelines
 
+We use `rustfmt` and `clippy` for formatting and linting. We use default configurations as much as
+possible.
+
+In addition,
+
+* Use the [general guidelines](general-guidelines.md).
+* Use descriptive local variable names. **Reason:** When other developers read the code they will
+  require less context to understand it.
+* Use `//` comments instead of `/* */` (block) comments.
+* When you need to clone a value into a closure use this pattern:
+```
+fn_taking_closure({
+    let x = x.clone();
+    || {
+        x
+    }
+})
+```
+* Unsafe Rust is not allowed outside of the implementation of OS primitives and core libraries.
+
+If you encounter violations of these rules in code you are editing, go ahead and fix them.
+
 ## API Documentation Guidelines
 
-API documentation describes the meanings and usage of APIs,
-and will be rendered into web pages by rustdoc.
+API documentation describes the meanings and usage of APIs, and is available in developers dev
+environment as well as in the `rustdoc` rendered documentation website.
 
-It is necessary to add documentation to all public APIs,
-including crates, modules, structs, traits, functions, macros, and more.
-The use of the `#[warn(missing_docs)]` lint enforces this rule.
+It is necessary to add documentation to all public APIs, including crates, modules, structs, traits,
+functions, macros, and more. The use of the `#[warn(missing_docs)]` lint enforces this rule.
 
-Asterinas adheres to the API style guidelines of the Rust community.
-The recommended API documentation style can be found at
-[How to write documentation - The rustdoc book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
+As you encounter undocumented parts of the system, take the time to document them, if possible. Add
+`#[warn(missing_docs)]` if possible. Eventually, we would like to enable this for the entire
+codebase.
+
+Asterinas adheres to the API style guidelines of the Rust community. The recommended API
+documentation style can be found at [How to write documentation - The rustdoc
+book](https://doc.rust-lang.org/rustdoc/how-to-write-documentation.html).
+
+Make any references to other parts of the code links, when possible. The syntax is:
+```
+[`path::to::thing`]
+```
+For more details see, [Linking to items by
+name](https://doc.rust-lang.org/rustdoc/write-documentation/linking-to-items-by-name.html) in the
+`rustdoc` documentation.
 
 ## Lint Guidelines
 
