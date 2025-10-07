@@ -452,21 +452,35 @@ ${DOCKER_RUST_CACHE_LOCATION}:
 	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
 	docker rm dummy
 
+.PHONY: docker
 docker: | ${DOCKER_RUST_CACHE_LOCATION}
 	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
+.PHONY: docker_start
 docker_start: | ${DOCKER_RUST_CACHE_LOCATION}
 	docker ps -a | grep $(DOCKER_CONTAINER_NAME) || \
-		docker run --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
+		docker run -d --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG) sleep infinity
 
+.PHONY: docker_attach
 docker_attach: docker_start
-	docker exec $(DOCKER_CONTAINER_NAME) -i /bin/bash
+	docker exec -it $(DOCKER_CONTAINER_NAME) /bin/bash -i
 
+.PHONY: docker_rm
 docker_rm:
+	docker stop $(DOCKER_CONTAINER_NAME)
 	docker rm $(DOCKER_CONTAINER_NAME)
 
-.PHONY: clean docker Clean
+.PHONY: clean
 clean:
+	@if find target test osdk/target docs '!' -writable 2>/dev/null | grep -q .; then \
+			echo "ERROR: Found unwritable files in build directories"; \
+			echo "ERROR: This must be run from the same environment as the build (generally inside the container)."; \
+			echo "ERROR: You may be running it in the host environment after a build in docker. Run it in docker instead."; \
+			echo "ERROR: (Note: Using "sudo make clean" will not work as the host environment may not have the correct tools.)"; \
+			false; \
+		else \
+			true; \
+		fi
 	@echo "Cleaning up Asterinas workspace target files"
 	cargo clean
 	@echo "Cleaning up OSDK workspace target files"
@@ -478,5 +492,20 @@ clean:
 	@echo "Uninstalling OSDK"
 	rm -f $(CARGO_OSDK)
 
-clean_all: clean
+.PHONY: clean_cache
+clean_cache:
+	@[ '!' -f /.dockerenv ] || ( \
+		echo "ERROR: Cleaning the Cargo and rustup caches from within the container is not allowed. Run it from the host environment."; \
+		false \
+		)
+	@if find $(DOCKER_RUST_CACHE_LOCATION) '!' -writable 2>/dev/null | grep -q .; then \
+			echo "ERROR: Found unwritable files in cache directory."; \
+			echo "ERROR: The container has probably created root owned files in cache. To fix that, run this as root: sudo make clean_cache"; \
+			false; \
+		else \
+			true; \
+		fi
 	rm -rf $(DOCKER_RUST_CACHE_LOCATION)
+
+.PHONY: clean_all
+clean_all: clean clean_cache
