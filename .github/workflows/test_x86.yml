@@ -27,6 +27,7 @@ jobs:
 
   integration-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container:
       image: ldosproject/asterinas:0.15.2-20250613
       options: --device=/dev/kvm --privileged
