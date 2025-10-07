@@ -72,8 +72,9 @@ make build
 make run
 ```
 
-If everything goes well, Asterinas is now up and running inside a VM.
-If things are running slow look for `ENABLE_KVM` in the output it should be 1 to make sure KVM was actually turned on.
+If everything goes well, Asterinas is now up and running inside a VM. If things are running slow,
+look for `Warning: KVM not present on your system` in the output. Your system may not be configured
+properly.
 
 Developer docs for LDOS's Asterinas are the [advanced instructions](docs/src/kernel/advanced-instructions.md). They include:
 - Userspace testing
