@@ -266,6 +266,9 @@ impl ClassScheduler {
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
     fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
+        // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/59): last_cpu is never
+        // cleared so once it is set, to the task can never move. last_cpu is set at:
+        // kernel/src/sched/sched_class/mod.rs:224 (ClassScheduler::enqueue)
         if let Some(last_cpu) = thread.sched_attr().last_cpu() {
             return last_cpu;
         }
