@@ -22,6 +22,7 @@ mod util;
 
 pub(crate) const NR_ENTRIES_PER_PAGE: usize = 512;
 
+/// Paging Constants for x86
 #[derive(Clone, Debug, Default)]
 pub struct PagingConsts {}
 
