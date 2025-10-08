@@ -40,6 +40,7 @@ mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
+pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;

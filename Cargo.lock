@@ -1195,6 +1195,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "orpc-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "osdk-frame-allocator"
 version = "0.15.2"
 dependencies = [
@@ -1241,6 +1250,7 @@ dependencies = [
  "log",
  "multiboot2",
  "num-traits",
+ "orpc-macros",
  "ostd-macros",
  "ostd-pod",
  "ostd-test",

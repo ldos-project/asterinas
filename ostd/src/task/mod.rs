@@ -37,6 +37,18 @@ pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
 }
 
+/// The state of a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskState {
+    /// The task is currently running or could be running.
+    Running,
+    /// The task is in the process of transitioning to `Blocked`. This state occurs while checking the conditions for a
+    /// blocking operation.
+    Blocking,
+    /// The task is currently blocked waiting to be explicitly awakened.
+    Blocked,
+}
+
 /// A task that executes a function to the end.
 ///
 /// Each task is associated with per-task data and an optional user space.
@@ -62,6 +74,8 @@ pub struct Task {
     switched_to_cpu: AtomicBool,
 
     schedule_info: TaskScheduleInfo,
+
+    pub lock: crate::sync::Mutex<TaskState>,
 }
 
 impl Task {
