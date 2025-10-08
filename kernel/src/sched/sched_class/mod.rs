@@ -130,6 +130,10 @@ trait SchedClassRq: Send + fmt::Debug {
 #[derive(Debug)]
 pub struct SchedAttr {
     policy: SchedPolicyState,
+    /// The CPU that the task is running on or was most recently scheduled on.
+    ///
+    /// This is distinct from [`ostd::task::scheduler::info::CommonSchedInfo::cpu()`] because it is
+    /// not cleared when the thread is descheduled.
     last_cpu: AtomicCpuId,
     real_time: real_time::RealTimeAttr,
     fair: fair::FairAttr,
@@ -182,10 +186,12 @@ impl SchedAttr {
         self.policy.update(f)
     }
 
+    /// The CPU that the thread is running on or was most recently scheduled on.
     fn last_cpu(&self) -> Option<CpuId> {
         self.last_cpu.get()
     }
 
+    /// Set the CPU this thread is being scheduled on.
     fn set_last_cpu(&self, cpu_id: CpuId) {
         self.last_cpu.set_anyway(cpu_id);
     }
@@ -198,6 +204,7 @@ impl Scheduler for ClassScheduler {
         let (still_in_rq, cpu) = {
             let selected_cpu_id = self.select_cpu(&thread, flags);
 
+            // If the task had already run on a CPU, use that.
             if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
                 debug_assert!(flags != EnqueueFlags::Spawn);
                 (true, task_cpu_id)
@@ -266,6 +273,9 @@ impl ClassScheduler {
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
     fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
+        // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/59): last_cpu is never
+        // cleared so once it is set, to the task can never move. last_cpu is set at:
+        // kernel/src/sched/sched_class/mod.rs:224 (ClassScheduler::enqueue)
         if let Some(last_cpu) = thread.sched_attr().last_cpu() {
             return last_cpu;
         }
@@ -283,6 +293,9 @@ impl ClassScheduler {
         // It still checks every CPU to find the one with the minimum load, but
         // avoids keeping selecting the same CPU when there are multiple equally
         // idle CPUs.
+
+        // Create a rotation of affinity so that the first element is the one after last_chosen.
+        // Create an iterator: CPUs after the last_chosen, then CPUs before last_chosen.
         let affinity_iter = affinity
             .iter()
             .filter(|&cpu| cpu.as_usize() as isize > last_chosen)
@@ -291,6 +304,8 @@ impl ClassScheduler {
                     .iter()
                     .filter(|&cpu| cpu.as_usize() as isize <= last_chosen),
             );
+
+        // Select the candidate with the minimum load. TODO(amp): Use fold and min_by_key
         for candidate in affinity_iter {
             let rq = self.rqs[candidate.as_usize()].lock();
             let (load, _) = rq.nr_queued_and_running();
@@ -299,6 +314,7 @@ impl ClassScheduler {
                 selected = candidate;
             }
         }
+
         self.last_chosen_cpu.set_anyway(selected);
         selected
     }
