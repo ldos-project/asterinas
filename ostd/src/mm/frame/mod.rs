@@ -56,7 +56,7 @@ pub use segment::Segment;
 use untyped::{AnyUFrameMeta, UFrame};
 
 use super::{PAGE_SIZE, PagingLevel};
-use crate::mm::{Paddr, PagingConsts, Vaddr};
+use crate::mm::{Paddr, Vaddr};
 
 static MAX_PADDR: AtomicUsize = AtomicUsize::new(0);
 
@@ -214,7 +214,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     pub(in crate::mm) unsafe fn from_raw(paddr: Paddr) -> Self {
         debug_assert!(paddr < max_paddr());
 
-        let vaddr = mapping::frame_to_meta::<PagingConsts>(paddr);
+        let vaddr = mapping::frame_to_meta(paddr);
         let ptr = vaddr as *const MetaSlot;
 
         Self {
@@ -326,7 +326,7 @@ pub(in crate::mm) unsafe fn inc_frame_ref_count(paddr: Paddr) {
     debug_assert!(paddr % PAGE_SIZE == 0);
     debug_assert!(paddr < max_paddr());
 
-    let vaddr: Vaddr = mapping::frame_to_meta::<PagingConsts>(paddr);
+    let vaddr: Vaddr = mapping::frame_to_meta(paddr);
     // SAFETY: `vaddr` points to a valid `MetaSlot` that will never be mutably borrowed, so taking
     // an immutable reference to it is always safe.
     let slot = unsafe { &*(vaddr as *const MetaSlot) };

@@ -17,7 +17,6 @@ use super::{
     unique::UniqueFrame,
 };
 use crate::{
-    arch::mm::PagingConsts,
     mm::{Paddr, Vaddr},
     panic::abort,
 };
@@ -285,7 +284,7 @@ where
 
         let mut frame = {
             let meta_ptr = current.as_ptr() as *mut MetaSlot;
-            let paddr = mapping::meta_to_frame::<PagingConsts>(meta_ptr as Vaddr);
+            let paddr = mapping::meta_to_frame(meta_ptr as Vaddr);
             // SAFETY: The frame was forgotten when inserted into the linked list.
             unsafe { UniqueFrame::<Link<M>>::from_raw(paddr) }
         };

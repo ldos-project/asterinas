@@ -8,7 +8,7 @@ use super::{
     AnyFrameMeta, Frame, MetaSlot,
     meta::{GetFrameError, REF_COUNT_UNIQUE},
 };
-use crate::mm::{PAGE_SIZE, Paddr, PagingConsts, PagingLevel, frame::mapping};
+use crate::mm::{PAGE_SIZE, Paddr, PagingLevel, frame::mapping};
 
 /// An owning frame pointer.
 ///
@@ -137,7 +137,7 @@ impl<M: AnyFrameMeta + ?Sized> UniqueFrame<M> {
     /// The caller must ensure that the physical address is valid and points to
     /// a forgotten frame that was previously casted by [`Self::into_raw`].
     pub(crate) unsafe fn from_raw(paddr: Paddr) -> Self {
-        let vaddr = mapping::frame_to_meta::<PagingConsts>(paddr);
+        let vaddr = mapping::frame_to_meta(paddr);
         let ptr = vaddr as *const MetaSlot;
 
         Self {
