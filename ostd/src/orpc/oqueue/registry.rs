@@ -1,26 +1,33 @@
-use core::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    sync::LazyLock,
-};
+use alloc::string::{String, ToString};
+use core::any::{Any, TypeId};
 
+use hashbrown::HashMap;
 use snafu::Snafu;
+use spin::Once;
 
-use crate::{oqueue::OQueueRef, sync::Mutex};
+use super::OQueueRef;
+use crate::{
+    prelude::{Arc, Box},
+    sync::Mutex,
+};
 
 type Registry = Mutex<HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>>;
 
-static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry::default());
+static REGISTRY: Once<Registry> = Once::new();
+
+pub fn init() {
+    REGISTRY.call_once(|| Registry::default());
+}
 
 pub fn register<T: 'static>(name: &str, v: OQueueRef<T>) {
     let key = (name.to_string(), TypeId::of::<T>());
-    let mut map = REGISTRY.lock();
+    let mut map = REGISTRY.get().unwrap().lock();
     map.insert(key, Box::new(v));
 }
 
 pub fn lookup<T: 'static>(name: &str) -> Option<OQueueRef<T>> {
     let key = (name.to_string(), TypeId::of::<T>());
-    let map = REGISTRY.lock();
+    let map = REGISTRY.get().unwrap().lock();
     let value = map.get(&key)?;
     let value: &OQueueRef<T> = value.downcast_ref()?;
     Some(value.clone())

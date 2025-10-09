@@ -1,28 +1,66 @@
 //! A simple implementation of a [`crate::oqueue::OQueue`] using a [`crate::sync::Mutex`]s. This is a baseline
 //! implementation that supports all features, but is also slow in many cases.
 
+use alloc::{borrow::ToOwned, format, sync::Weak};
+use core::{any::type_name, cell::Cell, panic::UnwindSafe};
+
+use super::{
+    super::sync::{blocker::Blocker, task::TaskRef},
+    Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver, WeakObserver,
+};
 use crate::{
-    oqueue::{Cursor, OQueue, Receiver, Sender, StrongObserver, OQueueAttachError, WeakObserver},
-    sync::{
-        Mutex,
-        blocker::{Blocker, TaskList},
-        task::{Task, TaskRef},
-    },
+    prelude::{Arc, Box, Vec},
+    sync::Mutex,
+    task::{Task, scheduler},
 };
-use alloc::{
-    borrow::ToOwned,
-    boxed::Box,
-    format,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
-use core::{any::type_name, cell::Cell};
-use std::panic::UnwindSafe;
+
+#[derive(Default, Debug)]
+pub struct TaskList {
+    tasks: Mutex<Vec<TaskRef>>,
+}
+
+fn taskref_to_opaque_id(task: &TaskRef) -> *const Task {
+    let raw = TaskRef::into_raw(task.clone());
+    unsafe { TaskRef::from_raw(raw) };
+    raw
+}
+
+impl TaskList {
+    pub(crate) fn add_task(&self, task: &TaskRef) {
+        let mut tasks = self.tasks.lock();
+        if tasks
+            .iter()
+            .all(|t| taskref_to_opaque_id(task) != taskref_to_opaque_id(task))
+        {
+            tasks.push(task.clone());
+        }
+    }
+
+    pub(crate) fn remove_task(&self, task: &TaskRef) {
+        let mut tasks = self.tasks.lock();
+        if let Some(i) = tasks
+            .iter()
+            .position(|t| taskref_to_opaque_id(t) == taskref_to_opaque_id(task))
+        {
+            tasks.remove(i);
+        }
+    }
+
+    pub(crate) fn wake_all(&self) {
+        let tasks: Vec<TaskRef> = {
+            let mut tasks = self.tasks.lock();
+            core::mem::take(tasks.as_mut())
+        };
+        for t in tasks {
+            scheduler::unpark_target(t);
+        }
+    }
+}
 
 /// A oqueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
 /// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// oqueue.
-pub struct LockingQueue<T> {
+pub struct LockingQueue<T: UnwindSafe> {
     this: Weak<LockingQueue<T>>,
     inner: Mutex<LockingTableInner<T>>,
     buffer_size: usize,
@@ -30,9 +68,9 @@ pub struct LockingQueue<T> {
     read_wait_queue: TaskList,
 }
 
-static_assertions::assert_impl_all!(LockingQueue<usize>: UnwindSafe);
+// static_assertions::assert_impl_all!(LockingQueue<usize>: UnwindSafe);
 
-impl<T> LockingQueue<T> {
+impl<T: UnwindSafe> LockingQueue<T> {
     /// Create a new oqueue with a given size.
     pub fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
@@ -67,7 +105,7 @@ impl<T> LockingQueue<T> {
 
 /// A oqueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
 /// number of senders and receivers. It is implemented using a single lock for the entire oqueue.
-pub struct ObservableLockingQueue<T> {
+pub struct ObservableLockingQueue<T: UnwindSafe> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
@@ -80,7 +118,7 @@ pub struct ObservableLockingQueue<T> {
     inner: Arc<LockingQueue<T>>,
 }
 
-impl<T> ObservableLockingQueue<T> {
+impl<T: UnwindSafe> ObservableLockingQueue<T> {
     /// Create a new oqueue (with observer support) with the given buffer size and supported strong observers. The cost
     /// of an unused observer is very low, so giving a large value here is reasonable.
     pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
@@ -227,7 +265,7 @@ impl<T> LockingTableInner<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
+impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueue<T> {
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
         self.inner.attach_sender()
     }
@@ -274,7 +312,7 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     }
 }
 
-impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
+impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
         Ok(Box::new(LockingSender { oqueue: this }))
@@ -304,13 +342,13 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
 }
 
 /// A sender for a locking oqueue. The same is used regardless of observation support.
-struct LockingSender<T> {
+struct LockingSender<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
 
-static_assertions::assert_impl_all!(LockingSender<usize>: UnwindSafe);
+// static_assertions::assert_impl_all!(LockingSender<usize>: UnwindSafe);
 
-impl<T: Send> Blocker for LockingSender<T> {
+impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_send().is_some()
     }
@@ -324,7 +362,7 @@ impl<T: Send> Blocker for LockingSender<T> {
     }
 }
 
-impl<T: Send> Sender<T> for LockingSender<T> {
+impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
     fn send(&self, data: T) {
         let mut d = Some(data);
 
@@ -333,7 +371,7 @@ impl<T: Send> Sender<T> for LockingSender<T> {
             if d.is_none() {
                 break;
             }
-            Task::current().block_on(&[self]);
+            Task::current().unwrap().block_on(&[self]);
         }
     }
 
@@ -351,31 +389,31 @@ impl<T: Send> Sender<T> for LockingSender<T> {
 
 /// A receiver for a locking oqueue. This is only used for non-observable tables where the value should be *moved* out
 /// instead of cloned.
-struct LockingReceiver<T> {
+struct LockingReceiver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
 
-impl<T> Blocker for LockingReceiver<T> {
+impl<T: UnwindSafe> Blocker for LockingReceiver<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_receive()
     }
 
-    fn prepare_to_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn prepare_to_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.add_task(task)
     }
 
-    fn finish_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn finish_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.remove_task(task);
     }
 }
 
-impl<T> Drop for LockingReceiver<T> {
+impl<T: UnwindSafe> Drop for LockingReceiver<T> {
     fn drop(&mut self) {
         self.oqueue.inner.lock().drop_receiver();
     }
 }
 
-impl<T: Send> Receiver<T> for LockingReceiver<T> {
+impl<T: Send + UnwindSafe> Receiver<T> for LockingReceiver<T> {
     fn receive(&self) -> T {
         self.block_until(|| self.try_receive())
     }
@@ -392,17 +430,17 @@ impl<T: Send> Receiver<T> for LockingReceiver<T> {
 
 /// A receiver for a locking oqueue which does support observers. This clones values as they are taken out of the oqueue,
 /// to make sure they are still available for observers.
-struct CloningLockingReceiver<T> {
+struct CloningLockingReceiver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
 
-impl<T> Drop for CloningLockingReceiver<T> {
+impl<T: UnwindSafe> Drop for CloningLockingReceiver<T> {
     fn drop(&mut self) {
         self.oqueue.inner.lock().drop_receiver();
     }
 }
 
-impl<T: Send + Clone> Receiver<T> for CloningLockingReceiver<T> {
+impl<T: Send + Clone + UnwindSafe> Receiver<T> for CloningLockingReceiver<T> {
     fn receive(&self) -> T {
         self.block_until(|| self.try_receive())
     }
@@ -417,41 +455,41 @@ impl<T: Send + Clone> Receiver<T> for CloningLockingReceiver<T> {
     }
 }
 
-impl<T> Blocker for CloningLockingReceiver<T> {
+impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_receive()
     }
 
-    fn prepare_to_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn prepare_to_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.add_task(task)
     }
 
-    fn finish_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn finish_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.remove_task(task);
     }
 }
 
 /// A strong observer for a locking oqueue. This will clone values and works only with [`CloningLockingReceiver`].
-struct LockingStrongObserver<T> {
+struct LockingStrongObserver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
     index: usize,
 }
 
-impl<T> Blocker for LockingStrongObserver<T> {
+impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_strong_observe(self.index)
     }
 
-    fn prepare_to_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn prepare_to_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.add_task(task)
     }
 
-    fn finish_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn finish_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.remove_task(task);
     }
 }
 
-impl<T> Drop for LockingStrongObserver<T> {
+impl<T: UnwindSafe> Drop for LockingStrongObserver<T> {
     fn drop(&mut self) {
         // Free the observer head so that it is available again and ignored.
         let mut inner = self.oqueue.inner.lock();
@@ -460,7 +498,7 @@ impl<T> Drop for LockingStrongObserver<T> {
     }
 }
 
-impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
+impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T> {
     fn strong_observe(&self) -> T {
         self.block_until(|| self.try_strong_observe())
     }
@@ -476,35 +514,35 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
 
 /// A weak observer for a locking oqueue. This only works with [`ObservableLockingTable`] since otherwise the values
 /// would have been moved out instead of cloned.
-struct LockingWeakObserver<T> {
+struct LockingWeakObserver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
     max_observed_tail: Cell<usize>,
 }
 
-impl<T> Blocker for LockingWeakObserver<T> {
+impl<T: UnwindSafe> Blocker for LockingWeakObserver<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().tail_index > self.max_observed_tail.get()
     }
 
-    fn prepare_to_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn prepare_to_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.add_task(task)
     }
 
-    fn finish_wait(&self, task: &crate::sync::task::TaskRef) {
+    fn finish_wait(&self, task: &TaskRef) {
         self.oqueue.read_wait_queue.remove_task(task);
     }
 }
 
-impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
+impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     fn weak_observe(&self, cursor: Cursor) -> Option<T> {
         let mut inner = self.oqueue.inner.lock();
         self.max_observed_tail
             .set(inner.tail_index.max(self.max_observed_tail.get()));
         inner.try_weak_observe(&cursor)
     }
-    
+
     fn wait(&self) {
-        Task::current().block_on(&[self]);
+        Task::current().unwrap().block_on(&[self]);
     }
 
     fn recent_cursor(&self) -> Cursor {
@@ -524,9 +562,8 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::oqueue::generic_test::*;
-
     use super::*;
+    use crate::oqueue::generic_test::*;
 
     #[test]
     fn test_produce_consume_locking() {

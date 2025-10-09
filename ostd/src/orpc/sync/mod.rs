@@ -5,7 +5,5 @@
 //! similar may be useful for user-space testing of kernel code. Related:
 //! https://github.com/ldos-project/asterinas/issues/26
 
-use alloc::fmt::Debug;
-
 pub mod blocker;
 pub mod task;

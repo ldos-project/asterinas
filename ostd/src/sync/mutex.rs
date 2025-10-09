@@ -17,6 +17,10 @@ pub struct Mutex<T: ?Sized> {
     val: UnsafeCell<T>,
 }
 
+// TODO(aneesh): mutex poisioning?
+impl<T: ?Sized> core::panic::UnwindSafe for Mutex<T> {}
+impl<T: ?Sized> core::panic::RefUnwindSafe for Mutex<T> {}
+
 impl<T> Mutex<T> {
     /// Creates a new mutex.
     pub const fn new(val: T) -> Self {
@@ -25,6 +29,12 @@ impl<T> Mutex<T> {
             queue: WaitQueue::new(),
             val: UnsafeCell::new(val),
         }
+    }
+}
+
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self::new(Default::default())
     }
 }
 

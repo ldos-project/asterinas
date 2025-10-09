@@ -2,16 +2,17 @@ mod generic_test;
 pub mod locking;
 pub mod registry;
 
+use alloc::string::String;
 use core::{
     any::Any,
     ops::{Add, Sub},
     panic::{RefUnwindSafe, UnwindSafe},
-    sync::Arc,
 };
 
 use snafu::Snafu;
 
-use crate::sync::blocker::Blocker;
+use super::sync::blocker::Blocker;
+use crate::prelude::{Arc, Box};
 
 /// A reference to a specific row in a queue. This refers to an element over the full history of a oqueue, not based on
 /// some implementation defined buffer.
@@ -55,7 +56,7 @@ pub trait Sender<T>: Send + UnwindSafe + Blocker {
     fn try_send(&self, data: T) -> Option<T>;
 }
 
-static_assertions::assert_obj_safe!(Sender<usize>);
+// static_assertions::assert_obj_safe!(Sender<usize>);
 
 /// A receiver handle to a oqueue. This allows taking or receiving values from the oqueue such that no other receiver will
 /// receive the same value ("exactly once to exactly one" semantics).
@@ -73,7 +74,7 @@ pub trait Receiver<T>: Send + UnwindSafe + Blocker {
     // }
 }
 
-static_assertions::assert_obj_safe!(Receiver<()>);
+// static_assertions::assert_obj_safe!(Receiver<()>);
 
 /// A strong-observer handle to a oqueue. This allows receiving every value from a oqueue without preventing other
 /// receivers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls

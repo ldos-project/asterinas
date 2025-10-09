@@ -4,8 +4,8 @@ extern crate alloc;
 // correctly in this crate, since they generate references to `::rpc`.
 // extern crate self as orpc;
 
-// pub mod oqueue;
-// pub mod orpc_impl;
+pub mod oqueue;
+pub mod orpc_impl;
 pub mod sync;
 //
 // pub use orpc_impl::{Server, ServerRef};

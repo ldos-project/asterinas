@@ -20,6 +20,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(trait_upcasting)]
 #![feature(unbounded_shifts)]
+#![feature(thread_local)]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]

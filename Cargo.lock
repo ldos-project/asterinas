@@ -859,6 +859,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "heck"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
 name = "iced-x86"
 version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1241,6 +1247,7 @@ dependencies = [
  "cfg-if",
  "fdt",
  "gimli 0.28.1",
+ "hashbrown 0.14.5",
  "iced-x86",
  "id-alloc",
  "inherit-methods-macro",
@@ -1257,6 +1264,7 @@ dependencies = [
  "riscv",
  "sbi-rt",
  "smallvec",
+ "snafu",
  "spin",
  "tdx-guest",
  "unwinding",
@@ -1595,6 +1603,27 @@ dependencies = [
  "heapless 0.8.0",
  "log",
  "managed",
+]
+
+[[package]]
+name = "snafu"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e84b3f4eacbf3a1ce05eac6763b4d629d60cbc94d632e4092c54ade71f1e1a2"
+dependencies = [
+ "snafu-derive",
+]
+
+[[package]]
+name = "snafu-derive"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
 ]
 
 [[package]]

@@ -4,15 +4,9 @@
 //! XXX: This needs to be reworked significantly because is forces some rather odd syntax in select and is not as
 //! flexible as it should be.
 
-use core::mem;
-
 pub use orpc_macros::select;
 
-use crate::{
-    prelude::{Arc, Vec},
-    sync::Mutex,
-    task::{CurrentTask, Task},
-};
+use crate::{prelude::Arc, task::Task};
 // use crate::{
 //     // orpc_impl::framework::CurrentServer,
 // };
