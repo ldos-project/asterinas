@@ -4,11 +4,15 @@
 //! XXX: This needs to be reworked significantly because is forces some rather odd syntax in select and is not as
 //! flexible as it should be.
 
-pub use orpc_macros::select;
-use task::{CurrentTask, Task, TaskState};
+use core::mem;
 
-use super::task;
-use crate::sync::Mutex;
+pub use orpc_macros::select;
+
+use crate::{
+    prelude::{Arc, Vec},
+    sync::Mutex,
+    task::{CurrentTask, Task},
+};
 // use crate::{
 //     // orpc_impl::framework::CurrentServer,
 // };
@@ -89,11 +93,11 @@ pub trait Blocker {
     ///
     /// This returns an ID which can be passed to [`Blocker::remove_task`] (on the same instance) to improve the
     /// performance of removal.
-    fn prepare_to_wait(&self, task: &task::TaskRef);
+    fn prepare_to_wait(&self, task: &Arc<Task>);
 
     /// Remove a task from the wait queue of `self`. `id` is the value returned from [`Blocker::add_task`] when `task`
     /// was added.
-    fn finish_wait(&self, task: &task::TaskRef);
+    fn finish_wait(&self, task: &Arc<Task>);
 
     /// Block on self repeately until `cond` returns Some. This assumes that this blocker will be woken if `cond()`
     /// would change.
@@ -108,73 +112,36 @@ pub trait Blocker {
                     return returned;
                 }
                 None => {
-                    Task::current().block_on(&[self]);
+                    Task::current().map(|t| t.block_on(&[self]));
                 }
             };
         }
     }
 }
 
-static_assertions::assert_obj_safe!(Blocker);
+// static_assertions::assert_obj_safe!(Blocker);
 
-impl CurrentTask {
+impl crate::task::CurrentTask {
     /// Wait for multiple blockers, waking if any wake.
-    pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) {
-        {
-            let mut state = self.lock.lock().unwrap();
-            *state = TaskState::Blocking;
-        }
-        // TODO:PERFORMANCE: The need for these abort point checks is concerning, but seems hard to avoid. This need
-        // investigation.
-        CurrentServer::abort_point();
-        for (i, blocker) in blockers.iter().enumerate() {
-            blocker.prepare_to_wait(&self);
-            if blocker.should_try() {
-                for _ in 0..=i {
-                    blockers[i].finish_wait(&self);
+    pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) -> Result<(), ()> {
+        let (waiter, waker) = crate::sync::Waiter::new_pair();
+        return Ok(waiter.wait_until_or_cancelled(
+            || {
+                for (i, blocker) in blockers.iter().enumerate() {
+                    let task = self.cloned();
+                    blocker.prepare_to_wait(&task);
+                    if blocker.should_try() {
+                        for _ in 0..=i {
+                            blockers[i].finish_wait(&task);
+                        }
+                        waker.wake_up();
+                        // We should try again and we have removed ourselves from all the task queues.
+                        return Some(());
+                    }
                 }
-                // We should try again and we have removed ourselves from all the task queues.
-                return;
-            }
-        }
-        self.park();
-        CurrentServer::abort_point();
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct TaskList {
-    tasks: Mutex<Vec<task::TaskRef>>,
-}
-
-impl TaskList {
-    pub(crate) fn add_task(&self, task: &task::TaskRef) {
-        let mut tasks = self.tasks.lock().unwrap();
-        if tasks
-            .iter()
-            .all(|t| t.os_thread.id() != task.os_thread.id())
-        {
-            tasks.push(task.clone());
-        }
-    }
-
-    pub(crate) fn remove_task(&self, task: &task::TaskRef) {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(i) = tasks
-            .iter()
-            .position(|t| t.os_thread.id() == task.os_thread.id())
-        {
-            tasks.remove(i);
-        }
-    }
-
-    pub(crate) fn wake_all(&self) {
-        let tasks: Vec<task::TaskRef> = {
-            let mut tasks = self.tasks.lock().unwrap();
-            mem::take(tasks.as_mut())
-        };
-        for t in tasks {
-            t.unpark();
-        }
+                None
+            },
+            || Ok(()), // CurrentServer::abort_point,
+        )?);
     }
 }

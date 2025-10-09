@@ -74,8 +74,6 @@ pub struct Task {
     switched_to_cpu: AtomicBool,
 
     schedule_info: TaskScheduleInfo,
-
-    pub lock: crate::sync::Mutex<TaskState>,
 }
 
 impl Task {
