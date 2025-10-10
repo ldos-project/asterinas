@@ -164,3 +164,22 @@ pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {
         _ => super::pools::dealloc(guard, [(addr, size)].into_iter()),
     }
 }
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use ostd::prelude::ktest;
+
+    #[ktest]
+    fn test_cache_array() {
+        const BASE_PAGE_SIZE: usize = 4096;
+        const LVL2_PAGE_SIZE: usize = 512 * BASE_PAGE_SIZE;
+        const LVL3_PAGE_SIZE: usize = 512 * LVL2_PAGE_SIZE;
+        assert_eq!(CacheArray::<1, 1, 1>::segment_size(), BASE_PAGE_SIZE);
+        assert_eq!(CacheArray::<2, 1, 1>::segment_size(), 2 * BASE_PAGE_SIZE);
+        assert_eq!(CacheArray::<1, 1, 2>::segment_size(), LVL2_PAGE_SIZE);
+        assert_eq!(CacheArray::<3, 1, 2>::segment_size(), 3 * LVL2_PAGE_SIZE);
+        assert_eq!(CacheArray::<1, 1, 3>::segment_size(), LVL3_PAGE_SIZE);
+        assert_eq!(CacheArray::<5, 1, 3>::segment_size(), 5 * LVL3_PAGE_SIZE);
+    }
+}
