@@ -42,14 +42,14 @@ pub use self::{
 pub(crate) use self::{
     kspace::paddr_to_vaddr, page_prop::PrivilegedPageFlags, page_table::PageTable,
 };
-use crate::arch::mm::PagingConsts;
+pub use crate::arch::mm::PagingConsts;
 
 /// The level of a page table node or a frame.
 pub type PagingLevel = u8;
 
 /// A minimal set of constants that determines the paging system.
 /// This provides an abstraction over most paging modes in common architectures.
-pub(crate) trait PagingConstsTrait: Clone + Debug + Send + Sync + 'static {
+pub trait PagingConstsTrait: Clone + Debug + Send + Sync + 'static {
     /// The smallest page size.
     /// This is also the page size at level 1 page tables.
     const BASE_PAGE_SIZE: usize;
@@ -90,7 +90,7 @@ pub(crate) trait PagingConstsTrait: Clone + Debug + Send + Sync + 'static {
 pub const PAGE_SIZE: usize = page_size::<PagingConsts>(1);
 
 /// The page size at a given level.
-pub(crate) const fn page_size<C: PagingConstsTrait>(level: PagingLevel) -> usize {
+pub const fn page_size<C: PagingConstsTrait>(level: PagingLevel) -> usize {
     C::BASE_PAGE_SIZE << (nr_subpage_per_huge::<C>().ilog2() as usize * (level as usize - 1))
 }
 

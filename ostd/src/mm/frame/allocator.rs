@@ -8,10 +8,11 @@ use align_ext::AlignExt;
 
 use super::{Frame, meta::AnyFrameMeta, segment::Segment};
 use crate::{
+    arch::mm::PagingConsts,
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr},
+    mm::{PAGE_SIZE, Paddr, PagingLevel, paddr_to_vaddr, page_size},
     prelude::*,
     util::ops::range_difference,
 };
@@ -19,6 +20,9 @@ use crate::{
 /// Options for allocating physical memory frames.
 pub struct FrameAllocOptions {
     zeroed: bool,
+    // Frame level controls the size of the frame - level 1 is typically 4KB, and each level after
+    // is a factor of 512 larger. This is architecture-dependant though.
+    level: PagingLevel,
 }
 
 impl Default for FrameAllocOptions {
@@ -30,7 +34,10 @@ impl Default for FrameAllocOptions {
 impl FrameAllocOptions {
     /// Creates new options for allocating the specified number of frames.
     pub fn new() -> Self {
-        Self { zeroed: true }
+        Self {
+            zeroed: true,
+            level: 1,
+        }
     }
 
     /// Sets whether the allocated frames should be initialized with zeros.
@@ -52,7 +59,8 @@ impl FrameAllocOptions {
 
     /// Allocates a single frame with additional metadata.
     pub fn alloc_frame_with<M: AnyFrameMeta>(&self, metadata: M) -> Result<Frame<M>> {
-        let single_layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
+        let page_size = page_size::<PagingConsts>(self.level);
+        let single_layout = Layout::from_size_align(page_size, page_size).unwrap();
         let frame = get_global_frame_allocator()
             .alloc(single_layout)
             .map(|paddr| Frame::from_unused(paddr, metadata).unwrap())

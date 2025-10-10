@@ -6,7 +6,7 @@ use core::{alloc::Layout, cell::RefCell};
 
 use ostd::{
     cpu_local,
-    mm::{PAGE_SIZE, Paddr},
+    mm::{PAGE_SIZE, Paddr, PagingConsts, PagingLevel, page_size},
     trap::irq::DisabledLocalIrqGuard,
 };
 
@@ -15,22 +15,26 @@ cpu_local! {
 }
 
 struct CacheOfSizes {
-    cache1: CacheArray<1, 12>,
-    cache2: CacheArray<2, 6>,
-    cache3: CacheArray<3, 6>,
-    cache4: CacheArray<4, 6>,
+    cache1: CacheArray<1, 12, 1>,
+    cache2: CacheArray<2, 6, 1>,
+    cache3: CacheArray<3, 6, 1>,
+    cache4: CacheArray<4, 6, 1>,
 }
 
 /// A fixed-size local cache for frame allocation.
 ///
 /// Each cache array contains at most `COUNT` segments. Each segment contains
 /// `NR_CONT_FRAMES` contiguous frames.
-struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize> {
+/// The size of each frame is determined by `LEVEL`, with level 1 corresponding to the base page
+/// size, and higher levels being a function of `LEVEL`. See [`mm::page_size`].
+struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel> {
     inner: [Option<Paddr>; COUNT],
     size: usize,
 }
 
-impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES, COUNT> {
+impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
+    CacheArray<NR_CONT_FRAMES, COUNT, LEVEL>
+{
     const fn new() -> Self {
         Self {
             inner: [const { None }; COUNT],
@@ -40,7 +44,7 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
 
     /// The size of the segments that this cache manages.
     const fn segment_size() -> usize {
-        NR_CONT_FRAMES * PAGE_SIZE
+        NR_CONT_FRAMES * page_size::<PagingConsts>(LEVEL)
     }
 
     /// Allocates a segment of frames.
@@ -52,12 +56,19 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
             return Some(frame);
         }
 
+        // Allocate enough frames to fill 2/3rds of the cache
         let nr_to_alloc = COUNT * 2 / 3;
         let allocated = super::pools::alloc(
             guard,
-            Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE).unwrap(),
+            Layout::from_size_align(
+                nr_to_alloc * Self::segment_size(),
+                page_size::<PagingConsts>(LEVEL),
+            )
+            .unwrap(),
         )?;
 
+        // Push all allocated frames except for the one we will return to the requester into the
+        // cache
         for i in 1..nr_to_alloc {
             self.push_front(allocated + i * Self::segment_size());
         }
@@ -151,5 +162,24 @@ pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {
         3 => cache.cache3.dealloc(guard, addr),
         4 => cache.cache4.dealloc(guard, addr),
         _ => super::pools::dealloc(guard, [(addr, size)].into_iter()),
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use ostd::prelude::ktest;
+
+    #[ktest]
+    fn test_cache_array() {
+        const BASE_PAGE_SIZE: usize = 4096;
+        const LVL2_PAGE_SIZE: usize = 512 * BASE_PAGE_SIZE;
+        const LVL3_PAGE_SIZE: usize = 512 * LVL2_PAGE_SIZE;
+        assert_eq!(CacheArray::<1, 1, 1>::segment_size(), BASE_PAGE_SIZE);
+        assert_eq!(CacheArray::<2, 1, 1>::segment_size(), 2 * BASE_PAGE_SIZE);
+        assert_eq!(CacheArray::<1, 1, 2>::segment_size(), LVL2_PAGE_SIZE);
+        assert_eq!(CacheArray::<3, 1, 2>::segment_size(), 3 * LVL2_PAGE_SIZE);
+        assert_eq!(CacheArray::<1, 1, 3>::segment_size(), LVL3_PAGE_SIZE);
+        assert_eq!(CacheArray::<5, 1, 3>::segment_size(), 5 * LVL3_PAGE_SIZE);
     }
 }
