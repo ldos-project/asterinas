@@ -20,6 +20,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(trait_upcasting)]
 #![feature(unbounded_shifts)]
+#![feature(thread_local)]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
@@ -40,6 +41,7 @@ mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
+pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
