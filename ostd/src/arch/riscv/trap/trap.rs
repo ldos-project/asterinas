@@ -57,9 +57,13 @@ global_asm!(include_str!("trap.S"));
 pub unsafe fn init() {
     // Set sscratch register to 0, indicating to exception vector that we are
     // presently executing in the kernel
-    asm!("csrw sscratch, zero");
+    unsafe {
+        asm!("csrw sscratch, zero");
+    }
     // Set the exception vector address
-    asm!("csrw stvec, {}", in(reg) trap_entry as usize);
+    unsafe {
+        asm!("csrw stvec, {}", in(reg) trap_entry as usize);
+    }
 }
 
 /// Trap frame of kernel interrupt
@@ -215,7 +219,7 @@ impl UserContext {
 }
 
 #[expect(improper_ctypes)]
-extern "C" {
+unsafe extern "C" {
     fn trap_entry();
     fn run_user(regs: &mut UserContext);
 }

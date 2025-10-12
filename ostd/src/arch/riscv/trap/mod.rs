@@ -17,7 +17,9 @@ cpu_local_cell! {
 
 /// Initialize interrupt handling on RISC-V.
 pub unsafe fn init() {
-    self::trap::init();
+    unsafe {
+        self::trap::init();
+    }
 }
 
 /// Returns true if this function is called within the context of an IRQ handler
@@ -28,7 +30,7 @@ pub fn is_kernel_interrupted() -> bool {
 }
 
 /// Handle traps (only from kernel).
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn trap_handler(f: &mut TrapFrame) {
     use riscv::register::scause::Trap;
 
