@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   # Only run RISCV tests on main so we track it but don't use resources on every PR since we don't really care 
   # right now.
-  # pull_request:
+  pull_request:
   push:
     branches:
       - main
