@@ -1,3 +1,5 @@
+//! Error module for ORPC
+
 use alloc::string::{String, ToString};
 use core::any::Any;
 
@@ -16,7 +18,10 @@ pub enum RPCError {
     /// A panic occurred in the server during the call. The panic payload will be converted to a string, if possible. If
     /// it cannot be, then the string will be a generic error message.
     #[snafu(display("{message}"))]
-    Panic { message: String },
+    Panic {
+        /// message associated with this panic
+        message: String,
+    },
     /// The server does not exist or is not running. This can happen when a server already crashed or has been shutdown.
     #[snafu(display("Server does not exist or not running"))]
     ServerMissing,

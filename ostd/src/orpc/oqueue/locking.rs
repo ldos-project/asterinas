@@ -14,6 +14,7 @@ use crate::{
     task::{Task, scheduler},
 };
 
+/// List of tasks that can be awoken as a group.
 #[derive(Default, Debug)]
 pub struct TaskList {
     tasks: Mutex<Vec<TaskRef>>,
@@ -30,7 +31,7 @@ impl TaskList {
         let mut tasks = self.tasks.lock();
         if tasks
             .iter()
-            .all(|t| taskref_to_opaque_id(task) != taskref_to_opaque_id(task))
+            .all(|_| taskref_to_opaque_id(task) != taskref_to_opaque_id(task))
         {
             tasks.push(task.clone());
         }
@@ -371,7 +372,7 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
             if d.is_none() {
                 break;
             }
-            Task::current().unwrap().block_on(&[self]);
+            Task::current().unwrap().block_on(&[self]).unwrap();
         }
     }
 
@@ -542,7 +543,7 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     }
 
     fn wait(&self) {
-        Task::current().unwrap().block_on(&[self]);
+        Task::current().unwrap().block_on(&[self]).unwrap();
     }
 
     fn recent_cursor(&self) -> Cursor {

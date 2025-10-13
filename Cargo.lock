@@ -641,6 +641,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derivative"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1245,6 +1256,7 @@ dependencies = [
  "bitvec",
  "buddy_system_allocator",
  "cfg-if",
+ "derivative",
  "fdt",
  "gimli 0.28.1",
  "hashbrown 0.14.5",

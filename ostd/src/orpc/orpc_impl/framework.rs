@@ -1,106 +1,12 @@
-use alloc::sync::Weak;
-use core::{
-    cell::RefCell,
-    fmt::Display,
-    panic::{RefUnwindSafe, UnwindSafe},
-    sync::atomic::{AtomicBool, Ordering},
-};
+//! Server infrastructure
 
-use super::{super::sync::task::TaskRef, errors::RPCError};
+use core::panic::{RefUnwindSafe, UnwindSafe};
+
+use super::errors::RPCError;
 use crate::{
-    prelude::{Arc, Box, Vec},
-    sync::Mutex,
-    task::{Task, TaskOptions, scheduler},
+    prelude::{Arc, Box},
+    task::{Server, Task, TaskOptions},
 };
-
-/// The primary trait for all server. This provides access to information and capabilities common to all servers.
-pub trait Server: Sync + Send + RefUnwindSafe + 'static {
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
-    /// use it.
-    ///
-    /// Get a reference to the struct implementing all the fundamental server operations. This is effectively the base
-    /// class pointer of this server.
-    #[doc(hidden)]
-    fn orpc_server_base(&self) -> &ServerBase;
-}
-
-/// A reference to a server. `T` is the server type and should always implement [`Server`]. Due to Rust limitations,
-/// this is not checked.
-pub type ServerRef<T> = Arc<T>;
-
-/// The information and state included in every server. The name comes form it being the "base class" state for all
-/// servers.
-pub struct ServerBase {
-    /// True if the server has been aborted. This usually occurs because a method or thread panicked.
-    aborted: AtomicBool,
-    /// The servers threads. These are used to verify that all treads have reported themselves as attached and to wake
-    /// up the threads of a cancelled server. This is used to make sure threads have attached to OQueues before
-    /// returning the `ServerRef`. Without this, messages sent to the server immediately after spawning could be lost.
-    server_threads: Mutex<Vec<TaskRef>>,
-    /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
-    /// is available.
-    weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>,
-}
-
-impl ServerBase {
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
-    /// code must use it.
-    ///
-    /// Create a new `ServerBase` with a cyclical reference to the server containing it.
-    #[doc(hidden)]
-    pub fn new(weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>) -> Self {
-        Self {
-            aborted: Default::default(),
-            server_threads: Mutex::new(Default::default()),
-            weak_this,
-        }
-    }
-
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
-    /// code must use it.
-    ///
-    /// Returns true if the server was aborted.
-    #[doc(hidden)]
-    pub fn is_aborted(&self) -> bool {
-        self.aborted.load(Ordering::Relaxed)
-    }
-
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
-    /// code must use it.
-    ///
-    /// Abort a server.
-    #[doc(hidden)]
-    pub fn abort(&self, _payload: &impl Display) {
-        self.aborted.store(true, Ordering::SeqCst);
-        // Wake up all the threads in the server. This assumes that all threads have an abort point
-        let server_threads = self.server_threads.lock();
-        for s in server_threads.iter() {
-            scheduler::unpark_target(s.clone());
-        }
-
-        // TODO: Replace with logging.
-        // println!("{}", payload);
-    }
-
-    fn attach_task(&self) {
-        let mut server_threads = self.server_threads.lock();
-        server_threads.push(Task::current().unwrap().cloned());
-    }
-
-    /// Check if the server has aborted and panic if it has. This should be called periodically from all server threads
-    /// to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a cancelation
-    /// point in pthreads.)
-    pub fn abort_point(&self) {
-        if self.is_aborted() {
-            panic!("Server aborted in another thread");
-        }
-    }
-
-    /// Get a strong reference to `self`.
-    fn get_ref(&self) -> Option<ServerRef<dyn Server + Sync + RefUnwindSafe + Send>> {
-        self.weak_this.upgrade()
-    }
-}
 
 /// Start a new server thread. This should only be called while spawning a server.
 pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
@@ -127,14 +33,6 @@ pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
     .unwrap();
 }
 
-// PERFORMANCE: The implementation of `thread_local` relies on LLVM devirtualization to eliminate a function call
-// during access. A better performing implementation may be needed to eliminate the overhead of internal abort
-// points (like in blocking implementations). In Mariposa, we could put the current server in the task struct making
-// the access a couple of pointer steps from a CPU-local (which does not have these performance issues).
-#[thread_local]
-static CURRENT_SERVER: RefCell<Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>>> =
-    RefCell::new(None);
-
 /// Methods to access the current server.
 pub struct CurrentServer {
     _private: (),
@@ -145,9 +43,9 @@ impl CurrentServer {
     /// server threads to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a
     /// cancelation point in pthreads.)
     pub fn abort_point() {
-        if let Some(s) = CURRENT_SERVER.borrow().as_ref() {
+        Task::current().unwrap().server().borrow().clone().map(|s| {
             s.orpc_server_base().abort_point();
-        }
+        });
     }
 
     /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
@@ -160,17 +58,26 @@ impl CurrentServer {
         // TODO:PERFORMANCE:The overhead of using a strong reference here is potentially significant. Instead, we should
         // probably use unsafe to just use a pointer, assuming we can guarantee dynamic scoping and rule out leaking the
         // reference.
-        let previous_server = CURRENT_SERVER.take();
-        CURRENT_SERVER.replace(server.orpc_server_base().get_ref());
+        let curr_task = Task::current().unwrap().cloned();
+        let previous_server = curr_task.server().take();
+        server.orpc_server_base().get_ref().map(|s| {
+            curr_task.server().replace(Some(s));
+        });
         CurrentServerChangeGuard(previous_server)
     }
 }
 
+/// Guard for entering a server context. When dropped, the current tasks's server is set to
+/// `self.0`.
 pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>>);
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
-        CURRENT_SERVER.replace(core::mem::take(&mut self.0));
+        Task::current()
+            .unwrap()
+            .cloned()
+            .server()
+            .replace(self.0.clone());
     }
 }
 

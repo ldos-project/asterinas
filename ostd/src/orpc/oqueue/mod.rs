@@ -1,3 +1,7 @@
+//! OQueue - Observable Queue
+//! OQueue provides an interface for passing data within or between subsystems in a way that can be
+//! Observed by policies.
+
 mod generic_test;
 pub mod locking;
 pub mod registry;

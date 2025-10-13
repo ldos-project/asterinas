@@ -9,15 +9,19 @@ mod processor;
 pub mod scheduler;
 mod utils;
 
+use alloc::sync::Weak;
 use core::{
     any::Any,
     borrow::Borrow,
-    cell::{Cell, SyncUnsafeCell},
+    cell::{Cell, RefCell, SyncUnsafeCell},
+    fmt::Display,
     ops::Deref,
+    panic::RefUnwindSafe,
     ptr::NonNull,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
+use derivative::Derivative;
 use kernel_stack::KernelStack;
 use processor::current_task;
 use spin::Once;
@@ -28,7 +32,7 @@ pub use self::{
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
 pub(crate) use crate::arch::task::{TaskContext, context_switch};
-use crate::{cpu::context::UserContext, prelude::*, trap::in_interrupt_context};
+use crate::{cpu::context::UserContext, prelude::*, sync::Mutex, trap::in_interrupt_context};
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
@@ -37,24 +41,13 @@ pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
 }
 
-/// The state of a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskState {
-    /// The task is currently running or could be running.
-    Running,
-    /// The task is in the process of transitioning to `Blocked`. This state occurs while checking the conditions for a
-    /// blocking operation.
-    Blocking,
-    /// The task is currently blocked waiting to be explicitly awakened.
-    Blocked,
-}
-
 /// A task that executes a function to the end.
 ///
 /// Each task is associated with per-task data and an optional user space.
 /// If having a user space, the task can switch to the user space to
 /// execute user code. Multiple tasks can share a single user space.
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
@@ -74,6 +67,9 @@ pub struct Task {
     switched_to_cpu: AtomicBool,
 
     schedule_info: TaskScheduleInfo,
+
+    #[derivative(Debug = "ignore")]
+    server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe>>>>,
 }
 
 impl Task {
@@ -85,6 +81,13 @@ impl Task {
 
         // SAFETY: `current_task` is the current task.
         Some(unsafe { CurrentTask::new(current_task) })
+    }
+
+    /// Get a reference to the current server managing this task.
+    pub fn server(
+        &self,
+    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+        unsafe { &self.server.get() }
     }
 
     pub(super) fn ctx(&self) -> &SyncUnsafeCell<TaskContext> {
@@ -275,6 +278,7 @@ impl TaskOptions {
                 cpu: AtomicCpuId::default(),
             },
             switched_to_cpu: AtomicBool::new(false),
+            server: ForceSync::new(RefCell::new(None)),
         };
 
         Ok(new_task)
@@ -376,6 +380,92 @@ pub trait TaskContextApi {
 
     /// Gets stack pointer
     fn stack_pointer(&self) -> usize;
+}
+
+/// The primary trait for all server. This provides access to information and capabilities common to all servers.
+pub trait Server: Sync + Send + RefUnwindSafe + 'static {
+    /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
+    /// use it.
+    ///
+    /// Get a reference to the struct implementing all the fundamental server operations. This is effectively the base
+    /// class pointer of this server.
+    #[doc(hidden)]
+    fn orpc_server_base(&self) -> &ServerBase;
+}
+
+/// The information and state included in every server. The name comes form it being the "base class" state for all
+/// servers.
+pub struct ServerBase {
+    /// True if the server has been aborted. This usually occurs because a method or thread panicked.
+    aborted: AtomicBool,
+    /// The servers threads. These are used to verify that all treads have reported themselves as attached and to wake
+    /// up the threads of a cancelled server. This is used to make sure threads have attached to OQueues before
+    /// returning the `Arc<Server>`. Without this, messages sent to the server immediately after spawning could be lost.
+    server_threads: Mutex<Vec<Arc<Task>>>,
+    /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
+    /// is available.
+    weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>,
+}
+
+impl ServerBase {
+    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
+    /// code must use it.
+    ///
+    /// Create a new `ServerBase` with a cyclical reference to the server containing it.
+    #[doc(hidden)]
+    pub fn new(weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>) -> Self {
+        Self {
+            aborted: Default::default(),
+            server_threads: Mutex::new(Default::default()),
+            weak_this,
+        }
+    }
+
+    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
+    /// code must use it.
+    ///
+    /// Returns true if the server was aborted.
+    #[doc(hidden)]
+    pub fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::Relaxed)
+    }
+
+    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
+    /// code must use it.
+    ///
+    /// Abort a server.
+    #[doc(hidden)]
+    pub fn abort(&self, _payload: &impl Display) {
+        self.aborted.store(true, Ordering::SeqCst);
+        // Wake up all the threads in the server. This assumes that all threads have an abort point
+        let server_threads = self.server_threads.lock();
+        for s in server_threads.iter() {
+            scheduler::unpark_target(s.clone());
+        }
+
+        // TODO: Replace with logging.
+        // println!("{}", payload);
+    }
+
+    /// Attack a task to this server.
+    pub fn attach_task(&self) {
+        let mut server_threads = self.server_threads.lock();
+        server_threads.push(Task::current().unwrap().cloned());
+    }
+
+    /// Check if the server has aborted and panic if it has. This should be called periodically from all server threads
+    /// to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a cancelation
+    /// point in pthreads.)
+    pub fn abort_point(&self) {
+        if self.is_aborted() {
+            panic!("Server aborted in another thread");
+        }
+    }
+
+    /// Get a strong reference to `self`.
+    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>> {
+        self.weak_this.upgrade()
+    }
 }
 
 #[cfg(ktest)]
