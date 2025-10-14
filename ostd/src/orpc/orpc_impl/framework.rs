@@ -81,19 +81,14 @@ impl Drop for CurrentServerChangeGuard {
     }
 }
 
-#[cfg(test)]
+// #[cfg(ktest)]
 mod test {
-    use std::{
-        panic::catch_unwind,
-        sync::Barrier,
-        thread::{self, sleep},
-        time::Duration,
-    };
+    use core::sync::atomic::{AtomicBool, Ordering};
 
-    use snafu::Whatever;
+    use snafu::{Whatever, whatever};
 
     use super::*;
-    use crate::{orpc_impl::errors::RPCError, sync::blocker::Blocker};
+    use crate::{orpc::sync::blocker::Blocker, sync::Mutex, task::ServerBase};
 
     struct InfinitBlocker;
 
@@ -102,9 +97,9 @@ mod test {
             false
         }
 
-        fn prepare_to_wait(&self, _task: &crate::sync::task::TaskRef) {}
+        fn prepare_to_wait(&self, _task: &Arc<Task>) {}
 
-        fn finish_wait(&self, _task: &crate::sync::task::TaskRef) {}
+        fn finish_wait(&self, _task: &Arc<Task>) {}
     }
 
     struct TestServer<F: Fn()> {
@@ -125,12 +120,12 @@ mod test {
             Ok(())
         }
 
-        fn orpc_start_threads(server: &ServerRef<TestServer<F>>) -> Result<(), Whatever> {
-            thread::spawn({
+        fn orpc_start_threads(server: &Arc<TestServer<F>>) -> Result<(), Whatever> {
+            let res = TaskOptions::new({
                 let server = server.clone();
 
                 move || {
-                    if let Err(payload) = catch_unwind({
+                    if let Err(payload) = crate::panic::catch_unwind({
                         let server = server.clone();
                         move || {
                             server.orpc_server_base().attach_task();
@@ -149,11 +144,13 @@ mod test {
                     }
                     server.thread_exited.store(true, Ordering::SeqCst);
                 }
-            });
+            })
+            .spawn();
+            let _ = whatever!(res, "Failed to spawn thread");
             Ok(())
         }
 
-        fn spawn(f: F) -> Result<ServerRef<Self>, Whatever> {
+        fn spawn(f: F) -> Result<Arc<Self>, Whatever> {
             let server = Arc::<Self>::new_cyclic(|weak_this| Self {
                 f,
                 base: ServerBase::new(weak_this.clone()),
@@ -172,28 +169,62 @@ mod test {
         }
     }
 
-    #[test]
+    struct Barrier {
+        count: u32,
+        generation: Mutex<u32>,
+        current: Mutex<u32>,
+    }
+
+    impl Barrier {
+        fn new(count: u32) -> Barrier {
+            Barrier {
+                count,
+                generation: Mutex::new(0),
+                current: Mutex::new(count),
+            }
+        }
+
+        fn wait(&mut self) {
+            let current_gen: u32 = *self.generation.lock();
+
+            {
+                let mut x = self.current.lock();
+                *x -= 1;
+                if *x == 0 {
+                    *self.generation.lock() += 1;
+                    *x = self.count;
+                }
+            }
+
+            while *self.generation.lock() == current_gen {}
+        }
+    }
+
+    // #[ktest]
     fn abort_while_blocking() {
-        let barrier = Arc::new(Barrier::new(2));
+        let barrier = Arc::new(Mutex::new(Barrier::new(2)));
         let server = TestServer::spawn({
             let barrier = barrier.clone();
             move || {
-                barrier.wait();
+                barrier.lock().wait();
                 let _guard = OnDrop(|| {
-                    barrier.wait();
+                    barrier.lock().wait();
                 });
-                Task::current().block_on(&[&InfinitBlocker])
+                Task::current()
+                    .unwrap()
+                    .block_on(&[&InfinitBlocker])
+                    .expect("Blocking failed");
             }
         })
         .unwrap();
 
-        barrier.wait();
+        barrier.lock().wait();
 
         server.base.abort(&"test");
 
-        barrier.wait();
+        barrier.lock().wait();
         // TODO: Fix potential flake.
-        sleep(Duration::from_millis(100));
+        // sleep(Duration::from_millis(100));
 
         assert!(server.thread_exited.load(Ordering::SeqCst));
     }

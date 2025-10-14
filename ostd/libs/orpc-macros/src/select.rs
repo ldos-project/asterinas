@@ -1,13 +1,12 @@
 /// The implementation of the `select!` macro.
-/// 
+///
 /// XXX: This syntax is probably bad and will be replaced.
-
 use proc_macro2::Span;
 use quote::quote;
 use syn::{Block, Expr, ExprLet, Ident, Token, parse::Parse, punctuated::Punctuated, token::Comma};
 
 /// A syn-parsable struct for the syntax:
-/// 
+///
 /// ```ignore
 /// if let Pat(..) = expr { body }
 /// ```
@@ -82,7 +81,7 @@ pub fn select_macro_impl(input: SelectInput) -> proc_macro2::TokenStream {
 
     let output = quote! {
         {
-            ::orpc::sync::task::Task::current().block_on(&[#(::std::convert::AsRef::as_ref(&#blockers)),*]);
+            ::ostd::task::Task::current().map(|c| c.block_on(&[#(::core::convert::AsRef::as_ref(&#blockers)),*]));
             #(#check_statements)*
         }
     };

@@ -24,6 +24,8 @@
 #![no_std]
 #![warn(missing_docs)]
 
+extern crate self as ostd;
+
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]

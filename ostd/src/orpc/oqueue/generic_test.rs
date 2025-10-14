@@ -1,17 +1,20 @@
-#![cfg(test)]
 #![allow(missing_docs)]
 #![allow(unused)]
 
-use std::{
-    thread::{self, sleep},
+use alloc::sync::Arc;
+use core::{
+    convert::AsRef,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
-use alloc::sync::Arc;
-
-use crate::sync::{Mutex, blocker::select, task::Task};
-
-use super::*;
+use super::{super::sync::blocker::select, *};
+use crate::{
+    orpc::oqueue::locking::LockingQueue,
+    prelude::Vec,
+    sync::{Mutex, WaitQueue},
+    task::{Task, TaskOptions},
+};
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub(crate) struct TestMessage {
@@ -145,52 +148,70 @@ pub(crate) fn test_send_receive_blocker<T: OQueue<TestMessage>>(
     n_messages: usize,
     n_observers: usize,
 ) {
+    let queue = Arc::new(WaitQueue::new());
+    let completed_threads = Arc::new(AtomicUsize::new(0));
+
     // Receiver which receives all the messages
     let received_messages = Arc::new(Mutex::new(Vec::with_capacity(n_messages)));
-    let received_thread = thread::spawn({
+    let received_thread = TaskOptions::new({
         let receiver = oqueue.attach_receiver().unwrap();
         let received_messages = Arc::clone(&received_messages);
+        let completed_cloned = completed_threads.clone();
         move || {
             for i in 0..n_messages {
                 let message = receiver.receive();
                 assert_eq!(message.x, i);
                 received_messages.lock().push(message);
             }
+            completed_cloned.fetch_add(1, Ordering::Relaxed);
         }
-    });
+    })
+    .build()
+    .unwrap();
 
     // Observers which strong observe all of the messages
     let observers: Vec<_> = (0..n_observers)
         .map(|_| {
             let strong_observer = oqueue.attach_strong_observer().unwrap();
-            thread::spawn({
+            let completed_cloned = completed_threads.clone();
+            TaskOptions::new({
                 move || {
                     for i in 0..n_messages {
                         let message = strong_observer.strong_observe();
                         assert_eq!(message.x, i);
                     }
+                    completed_cloned.fetch_add(1, Ordering::Relaxed);
                 }
             })
+            .build()
+            .unwrap();
         })
         .collect();
 
     // Sender thread which sends n messages
-    let sender_thread = thread::spawn({
+    let sender_thread = TaskOptions::new({
         let sender = oqueue.attach_sender().unwrap();
+        let completed_cloned = completed_threads.clone();
         move || {
             for x in 0..n_messages {
                 sender.send(TestMessage { x });
                 sleep(Duration::from_millis(3));
             }
+            completed_cloned.fetch_add(1, Ordering::Relaxed);
+        }
+    })
+    .build()
+    .unwrap();
+
+    // server_thread, received_thread, observers
+    let n_threads = 1 + 1 + observers.len();
+    queue.wait_until(|| {
+        if completed_threads.load(Ordering::Relaxed) == n_threads {
+            Some(())
+        } else {
+            None
         }
     });
-
-    // Wait for all threads to finish
-    sender_thread.join().unwrap();
-    received_thread.join().unwrap();
-    for observer in observers {
-        observer.join().unwrap();
-    }
 
     let received_messages = received_messages.lock();
     assert_eq!(received_messages.len(), n_messages);
@@ -205,7 +226,11 @@ pub(crate) fn test_send_multi_receive_blocker<T: OQueue<TestMessage>>(
     // Receiver which receives all the messages
     let receiver1 = oqueue1.attach_receiver().unwrap();
     let receiver2 = oqueue2.attach_receiver().unwrap();
-    let receive_thread = thread::spawn({
+    let recv_queue = Arc::new(WaitQueue::new());
+    let recv_queue_cloned = recv_queue.clone();
+    let recv_completed = Arc::new(AtomicBool::new(false));
+    let recv_completed_cloned = recv_completed.clone();
+    let receive_thread = TaskOptions::new({
         move || {
             let mut receiver1_counter = 0;
             let mut receiver2_counter = 0;
@@ -222,27 +247,40 @@ pub(crate) fn test_send_multi_receive_blocker<T: OQueue<TestMessage>>(
                     }
                 )
             }
+            recv_completed_cloned.store(true, Ordering::Relaxed);
+            recv_queue_cloned.wake_all();
         }
-    });
+    })
+    .build()
+    .unwrap();
 
+    let sender_queue = Arc::new(WaitQueue::new());
     // Sender thread which sends n messages
-    let sender_threads: Vec<_> = [oqueue1, oqueue2]
+    let sender_thread_completions: Vec<_> = [oqueue1, oqueue2]
         .into_iter()
         .enumerate()
         .map(|(i, oqueue)| {
             let sender = oqueue.attach_sender().unwrap();
-            thread::spawn(move || {
+            let completed = Arc::new(AtomicBool::new(false));
+            let completed_cloned = completed.clone();
+            let queue_cloned = sender_queue.clone();
+            TaskOptions::new(move || {
                 for x in 0..n_messages {
                     sender.send(TestMessage { x });
                     sleep(Duration::from_millis(i as u64 + 1));
                 }
+                completed_cloned.store(true, Ordering::Relaxed);
+                queue_cloned.wake_all();
             })
+            .build()
+            .unwrap();
+            completed
         })
         .collect();
 
     // Wait for all threads to finish
-    for t in sender_threads {
-        t.join().unwrap();
+    for completed in sender_thread_completions {
+        sender_queue.wait_until(|| completed.load(Ordering::Relaxed).then_some(()));
     }
-    receive_thread.join().unwrap();
+    recv_queue.wait_until(|| recv_completed.load(Ordering::Relaxed).then_some(()));
 }

@@ -561,12 +561,13 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(ktest)]
 mod test {
-    use super::*;
-    use crate::oqueue::generic_test::*;
+    use ostd_macros::ktest;
 
-    #[test]
+    use crate::orpc::oqueue::{generic_test::*, locking::LockingQueue};
+
+    #[ktest]
     fn test_produce_consume_locking() {
         let oqueue = LockingQueue::new(2);
         test_produce_consume(oqueue);
