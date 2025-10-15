@@ -1,6 +1,6 @@
 /// The implementation of the `select!` macro.
 ///
-/// XXX: This syntax is probably bad and will be replaced.
+/// TODO(#73): This syntax is probably bad and will be replaced.
 use proc_macro2::Span;
 use quote::quote;
 use syn::{Block, Expr, ExprLet, Ident, Token, parse::Parse, punctuated::Punctuated, token::Comma};

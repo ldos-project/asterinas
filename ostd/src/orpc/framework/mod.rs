@@ -144,9 +144,14 @@ impl CurrentServer {
     /// server threads to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a
     /// cancelation point in pthreads.)
     pub fn abort_point() {
-        Task::current().unwrap().server().borrow().clone().map(|s| {
-            s.orpc_server_base().abort_point();
-        });
+        Task::current()
+            .unwrap()
+            .server()
+            .borrow()
+            .as_ref()
+            .map(|s| {
+                s.orpc_server_base().abort_point();
+            });
     }
 
     /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
@@ -159,7 +164,7 @@ impl CurrentServer {
         // TODO:PERFORMANCE:The overhead of using a strong reference here is potentially significant. Instead, we should
         // probably use unsafe to just use a pointer, assuming we can guarantee dynamic scoping and rule out leaking the
         // reference.
-        let curr_task = Task::current().unwrap().cloned();
+        let curr_task = Task::current().unwrap();
         let previous_server = curr_task.server().take();
         server.orpc_server_base().get_ref().map(|s| {
             curr_task.server().replace(Some(s));
@@ -174,11 +179,7 @@ pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + RefUnwindSafe
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
-        Task::current()
-            .unwrap()
-            .cloned()
-            .server()
-            .replace(self.0.clone());
+        Task::current().unwrap().server().replace(self.0.clone());
     }
 }
 

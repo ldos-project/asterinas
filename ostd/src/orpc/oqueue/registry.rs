@@ -15,7 +15,8 @@ type Registry = Mutex<Option<HashMap<(String, TypeId), Box<dyn Any + Send + Sync
 
 static REGISTRY: Registry = Mutex::new(None);
 
-/// Initialize registry. MUST be called at boot.
+
+/// Get a reference to the global registry object, initializing it if needed.
 pub fn registry()
 -> MutexGuard<'static, Option<HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>>> {
     let mut guard = REGISTRY.lock();

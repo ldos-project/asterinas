@@ -95,8 +95,9 @@ impl Task {
         Some(unsafe { CurrentTask::new(current_task) })
     }
 
-    /// Get a reference to the current server managing this task.
-    pub fn server(
+    /// Get a reference to the current server managing this task. This should not be called from
+    /// concurrent contexts to avoid races on setting the server for this task.
+    pub unsafe fn server(
         &self,
     ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
         unsafe { &self.server.get() }
@@ -355,6 +356,15 @@ impl CurrentTask {
 
         // SAFETY: We've increased the reference count in the current `Arc<Task>` above.
         unsafe { Arc::from_raw(ptr) }
+    }
+
+    /// Get a reference to the current server managing this task.
+    pub fn server(
+        &self,
+    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+        // SAFETY: This is the current task, so we have safe access to mutate the server attached to
+        // the task
+        unsafe { &self.as_ref().server() }
     }
 }
 

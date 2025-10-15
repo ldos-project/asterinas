@@ -1,7 +1,7 @@
 //! A trait [`Blocker`] which allows a thread to wait for a wake-up from another thread. The API is designed to allow a
 //! waiter to wait on multiple blockers at the same time to support [`select!`].
 //!
-//! XXX: This needs to be reworked significantly because is forces some rather odd syntax in select and is not as
+//! TODO(#73): This needs to be reworked significantly because is forces some rather odd syntax in select and is not as
 //! flexible as it should be.
 
 pub use orpc_macros::select;
@@ -13,7 +13,7 @@ use crate::{
     task::{CurrentTask, Task},
 };
 
-// XXX: This will need rework since it is inefficient and not well architected. It probably needs to use a more event
+// TODO(#73): This will need rework since it is inefficient and not well architected. It probably needs to use a more event
 // based approach more like epoll. That would imply attaching a callback to the waker so that it can provide information
 // on what event(s) actually occurred back to the waiter. This will be even more complex, but may provide better
 // performance.
@@ -22,7 +22,7 @@ use crate::{
 // users of the OQueue. HOWEVER, the contention may occur exactly when a wake up is actually required meaning that the
 // cost may be very low.
 
-// XXX: The current setup for blocking is to include a call to `try_*` and infer the blocker from the receiver. This is
+// TODO(#73): The current setup for blocking is to include a call to `try_*` and infer the blocker from the receiver. This is
 // kind of "magical". It would be better to have a type which encapsulates the async call information (the try function
 // and the blocker). This becomes extremely similar to the `Future` types in Rust async. However, it performs no
 // computation when the check is made, only doing a few instructions to check if the operation is possible. This is

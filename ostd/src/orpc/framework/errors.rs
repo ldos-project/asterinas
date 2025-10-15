@@ -44,7 +44,7 @@ impl RPCError {
     /// This take ownership of the payload to allow it to be implemented allocation free in as many cases as possible.
     /// This is important since allocating on an error path can cause issues.
     pub fn from_panic(payload: Box<dyn Any>) -> Self {
-        // TODO: The `to_string` call could potentially allocate which could be an issue on the panic path. A better way
+        // TODO(#72): The `to_string` call could potentially allocate which could be an issue on the panic path. A better way
         // to do this may be needed.
         Self::Panic {
             message: payload_as_str(payload.as_ref())
