@@ -21,7 +21,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use derivative::Derivative;
 use kernel_stack::KernelStack;
 use processor::current_task;
 use spin::Once;
@@ -46,8 +45,6 @@ pub fn inject_post_schedule_handler(handler: fn()) {
 /// Each task is associated with per-task data and an optional user space.
 /// If having a user space, the task can switch to the user space to
 /// execute user code. Multiple tasks can share a single user space.
-#[derive(Derivative)]
-#[derivative(Debug)]
 pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
@@ -68,8 +65,23 @@ pub struct Task {
 
     schedule_info: TaskScheduleInfo,
 
-    #[derivative(Debug = "ignore")]
     server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe>>>>,
+}
+
+impl core::fmt::Debug for Task {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Task")
+            .field("func", &self.func)
+            .field("data", &self.data)
+            .field("local_data", &self.local_data)
+            .field("user_ctx", &self.user_ctx)
+            .field("ctx", &self.ctx)
+            .field("kstack", &self.kstack)
+            .field("switched_to_cpu", &self.switched_to_cpu)
+            .field("schedule_info", &self.schedule_info)
+            // server's implementation might not be Debug, so omit it for now
+            .finish()
+    }
 }
 
 impl Task {
