@@ -1,19 +1,19 @@
 #![cfg(test)]
 
-use assert_matches::assert_matches;
-use orpc::{orpc_impl, orpc_server, orpc_trait};
-
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     thread::sleep,
     time::Duration,
 };
 
+use assert_matches::assert_matches;
+use orpc::{framework, orpc_server, orpc_trait};
 use snafu::{ResultExt as _, Whatever};
 
 use crate::{
-    oqueue::{locking::LockingQueue, OQueueRef, Receiver},
-    orpc_impl::{errors::RPCError, framework::CurrentServer, ServerRef}, spawn_thread,
+    framework::{CurrentServer, ServerRef, errors::RPCError},
+    oqueue::{OQueueRef, Receiver, locking::LockingQueue},
+    spawn_thread,
 };
 
 // #[observable]

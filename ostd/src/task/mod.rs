@@ -30,8 +30,7 @@ pub use self::{
 };
 pub(crate) use crate::arch::task::{TaskContext, context_switch};
 use crate::{
-    cpu::context::UserContext, orpc::orpc_impl::framework::Server, prelude::*,
-    trap::in_interrupt_context,
+    cpu::context::UserContext, orpc::framework::Server, prelude::*, trap::in_interrupt_context,
 };
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();

@@ -3,5 +3,5 @@
 extern crate alloc;
 
 pub mod oqueue;
-pub mod orpc_impl;
+pub mod framework;
 pub mod sync;

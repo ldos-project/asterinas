@@ -1,4 +1,6 @@
-//! Server infrastructure
+//! The module containing implementations of the ORPC framework.
+pub mod errors;
+mod integration_test;
 
 use alloc::{sync::Weak, vec::Vec};
 use core::{
@@ -7,7 +9,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use super::errors::RPCError;
 use crate::{
     prelude::{Arc, Box},
     sync::Mutex,
@@ -114,7 +115,8 @@ pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
                     }
                 }
             }) {
-                Server::orpc_server_base(server.as_ref()).abort(&RPCError::from_panic(payload));
+                Server::orpc_server_base(server.as_ref())
+                    .abort(&errors::RPCError::from_panic(payload));
             }
         }
     })
@@ -194,7 +196,6 @@ mod test {
     use crate::{
         orpc::{oqueue::generic_test, sync::Blocker},
         sync::Waker,
-        task::ServerBase,
     };
 
     struct InfiniteBlocker;
@@ -245,7 +246,7 @@ mod test {
                         // TODO: An actual logging operation.
                         server
                             .orpc_server_base()
-                            .abort(&RPCError::from_panic(payload));
+                            .abort(&errors::RPCError::from_panic(payload));
                     }
                     server.thread_exited.store(true, Ordering::SeqCst);
                 }
