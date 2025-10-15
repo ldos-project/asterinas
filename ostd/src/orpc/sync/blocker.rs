@@ -6,10 +6,11 @@
 
 pub use orpc_macros::select;
 
-use crate::{prelude::Arc, task::Task};
-// use crate::{
-//     // orpc_impl::framework::CurrentServer,
-// };
+use crate::{
+    orpc::orpc_impl::framework::CurrentServer,
+    prelude::Arc,
+    task::{CurrentTask, Task, scheduler},
+};
 
 // XXX: This will need rework since it is inefficient and not well architected. It probably needs to use a more event
 // based approach more like epoll. That would imply attaching a callback to the waker so that it can provide information
@@ -115,27 +116,25 @@ pub trait Blocker {
 
 // static_assertions::assert_obj_safe!(Blocker);
 
-impl crate::task::CurrentTask {
+impl CurrentTask {
     /// Wait for multiple blockers, waking if any wake.
     pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) -> Result<(), ()> {
-        let (waiter, waker) = crate::sync::Waiter::new_pair();
-        return Ok(waiter.wait_until_or_cancelled(
-            || {
-                for (i, blocker) in blockers.iter().enumerate() {
-                    let task = self.cloned();
-                    blocker.prepare_to_wait(&task);
-                    if blocker.should_try() {
-                        for _ in 0..=i {
-                            blockers[i].finish_wait(&task);
-                        }
-                        waker.wake_up();
-                        // We should try again and we have removed ourselves from all the task queues.
-                        return Some(());
+        CurrentServer::abort_point();
+        scheduler::park_current(|| {
+            for (i, blocker) in blockers.iter().enumerate() {
+                let task = self.cloned();
+                blocker.prepare_to_wait(&task);
+                if blocker.should_try() {
+                    for _ in 0..=i {
+                        blockers[i].finish_wait(&task);
                     }
+                    // We should try again and we have removed ourselves from all the task queues.
+                    return true;
                 }
-                None
-            },
-            || Ok(()), // CurrentServer::abort_point,
-        )?);
+            }
+            false
+        });
+        CurrentServer::abort_point();
+        Ok(())
     }
 }

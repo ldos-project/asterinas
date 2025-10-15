@@ -20,10 +20,10 @@ pub struct TaskList {
     tasks: Mutex<Vec<TaskRef>>,
 }
 
-fn taskref_to_opaque_id(task: &TaskRef) -> *const Task {
+fn taskref_to_opaque_id(task: &TaskRef) -> u64 {
     let raw = TaskRef::into_raw(task.clone());
     unsafe { TaskRef::from_raw(raw) };
-    raw
+    raw as u64
 }
 
 impl TaskList {
@@ -31,7 +31,7 @@ impl TaskList {
         let mut tasks = self.tasks.lock();
         if tasks
             .iter()
-            .all(|_| taskref_to_opaque_id(task) != taskref_to_opaque_id(task))
+            .all(|t| taskref_to_opaque_id(t) != taskref_to_opaque_id(task))
         {
             tasks.push(task.clone());
         }
@@ -482,7 +482,7 @@ impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
     }
 
     fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.add_task(task)
+        self.oqueue.read_wait_queue.add_task(task);
     }
 
     fn finish_wait(&self, task: &TaskRef) {
@@ -565,7 +565,8 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
 mod test {
     use ostd_macros::ktest;
 
-    use crate::orpc::oqueue::{generic_test::*, locking::LockingQueue};
+    use super::*;
+    use crate::orpc::oqueue::generic_test::*;
 
     #[ktest]
     fn test_produce_consume_locking() {
@@ -573,38 +574,38 @@ mod test {
         test_produce_consume(oqueue);
     }
 
-    #[test]
+    #[ktest]
     fn test_send_multi_receive_blocker_locking() {
         let oqueue1 = LockingQueue::new(10);
         let oqueue2 = LockingQueue::new(10);
         test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
-    #[test]
+    #[ktest]
     fn test_produce_consume_observable_locking() {
         let oqueue = ObservableLockingQueue::new(2, 5);
         test_produce_consume(oqueue);
     }
 
-    #[test]
+    #[ktest]
     fn test_produce_strong_observe_observable_locking() {
         let oqueue = ObservableLockingQueue::new(2, 5);
         test_produce_strong_observe(oqueue);
     }
 
-    #[test]
+    #[ktest]
     fn test_produce_weak_observe_observable_locking() {
         let oqueue = ObservableLockingQueue::new(2, 5);
         test_produce_weak_observe(oqueue);
     }
 
-    #[test]
+    #[ktest]
     fn test_send_receive_blocker_observable_locking() {
         let oqueue = ObservableLockingQueue::new(10, 5);
         test_send_receive_blocker(oqueue, 100, 5);
     }
 
-    #[test]
+    #[ktest]
     fn test_send_multi_receive_blocker_observable_locking() {
         let oqueue1 = ObservableLockingQueue::new(10, 5);
         let oqueue2 = ObservableLockingQueue::new(10, 5);

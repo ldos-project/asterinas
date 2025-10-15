@@ -81,18 +81,19 @@ impl Drop for CurrentServerChangeGuard {
     }
 }
 
-// #[cfg(ktest)]
+#[cfg(ktest)]
 mod test {
     use core::sync::atomic::{AtomicBool, Ordering};
 
+    use ostd_macros::ktest;
     use snafu::{Whatever, whatever};
 
     use super::*;
-    use crate::{orpc::sync::blocker::Blocker, sync::Mutex, task::ServerBase};
+    use crate::{orpc::sync::blocker::Blocker, task::ServerBase};
 
-    struct InfinitBlocker;
+    struct InfiniteBlocker;
 
-    impl Blocker for InfinitBlocker {
+    impl Blocker for InfiniteBlocker {
         fn should_try(&self) -> bool {
             false
         }
@@ -169,60 +170,34 @@ mod test {
         }
     }
 
-    struct Barrier {
-        count: u32,
-        generation: Mutex<u32>,
-        current: Mutex<u32>,
-    }
-
-    impl Barrier {
-        fn new(count: u32) -> Barrier {
-            Barrier {
-                count,
-                generation: Mutex::new(0),
-                current: Mutex::new(count),
-            }
-        }
-
-        fn wait(&mut self) {
-            let current_gen: u32 = *self.generation.lock();
-
-            {
-                let mut x = self.current.lock();
-                *x -= 1;
-                if *x == 0 {
-                    *self.generation.lock() += 1;
-                    *x = self.count;
-                }
-            }
-
-            while *self.generation.lock() == current_gen {}
-        }
-    }
-
-    // #[ktest]
+    #[ktest]
     fn abort_while_blocking() {
-        let barrier = Arc::new(Mutex::new(Barrier::new(2)));
+        let barrier0 = Arc::new(AtomicBool::new(false));
+        let barrier1 = Arc::new(AtomicBool::new(false));
         let server = TestServer::spawn({
-            let barrier = barrier.clone();
+            let barrier0 = barrier0.clone();
+            let barrier1 = barrier1.clone();
             move || {
-                barrier.lock().wait();
+                barrier0.store(true, Ordering::Relaxed);
                 let _guard = OnDrop(|| {
-                    barrier.lock().wait();
+                    barrier1.store(true, Ordering::Relaxed);
                 });
                 Task::current()
                     .unwrap()
-                    .block_on(&[&InfinitBlocker])
+                    .block_on(&[&InfiniteBlocker])
                     .expect("Blocking failed");
             }
         })
         .unwrap();
 
-        barrier.lock().wait();
-
+        while !barrier0.load(Ordering::Relaxed) {
+            Task::yield_now();
+        }
         server.base.abort(&"test");
 
-        barrier.lock().wait();
+        while !barrier1.load(Ordering::Relaxed) {
+            Task::yield_now();
+        }
         // TODO: Fix potential flake.
         // sleep(Duration::from_millis(100));
 
