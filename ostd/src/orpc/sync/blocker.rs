@@ -114,8 +114,6 @@ pub trait Blocker {
     }
 }
 
-// static_assertions::assert_obj_safe!(Blocker);
-
 impl CurrentTask {
     /// Wait for multiple blockers, waking if any wake.
     pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) -> Result<(), ()> {

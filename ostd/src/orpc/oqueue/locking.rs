@@ -69,8 +69,6 @@ pub struct LockingQueue<T: UnwindSafe> {
     read_wait_queue: TaskList,
 }
 
-// static_assertions::assert_impl_all!(LockingQueue<usize>: UnwindSafe);
-
 impl<T: UnwindSafe> LockingQueue<T> {
     /// Create a new oqueue with a given size.
     pub fn new(buffer_size: usize) -> Arc<Self> {
@@ -346,8 +344,6 @@ impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
 struct LockingSender<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
-
-// static_assertions::assert_impl_all!(LockingSender<usize>: UnwindSafe);
 
 impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
     fn should_try(&self) -> bool {
