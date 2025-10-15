@@ -39,6 +39,16 @@ pub struct CurrentServer {
 }
 
 impl CurrentServer {
+    /// Check if the current server has aborted
+    pub fn is_aborted() -> bool {
+        Task::current()
+            .unwrap()
+            .server()
+            .borrow()
+            .clone()
+            .map(|s| s.orpc_server_base().is_aborted())
+            .unwrap_or(false)
+    }
     /// Check the if the current server has aborted and panic if it has. This should be called periodically from all
     /// server threads to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a
     /// cancelation point in pthreads.)
@@ -83,13 +93,20 @@ impl Drop for CurrentServerChangeGuard {
 
 #[cfg(ktest)]
 mod test {
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use ostd_macros::ktest;
     use snafu::{Whatever, whatever};
 
     use super::*;
-    use crate::{orpc::sync::blocker::Blocker, task::ServerBase};
+    use crate::{
+        orpc::{oqueue::generic_test, sync::Blocker},
+        sync::Waker,
+        task::ServerBase,
+    };
 
     struct InfiniteBlocker;
 
@@ -98,9 +115,7 @@ mod test {
             false
         }
 
-        fn prepare_to_wait(&self, _task: &Arc<Task>) {}
-
-        fn finish_wait(&self, _task: &Arc<Task>) {}
+        fn prepare_to_wait(&self, _waker: &Arc<Waker>) {}
     }
 
     struct TestServer<F: Fn()> {
@@ -199,7 +214,7 @@ mod test {
             Task::yield_now();
         }
         // TODO: Fix potential flake.
-        // sleep(Duration::from_millis(100));
+        generic_test::sleep(Duration::from_millis(100));
 
         assert!(server.thread_exited.load(Ordering::SeqCst));
     }

@@ -8,7 +8,7 @@ use core::{
     time::Duration,
 };
 
-use super::{super::sync::blocker::select, *};
+use super::{super::sync::select, *};
 use crate::{
     arch::timer::TIMER_FREQ,
     orpc::oqueue::locking::LockingQueue,
@@ -144,7 +144,7 @@ pub(crate) fn test_produce_weak_observe<T: OQueue<TestMessage>>(oqueue: Arc<T>) 
     assert_eq!(receiver.receive(), test_message_3);
 }
 
-fn sleep(d: Duration) {
+pub fn sleep(d: Duration) {
     let now = Jiffies::elapsed().as_duration();
     let target = now + d;
     while Jiffies::elapsed().as_duration() < target {

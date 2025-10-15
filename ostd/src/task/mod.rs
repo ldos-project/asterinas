@@ -454,9 +454,6 @@ impl ServerBase {
         for s in server_threads.iter() {
             scheduler::unpark_target(s.clone());
         }
-
-        // TODO: Replace with logging.
-        // println!("{}", payload);
     }
 
     /// Attack a task to this server.

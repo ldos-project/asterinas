@@ -5,58 +5,14 @@ use alloc::{borrow::ToOwned, format, sync::Weak};
 use core::{any::type_name, cell::Cell, panic::UnwindSafe};
 
 use super::{
-    super::sync::{blocker::Blocker, task::TaskRef},
-    Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver, WeakObserver,
+    super::sync::Blocker, Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver,
+    WeakObserver,
 };
 use crate::{
     prelude::{Arc, Box, Vec},
-    sync::Mutex,
-    task::{Task, scheduler},
+    sync::{Mutex, WaitQueue, Waker},
+    task::Task,
 };
-
-/// List of tasks that can be awoken as a group.
-#[derive(Default, Debug)]
-pub struct TaskList {
-    tasks: Mutex<Vec<TaskRef>>,
-}
-
-fn taskref_to_opaque_id(task: &TaskRef) -> u64 {
-    let raw = TaskRef::into_raw(task.clone());
-    unsafe { TaskRef::from_raw(raw) };
-    raw as u64
-}
-
-impl TaskList {
-    pub(crate) fn add_task(&self, task: &TaskRef) {
-        let mut tasks = self.tasks.lock();
-        if tasks
-            .iter()
-            .all(|t| taskref_to_opaque_id(t) != taskref_to_opaque_id(task))
-        {
-            tasks.push(task.clone());
-        }
-    }
-
-    pub(crate) fn remove_task(&self, task: &TaskRef) {
-        let mut tasks = self.tasks.lock();
-        if let Some(i) = tasks
-            .iter()
-            .position(|t| taskref_to_opaque_id(t) == taskref_to_opaque_id(task))
-        {
-            tasks.remove(i);
-        }
-    }
-
-    pub(crate) fn wake_all(&self) {
-        let tasks: Vec<TaskRef> = {
-            let mut tasks = self.tasks.lock();
-            core::mem::take(tasks.as_mut())
-        };
-        for t in tasks {
-            scheduler::unpark_target(t);
-        }
-    }
-}
 
 /// A oqueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
 /// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
@@ -65,8 +21,8 @@ pub struct LockingQueue<T: UnwindSafe> {
     this: Weak<LockingQueue<T>>,
     inner: Mutex<LockingTableInner<T>>,
     buffer_size: usize,
-    put_wait_queue: TaskList,
-    read_wait_queue: TaskList,
+    put_wait_queue: WaitQueue,
+    read_wait_queue: WaitQueue,
 }
 
 impl<T: UnwindSafe> LockingQueue<T> {
@@ -350,12 +306,8 @@ impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
         self.oqueue.inner.lock().can_send().is_some()
     }
 
-    fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.put_wait_queue.add_task(task)
-    }
-
-    fn finish_wait(&self, task: &TaskRef) {
-        self.oqueue.put_wait_queue.remove_task(task)
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue.put_wait_queue.enqueue(waker.clone());
     }
 }
 
@@ -395,12 +347,8 @@ impl<T: UnwindSafe> Blocker for LockingReceiver<T> {
         self.oqueue.inner.lock().can_receive()
     }
 
-    fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.add_task(task)
-    }
-
-    fn finish_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.remove_task(task);
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue.read_wait_queue.enqueue(waker.clone())
     }
 }
 
@@ -457,12 +405,8 @@ impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
         self.oqueue.inner.lock().can_receive()
     }
 
-    fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.add_task(task)
-    }
-
-    fn finish_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.remove_task(task);
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue.read_wait_queue.enqueue(waker.clone())
     }
 }
 
@@ -477,12 +421,8 @@ impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
         self.oqueue.inner.lock().can_strong_observe(self.index)
     }
 
-    fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.add_task(task);
-    }
-
-    fn finish_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.remove_task(task);
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue.read_wait_queue.enqueue(waker.clone());
     }
 }
 
@@ -521,12 +461,8 @@ impl<T: UnwindSafe> Blocker for LockingWeakObserver<T> {
         self.oqueue.inner.lock().tail_index > self.max_observed_tail.get()
     }
 
-    fn prepare_to_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.add_task(task)
-    }
-
-    fn finish_wait(&self, task: &TaskRef) {
-        self.oqueue.read_wait_queue.remove_task(task);
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue.read_wait_queue.enqueue(waker.clone())
     }
 }
 

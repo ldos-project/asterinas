@@ -54,6 +54,10 @@ impl<T, G> SpinLock<T, G> {
     }
 }
 
+// TODO(aneesh): mutex poisioning?
+impl<T, G> core::panic::UnwindSafe for SpinLock<T, G> {}
+impl<T, G> core::panic::RefUnwindSafe for SpinLock<T, G> {}
+
 impl<T: ?Sized> SpinLock<T, PreemptDisabled> {
     /// Converts the guard behavior from disabling preemption to disabling IRQs.
     pub fn disable_irq(&self) -> &SpinLock<T, LocalIrqDisabled> {

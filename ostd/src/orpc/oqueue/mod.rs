@@ -17,7 +17,7 @@ use core::{
 
 use snafu::Snafu;
 
-use super::sync::blocker::Blocker;
+use super::sync::Blocker;
 use crate::prelude::{Arc, Box};
 
 /// A reference to a specific row in a queue. This refers to an element over the full history of a oqueue, not based on
