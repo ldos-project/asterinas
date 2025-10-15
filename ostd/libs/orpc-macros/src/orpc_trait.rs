@@ -189,7 +189,7 @@ fn process_oqueue_method(
     }
 
     let ident = &trait_item_method.sig.ident;
-    
+
     // Extract the docs to place on the field.
     let attrs: Vec<_> = trait_item_method
         .attrs

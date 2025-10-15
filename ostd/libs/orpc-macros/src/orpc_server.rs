@@ -1,7 +1,7 @@
-use quote::{format_ident, quote, quote_spanned, ToTokens};
-use syn::{spanned::Spanned, FieldsNamed, ItemStruct, LitStr, Path, Token};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
+use syn::{FieldsNamed, ItemStruct, LitStr, Path, Token, spanned::Spanned};
 
-use crate::{parsing_utils::make_oqueues_field_name};
+use crate::parsing_utils::make_oqueues_field_name;
 
 /// The implementations of the `orpc_server` attr macro.
 pub fn orpc_server_macro_impl(
@@ -39,7 +39,13 @@ pub fn orpc_server_macro_impl(
         .map(|i| make_oqueues_field_name(&mut errors, i))
         .collect();
 
-    let orpc_internal_struct_doc = LitStr::new(&format!("The ORPC internal data structure for {}", input.ident.to_string()), input.span());
+    let orpc_internal_struct_doc = LitStr::new(
+        &format!(
+            "The ORPC internal data structure for {}",
+            input.ident.to_string()
+        ),
+        input.span(),
+    );
 
     let ItemStruct {
         attrs,
@@ -50,12 +56,13 @@ pub fn orpc_server_macro_impl(
         fields,
         semi_token,
     } = input;
-    let orpc_internal_struct_ident = format_ident!("{}ORPCInternal", ident.to_string(), span = ident.span());
+    let orpc_internal_struct_ident =
+        format_ident!("{}ORPCInternal", ident.to_string(), span = ident.span());
     // All the fields of the user declared server struct with the added orpc_internal field.
     let fields = match fields {
         syn::Fields::Named(FieldsNamed { named, .. }) => {
             let named = named.iter();
-            quote! { 
+            quote! {
                 {
                     #(#named,)*
                     #[doc(hidden)]

@@ -2,6 +2,6 @@
 
 extern crate alloc;
 
-pub mod oqueue;
 pub mod framework;
+pub mod oqueue;
 pub mod sync;
