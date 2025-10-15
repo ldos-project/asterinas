@@ -24,6 +24,8 @@
 #![no_std]
 #![warn(missing_docs)]
 
+// This declaration exposes the current crate under the name `orpc`. This is required to make the
+// orpc macros work correctly in this crate, since they generate references to `::orpc`.
 extern crate self as ostd;
 
 extern crate alloc;
