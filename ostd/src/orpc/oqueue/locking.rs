@@ -14,7 +14,7 @@ use crate::{
     task::Task,
 };
 
-/// A oqueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
+/// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
 /// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// oqueue.
 pub struct LockingQueue<T: UnwindSafe> {
@@ -58,7 +58,7 @@ impl<T: UnwindSafe> LockingQueue<T> {
     }
 }
 
-/// A oqueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
+/// An OQueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
 /// number of senders and receivers. It is implemented using a single lock for the entire oqueue.
 pub struct ObservableLockingQueue<T: UnwindSafe> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
