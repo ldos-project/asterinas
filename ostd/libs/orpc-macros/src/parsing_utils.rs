@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use quote::{format_ident, quote};
 use syn::{Path, Type};
 

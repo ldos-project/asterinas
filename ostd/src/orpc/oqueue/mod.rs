@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! OQueue - Observable Queue
 //! OQueue provides an interface for passing data within or between subsystems in a way that can be
 //! Observed by policies.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! ORPC - Observable Remote Procedure Call
 
 extern crate alloc;

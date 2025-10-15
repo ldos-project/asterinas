@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! A trait [`Blocker`] which allows a thread to wait for a wake-up from another thread. The API is designed to allow a
 //! waiter to wait on multiple blockers at the same time to support [`select!`].
 //!

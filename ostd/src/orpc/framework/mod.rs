@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! The module containing implementations of the ORPC framework.
 pub mod errors;
 mod integration_test;

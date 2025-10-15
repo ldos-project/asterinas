@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use quote::{ToTokens, quote, quote_spanned};
 use syn::{Expr, Item, ItemImpl, Stmt, parse_quote, spanned::Spanned};
 

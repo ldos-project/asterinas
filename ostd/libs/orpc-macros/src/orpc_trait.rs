@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{FnArg, ItemTrait, LitStr, Receiver, spanned::Spanned};
 

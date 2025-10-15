@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Error module for ORPC
 
 use alloc::string::{String, ToString};

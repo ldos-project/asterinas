@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 /// The implementation of the `select!` macro.
 ///
 /// TODO(#73): This syntax is probably bad and will be replaced.

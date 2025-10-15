@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 /// A set of macros for use with ORPC. The most important are the ORPC attribute macros `orpc_trait`, `orpc_server`, and
 /// `orpc_impl`. The `select` macro (for waiting on multiple OQueues) is also defined here.
 mod orpc_impl;

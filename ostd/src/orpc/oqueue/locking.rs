@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! A simple implementation of a [`crate::oqueue::OQueue`] using a [`crate::sync::Mutex`]s. This is a baseline
 //! implementation that supports all features, but is also slow in many cases.
 

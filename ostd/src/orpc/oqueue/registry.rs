@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Registry of named OQueues
 
 use alloc::string::{String, ToString};
