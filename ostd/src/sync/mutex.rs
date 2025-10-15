@@ -17,7 +17,7 @@ pub struct Mutex<T: ?Sized> {
     val: UnsafeCell<T>,
 }
 
-// TODO(aneesh): mutex poisioning?
+// TODO(#70): Implement mutex poisioning.
 impl<T: ?Sized> core::panic::UnwindSafe for Mutex<T> {}
 impl<T: ?Sized> core::panic::RefUnwindSafe for Mutex<T> {}
 

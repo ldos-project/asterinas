@@ -54,7 +54,7 @@ impl<T, G> SpinLock<T, G> {
     }
 }
 
-// TODO(aneesh): mutex poisioning?
+// TODO(#70): Implement mutex poisioning.
 impl<T, G> core::panic::UnwindSafe for SpinLock<T, G> {}
 impl<T, G> core::panic::RefUnwindSafe for SpinLock<T, G> {}
 
