@@ -363,7 +363,7 @@ impl CurrentTask {
         &self,
     ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
         // SAFETY: This is the current task, so we have safe access to mutate the server attached to
-        // the task
+        // the task. See [`CurrentTask::new`].
         unsafe { &self.as_ref().server() }
     }
 }
