@@ -2,7 +2,11 @@
 //! implementation that supports all features, but is also slow in many cases.
 
 use alloc::{borrow::ToOwned, format, sync::Weak};
-use core::{any::type_name, cell::Cell, panic::UnwindSafe};
+use core::{
+    any::{Any, type_name},
+    cell::Cell,
+    panic::{RefUnwindSafe, UnwindSafe},
+};
 
 use super::{
     super::sync::Blocker, Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver,
@@ -71,6 +75,7 @@ pub struct ObservableLockingQueue<T: UnwindSafe> {
     /// does support the required features, but only if `T: Clone` and this type is required to guarantee that during
     /// attachment and handle construction.
     inner: Arc<LockingQueue<T>>,
+    this: Weak<ObservableLockingQueue<T>>,
 }
 
 impl<T: UnwindSafe> ObservableLockingQueue<T> {
@@ -78,7 +83,10 @@ impl<T: UnwindSafe> ObservableLockingQueue<T> {
     /// of an unused observer is very low, so giving a large value here is reasonable.
     pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
         let inner = LockingQueue::new_with_observers(buffer_size, max_strong_observers);
-        Arc::new(ObservableLockingQueue { inner })
+        Arc::new_cyclic(|this| ObservableLockingQueue {
+            inner,
+            this: this.clone(),
+        })
     }
 }
 
@@ -222,13 +230,20 @@ impl<T> LockingOQueueInner<T> {
 
 impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueue<T> {
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
-        self.inner.attach_sender()
+        let this = self.inner.get_this()?;
+        Ok(Box::new(LockingSender {
+            oqueue: this.this.clone(),
+            _oqueue_ref: self.this.upgrade().unwrap(),
+        }))
     }
 
     fn attach_receiver(&self) -> Result<Box<dyn super::Receiver<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
         this.inner.lock().attach_receiver();
-        Ok(Box::new(CloningLockingReceiver { oqueue: this }))
+        Ok(Box::new(CloningLockingReceiver {
+            oqueue: this.this.clone(),
+            _oqueue_ref: self.this.upgrade().unwrap(),
+        }))
     }
 
     fn attach_strong_observer(
@@ -251,8 +266,9 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
         };
         let this = self.inner.get_this()?;
         Ok(Box::new(LockingStrongObserver {
-            oqueue: this,
+            oqueue: this.this.clone(),
             index,
+            _oqueue_ref: self.this.upgrade().unwrap(),
         }))
     }
 
@@ -261,8 +277,9 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
     ) -> Result<Box<dyn super::WeakObserver<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
         Ok(Box::new(LockingWeakObserver {
-            oqueue: this,
+            oqueue: this.this.clone(),
             max_observed_tail: Cell::new(0),
+            _oqueue_ref: self.this.upgrade().unwrap(),
         }))
     }
 }
@@ -270,7 +287,10 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
 impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
     fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
-        Ok(Box::new(LockingSender { oqueue: this }))
+        Ok(Box::new(LockingSender {
+            oqueue: this.this.clone(),
+            _oqueue_ref: this,
+        }))
     }
 
     fn attach_receiver(&self) -> Result<Box<dyn super::Receiver<T>>, super::OQueueAttachError> {
@@ -298,16 +318,24 @@ impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
 
 /// A sender for a locking OQueue. The same is used regardless of observation support.
 struct LockingSender<T: UnwindSafe> {
-    oqueue: Arc<LockingQueue<T>>,
+    oqueue: Weak<LockingQueue<T>>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+}
+
+impl<T: UnwindSafe> LockingSender<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
 }
 
 impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
     fn should_try(&self) -> bool {
-        self.oqueue.inner.lock().can_send().is_some()
+        self.oqueue().inner.lock().can_send().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        self.oqueue.put_wait_queue.enqueue(waker.clone());
+        self.oqueue().put_wait_queue.enqueue(waker.clone());
     }
 }
 
@@ -325,12 +353,12 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
     }
 
     fn try_send(&self, data: T) -> Option<T> {
-        let res = self.oqueue.inner.lock().try_send(data);
+        let res = self.oqueue().inner.lock().try_send(data);
         // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
             // We wake up everyone to make sure we get all the observers. If there are multiple receivers, only one will
             // actually succeed.
-            self.oqueue.read_wait_queue.wake_all();
+            self.oqueue().read_wait_queue.wake_all();
         }
         res
     }
@@ -376,12 +404,21 @@ impl<T: Send + UnwindSafe> Receiver<T> for LockingReceiver<T> {
 /// A receiver for a locking OQueue which does support observers. This clones values as they are taken out of the OQueue,
 /// to make sure they are still available for observers.
 struct CloningLockingReceiver<T: UnwindSafe> {
-    oqueue: Arc<LockingQueue<T>>,
+    oqueue: Weak<LockingQueue<T>>,
+    // Object that manages the lifetime of `oqueue`
+    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+}
+
+impl<T: UnwindSafe> CloningLockingReceiver<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
 }
 
 impl<T: UnwindSafe> Drop for CloningLockingReceiver<T> {
     fn drop(&mut self) {
-        self.oqueue.inner.lock().drop_receiver();
+        self.oqueue().inner.lock().drop_receiver();
     }
 }
 
@@ -391,10 +428,10 @@ impl<T: Send + Clone + UnwindSafe> Receiver<T> for CloningLockingReceiver<T> {
     }
 
     fn try_receive(&self) -> Option<T> {
-        let res = self.oqueue.inner.lock().try_receive_clone();
+        let res = self.oqueue().inner.lock().try_receive_clone();
         // If a value was taken, wake up a sender.
         if res.is_some() {
-            self.oqueue.put_wait_queue.wake_all();
+            self.oqueue().put_wait_queue.wake_all();
         }
         res
     }
@@ -402,34 +439,43 @@ impl<T: Send + Clone + UnwindSafe> Receiver<T> for CloningLockingReceiver<T> {
 
 impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
     fn should_try(&self) -> bool {
-        self.oqueue.inner.lock().can_receive()
+        self.oqueue().inner.lock().can_receive()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        self.oqueue.read_wait_queue.enqueue(waker.clone())
+        self.oqueue().read_wait_queue.enqueue(waker.clone())
     }
 }
 
 /// A strong observer for a locking OQueue. This will clone values and works only with [`CloningLockingReceiver`].
 struct LockingStrongObserver<T: UnwindSafe> {
-    oqueue: Arc<LockingQueue<T>>,
+    oqueue: Weak<LockingQueue<T>>,
     index: usize,
+    // Object that manages the lifetime of `oqueue`
+    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+}
+
+impl<T: UnwindSafe> LockingStrongObserver<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
 }
 
 impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
     fn should_try(&self) -> bool {
-        self.oqueue.inner.lock().can_strong_observe(self.index)
+        self.oqueue().inner.lock().can_strong_observe(self.index)
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        self.oqueue.read_wait_queue.enqueue(waker.clone());
+        self.oqueue().read_wait_queue.enqueue(waker.clone());
     }
 }
 
 impl<T: UnwindSafe> Drop for LockingStrongObserver<T> {
     fn drop(&mut self) {
         // Free the observer head so that it is available again and ignored.
-        let mut inner = self.oqueue.inner.lock();
+        let mut inner = self.oqueue().inner.lock();
         inner.strong_observer_heads[self.index] = usize::MAX;
         inner.free_strong_observer_heads.push(self.index);
     }
@@ -441,9 +487,13 @@ impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T
     }
 
     fn try_strong_observe(&self) -> Option<T> {
-        let res = self.oqueue.inner.try_lock()?.try_strong_observe(self.index);
+        let res = self
+            .oqueue()
+            .inner
+            .try_lock()?
+            .try_strong_observe(self.index);
         if res.is_some() {
-            self.oqueue.put_wait_queue.wake_all();
+            self.oqueue().put_wait_queue.wake_all();
         }
         res
     }
@@ -452,23 +502,32 @@ impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T
 /// A weak observer for a locking OQueue. This only works with [`ObservableLockingOQueue`] since otherwise the values
 /// would have been moved out instead of cloned.
 struct LockingWeakObserver<T: UnwindSafe> {
-    oqueue: Arc<LockingQueue<T>>,
+    oqueue: Weak<LockingQueue<T>>,
     max_observed_tail: Cell<usize>,
+    // Object that manages the lifetime of `oqueue`
+    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+}
+
+impl<T: UnwindSafe> LockingWeakObserver<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
 }
 
 impl<T: UnwindSafe> Blocker for LockingWeakObserver<T> {
     fn should_try(&self) -> bool {
-        self.oqueue.inner.lock().tail_index > self.max_observed_tail.get()
+        self.oqueue().inner.lock().tail_index > self.max_observed_tail.get()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        self.oqueue.read_wait_queue.enqueue(waker.clone())
+        self.oqueue().read_wait_queue.enqueue(waker.clone())
     }
 }
 
 impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     fn weak_observe(&self, cursor: Cursor) -> Option<T> {
-        let mut inner = self.oqueue.inner.lock();
+        let mut inner = self.oqueue().inner.lock();
         self.max_observed_tail
             .set(inner.tail_index.max(self.max_observed_tail.get()));
         inner.try_weak_observe(&cursor)
@@ -479,16 +538,16 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     }
 
     fn recent_cursor(&self) -> Cursor {
-        Cursor(self.oqueue.inner.lock().tail_index.saturating_sub(1))
+        Cursor(self.oqueue().inner.lock().tail_index.saturating_sub(1))
     }
 
     fn oldest_cursor(&self) -> Cursor {
         let Cursor(i) = self.recent_cursor();
         // Return the most recent - the buffer size or zero if the buffer isn't full yet.
-        if i < self.oqueue.buffer_size {
+        if i < self.oqueue().buffer_size {
             Cursor(0)
         } else {
-            Cursor(i - (self.oqueue.buffer_size - 1))
+            Cursor(i - (self.oqueue().buffer_size - 1))
         }
     }
 }
