@@ -40,10 +40,7 @@ pub fn orpc_server_macro_impl(
         .collect();
 
     let orpc_internal_struct_doc = LitStr::new(
-        &format!(
-            "The ORPC internal data structure for {}",
-            input.ident.to_string()
-        ),
+        &format!("The ORPC internal data structure for {}", input.ident),
         input.span(),
     );
 

@@ -97,10 +97,12 @@ impl Task {
 
     /// Get a reference to the current server managing this task. This should not be called from
     /// concurrent contexts to avoid races on setting the server for this task.
+    /// # SAFETY
+    ///   This is only safe if it is NOT done concurrently
     pub unsafe fn server(
         &self,
     ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
-        unsafe { &self.server.get() }
+        unsafe { self.server.get() }
     }
 
     pub(super) fn ctx(&self) -> &SyncUnsafeCell<TaskContext> {
@@ -364,7 +366,7 @@ impl CurrentTask {
     ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
         // SAFETY: This is the current task, so we have safe access to mutate the server attached to
         // the task. See [`CurrentTask::new`].
-        unsafe { &self.as_ref().server() }
+        unsafe { self.as_ref().server() }
     }
 }
 

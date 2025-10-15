@@ -5,12 +5,12 @@ use syn::{Path, Type};
 pub(crate) enum ORPCMethodKind<'a> {
     /// An normal RPC method. This returns some `Result<R, E>`.
     #[allow(unused)]
-    ORPC { return_type: &'a Type },
+    Orpc { return_type: &'a Type },
     /// An accessor method for an OQueue. This returns some `OQueueRef<T>`.
     OQueue { return_type: &'a Type },
 }
 
-impl<'a> ORPCMethodKind<'a> {
+impl ORPCMethodKind<'_> {
     /// Extract all the required information from a signature.
     pub(crate) fn of(sig: &syn::Signature) -> Option<ORPCMethodKind> {
         let ret = &sig.output;
@@ -19,7 +19,7 @@ impl<'a> ORPCMethodKind<'a> {
                 let path_segment = &path.segments.last()?;
                 let name = path_segment.ident.to_string();
                 return match name.as_str() {
-                    "Result" => Some(ORPCMethodKind::ORPC { return_type: typ }),
+                    "Result" => Some(ORPCMethodKind::Orpc { return_type: typ }),
                     "OQueueRef" => Some(ORPCMethodKind::OQueue { return_type: typ }),
                     _ => None,
                 };

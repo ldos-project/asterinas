@@ -11,15 +11,15 @@ use crate::{
     sync::{Mutex, MutexGuard},
 };
 
-type Registry = Mutex<Option<HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>>>;
+type RegistryMap = HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>;
+type Registry = Mutex<Option<RegistryMap>>;
 
 static REGISTRY: Registry = Mutex::new(None);
 
 /// Get a reference to the global registry object, initializing it if needed.
-pub fn registry()
--> MutexGuard<'static, Option<HashMap<(String, TypeId), Box<dyn Any + Send + Sync + 'static>>>> {
+pub fn registry() -> MutexGuard<'static, Option<RegistryMap>> {
     let mut guard = REGISTRY.lock();
-    if let None = *guard {
+    if guard.is_none() {
         guard.replace(HashMap::new());
     }
 

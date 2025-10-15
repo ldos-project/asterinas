@@ -348,7 +348,7 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
             if d.is_none() {
                 break;
             }
-            Task::current().unwrap().block_on(&[self]).unwrap();
+            Task::current().unwrap().block_on(&[self]);
         }
     }
 
@@ -534,7 +534,7 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
     }
 
     fn wait(&self) {
-        Task::current().unwrap().block_on(&[self]).unwrap();
+        Task::current().unwrap().block_on(&[self]);
     }
 
     fn recent_cursor(&self) -> Cursor {

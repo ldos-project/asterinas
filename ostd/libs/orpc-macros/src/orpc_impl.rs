@@ -16,7 +16,7 @@ pub fn orpc_impl_macro_impl(
         match item {
             syn::ImplItem::Method(method) => {
                 match ORPCMethodKind::of(&method.sig) {
-                    Some(ORPCMethodKind::ORPC { .. }) => {
+                    Some(ORPCMethodKind::Orpc { .. }) => {
                         process_orpc_method(&mut method_implementations, &mut errors, method);
                     }
                     Some(ORPCMethodKind::OQueue { .. }) => {
@@ -83,7 +83,7 @@ pub fn orpc_impl_macro_impl(
 /// Generate the method implementation for an ORPC method.
 fn process_orpc_method(
     method_implementations: &mut Vec<proc_macro2::TokenStream>,
-    _errors: &mut Vec<proc_macro2::TokenStream>,
+    _errors: &mut [proc_macro2::TokenStream],
     method: &syn::ImplItemMethod,
 ) {
     let syn::ImplItemMethod {

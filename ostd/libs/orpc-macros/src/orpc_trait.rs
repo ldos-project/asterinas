@@ -23,8 +23,8 @@ pub fn orpc_trait_macro_impl(
         match item {
             syn::TraitItem::Method(trait_item_method) => {
                 match ORPCMethodKind::of(&trait_item_method.sig) {
-                    Some(ORPCMethodKind::ORPC { return_type: _ }) => {
-                        process_orpc_method(&mut method_decls, &mut errors, &trait_item_method);
+                    Some(ORPCMethodKind::Orpc { return_type: _ }) => {
+                        process_orpc_method(&mut method_decls, &mut errors, trait_item_method);
                     }
                     Some(ORPCMethodKind::OQueue { return_type: typ }) => {
                         process_oqueue_method(
@@ -32,7 +32,7 @@ pub fn orpc_trait_macro_impl(
                             &mut oqueue_initializers,
                             &mut method_decls,
                             &mut errors,
-                            &trait_item_method,
+                            trait_item_method,
                             typ,
                             vis,
                         );
@@ -94,7 +94,7 @@ pub fn orpc_trait_macro_impl(
     let oqueue_struct_docs = LitStr::new(
         &format!(
             "All the OQueue references associated with {}. This is used to build the ORPC internal data structures for server.",
-            input.ident.to_string()
+            input.ident
         ),
         input.span(),
     );
@@ -132,7 +132,7 @@ fn process_orpc_method(
     trait_item_method: &syn::TraitItemMethod,
 ) {
     let mut bad_arg = false;
-    if 1 > trait_item_method.sig.inputs.len() || trait_item_method.sig.inputs.len() > 2 {
+    if trait_item_method.sig.inputs.is_empty() || trait_item_method.sig.inputs.len() > 2 {
         bad_arg = true;
     }
     match trait_item_method.sig.receiver() {
@@ -194,11 +194,7 @@ fn process_oqueue_method(
     let attrs: Vec<_> = trait_item_method
         .attrs
         .iter()
-        .filter(|a| {
-            a.path
-                .get_ident()
-                .is_some_and(|i| i.to_string() == "doc".to_string())
-        })
+        .filter(|a| a.path.get_ident().is_some_and(|i| *i == *"doc"))
         .collect();
     // Create the initializer for the field. In the error case, just use `todo!` and generate an error separately.
     if let Some(constr) = &trait_item_method.default {

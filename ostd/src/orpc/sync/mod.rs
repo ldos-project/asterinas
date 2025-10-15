@@ -36,11 +36,11 @@ use crate::{
 /// 2. Use `add_task` to register the task to be awoken when the blocker unblocks.
 /// 3. Call `should_try` to check if it should actually block.
 /// 4. If the task should try:
-///         1. Unregister the task with `remove_task`.
-///         2. Unlock the task into the running state.
+///     1. Unregister the task with `remove_task`.
+///     2. Unlock the task into the running state.
 ///
 ///    If the task should not try:
-///         1. Unlock the task into the blocked state.
+///     1. Unlock the task into the blocked state.
 ///
 /// To block on multiple blockers:
 ///
@@ -49,11 +49,11 @@ use crate::{
 ///     1. Use `add_task` to register the task to be awoken when the blocker unblocks.
 ///     2. Call `should_try` to check if it should actually block.
 /// 4. If the task should try:
-///         1. Unregister the task from all blockers registered so far with `remove_task`.
-///         2. Unlock the task into the running state.
+///     1. Unregister the task from all blockers registered so far with `remove_task`.
+///     2. Unlock the task into the running state.
 ///
 ///    If the task should not try:
-///         1. Unlock the task into the blocked state.
+///     1. Unlock the task into the blocked state.
 ///
 /// To wake tasks the blocker will iterate the tasks and for each: (The waker must atomically "take" the list,
 /// guanteeing that exactly one waker gets the non-empty list.)
@@ -104,7 +104,9 @@ pub trait Blocker {
                     return returned;
                 }
                 None => {
-                    Task::current().map(|t| t.block_on(&[self]));
+                    if let Some(t) = Task::current() {
+                        t.block_on(&[self]);
+                    }
                 }
             };
         }
@@ -113,11 +115,11 @@ pub trait Blocker {
 
 impl CurrentTask {
     /// Wait for multiple blockers, waking if any wake.
-    pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) -> Result<(), ()> {
+    pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) {
         CurrentServer::abort_point();
         let (waiter, waker) = Waiter::new_pair();
         if blockers.iter().any(|b| b.should_try()) {
-            return Ok(());
+            return;
         }
 
         for blocker in blockers.iter() {
@@ -133,6 +135,5 @@ impl CurrentTask {
         });
 
         CurrentServer::abort_point();
-        Ok(())
     }
 }

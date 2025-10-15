@@ -297,7 +297,7 @@ impl Waker {
                 self.has_woken.load(Ordering::Acquire) || cancel_cond().is_err()
             });
 
-            if let Err(_) = cancel_cond() {
+            if cancel_cond().is_err() {
                 break;
             }
         }

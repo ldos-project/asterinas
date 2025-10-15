@@ -144,14 +144,9 @@ impl CurrentServer {
     /// server threads to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a
     /// cancelation point in pthreads.)
     pub fn abort_point() {
-        Task::current()
-            .unwrap()
-            .server()
-            .borrow()
-            .as_ref()
-            .map(|s| {
-                s.orpc_server_base().abort_point();
-            });
+        if let Some(s) = Task::current().unwrap().server().borrow().as_ref() {
+            s.orpc_server_base().abort_point();
+        }
     }
 
     /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
@@ -166,9 +161,9 @@ impl CurrentServer {
         // reference.
         let curr_task = Task::current().unwrap();
         let previous_server = curr_task.server().take();
-        server.orpc_server_base().get_ref().map(|s| {
+        if let Some(s) = server.orpc_server_base().get_ref() {
             curr_task.server().replace(Some(s));
-        });
+        }
         CurrentServerChangeGuard(previous_server)
     }
 }
@@ -288,10 +283,7 @@ mod test {
                 let _guard = OnDrop(|| {
                     barrier1.store(true, Ordering::Relaxed);
                 });
-                Task::current()
-                    .unwrap()
-                    .block_on(&[&InfiniteBlocker])
-                    .expect("Blocking failed");
+                Task::current().unwrap().block_on(&[&InfiniteBlocker]);
             }
         })
         .unwrap();
