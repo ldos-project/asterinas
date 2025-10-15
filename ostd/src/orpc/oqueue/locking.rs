@@ -16,17 +16,17 @@ use crate::{
 
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
 /// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
-/// oqueue.
+/// OQueue.
 pub struct LockingQueue<T: UnwindSafe> {
     this: Weak<LockingQueue<T>>,
-    inner: Mutex<LockingTableInner<T>>,
+    inner: Mutex<LockingOQueueInner<T>>,
     buffer_size: usize,
     put_wait_queue: WaitQueue,
     read_wait_queue: WaitQueue,
 }
 
 impl<T: UnwindSafe> LockingQueue<T> {
-    /// Create a new oqueue with a given size.
+    /// Create a new OQueue with a given size.
     pub fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
     }
@@ -35,7 +35,7 @@ impl<T: UnwindSafe> LockingQueue<T> {
         Arc::new_cyclic(|this| LockingQueue {
             this: this.clone(),
             buffer_size,
-            inner: Mutex::new(LockingTableInner {
+            inner: Mutex::new(LockingOQueueInner {
                 buffer: (0..buffer_size).map(|_| None).collect(),
                 n_receivers: 0,
                 head_index: usize::MAX,
@@ -59,22 +59,22 @@ impl<T: UnwindSafe> LockingQueue<T> {
 }
 
 /// An OQueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
-/// number of senders and receivers. It is implemented using a single lock for the entire oqueue.
+/// number of senders and receivers. It is implemented using a single lock for the entire OQueue.
 pub struct ObservableLockingQueue<T: UnwindSafe> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
-    // wrapping the oqueue.
+    // wrapping the OQueue.
 
     // XXX: Because of the above the outer layer can get collected even if the inner is kept alive by an attachment.
-    /// The underlying oqueue used. This can be used to implement the more general observable oqueue because it actually
+    /// The underlying OQueue used. This can be used to implement the more general observable OQueue because it actually
     /// does support the required features, but only if `T: Clone` and this type is required to guarantee that during
     /// attachment and handle construction.
     inner: Arc<LockingQueue<T>>,
 }
 
 impl<T: UnwindSafe> ObservableLockingQueue<T> {
-    /// Create a new oqueue (with observer support) with the given buffer size and supported strong observers. The cost
+    /// Create a new OQueue (with observer support) with the given buffer size and supported strong observers. The cost
     /// of an unused observer is very low, so giving a large value here is reasonable.
     pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
         let inner = LockingQueue::new_with_observers(buffer_size, max_strong_observers);
@@ -82,9 +82,9 @@ impl<T: UnwindSafe> ObservableLockingQueue<T> {
     }
 }
 
-/// The mutex protected data in the locking oqueue implementations.
-struct LockingTableInner<T> {
-    // TODO: This buffer could use Uninit to save space.
+/// The mutex protected data in the locking OQueue implementations.
+struct LockingOQueueInner<T> {
+    // TODO:PERFORMANCE: This buffer could use Uninit to save space.
     /// The buffer.
     buffer: Box<[Option<T>]>,
 
@@ -102,7 +102,7 @@ struct LockingTableInner<T> {
     free_strong_observer_heads: Vec<usize>,
 }
 
-impl<T> LockingTableInner<T> {
+impl<T> LockingOQueueInner<T> {
     fn mod_len(&self, i: usize) -> usize {
         i % self.buffer.len()
     }
@@ -129,7 +129,7 @@ impl<T> LockingTableInner<T> {
         };
 
         let slot_cell = &mut self.buffer[self.mod_len(tail_index)];
-        // This will generally fill something that was None. However, if the this is an observable oqueue then they will
+        // This will generally fill something that was None. However, if the this is an observable OQueue then they will
         // be cloned out and left in place. So the cell will still be full.
 
         // TODO: It might be worth clearing the slot as soon as it is observed since that would avoid holding onto
@@ -296,7 +296,7 @@ impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
     }
 }
 
-/// A sender for a locking oqueue. The same is used regardless of observation support.
+/// A sender for a locking OQueue. The same is used regardless of observation support.
 struct LockingSender<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
@@ -326,7 +326,7 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
 
     fn try_send(&self, data: T) -> Option<T> {
         let res = self.oqueue.inner.lock().try_send(data);
-        // If the value was put into the oqueue, wake up the readers.
+        // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
             // We wake up everyone to make sure we get all the observers. If there are multiple receivers, only one will
             // actually succeed.
@@ -336,7 +336,7 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
     }
 }
 
-/// A receiver for a locking oqueue. This is only used for non-observable tables where the value should be *moved* out
+/// A receiver for a locking OQueue. This is only used for non-observable tables where the value should be *moved* out
 /// instead of cloned.
 struct LockingReceiver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
@@ -373,7 +373,7 @@ impl<T: Send + UnwindSafe> Receiver<T> for LockingReceiver<T> {
     }
 }
 
-/// A receiver for a locking oqueue which does support observers. This clones values as they are taken out of the oqueue,
+/// A receiver for a locking OQueue which does support observers. This clones values as they are taken out of the OQueue,
 /// to make sure they are still available for observers.
 struct CloningLockingReceiver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
@@ -410,7 +410,7 @@ impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
     }
 }
 
-/// A strong observer for a locking oqueue. This will clone values and works only with [`CloningLockingReceiver`].
+/// A strong observer for a locking OQueue. This will clone values and works only with [`CloningLockingReceiver`].
 struct LockingStrongObserver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
     index: usize,
@@ -449,7 +449,7 @@ impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T
     }
 }
 
-/// A weak observer for a locking oqueue. This only works with [`ObservableLockingTable`] since otherwise the values
+/// A weak observer for a locking OQueue. This only works with [`ObservableLockingOQueue`] since otherwise the values
 /// would have been moved out instead of cloned.
 struct LockingWeakObserver<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,

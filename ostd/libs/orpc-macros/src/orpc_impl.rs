@@ -16,15 +16,20 @@ pub fn orpc_impl_macro_impl(
         match item {
             syn::ImplItem::Method(method) => {
                 match ORPCMethodKind::of(&method.sig) {
-                    Some(ORPCMethodKind::ORPC { return_type: _ }) => {
+                    Some(ORPCMethodKind::ORPC { .. }) => {
                         process_orpc_method(&mut method_implementations, &mut errors, method);
                     }
-                    Some(ORPCMethodKind::OQueue { return_type: _ }) => {
+                    Some(ORPCMethodKind::OQueue { .. }) => {
                         // We need the trait name, which requires that this impl be of a trait (not inherent). This this
                         // check fails. This macro will generate an error later in this function anyway, so dropping the
                         // member is fine.
                         if let Some((_, path, _)) = &input.trait_ {
-                            process_oqueue_method(&mut method_implementations, &mut errors, path, method);
+                            process_oqueue_method(
+                                &mut method_implementations,
+                                &mut errors,
+                                path,
+                                method,
+                            );
                         }
                     }
                     None => {
@@ -134,7 +139,6 @@ fn process_orpc_method(
         }
     });
 }
- 
 
 /// Generate the method implementation for an OQueue access method. The method just extract the OQueueRef from inside
 /// the servers `orpc_internal` struct.

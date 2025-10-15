@@ -183,8 +183,3 @@ pub trait OQueue<T>: Any + Sync + Send + RefUnwindSafe {
 /// A reference to an OQueue. This must be cloned when a new reference is needed. It is `Send`, but not `Sync`. (It
 /// behaves similarly to `Arc` and as of writing is implemented as `Arc`.)
 pub type OQueueRef<T> = Arc<dyn OQueue<T>>;
-
-// TODO: The `RefUnwindSafe` requirement is questionable here. We need it for panic handling, but it's not clear how we
-// guarantee that OQueues actually have the correct property. This may require that OQueues implement some form of
-// poisoning (like `Mutex`). However, it's not clear what needs to be poisoned and which queues need that treatment. The
-// access handles may also need unwind safety.
