@@ -24,6 +24,10 @@
 #![no_std]
 #![warn(missing_docs)]
 
+// This declaration exposes the current crate under the name `orpc`. This is required to make the
+// orpc macros work correctly in this crate, since they generate references to `::orpc`.
+extern crate self as ostd;
+
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
@@ -40,6 +44,7 @@ mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
+pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;

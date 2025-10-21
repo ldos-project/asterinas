@@ -200,6 +200,18 @@ impl Waiter {
         self.waker.do_wait();
     }
 
+    #[track_caller]
+    /// Waits until some condition is met or the cancel condition becomes true.
+    /// Note that this wait can be cancelled when cancel_cond is true even if the waker hasn't set
+    /// has_woken to true. In other words, this wait can be cancelled by anything that has a
+    /// reference to the Task that is waiting.
+    pub fn wait_cancellable<F, E>(&self, cancel_cond: F)
+    where
+        F: Fn() -> core::result::Result<(), E>,
+    {
+        self.waker.do_wait_cancellable(cancel_cond);
+    }
+
     /// Waits until some condition is met or the cancel condition becomes true.
     ///
     /// This method will return `Ok(_)` if the condition returns `Some(_)`, and will stop waiting
@@ -272,6 +284,22 @@ impl Waker {
     fn do_wait(&self) {
         while !self.has_woken.swap(false, Ordering::Acquire) {
             scheduler::park_current(|| self.has_woken.load(Ordering::Acquire));
+        }
+    }
+
+    #[track_caller]
+    fn do_wait_cancellable<F, E>(&self, cancel_cond: F)
+    where
+        F: Fn() -> core::result::Result<(), E>,
+    {
+        while !self.has_woken.swap(false, Ordering::Acquire) {
+            scheduler::park_current(|| {
+                self.has_woken.load(Ordering::Acquire) || cancel_cond().is_err()
+            });
+
+            if cancel_cond().is_err() {
+                break;
+            }
         }
     }
 

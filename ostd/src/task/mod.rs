@@ -12,8 +12,9 @@ mod utils;
 use core::{
     any::Any,
     borrow::Borrow,
-    cell::{Cell, SyncUnsafeCell},
+    cell::{Cell, RefCell, SyncUnsafeCell},
     ops::Deref,
+    panic::RefUnwindSafe,
     ptr::NonNull,
     sync::atomic::AtomicBool,
 };
@@ -28,7 +29,9 @@ pub use self::{
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
 pub(crate) use crate::arch::task::{TaskContext, context_switch};
-use crate::{cpu::context::UserContext, prelude::*, trap::in_interrupt_context};
+use crate::{
+    cpu::context::UserContext, orpc::framework::Server, prelude::*, trap::in_interrupt_context,
+};
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
@@ -42,7 +45,6 @@ pub fn inject_post_schedule_handler(handler: fn()) {
 /// Each task is associated with per-task data and an optional user space.
 /// If having a user space, the task can switch to the user space to
 /// execute user code. Multiple tasks can share a single user space.
-#[derive(Debug)]
 pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
@@ -62,6 +64,24 @@ pub struct Task {
     switched_to_cpu: AtomicBool,
 
     schedule_info: TaskScheduleInfo,
+
+    server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe>>>>,
+}
+
+impl core::fmt::Debug for Task {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Task")
+            .field("func", &self.func)
+            .field("data", &self.data)
+            .field("local_data", &self.local_data)
+            .field("user_ctx", &self.user_ctx)
+            .field("ctx", &self.ctx)
+            .field("kstack", &self.kstack)
+            .field("switched_to_cpu", &self.switched_to_cpu)
+            .field("schedule_info", &self.schedule_info)
+            // server's implementation might not be Debug, so omit it for now
+            .finish()
+    }
 }
 
 impl Task {
@@ -73,6 +93,17 @@ impl Task {
 
         // SAFETY: `current_task` is the current task.
         Some(unsafe { CurrentTask::new(current_task) })
+    }
+
+    /// Get a reference to the current server managing this task. This should not be called from
+    /// concurrent contexts to avoid races on setting the server for this task.
+    /// # SAFETY
+    ///
+    /// This is only safe if it is NOT done concurrently
+    pub unsafe fn server(
+        &self,
+    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+        unsafe { self.server.get() }
     }
 
     pub(super) fn ctx(&self) -> &SyncUnsafeCell<TaskContext> {
@@ -263,6 +294,7 @@ impl TaskOptions {
                 cpu: AtomicCpuId::default(),
             },
             switched_to_cpu: AtomicBool::new(false),
+            server: ForceSync::new(RefCell::new(None)),
         };
 
         Ok(new_task)
@@ -327,6 +359,15 @@ impl CurrentTask {
 
         // SAFETY: We've increased the reference count in the current `Arc<Task>` above.
         unsafe { Arc::from_raw(ptr) }
+    }
+
+    /// Get a reference to the current server managing this task.
+    pub fn server(
+        &self,
+    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+        // SAFETY: This is the current task, so we have safe access to mutate the server attached to
+        // the task. See [`CurrentTask::new`].
+        unsafe { self.as_ref().server() }
     }
 }
 
