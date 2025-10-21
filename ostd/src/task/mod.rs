@@ -98,7 +98,8 @@ impl Task {
     /// Get a reference to the current server managing this task. This should not be called from
     /// concurrent contexts to avoid races on setting the server for this task.
     /// # SAFETY
-    ///   This is only safe if it is NOT done concurrently
+    ///
+    /// This is only safe if it is NOT done concurrently
     pub unsafe fn server(
         &self,
     ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {

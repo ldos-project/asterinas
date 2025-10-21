@@ -325,7 +325,7 @@ struct LockingSender<T: UnwindSafe> {
 
 impl<T: UnwindSafe> LockingSender<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
-        // This is safe when `oqueue` is referenced by `_oqueue_ref`
+        // SAFETY: This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
