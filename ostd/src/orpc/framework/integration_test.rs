@@ -1,190 +1,194 @@
 // SPDX-License-Identifier: MPL-2.0
-#![cfg(test)]
+#[cfg(ktest)]
+mod test {
+    use core::{
+        assert_matches::assert_matches,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
 
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    thread::sleep,
-    time::Duration,
-};
+    use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
+    use ostd_macros::ktest;
+    use snafu::{ResultExt as _, Whatever};
 
-use assert_matches::assert_matches;
-use orpc::{framework, orpc_server, orpc_trait};
-use snafu::{ResultExt as _, Whatever};
+    use crate::{
+        orpc::{
+            framework::{CurrentServer, errors::RPCError, spawn_thread},
+            oqueue::{OQueueRef, Receiver, generic_test, locking::LockingQueue},
+        },
+        prelude::{Arc, Box},
+    };
 
-use crate::{
-    framework::{CurrentServer, ServerRef, errors::RPCError},
-    oqueue::{OQueueRef, Receiver, locking::LockingQueue},
-    spawn_thread,
-};
-
-// #[observable]
-struct AdditionalAmount {
-    n: usize,
-    trigger_panic: bool,
-}
-
-#[orpc_trait]
-trait Counter {
-    fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError>;
-    fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount> {
-        LockingQueue::new(8)
+    // #[observable]
+    struct AdditionalAmount {
+        n: usize,
+        trigger_panic: bool,
     }
-}
 
-#[orpc_server(Counter)]
-struct ServerAState {
-    increment: usize,
-    atomic_count: AtomicUsize,
-}
-
-#[orpc_impl]
-impl Counter for ServerAState {
-    fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError> {
-        if additional.trigger_panic {
-            panic!("Asked to panic");
+    #[orpc_trait]
+    trait Counter {
+        fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError>;
+        fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount> {
+            LockingQueue::new(8)
         }
-
-        let addend = self.increment + additional.n;
-        // collect!(addend, addend);
-        let v = self.atomic_count.fetch_add(addend, Ordering::Relaxed);
-        Ok(v + addend)
     }
 
-    fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount>;
-}
+    #[orpc_server(Counter)]
+    struct ServerAState {
+        increment: usize,
+        atomic_count: AtomicUsize,
+    }
 
-impl ServerAState {
-    fn main_thread(
-        &self,
-        incr_oqueue_receiver: Box<dyn Receiver<AdditionalAmount>>,
-    ) -> Result<(), Whatever> {
-        let mut _count = 0;
-        loop {
-            let AdditionalAmount { n, trigger_panic } = incr_oqueue_receiver.receive();
-            if trigger_panic {
-                panic!("Asked to panic by message");
+    #[orpc_impl]
+    impl Counter for ServerAState {
+        fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError> {
+            if additional.trigger_panic {
+                panic!("Asked to panic");
             }
-            let addend = self.increment + n;
-            // collect!(addend, addend);
-            _count += addend;
-            CurrentServer::abort_point();
+
+            let addend = self.increment + additional.n;
+            let v = self.atomic_count.fetch_add(addend, Ordering::Relaxed);
+            Ok(v + addend)
+        }
+
+        fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount>;
+    }
+
+    impl ServerAState {
+        fn main_thread(
+            &self,
+            incr_oqueue_receiver: Box<dyn Receiver<AdditionalAmount>>,
+        ) -> Result<(), Whatever> {
+            let mut _count = 0;
+            loop {
+                let AdditionalAmount { n, trigger_panic } = incr_oqueue_receiver.receive();
+                if trigger_panic {
+                    panic!("Asked to panic by message");
+                }
+                let addend = self.increment + n;
+                _count += addend;
+                CurrentServer::abort_point();
+            }
+        }
+
+        fn spawn(
+            increment: usize,
+            atomic_count: AtomicUsize,
+        ) -> Result<Arc<ServerAState>, Whatever> {
+            let server = Self::new_with(|orpc_internal| Self {
+                increment,
+                atomic_count,
+                orpc_internal,
+            });
+            spawn_thread(server.clone(), {
+                let server = server.clone();
+                let incr_oqueue_receiver = server
+                    .incr_oqueue()
+                    .attach_receiver()
+                    .whatever_context("incr_oqueue_receiver")?;
+                move || Ok(server.main_thread(incr_oqueue_receiver)?)
+            });
+            Ok(server)
         }
     }
 
-    fn spawn(increment: usize, atomic_count: AtomicUsize) -> Result<ServerRef<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal| Self {
-            increment,
-            atomic_count,
-            orpc_internal,
-        });
-        spawn_thread(server.clone(), {
-            let server = server.clone();
-            let incr_oqueue_receiver = server
-                .incr_oqueue()
-                .attach_receiver()
-                .whatever_context("incr_oqueue_receiver")?;
-            move || Ok(server.main_thread(incr_oqueue_receiver)?)
-        });
-        Ok(server)
+    #[ktest]
+    fn start_server() {
+        let _server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
     }
-}
 
-#[test]
-fn start_server() {
-    let _server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
-}
+    #[ktest]
+    fn direct_call() {
+        let server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
+        assert_eq!(
+            server_ref
+                .atomic_incr(AdditionalAmount {
+                    n: 1,
+                    trigger_panic: false
+                })
+                .unwrap(),
+            3
+        );
 
-#[test]
-fn direct_call() {
-    let server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
-    assert_eq!(
-        server_ref
-            .atomic_incr(AdditionalAmount {
+        let server_ref: Arc<ServerAState> = server_ref;
+        assert_eq!(
+            server_ref
+                .atomic_incr(AdditionalAmount {
+                    n: 1,
+                    trigger_panic: false
+                })
+                .unwrap(),
+            6
+        );
+
+        assert_matches!(
+            server_ref.atomic_incr(AdditionalAmount {
                 n: 1,
-                trigger_panic: false
-            })
-            .unwrap(),
-        3
-    );
+                trigger_panic: true,
+            }),
+            Err(RPCError::Panic { .. })
+        );
 
-    let server_ref: ServerRef<dyn Counter> = server_ref;
-    assert_eq!(
-        server_ref
-            .atomic_incr(AdditionalAmount {
+        assert_matches!(
+            server_ref.atomic_incr(AdditionalAmount {
                 n: 1,
-                trigger_panic: false
-            })
-            .unwrap(),
-        6
-    );
+                trigger_panic: false,
+            }),
+            Err(RPCError::ServerMissing)
+        );
 
-    assert_matches!(
-        server_ref.atomic_incr(AdditionalAmount {
-            n: 1,
-            trigger_panic: true,
-        }),
-        Err(RPCError::Panic { .. })
-    );
+        assert_matches!(
+            server_ref.atomic_incr(AdditionalAmount {
+                n: 1,
+                trigger_panic: true,
+            }),
+            Err(RPCError::ServerMissing)
+        );
+    }
 
-    assert_matches!(
-        server_ref.atomic_incr(AdditionalAmount {
-            n: 1,
-            trigger_panic: false,
-        }),
-        Err(RPCError::ServerMissing)
-    );
+    #[ktest]
+    fn message() {
+        let server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
 
-    assert_matches!(
-        server_ref.atomic_incr(AdditionalAmount {
-            n: 1,
-            trigger_panic: true,
-        }),
-        Err(RPCError::ServerMissing)
-    );
-}
+        server_ref
+            .incr_oqueue()
+            .attach_sender()
+            .unwrap()
+            .send(AdditionalAmount {
+                n: 1,
+                trigger_panic: false,
+            });
 
-#[test]
-fn message() {
-    let server_ref = ServerAState::spawn(2, AtomicUsize::new(0)).unwrap();
+        let server_ref: Arc<ServerAState> = server_ref;
 
-    server_ref
-        .incr_oqueue()
-        .attach_sender()
-        .unwrap()
-        .send(AdditionalAmount {
-            n: 1,
-            trigger_panic: false,
-        });
+        server_ref
+            .incr_oqueue()
+            .attach_sender()
+            .unwrap()
+            .send(AdditionalAmount {
+                n: 1,
+                trigger_panic: false,
+            });
 
-    let server_ref: ServerRef<dyn Counter> = server_ref;
+        server_ref
+            .incr_oqueue()
+            .attach_sender()
+            .unwrap()
+            .send(AdditionalAmount {
+                n: 1,
+                trigger_panic: true,
+            });
 
-    server_ref
-        .incr_oqueue()
-        .attach_sender()
-        .unwrap()
-        .send(AdditionalAmount {
-            n: 1,
-            trigger_panic: false,
-        });
+        // This is fundamentally racy, but it's very hard to avoid because any reply from the message send above will, by
+        // definition, be sent before the panic.
+        generic_test::sleep(Duration::from_millis(250));
 
-    server_ref
-        .incr_oqueue()
-        .attach_sender()
-        .unwrap()
-        .send(AdditionalAmount {
-            n: 1,
-            trigger_panic: true,
-        });
-
-    // This is fundamentally racy, but it's very hard to avoid because any reply from the message send above will, by
-    // definition, be sent before the panic.
-    sleep(Duration::from_millis(250));
-
-    assert_matches!(
-        server_ref.atomic_incr(AdditionalAmount {
-            n: 1,
-            trigger_panic: false,
-        }),
-        Err(RPCError::ServerMissing)
-    );
+        assert_matches!(
+            server_ref.atomic_incr(AdditionalAmount {
+                n: 1,
+                trigger_panic: false,
+            }),
+            Err(RPCError::ServerMissing)
+        );
+    }
 }
