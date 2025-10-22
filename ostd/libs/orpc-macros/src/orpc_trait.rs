@@ -82,7 +82,7 @@ pub fn orpc_trait_macro_impl(
             #ident
             #generics
             #colon_token
-            #supertraits #plus_token ::orpc::Server
+            #supertraits #plus_token ::ostd::orpc::framework::Server
             {
                 #(#method_decls)*
             }

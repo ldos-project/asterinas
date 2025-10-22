@@ -99,14 +99,14 @@ fn process_orpc_method(
 
     // Don't check for illegal signatures. Those will already have been checked at the trait definition.
 
-    let base_ref: Expr = parse_quote! { ::orpc::orpc_impl::Server::orpc_server_base(self) };
+    let base_ref: Expr = parse_quote! { ::ostd::orpc::framework::Server::orpc_server_base(self) };
     let abort_check = quote_spanned! { sig.span() =>
         if #base_ref.is_aborted() {
-            return ::core::result::Result::Err(::orpc::orpc_impl::errors::RPCError::ServerMissing.into());
+            return ::core::result::Result::Err(::ostd::orpc::framework::errors::RPCError::ServerMissing.into());
         }
     };
     let enter_server_context = quote_spanned! { sig.span() =>
-            let _server_context = ::orpc::orpc_impl::framework::CurrentServer::enter_server_context(
+            let _server_context = ::ostd::orpc::framework::CurrentServer::enter_server_context(
                 self
             );
     };
@@ -114,7 +114,7 @@ fn process_orpc_method(
         {
             Ok(ret) => ret,
             Err(payload) => {
-                let e = ::orpc::orpc_impl::errors::RPCError::from_panic(payload);
+                let e = ::ostd::orpc::framework::errors::RPCError::from_panic(payload);
                 #base_ref.abort(&e);
                 Err(e.into())
             }
@@ -124,7 +124,7 @@ fn process_orpc_method(
     let new_body = quote_spanned! { body.span() =>
         #abort_check
 
-        match ::std::panic::catch_unwind(|| {
+        match ::ostd::panic::catch_unwind(|| {
             #enter_server_context
             (|| #ret_type #body)()
         }) #error_cases
@@ -132,6 +132,7 @@ fn process_orpc_method(
     };
 
     method_implementations.push(quote_spanned! { method.span() =>
+        #[allow(clippy::redundant_closure_call, clippy::useless_conversion)]
         #(#attrs)*
         #vis
         #defaultness

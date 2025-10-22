@@ -80,7 +80,7 @@ pub fn orpc_server_macro_impl(
     // The initializer for the ORPC internals struct for this server type
     let internal_init = quote! {
         #orpc_internal_struct_ident {
-            base: ::orpc::orpc_impl::framework::ServerBase::new(weak_this.clone()),
+            base: ::ostd::orpc::framework::ServerBase::new(weak_this.clone()),
             #(#oqueue_field_names: ::core::default::Default::default()),*
         }
     };
@@ -102,7 +102,7 @@ let server = Self::new_with(|orpc_internal| Self {
 "]
             #vis fn new_with(
                 f: impl FnOnce(#orpc_internal_struct_ident) -> Self,
-            ) -> ::orpc::orpc_impl::ServerRef<Self> {
+            ) -> ::alloc::sync::Arc::<Self> {
                 let server = ::alloc::sync::Arc::<Self>::new_cyclic(|weak_this| {
                     let orpc_internal = #internal_init;
                     f(orpc_internal)
@@ -121,8 +121,8 @@ let server = Self::new_with(|orpc_internal| Self {
         #fields
         #semi_token
 
-        impl #generics ::orpc::Server for #ident {
-            fn orpc_server_base(&self) -> &::orpc::orpc_impl::framework::ServerBase {
+        impl #generics ::ostd::orpc::framework::Server for #ident {
+            fn orpc_server_base(&self) -> &::ostd::orpc::framework::ServerBase {
                 &self.orpc_internal.base
             }
         }
@@ -133,7 +133,7 @@ let server = Self::new_with(|orpc_internal| Self {
         #[doc = #orpc_internal_struct_doc]
         #[allow(non_snake_case)]
         struct #orpc_internal_struct_ident {
-            base: ::orpc::orpc_impl::framework::ServerBase,
+            base: ::ostd::orpc::framework::ServerBase,
             #(
                 #oqueue_fields
             ),*
