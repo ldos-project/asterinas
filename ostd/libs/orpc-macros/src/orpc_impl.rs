@@ -132,6 +132,7 @@ fn process_orpc_method(
     };
 
     method_implementations.push(quote_spanned! { method.span() =>
+        #[allow(clippy::all)]
         #(#attrs)*
         #vis
         #defaultness

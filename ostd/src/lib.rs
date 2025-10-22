@@ -23,7 +23,6 @@
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
-
 // TODO - only for cfg test
 #![feature(assert_matches)]
 
