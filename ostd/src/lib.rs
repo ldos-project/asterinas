@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The standard library for Asterinas and other Rust OSes.
+#![cfg_attr(ktest, feature(assert_matches))]
 #![feature(alloc_error_handler)]
 #![feature(allocator_api)]
 #![feature(btree_cursors)]
@@ -23,8 +24,6 @@
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
-// TODO - only for cfg test
-#![feature(assert_matches)]
 
 // This declaration exposes the current crate under the name `orpc`. This is required to make the
 // orpc macros work correctly in this crate, since they generate references to `::orpc`.

@@ -132,7 +132,7 @@ fn process_orpc_method(
     };
 
     method_implementations.push(quote_spanned! { method.span() =>
-        #[allow(clippy::all)]
+        #[allow(clippy::redundant_closure_call, clippy::useless_conversion)]
         #(#attrs)*
         #vis
         #defaultness
