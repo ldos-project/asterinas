@@ -311,6 +311,24 @@ impl Error {
         }
     }
 
+    // TODO(amp, https://github.com/ldos-project/asterinas/issues/4): This shouldn't use
+    // ENOTRECOVERABLE as that is a specific POSIX error that may not be appropriate here.
+
+    /// An error with no useful information. This is used in place of an empty panic. For example,
+    /// instead of `v.unwrap()` use `v.ok_or_else(Error::unknown)?`.
+    ///
+    /// Use [`Error::unreachable`] if the state is specifically unreachable.
+    pub const fn unknown() -> Error {
+        Error::with_message(Errno::ENOTRECOVERABLE, "unknown failure")
+    }
+
+    /// An error which should never be returned, because it's return is not reachable. This should
+    /// be used in place of [`unreachable!`] when at all possible. For example, instead of
+    /// `v.unwrap()` use `v.ok_or_else(Error::unreachable)?`.
+    pub const fn unreachable() -> Error {
+        Error::with_message(Errno::ENOTRECOVERABLE, "reached unreachable code")
+    }
+
     pub const fn error(&self) -> Errno {
         self.errno
     }
