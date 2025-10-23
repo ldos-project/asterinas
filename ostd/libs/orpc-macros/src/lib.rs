@@ -134,11 +134,11 @@ pub fn orpc_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// orpc_macros::select!(
-///     if let msg = receiver1.try_receive() {
+///     if let msg = receiver1.try_produce() {
 ///         assert_eq!(msg.x, receiver1_counter);
 ///         receiver1_counter += 1;
 ///     },
-///     if let TestMessage { x } = receiver2.try_receive() {
+///     if let TestMessage { x } = receiver2.try_produce() {
 ///         assert_eq!(x, receiver2_counter);
 ///         receiver2_counter += 1;
 ///     }

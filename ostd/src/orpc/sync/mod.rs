@@ -23,7 +23,7 @@ use crate::{
 // users of the OQueue. HOWEVER, the contention may occur exactly when a wake up is actually required meaning that the
 // cost may be very low.
 
-// TODO(#73): The current setup for blocking is to include a call to `try_*` and infer the blocker from the receiver. This is
+// TODO(#73): The current setup for blocking is to include a call to `try_*` and infer the blocker from the consumer. This is
 // kind of "magical". It would be better to have a type which encapsulates the async call information (the try function
 // and the blocker). This becomes extremely similar to the `Future` types in Rust async. However, it performs no
 // computation when the check is made, only doing a few instructions to check if the operation is possible. This is
@@ -77,7 +77,7 @@ pub trait Blocker {
     /// Return true if performing the action may succeed and should be attempted. This must be *very* fast and cannot
     /// block for any condition itself. This is because it will be called inside the scheduler with locks held.
     ///
-    /// This should be an approximation of the success of a `try_` function such as [`Receiver::try_receive`]. This
+    /// This should be an approximation of the success of a `try_` function such as [`Consumer::try_produce`]. This
     /// *must* return true if `try`ing would succeed, but may also return true spuriously even if it will fail.
     ///
     /// This must have Acquire ordering.

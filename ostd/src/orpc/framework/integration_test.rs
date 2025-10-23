@@ -14,7 +14,7 @@ mod test {
     use crate::{
         orpc::{
             framework::{CurrentServer, errors::RPCError, spawn_thread},
-            oqueue::{OQueueRef, Receiver, generic_test, locking::LockingQueue},
+            oqueue::{Consumer, OQueueRef, generic_test, locking::LockingQueue},
         },
         prelude::{Arc, Box},
     };
@@ -57,11 +57,11 @@ mod test {
     impl ServerAState {
         fn main_thread(
             &self,
-            incr_oqueue_receiver: Box<dyn Receiver<AdditionalAmount>>,
+            incr_oqueue_consumer: Box<dyn Consumer<AdditionalAmount>>,
         ) -> Result<(), Whatever> {
             let mut _count = 0;
             loop {
-                let AdditionalAmount { n, trigger_panic } = incr_oqueue_receiver.receive();
+                let AdditionalAmount { n, trigger_panic } = incr_oqueue_consumer.consume();
                 if trigger_panic {
                     panic!("Asked to panic by message");
                 }
@@ -82,11 +82,11 @@ mod test {
             });
             spawn_thread(server.clone(), {
                 let server = server.clone();
-                let incr_oqueue_receiver = server
+                let incr_oqueue_consumer = server
                     .incr_oqueue()
-                    .attach_receiver()
-                    .whatever_context("incr_oqueue_receiver")?;
-                move || Ok(server.main_thread(incr_oqueue_receiver)?)
+                    .attach_consumer()
+                    .whatever_context("incr_oqueue_consumer")?;
+                move || Ok(server.main_thread(incr_oqueue_consumer)?)
             });
             Ok(server)
         }
@@ -152,9 +152,9 @@ mod test {
 
         server_ref
             .incr_oqueue()
-            .attach_sender()
+            .attach_producer()
             .unwrap()
-            .send(AdditionalAmount {
+            .produce(AdditionalAmount {
                 n: 1,
                 trigger_panic: false,
             });
@@ -163,18 +163,18 @@ mod test {
 
         server_ref
             .incr_oqueue()
-            .attach_sender()
+            .attach_producer()
             .unwrap()
-            .send(AdditionalAmount {
+            .produce(AdditionalAmount {
                 n: 1,
                 trigger_panic: false,
             });
 
         server_ref
             .incr_oqueue()
-            .attach_sender()
+            .attach_producer()
             .unwrap()
-            .send(AdditionalAmount {
+            .produce(AdditionalAmount {
                 n: 1,
                 trigger_panic: true,
             });

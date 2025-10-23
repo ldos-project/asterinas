@@ -53,35 +53,31 @@ impl Sub<usize> for Cursor {
     }
 }
 
-/// A sender handle to a queue. This allow putting values into the queue. Senders are also called senders.
-pub trait Sender<T>: Send + UnwindSafe + Blocker {
-    /// Send a message. This is also called producing a value.
-    fn send(&self, data: T);
+/// A producer handle to a queue. This allow putting values into the queue. Producers are also called producers.
+pub trait Producer<T>: Send + UnwindSafe + Blocker {
+    /// Produce a value. This sends `data` to a `Consumer` and makes it available for observation.
+    fn produce(&self, data: T);
 
-    /// Send a message (a.k.a. produce a value) if there is space, otherwise return it to the caller. If this returns
+    /// Produce a value (a.k.a. send a message) if there is space, otherwise return it to the caller. If this returns
     /// `None`, the put succeeded.
-    fn try_send(&self, data: T) -> Option<T>;
+    fn try_produce(&self, data: T) -> Option<T>;
 }
 
-/// A receiver handle to a oqueue. This allows taking or receiving values from the oqueue such that no other receiver will
+/// A consumer handle to a oqueue. This allows taking or receiving values from the oqueue such that no other consumer will
 /// receive the same value ("exactly once to exactly one" semantics).
-pub trait Receiver<T>: Send + UnwindSafe + Blocker {
-    /// Receive a message. This is also called consuming a value.
+pub trait Consumer<T>: Send + UnwindSafe + Blocker {
+    /// Consume a value. This is also called receiving a message.
     ///
-    /// This has "exactly once to exactly one receiver" semantics.
-    fn receive(&self) -> T;
+    /// This has "exactly once to exactly one consumer" semantics.
+    fn consume(&self) -> T;
 
-    /// Receive a message (a.k.a. consume a value) if there is something in the queue.
-    fn try_receive(&self) -> Option<T>;
-
-    // fn receive_async(&self) -> ReceiverPromise<T> {
-    //     ReceiverPromise(self)
-    // }
+    /// Consume a value (a.k.a. receive a message) if there is something in the queue.
+    fn try_consume(&self) -> Option<T>;
 }
 
 /// A strong-observer handle to a oqueue. This allows receiving every value from a oqueue without preventing other
-/// receivers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
-/// behind on observing elements it will cause the oqueue to block senders, so strong observers must make sure they
+/// consumers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
+/// behind on observing elements it will cause the oqueue to block producers, so strong observers must make sure they
 /// process data promptly.
 pub trait StrongObserver<T>: Send + UnwindSafe + Blocker {
     /// Observe some data. The caller must be subscribed as a strict observer.
@@ -94,8 +90,8 @@ pub trait StrongObserver<T>: Send + UnwindSafe + Blocker {
 }
 
 /// A weak-observer handle to a oqueue. This allows looking at the history of the oqueue without affecting any other
-/// senders, receivers, or observers. Weak-observers are not guaranteed to observe every element, so they never block
-/// senders (which can simply overwrite data). However, weak-observers are guaranteed to alway get either nothing or
+/// producers, consumers, or observers. Weak-observers are not guaranteed to observe every element, so they never block
+/// producers (which can simply overwrite data). However, weak-observers are guaranteed to alway get either nothing or
 /// the data at the cursor requested.
 ///
 /// When used as a blocker this will wake if there is unobserved data in the queue. Code using this should make sure
@@ -159,19 +155,19 @@ pub enum OQueueAttachError {
 }
 
 /// An Observable Queue. The `attach_*` methods allow a user to use the queue as as a message channel or observe
-/// messages passing through. If no receivers are attached, messages will just disappear once they are observed. If no
-/// receivers and no observers are attached, then messages will be written into the buffer whenever they are produced.
+/// messages passing through. If no consumers are attached, messages will just disappear once they are observed. If no
+/// consumers and no observers are attached, then messages will be written into the buffer whenever they are produced.
 /// Weak observers can still observe the messages.
 ///
 /// NOTE: Due to the needs to ORPC, OQueues should generally implement `RefUnwindSafe`.
 pub trait OQueue<T>: Any + Sync + Send + RefUnwindSafe {
-    /// Attach to the oqueue as a sender. An error represents either that senders are not supported or that senders
-    /// are supported but all supported senders are already attached (for instance, if a second sender tries to
-    /// attach to a single-sender oqueue implementation).
-    fn attach_sender(&self) -> Result<Box<dyn Sender<T>>, OQueueAttachError>;
-    /// Attach to the oqueue as a receiver. An error represents either that senders are not supported or that no more
-    /// receivers are allowed on this specific oqueue (for example, for a single-receiver oqueue implementation).
-    fn attach_receiver(&self) -> Result<Box<dyn Receiver<T>>, OQueueAttachError>;
+    /// Attach to the oqueue as a producer. An error represents either that producers are not supported or that producers
+    /// are supported but all supported producers are already attached (for instance, if a second producer tries to
+    /// attach to a single-producer oqueue implementation).
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError>;
+    /// Attach to the oqueue as a consumer. An error represents either that producers are not supported or that no more
+    /// consumers are allowed on this specific oqueue (for example, for a single-consumer oqueue implementation).
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError>;
     /// Attach to the oqueue as a strong observer. An error represents either that strong observers are not supported or that no more
     /// strong-observers are allowed on this specific oqueue (for example, if the oqueue as a limited number of strong-observer slots).
     fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError>;
