@@ -9,7 +9,7 @@ fn main() {
     let target_arch = std::env::var("TARGET").unwrap();
     let lds = source_dir.join("src/x86/linker.ld");
     let def = match target_arch.as_str() {
-        "x86_64-unknown-none" => "-DCFG_TARGET_ARCH_X86_64=1",
+        "x86_64-unknown-none" | "x86_64-unknown-linux-gnu" => "-DCFG_TARGET_ARCH_X86_64=1",
         "x86_64-i386_pm-none" => "-DCFG_TARGET_ARCH_X86_64=0",
         other => panic!("unsupported target: {}", other),
     };
