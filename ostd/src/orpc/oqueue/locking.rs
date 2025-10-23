@@ -10,7 +10,7 @@ use core::{
 };
 
 use super::{
-    super::sync::Blocker, Cursor, OQueue, OQueueAttachError, Receiver, Sender, StrongObserver,
+    super::sync::Blocker, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver,
     WeakObserver,
 };
 use crate::{
@@ -19,8 +19,8 @@ use crate::{
     task::Task,
 };
 
-/// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of senders and
-/// receivers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
+/// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
+/// consumers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// OQueue.
 pub struct LockingQueue<T: UnwindSafe> {
     this: Weak<LockingQueue<T>>,
@@ -42,7 +42,7 @@ impl<T: UnwindSafe> LockingQueue<T> {
             buffer_size,
             inner: Mutex::new(LockingOQueueInner {
                 buffer: (0..buffer_size).map(|_| None).collect(),
-                n_receivers: 0,
+                n_consumers: 0,
                 head_index: usize::MAX,
                 tail_index: 0,
                 free_strong_observer_heads: (0..max_strong_observers).collect(),
@@ -64,7 +64,7 @@ impl<T: UnwindSafe> LockingQueue<T> {
 }
 
 /// An OQueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
-/// number of senders and receivers. It is implemented using a single lock for the entire OQueue.
+/// number of producers and consumers. It is implemented using a single lock for the entire OQueue.
 pub struct ObservableLockingQueue<T: UnwindSafe> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
@@ -97,11 +97,11 @@ struct LockingOQueueInner<T> {
     /// The buffer.
     buffer: Box<[Option<T>]>,
 
-    /// The number of attached receivers.
-    n_receivers: usize,
-    /// The index from which the next element will be read. Used by receivers.
+    /// The number of attached consumers.
+    n_consumers: usize,
+    /// The index from which the next element will be read. Used by consumers.
     head_index: usize,
-    /// The index of the next element to write in the buffer. Used by senders.
+    /// The index of the next element to write in the buffer. Used by producers.
     tail_index: usize,
 
     /// The heads used by strong observers.
@@ -116,11 +116,11 @@ impl<T> LockingOQueueInner<T> {
         i % self.buffer.len()
     }
 
-    fn can_send(&self) -> Option<usize> {
+    fn can_produce(&self) -> Option<usize> {
         let head_slot = self.mod_len(self.head_index);
 
         let next_tail_slot = self.mod_len(self.tail_index + 1);
-        if (self.n_receivers > 0 && next_tail_slot == head_slot)
+        if (self.n_consumers > 0 && next_tail_slot == head_slot)
             || (self
                 .strong_observer_heads
                 .iter()
@@ -132,8 +132,8 @@ impl<T> LockingOQueueInner<T> {
         Some(self.tail_index)
     }
 
-    fn try_send(&mut self, v: T) -> Option<T> {
-        let Some(tail_index) = self.can_send() else {
+    fn try_produce(&mut self, v: T) -> Option<T> {
+        let Some(tail_index) = self.can_produce() else {
             return Some(v);
         };
 
@@ -150,18 +150,18 @@ impl<T> LockingOQueueInner<T> {
         None
     }
 
-    fn drop_receiver(&mut self) {
-        self.n_receivers -= 1;
-        if self.n_receivers == 0 {
+    fn drop_consumer(&mut self) {
+        self.n_consumers -= 1;
+        if self.n_consumers == 0 {
             self.head_index = usize::MAX;
         }
     }
 
-    fn attach_receiver(&mut self) {
-        if self.n_receivers == 0 {
+    fn attach_consumer(&mut self) {
+        if self.n_consumers == 0 {
             self.head_index = self.tail_index;
         }
-        self.n_receivers += 1;
+        self.n_consumers += 1;
     }
 
     fn try_take_for_head(&mut self, head_index: usize) -> Option<&mut Option<T>> {
@@ -176,7 +176,7 @@ impl<T> LockingOQueueInner<T> {
         Some(slot_cell)
     }
 
-    fn try_receive(&mut self) -> Option<T> {
+    fn try_consume(&mut self) -> Option<T> {
         let res = self.try_take_for_head(self.head_index)?;
         let res = res
             .take()
@@ -185,11 +185,11 @@ impl<T> LockingOQueueInner<T> {
         Some(res)
     }
 
-    fn can_receive(&self) -> bool {
+    fn can_consume(&self) -> bool {
         self.head_index != self.tail_index
     }
 
-    fn try_receive_clone(&mut self) -> Option<T>
+    fn try_consume_clone(&mut self) -> Option<T>
     where
         T: Clone,
     {
@@ -230,18 +230,18 @@ impl<T> LockingOQueueInner<T> {
 }
 
 impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueue<T> {
-    fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
-        Ok(Box::new(LockingSender {
+        Ok(Box::new(LockingProducer {
             oqueue: this.this.clone(),
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
     }
 
-    fn attach_receiver(&self) -> Result<Box<dyn super::Receiver<T>>, super::OQueueAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
-        this.inner.lock().attach_receiver();
-        Ok(Box::new(CloningLockingReceiver {
+        this.inner.lock().attach_consumer();
+        Ok(Box::new(CloningLockingConsumer {
             oqueue: this.this.clone(),
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
@@ -261,7 +261,7 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
                     ),
                 }
             })?;
-            // Start the observer at the current position of the sender.
+            // Start the observer at the current position of the producer.
             inner.strong_observer_heads[index] = inner.tail_index;
             index
         };
@@ -286,18 +286,18 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
 }
 
 impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
-    fn attach_sender(&self) -> Result<Box<dyn super::Sender<T>>, super::OQueueAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
-        Ok(Box::new(LockingSender {
+        Ok(Box::new(LockingProducer {
             oqueue: this.this.clone(),
             _oqueue_ref: this,
         }))
     }
 
-    fn attach_receiver(&self) -> Result<Box<dyn super::Receiver<T>>, super::OQueueAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
-        this.inner.lock().attach_receiver();
-        Ok(Box::new(LockingReceiver { oqueue: this }))
+        this.inner.lock().attach_consumer();
+        Ok(Box::new(LockingConsumer { oqueue: this }))
     }
 
     fn attach_strong_observer(
@@ -317,22 +317,22 @@ impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
     }
 }
 
-/// A sender for a locking OQueue. The same is used regardless of observation support.
-struct LockingSender<T: UnwindSafe> {
+/// A producer for a locking OQueue. The same is used regardless of observation support.
+struct LockingProducer<T: UnwindSafe> {
     oqueue: Weak<LockingQueue<T>>,
     _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
 }
 
-impl<T: UnwindSafe> LockingSender<T> {
+impl<T: UnwindSafe> LockingProducer<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // SAFETY: This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
+impl<T: Send + UnwindSafe> Blocker for LockingProducer<T> {
     fn should_try(&self) -> bool {
-        self.oqueue().inner.lock().can_send().is_some()
+        self.oqueue().inner.lock().can_produce().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -340,12 +340,12 @@ impl<T: Send + UnwindSafe> Blocker for LockingSender<T> {
     }
 }
 
-impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
-    fn send(&self, data: T) {
+impl<T: Send + UnwindSafe> Producer<T> for LockingProducer<T> {
+    fn produce(&self, data: T) {
         let mut d = Some(data);
 
         loop {
-            d = self.try_send(d.take().expect("Unreachable"));
+            d = self.try_produce(d.take().expect("Unreachable"));
             if d.is_none() {
                 break;
             }
@@ -353,11 +353,11 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
         }
     }
 
-    fn try_send(&self, data: T) -> Option<T> {
-        let res = self.oqueue().inner.lock().try_send(data);
+    fn try_produce(&self, data: T) -> Option<T> {
+        let res = self.oqueue().inner.lock().try_produce(data);
         // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
-            // We wake up everyone to make sure we get all the observers. If there are multiple receivers, only one will
+            // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
             // actually succeed.
             self.oqueue().read_wait_queue.wake_all();
         }
@@ -365,15 +365,15 @@ impl<T: Send + UnwindSafe> Sender<T> for LockingSender<T> {
     }
 }
 
-/// A receiver for a locking OQueue. This is only used for non-observable tables where the value should be *moved* out
+/// A consumer for a locking OQueue. This is only used for non-observable tables where the value should be *moved* out
 /// instead of cloned.
-struct LockingReceiver<T: UnwindSafe> {
+struct LockingConsumer<T: UnwindSafe> {
     oqueue: Arc<LockingQueue<T>>,
 }
 
-impl<T: UnwindSafe> Blocker for LockingReceiver<T> {
+impl<T: UnwindSafe> Blocker for LockingConsumer<T> {
     fn should_try(&self) -> bool {
-        self.oqueue.inner.lock().can_receive()
+        self.oqueue.inner.lock().can_consume()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -381,20 +381,20 @@ impl<T: UnwindSafe> Blocker for LockingReceiver<T> {
     }
 }
 
-impl<T: UnwindSafe> Drop for LockingReceiver<T> {
+impl<T: UnwindSafe> Drop for LockingConsumer<T> {
     fn drop(&mut self) {
-        self.oqueue.inner.lock().drop_receiver();
+        self.oqueue.inner.lock().drop_consumer();
     }
 }
 
-impl<T: Send + UnwindSafe> Receiver<T> for LockingReceiver<T> {
-    fn receive(&self) -> T {
-        self.block_until(|| self.try_receive())
+impl<T: Send + UnwindSafe> Consumer<T> for LockingConsumer<T> {
+    fn consume(&self) -> T {
+        self.block_until(|| self.try_consume())
     }
 
-    fn try_receive(&self) -> Option<T> {
-        let res = self.oqueue.inner.lock().try_receive();
-        // If a value was taken, wake up a sender.
+    fn try_consume(&self) -> Option<T> {
+        let res = self.oqueue.inner.lock().try_consume();
+        // If a value was taken, wake up a consumer.
         if res.is_some() {
             self.oqueue.put_wait_queue.wake_all();
         }
@@ -402,35 +402,35 @@ impl<T: Send + UnwindSafe> Receiver<T> for LockingReceiver<T> {
     }
 }
 
-/// A receiver for a locking OQueue which does support observers. This clones values as they are taken out of the OQueue,
+/// A consumer for a locking OQueue which does support observers. This clones values as they are taken out of the OQueue,
 /// to make sure they are still available for observers.
-struct CloningLockingReceiver<T: UnwindSafe> {
+struct CloningLockingConsumer<T: UnwindSafe> {
     oqueue: Weak<LockingQueue<T>>,
     // Object that manages the lifetime of `oqueue`
     _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
 }
 
-impl<T: UnwindSafe> CloningLockingReceiver<T> {
+impl<T: UnwindSafe> CloningLockingConsumer<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: UnwindSafe> Drop for CloningLockingReceiver<T> {
+impl<T: UnwindSafe> Drop for CloningLockingConsumer<T> {
     fn drop(&mut self) {
-        self.oqueue().inner.lock().drop_receiver();
+        self.oqueue().inner.lock().drop_consumer();
     }
 }
 
-impl<T: Send + Clone + UnwindSafe> Receiver<T> for CloningLockingReceiver<T> {
-    fn receive(&self) -> T {
-        self.block_until(|| self.try_receive())
+impl<T: Send + Clone + UnwindSafe> Consumer<T> for CloningLockingConsumer<T> {
+    fn consume(&self) -> T {
+        self.block_until(|| self.try_consume())
     }
 
-    fn try_receive(&self) -> Option<T> {
-        let res = self.oqueue().inner.lock().try_receive_clone();
-        // If a value was taken, wake up a sender.
+    fn try_consume(&self) -> Option<T> {
+        let res = self.oqueue().inner.lock().try_consume_clone();
+        // If a value was taken, wake up a consumer.
         if res.is_some() {
             self.oqueue().put_wait_queue.wake_all();
         }
@@ -438,9 +438,9 @@ impl<T: Send + Clone + UnwindSafe> Receiver<T> for CloningLockingReceiver<T> {
     }
 }
 
-impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
+impl<T: UnwindSafe> Blocker for CloningLockingConsumer<T> {
     fn should_try(&self) -> bool {
-        self.oqueue().inner.lock().can_receive()
+        self.oqueue().inner.lock().can_consume()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -448,7 +448,7 @@ impl<T: UnwindSafe> Blocker for CloningLockingReceiver<T> {
     }
 }
 
-/// A strong observer for a locking OQueue. This will clone values and works only with [`CloningLockingReceiver`].
+/// A strong observer for a locking OQueue. This will clone values and works only with [`CloningLockingConsumer`].
 struct LockingStrongObserver<T: UnwindSafe> {
     oqueue: Weak<LockingQueue<T>>,
     index: usize,
