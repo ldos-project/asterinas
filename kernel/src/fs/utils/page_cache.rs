@@ -407,7 +407,7 @@ impl PageCacheManager {
                 // If there is no previous readahead, an error must have occurred somewhere.
                 assert!(ra_state.request_number() != 0);
                 ra_state.wait_for_prev_readahead(&mut pages)?;
-                pages.get(&idx).unwrap().clone()
+                pages.get(&idx).ok_or_else(Error::unreachable)?.clone()
             } else {
                 // Cond 1.
                 page.clone()
