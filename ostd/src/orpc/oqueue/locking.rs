@@ -6,7 +6,6 @@ use alloc::{borrow::ToOwned, format, sync::Weak};
 use core::{
     any::{Any, type_name},
     cell::Cell,
-    panic::{RefUnwindSafe, UnwindSafe},
 };
 
 use super::{
@@ -22,7 +21,7 @@ use crate::{
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
 /// consumers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// OQueue.
-pub struct LockingQueue<T: UnwindSafe> {
+pub struct LockingQueue<T> {
     this: Weak<LockingQueue<T>>,
     inner: Mutex<LockingOQueueInner<T>>,
     buffer_size: usize,
@@ -30,7 +29,7 @@ pub struct LockingQueue<T: UnwindSafe> {
     read_wait_queue: WaitQueue,
 }
 
-impl<T: UnwindSafe> LockingQueue<T> {
+impl<T> LockingQueue<T> {
     /// Create a new OQueue with a given size.
     pub fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
@@ -65,7 +64,7 @@ impl<T: UnwindSafe> LockingQueue<T> {
 
 /// An OQueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
 /// number of producers and consumers. It is implemented using a single lock for the entire OQueue.
-pub struct ObservableLockingQueue<T: UnwindSafe> {
+pub struct ObservableLockingQueue<T> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
@@ -79,7 +78,7 @@ pub struct ObservableLockingQueue<T: UnwindSafe> {
     this: Weak<ObservableLockingQueue<T>>,
 }
 
-impl<T: UnwindSafe> ObservableLockingQueue<T> {
+impl<T> ObservableLockingQueue<T> {
     /// Create a new OQueue (with observer support) with the given buffer size and supported strong observers. The cost
     /// of an unused observer is very low, so giving a large value here is reasonable.
     pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
@@ -229,7 +228,7 @@ impl<T> LockingOQueueInner<T> {
     }
 }
 
-impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueue<T> {
+impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
         Ok(Box::new(LockingProducer {
@@ -285,7 +284,7 @@ impl<T: Clone + Send + UnwindSafe + 'static> OQueue<T> for ObservableLockingQueu
     }
 }
 
-impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
+impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
     fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.get_this()?;
         Ok(Box::new(LockingProducer {
@@ -318,19 +317,19 @@ impl<T: Send + UnwindSafe + 'static> OQueue<T> for LockingQueue<T> {
 }
 
 /// A producer for a locking OQueue. The same is used regardless of observation support.
-struct LockingProducer<T: UnwindSafe> {
+struct LockingProducer<T> {
     oqueue: Weak<LockingQueue<T>>,
-    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
 }
 
-impl<T: UnwindSafe> LockingProducer<T> {
+impl<T> LockingProducer<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // SAFETY: This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: Send + UnwindSafe> Blocker for LockingProducer<T> {
+impl<T: Send> Blocker for LockingProducer<T> {
     fn should_try(&self) -> bool {
         self.oqueue().inner.lock().can_produce().is_some()
     }
@@ -340,7 +339,7 @@ impl<T: Send + UnwindSafe> Blocker for LockingProducer<T> {
     }
 }
 
-impl<T: Send + UnwindSafe> Producer<T> for LockingProducer<T> {
+impl<T: Send> Producer<T> for LockingProducer<T> {
     fn produce(&self, data: T) {
         let mut d = Some(data);
 
@@ -367,11 +366,11 @@ impl<T: Send + UnwindSafe> Producer<T> for LockingProducer<T> {
 
 /// A consumer for a locking OQueue. This is only used for non-observable tables where the value should be *moved* out
 /// instead of cloned.
-struct LockingConsumer<T: UnwindSafe> {
+struct LockingConsumer<T> {
     oqueue: Arc<LockingQueue<T>>,
 }
 
-impl<T: UnwindSafe> Blocker for LockingConsumer<T> {
+impl<T> Blocker for LockingConsumer<T> {
     fn should_try(&self) -> bool {
         self.oqueue.inner.lock().can_consume()
     }
@@ -381,13 +380,13 @@ impl<T: UnwindSafe> Blocker for LockingConsumer<T> {
     }
 }
 
-impl<T: UnwindSafe> Drop for LockingConsumer<T> {
+impl<T> Drop for LockingConsumer<T> {
     fn drop(&mut self) {
         self.oqueue.inner.lock().drop_consumer();
     }
 }
 
-impl<T: Send + UnwindSafe> Consumer<T> for LockingConsumer<T> {
+impl<T: Send> Consumer<T> for LockingConsumer<T> {
     fn consume(&self) -> T {
         self.block_until(|| self.try_consume())
     }
@@ -404,26 +403,26 @@ impl<T: Send + UnwindSafe> Consumer<T> for LockingConsumer<T> {
 
 /// A consumer for a locking OQueue which does support observers. This clones values as they are taken out of the OQueue,
 /// to make sure they are still available for observers.
-struct CloningLockingConsumer<T: UnwindSafe> {
+struct CloningLockingConsumer<T> {
     oqueue: Weak<LockingQueue<T>>,
     // Object that manages the lifetime of `oqueue`
-    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
 }
 
-impl<T: UnwindSafe> CloningLockingConsumer<T> {
+impl<T> CloningLockingConsumer<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: UnwindSafe> Drop for CloningLockingConsumer<T> {
+impl<T> Drop for CloningLockingConsumer<T> {
     fn drop(&mut self) {
         self.oqueue().inner.lock().drop_consumer();
     }
 }
 
-impl<T: Send + Clone + UnwindSafe> Consumer<T> for CloningLockingConsumer<T> {
+impl<T: Send + Clone> Consumer<T> for CloningLockingConsumer<T> {
     fn consume(&self) -> T {
         self.block_until(|| self.try_consume())
     }
@@ -438,7 +437,7 @@ impl<T: Send + Clone + UnwindSafe> Consumer<T> for CloningLockingConsumer<T> {
     }
 }
 
-impl<T: UnwindSafe> Blocker for CloningLockingConsumer<T> {
+impl<T> Blocker for CloningLockingConsumer<T> {
     fn should_try(&self) -> bool {
         self.oqueue().inner.lock().can_consume()
     }
@@ -449,21 +448,21 @@ impl<T: UnwindSafe> Blocker for CloningLockingConsumer<T> {
 }
 
 /// A strong observer for a locking OQueue. This will clone values and works only with [`CloningLockingConsumer`].
-struct LockingStrongObserver<T: UnwindSafe> {
+struct LockingStrongObserver<T> {
     oqueue: Weak<LockingQueue<T>>,
     index: usize,
     // Object that manages the lifetime of `oqueue`
-    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
 }
 
-impl<T: UnwindSafe> LockingStrongObserver<T> {
+impl<T> LockingStrongObserver<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
+impl<T> Blocker for LockingStrongObserver<T> {
     fn should_try(&self) -> bool {
         self.oqueue().inner.lock().can_strong_observe(self.index)
     }
@@ -473,7 +472,7 @@ impl<T: UnwindSafe> Blocker for LockingStrongObserver<T> {
     }
 }
 
-impl<T: UnwindSafe> Drop for LockingStrongObserver<T> {
+impl<T> Drop for LockingStrongObserver<T> {
     fn drop(&mut self) {
         // Free the observer head so that it is available again and ignored.
         let mut inner = self.oqueue().inner.lock();
@@ -482,7 +481,7 @@ impl<T: UnwindSafe> Drop for LockingStrongObserver<T> {
     }
 }
 
-impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T> {
+impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
     fn strong_observe(&self) -> T {
         self.block_until(|| self.try_strong_observe())
     }
@@ -502,21 +501,21 @@ impl<T: Clone + Send + UnwindSafe> StrongObserver<T> for LockingStrongObserver<T
 
 /// A weak observer for a locking OQueue. This only works with [`ObservableLockingOQueue`] since otherwise the values
 /// would have been moved out instead of cloned.
-struct LockingWeakObserver<T: UnwindSafe> {
+struct LockingWeakObserver<T> {
     oqueue: Weak<LockingQueue<T>>,
     max_observed_tail: Cell<usize>,
     // Object that manages the lifetime of `oqueue`
-    _oqueue_ref: Arc<dyn Any + Send + Sync + RefUnwindSafe>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
 }
 
-impl<T: UnwindSafe> LockingWeakObserver<T> {
+impl<T> LockingWeakObserver<T> {
     fn oqueue(&self) -> &LockingQueue<T> {
         // This is safe when `oqueue` is referenced by `_oqueue_ref`
         unsafe { &*self.oqueue.as_ptr() }
     }
 }
 
-impl<T: UnwindSafe> Blocker for LockingWeakObserver<T> {
+impl<T> Blocker for LockingWeakObserver<T> {
     fn should_try(&self) -> bool {
         self.oqueue().inner.lock().tail_index > self.max_observed_tail.get()
     }
@@ -526,7 +525,7 @@ impl<T: UnwindSafe> Blocker for LockingWeakObserver<T> {
     }
 }
 
-impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
+impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
     fn weak_observe(&self, cursor: Cursor) -> Option<T> {
         let mut inner = self.oqueue().inner.lock();
         self.max_observed_tail

@@ -3,6 +3,8 @@
 mod test {
     use core::{
         assert_matches::assert_matches,
+        cell::Cell,
+        panic::{RefUnwindSafe, UnwindSafe},
         sync::atomic::{AtomicUsize, Ordering},
         time::Duration,
     };
@@ -218,5 +220,45 @@ mod test {
         let server_ref: Arc<dyn TestTrait> = server_ref;
 
         assert_matches!(server_ref.f(), Err(RPCError::Panic { .. }));
+    }
+
+    #[ktest]
+    fn non_unwind_safe() {
+        #[orpc_trait]
+        trait TestTrait {
+            fn f(&self) -> Result<usize, RPCError>;
+        }
+
+        #[orpc_server(TestTrait)]
+        struct TestServer {
+            x: Cell<usize>,
+        }
+
+        unsafe impl Sync for TestServer {}
+        impl !RefUnwindSafe for TestServer {}
+        impl !UnwindSafe for TestServer {}
+
+        #[orpc_impl]
+        impl TestTrait for TestServer {
+            fn f(&self) -> Result<usize, RPCError> {
+                self.x.set(2);
+                Ok(42)
+            }
+        }
+
+        impl TestServer {
+            fn spawn() -> Result<Arc<Self>, Whatever> {
+                let server = Self::new_with(|orpc_internal| Self {
+                    x: Default::default(),
+                    orpc_internal,
+                });
+                Ok(server)
+            }
+        }
+
+        let server_ref = TestServer::spawn().unwrap();
+        let server_ref: Arc<dyn TestTrait> = server_ref;
+
+        assert_eq!(server_ref.f().unwrap(), 42);
     }
 }
