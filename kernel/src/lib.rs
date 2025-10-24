@@ -157,10 +157,11 @@ fn init_thread() {
         console.disable();
     };
 
-    let n_producers = 2;
-    let n_messages = 1024;
+    const N_PRODUCERS: usize = 2;
+    const N_MESSAGES: usize = 1024;
+    const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
 
-    let n_messages_per_producer = n_messages / n_producers;
+    let stats = Arc::new(Mutex::new([0u128; N_MESSAGES]));
 
     let completed = Arc::new(core::sync::atomic::AtomicBool::new(false));
     let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
@@ -175,7 +176,7 @@ fn init_thread() {
         let completed_wq = completed_wq.clone();
         let consumer = q.attach_consumer().unwrap();
         move || {
-            for i in 0..n_messages {
+            for _ in 0..N_MESSAGES {
                 consumer.consume();
                 println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
             }
@@ -188,19 +189,30 @@ fn init_thread() {
     .spawn();
     println!("Starting producers");
     // Start all producers
-    for tid in 0..n_producers {
+    for tid in 0..N_PRODUCERS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 2).unwrap());
         ThreadOptions::new({
             let producer = q.attach_producer().unwrap();
+            let stats = stats.clone();
             move || {
-                for i in 0..n_messages_per_producer {
+                let mut l_stats = [0u128; N_MESSAGES_PER_PRODUCER];
+                for i in 0..N_MESSAGES_PER_PRODUCER {
+                    let now = time::clocks::RealTimeClock::get().read_time();
                     producer.produce(0);
+                    let end = time::clocks::RealTimeClock::get().read_time();
                     println!(
-                        "[producer-{}-{:?}] sent msg",
+                        "[producer-{}-{:?}] sent msg in {:?}",
                         tid,
-                        ostd::cpu::CpuId::current_racy()
+                        ostd::cpu::CpuId::current_racy(),
+                        end - now
                     );
+                    l_stats[i] = (end - now).as_nanos();
+                }
+
+                let mut g_stats = stats.lock();
+                for i in 0..N_MESSAGES_PER_PRODUCER {
+                    g_stats[tid * N_MESSAGES_PER_PRODUCER + i] = l_stats[i];
                 }
             }
         })
@@ -215,6 +227,9 @@ fn init_thread() {
             .load(core::sync::atomic::Ordering::Relaxed)
             .then_some(())
     });
+
+    let g_stats = stats.lock();
+    println!("{:?}", *g_stats);
 
     println!("done");
     exit_qemu(QemuExitCode::Success);
