@@ -191,4 +191,32 @@ mod test {
             Err(RPCError::ServerMissing)
         );
     }
+
+    #[ktest]
+    fn panic_in_default_impl() {
+        #[orpc_trait]
+        trait TestTrait {
+            fn f(&self) -> Result<usize, RPCError> {
+                panic!();
+            }
+        }
+
+        #[orpc_server(TestTrait)]
+        struct TestServer {}
+
+        #[orpc_impl]
+        impl TestTrait for TestServer {}
+
+        impl TestServer {
+            fn spawn() -> Result<Arc<Self>, Whatever> {
+                let server = Self::new_with(|orpc_internal| Self { orpc_internal });
+                Ok(server)
+            }
+        }
+
+        let server_ref = TestServer::spawn().unwrap();
+        let server_ref: Arc<dyn TestTrait> = server_ref;
+
+        assert_matches!(server_ref.f(), Err(RPCError::Panic { .. }));
+    }
 }
