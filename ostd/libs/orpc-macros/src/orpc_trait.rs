@@ -2,7 +2,7 @@
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{FnArg, ItemTrait, LitStr, Receiver, spanned::Spanned};
 
-use crate::parsing_utils::ORPCMethodKind;
+use crate::{orpc_impl::generate_orpc_method_body, parsing_utils::ORPCMethodKind};
 
 /// The implementation of the `orpc_trait` attr macro.
 pub fn orpc_trait_macro_impl(
@@ -125,18 +125,25 @@ pub fn orpc_trait_macro_impl(
 
 /// Take an ORPC method declaration and process it for the trait declaration.
 ///
-/// We don't actually generate anything for these. This method just checks and generates errors if the method match the
-/// correct form.
+/// For pure declarations, this method just checks and generates errors if the method match the
+/// correct form. If there is a default implementation, this uses
+/// [`crate::orpc_impl::generate_orpc_method_body`] to generate the default implementation body.
 fn process_orpc_method(
     method_decls: &mut Vec<proc_macro2::TokenStream>,
     errors: &mut Vec<proc_macro2::TokenStream>,
     trait_item_method: &syn::TraitItemMethod,
 ) {
+    let syn::TraitItemMethod {
+        attrs,
+        sig,
+        default,
+        semi_token: _,
+    } = trait_item_method;
     let mut bad_arg = false;
-    if trait_item_method.sig.inputs.is_empty() || trait_item_method.sig.inputs.len() > 2 {
+    if sig.inputs.is_empty() || sig.inputs.len() > 2 {
         bad_arg = true;
     }
-    match trait_item_method.sig.receiver() {
+    match sig.receiver() {
         // The only correct form: `&self`
         Some(FnArg::Receiver(Receiver {
             reference: Some(_),
@@ -146,11 +153,23 @@ fn process_orpc_method(
         _ => bad_arg = true,
     }
     if bad_arg {
-        errors.push(quote_spanned! { trait_item_method.sig.inputs.span() =>
+        errors.push(quote_spanned! { sig.inputs.span() =>
             compile_error!("ORPC trait methods must have the self argument and at most one other argument")
         });
     }
-    method_decls.push(trait_item_method.to_token_stream());
+
+    if let Some(default) = default {
+        let new_body = generate_orpc_method_body(sig, default);
+
+        method_decls.push(quote_spanned! { trait_item_method.span() =>
+            #(#attrs)*
+            #sig {
+                #new_body
+            }
+        });
+    } else {
+        method_decls.push(trait_item_method.to_token_stream());
+    }
 }
 
 /// Take an OQueue declaration on an ORPC trait and generate code to implement it.

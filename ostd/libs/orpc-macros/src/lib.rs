@@ -28,6 +28,9 @@ use syn::{
 /// type. This will be run only when a server is constructed. This requirement will be relaxed once the OQueue
 /// implementation matures to the point that there is a universal OQueue implementation.
 ///
+/// TODO(amp, https://github.com/ldos-project/asterinas/issues/79): This requires specific OQueue
+/// implementations to be used. It should be dynamically selected or even reconfigured.
+///
 /// ### Example
 ///
 /// ```ignore

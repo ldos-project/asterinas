@@ -111,7 +111,8 @@ pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
                 let server = server.clone();
                 move || {
                     Server::orpc_server_base(server.as_ref()).attach_task();
-                    let _server_context = CurrentServer::enter_server_context(server.as_ref());
+                    let _server_context =
+                        CurrentServer::enter_server_context(server.orpc_server_base());
                     if let Result::Err(e) = body() {
                         Server::orpc_server_base(server.as_ref()).abort(&e);
                     }
@@ -157,13 +158,13 @@ impl CurrentServer {
     /// Enter a server context by changing the current server. This is used in the implementations of methods and server
     /// threads.
     #[doc(hidden)]
-    pub fn enter_server_context(server: &dyn Server) -> CurrentServerChangeGuard {
+    pub fn enter_server_context(orpc_server_base: &ServerBase) -> CurrentServerChangeGuard {
         // TODO:PERFORMANCE:The overhead of using a strong reference here is potentially significant. Instead, we should
         // probably use unsafe to just use a pointer, assuming we can guarantee dynamic scoping and rule out leaking the
         // reference.
         let curr_task = Task::current().unwrap();
         let previous_server = curr_task.server().take();
-        if let Some(s) = server.orpc_server_base().get_ref() {
+        if let Some(s) = orpc_server_base.get_ref() {
             curr_task.server().replace(Some(s));
         }
         CurrentServerChangeGuard(previous_server)
@@ -234,7 +235,7 @@ mod test {
                         move || {
                             server.orpc_server_base().attach_task();
                             let _server_context =
-                                CurrentServer::enter_server_context(server.as_ref());
+                                CurrentServer::enter_server_context(server.orpc_server_base());
                             if let Err(e) = server.main_thread() {
                                 // TODO: An actual logging operation.
                                 server.orpc_server_base().abort(&e);

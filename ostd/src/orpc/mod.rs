@@ -6,3 +6,5 @@ extern crate alloc;
 pub mod framework;
 pub mod oqueue;
 pub mod sync;
+
+pub use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
