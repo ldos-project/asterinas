@@ -58,7 +58,7 @@ allow_attributes = "warn"
 # TODO(arthurp,  #49): Enable once the code can pass it.
 # missing_panics_doc = "deny"
 
-# Cargo only looks at the profile settings 
+# Cargo only looks at the profile settings
 # in the Cargo.toml manifest at the root of the workspace
 
 [profile.dev]
@@ -70,7 +70,7 @@ panic = "unwind"
 
 # Release profile configuration with Link Time Optimization (LTO) enabled.
 #
-# This profile is optimized for maximum runtime performance, 
+# This profile is optimized for maximum runtime performance,
 # (achieving a 2% reduction in latency for the getpid system call).
 # However, enabling LTO significantly increases compilation times,
 # approximately doubling them compared to when LTO is not enabled.
