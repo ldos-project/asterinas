@@ -34,6 +34,7 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::oqueue::OQueue,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -155,6 +156,68 @@ fn init_thread() {
     if let Some(console) = FRAMEBUFFER_CONSOLE.get() {
         console.disable();
     };
+
+    let n_producers = 2;
+    let n_messages = 1024;
+
+    let n_messages_per_producer = n_messages / n_producers;
+
+    let completed = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+
+    println!("Starting consumer");
+    // Start consumer
+    let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let completed_wq = completed_wq.clone();
+        let consumer = q.attach_consumer().unwrap();
+        move || {
+            for i in 0..n_messages {
+                consumer.consume();
+                println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
+            }
+
+            completed.store(true, core::sync::atomic::Ordering::Relaxed);
+            completed_wq.wake_all();
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+    println!("Starting producers");
+    // Start all producers
+    for tid in 0..n_producers {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 2).unwrap());
+        ThreadOptions::new({
+            let producer = q.attach_producer().unwrap();
+            move || {
+                for i in 0..n_messages_per_producer {
+                    producer.produce(0);
+                    println!(
+                        "[producer-{}-{:?}] sent msg",
+                        tid,
+                        ostd::cpu::CpuId::current_racy()
+                    );
+                }
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    println!("Waiting for benchmark to complete");
+    // Exit after benchmark completes
+    completed_wq.wait_until(|| {
+        completed
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .then_some(())
+    });
+
+    println!("done");
+    exit_qemu(QemuExitCode::Success);
 
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),
