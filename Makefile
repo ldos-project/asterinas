@@ -73,24 +73,7 @@ DOCKER_TAG := ldosproject/asterinas
 DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
 DOCKER_RUN_ARGS := --privileged --network=host --device=/dev/kvm
-
-
-DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas
-# TODO(aneesh) quote CARGO_CACHE - it's not trivial to do in Make
-_:=$(shell test -e $(CARGO_CACHE))
-$(info ccache $(.SHELLSTATUS))
-ifeq ($(.SHELLSTATUS),0)
-DOCKER_MOUNTS += -v $(CARGO_CACHE):/root/.cargo
-endif
-
-# TODO(aneesh) quote RUSTUP_CACHE - it's not trivial to do in Make
-_:=$(shell test -e $(RUSTUP_CACHE))
-$(info rcache $(.SHELLSTATUS))
-ifeq ($(.SHELLSTATUS),0)
-DOCKER_MOUNTS += -v $(RUSTUP_CACHE):/root/.rustup
-endif
-
-$(info docker_mounts= $(DOCKER_MOUNTS))
+DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
 
 ifeq ($(AUTO_TEST), syscall)
 BUILD_SYSCALL_TEST := 1
