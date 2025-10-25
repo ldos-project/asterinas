@@ -534,10 +534,6 @@ impl<T: Clone + Send + UnwindSafe> WeakObserver<T> for LockingWeakObserver<T> {
         inner.try_weak_observe(&cursor)
     }
 
-    fn wait(&self) {
-        Task::current().unwrap().block_on(&[self]);
-    }
-
     fn recent_cursor(&self) -> Cursor {
         Cursor(self.oqueue().inner.lock().tail_index.saturating_sub(1))
     }

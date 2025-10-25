@@ -39,6 +39,7 @@ snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_
 unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
 volatile = "0.6.1"
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
+crossbeam-utils = { version = "0.8.21", default-features = false }
 
 [target.x86_64-unknown-none.dependencies]
 x86_64 = "0.14.13"

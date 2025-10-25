@@ -8,6 +8,7 @@ pub mod generic_test;
 
 pub mod locking;
 pub mod registry;
+pub mod ringbuffer;
 
 use alloc::string::String;
 use core::{
@@ -19,7 +20,10 @@ use core::{
 use snafu::Snafu;
 
 use super::sync::Blocker;
-use crate::prelude::{Arc, Box};
+use crate::{
+    prelude::{Arc, Box},
+    task::Task,
+};
 
 /// A reference to a specific row in a queue. This refers to an element over the full history of a oqueue, not based on
 /// some implementation defined buffer.
@@ -104,7 +108,12 @@ pub trait WeakObserver<T>: Send + UnwindSafe + Blocker {
     fn weak_observe(&self, index: Cursor) -> Option<T>;
 
     /// Wait for new data to become available.
-    fn wait(&self);
+    fn wait(&self)
+    where
+        Self: Sized,
+    {
+        Task::current().unwrap().block_on(&[self]);
+    }
 
     /// Return a cursor pointing to the most recent value in the oqueue. This has very relaxed consistency, the element
     /// may no longer be the most recent or even no longer be available.
