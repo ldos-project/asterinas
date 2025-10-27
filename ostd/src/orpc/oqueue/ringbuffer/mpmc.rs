@@ -94,11 +94,11 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             this: this.clone(),
             capacity: size,
             max_strong_observers,
-            slots: (0..size).map(|_| Slot::new()).collect(),
+            slots: (0..(size + 1)).map(|_| Slot::new()).collect(),
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
             strong_observer_tails: (0..max_strong_observers)
-                .map(|_| CachePadded::new(AtomicUsize::new(0)))
+                .map(|_| CachePadded::new(AtomicUsize::new(usize::MAX)))
                 .collect(),
             n_strong_observers: Mutex::new(0),
             put_wait_queue: Default::default(),
@@ -169,7 +169,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     if self.strong_observer_tails.iter().all(|t| {
                         // This has to be greater than or equal, to avoid a race. See
                         // `try_observe` below.
-                        t.load(Ordering::Acquire) >= tail
+                        t.load(Ordering::Acquire) >= (tail + 1)
                     }) {
                         // Do a compare_exchange instead of store because we don't want to overwrite
                         // a newer value if some other consumer got to it first.
@@ -217,11 +217,11 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // The slowest tail updates the slot. The check for the other tail values must be >= and not
         // just >, because it's better for two threads to attempt to redundantly update the slot
         // than to have the slot never update.
-        if self.tail.load(Ordering::Acquire) >= tail
+        if self.tail.load(Ordering::Acquire) >= (tail + 1)
             && self
                 .strong_observer_tails
                 .iter()
-                .all(|t| t.load(Ordering::Acquire) >= tail)
+                .all(|t| t.load(Ordering::Acquire) >= (tail + 1))
         {
             loop {
                 // Do a compare_exchange instead of store because we don't want to overwrite a newer
@@ -244,7 +244,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn size(&self) -> usize {
-        self.head.load(Ordering::Relaxed) - self.strong_observer_tails[0].load(Ordering::Relaxed)
+        self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 
     fn empty(&self) -> bool {
@@ -261,25 +261,26 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     where
         T: Copy + Send,
     {
-        if self.empty() {
+        let mut index = cursor.index();
+
+        if self.empty() && self.head.load(Ordering::Relaxed) == 0 {
             return None;
         }
 
-        let mut index = cursor.index();
-        loop {
-            let sturn = self.slots[self.idx(index)].turn.load(Ordering::Relaxed);
-            if sturn < (2 * self.turn(index)) {
-                break;
-            }
-
-            let v = unsafe { self.slots[self.idx(index)].get() };
-            if self.slots[self.idx(index)].turn.load(Ordering::Acquire) != sturn {
-                index += 1;
-                continue;
-            }
-            return Some(v);
+        let sturn = self.slots[self.idx(index)].turn.load(Ordering::Relaxed);
+        // If the turn of the slot is either the current turn and readable, or the next turn and
+        // writable (but not yet written), then attempt to read
+        if sturn != (2 * self.turn(index) + 1) && sturn != (2 * (self.turn(index) + 1)) {
+            return None;
         }
-        None
+
+        let v = unsafe { self.slots[self.idx(index)].get() };
+        // Check if the turn changed while writing
+        if self.slots[self.idx(index)].turn.load(Ordering::Acquire) != sturn {
+            index += 1;
+            return None;
+        }
+        return Some(v);
     }
 
     fn get_this(
@@ -305,7 +306,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        !self.oqueue.empty()
+        self.oqueue.size() < self.oqueue.capacity
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -351,7 +352,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity
+        !self.oqueue.empty()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -388,6 +389,16 @@ pub struct MPMCStrongObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERV
     observer_id: usize,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
+}
+
+impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
+    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+{
+    fn drop(&mut self) {
+        let mut n_strong_observers = self.oqueue.n_strong_observers.lock();
+        self.oqueue.strong_observer_tails[self.observer_id].store(usize::MAX, Ordering::Relaxed);
+        *n_strong_observers -= 1;
+    }
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
@@ -492,7 +503,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         } else {
             let observer_id = *n_observers;
             self.strong_observer_tails[observer_id]
-                .store(self.head.load(Ordering::Relaxed), Ordering::Relaxed);
+                .store(self.tail.load(Ordering::Relaxed), Ordering::Relaxed);
             (*n_observers) += 1;
 
             let oqueue = self.get_this()?;
@@ -509,5 +520,45 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             oqueue: self.get_this()?,
             _phantom: PhantomData,
         }))
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use crate::{orpc::oqueue::generic_test, prelude::*};
+    #[ktest]
+    fn test_produce_consume() {
+        generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 0));
+    }
+
+    #[ktest]
+    fn test_produce_strong_observe() {
+        generic_test::test_produce_strong_observe(MPMCOQueue::<_>::new(1, 1));
+    }
+
+    #[ktest]
+    fn test_produce_weak_observe() {
+        generic_test::test_produce_weak_observe(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_all() {
+        generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 1));
+        generic_test::test_produce_strong_observe(MPMCOQueue::<_>::new(1, 1));
+        generic_test::test_produce_weak_observe(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_send_receive_blocker_observable_mpmc() {
+        let oqueue = MPMCOQueue::<_>::new(16, 5);
+        generic_test::test_send_receive_blocker(oqueue, 100, 5);
+    }
+
+    #[ktest]
+    fn test_send_multi_receive_blocker_observable_mpmc() {
+        let oqueue1 = MPMCOQueue::<_>::new(16, 5);
+        let oqueue2 = MPMCOQueue::<_>::new(16, 5);
+        generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 }
