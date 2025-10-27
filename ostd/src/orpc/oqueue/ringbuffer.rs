@@ -1,4 +1,4 @@
-//! A MPMC OQueue implementation with support for strong and weak observation with both static and dynamic configurability.
+//! A SPSC OQueue implementation with support for strong and weak observation with both static and dynamic configurability.
 //!
 //! This is implemented as a lock-free ring buffer with additional head pointers to support strong observers. Strong
 //! observers are otherwise identical to the consumer.
@@ -19,7 +19,7 @@
 // when needed. This will only help significantly for longer queues.
 
 // TODO: Implement a multi-consumer and/or multi-producer variant. Potentially with cases for just one or the other if
-// those are faster. If there is no advantage to the fully MPMC case, the MPMC case could be the only implementation.
+// those are faster. If there is no advantage to the fully SPSC case, the SPSC case could be the only implementation.
 
 // TODO: It might be a good idea to disable preemption during some of the lock-free operations. The
 // reason is it would reduce the risk be contention since only threads on other cores could contend.
@@ -125,8 +125,8 @@ struct ElementWeakState {
     weak_readers: AtomicU64,
 }
 
-/// See [`MPMCOQueue::attachment_state`].
-struct MPMCOQueueAttachmentState {
+/// See [`SPSCOQueue::attachment_state`].
+struct SPSCOQueueAttachmentState {
     /// A list of strong observer head indexes which are not in use, so they can be allocated to a new strong observer.
     /// When a value is taken from this list, it can safely be used as an index into `strong_observer_heads`.
     free_strong_observer_heads: Vec<usize>,
@@ -154,10 +154,9 @@ struct MPMCOQueueAttachmentState {
 /// Enabling weak observers at construction causes an additional padded atomic word to be allocated per element of the
 /// ring buffer. This is to guarantee no false sharing between the weak observer state words of different elements *and*
 /// no false sharing between the state word and the element data itself.
-pub type MPMCOQueue<T> = MPMCOQueueCustom<T>;
 
 /// A statically-customizable OQueue supporting a producer, a consumer, multiple strong observers, and multiple weak
-/// observers. The latter two being optional both statically and dynamically. See [`MPMCOQueue`] and [`super::spsc`].
+/// observers. The latter two being optional both statically and dynamically. See [`SPSCOQueue`] and [`super::spsc`].
 ///
 /// ## Configurations
 ///
@@ -169,11 +168,7 @@ pub type MPMCOQueue<T> = MPMCOQueueCustom<T>;
 ///
 /// Both are `true` by default and should *not* be disabled without benchmarking. They have little to no overhead as
 /// long as there are no attached observers, so leaving them enabled provides more dynamic flexibility.
-pub struct MPMCOQueueCustom<
-    T,
-    const STRONG_OBSERVERS: bool = true,
-    const WEAK_OBSERVERS: bool = true,
-> {
+pub struct SPSCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
     this: Weak<Self>,
 
     // INVARIANTS:
@@ -217,7 +212,7 @@ pub struct MPMCOQueueCustom<
 
     // # Cold-path data that is accessed infrequently and for which false sharing is acceptable.
     /// The state used to attach to this oqueue.
-    attachment_state: Mutex<MPMCOQueueAttachmentState>,
+    attachment_state: Mutex<SPSCOQueueAttachmentState>,
 
     /// Wait queue for threads waiting to put into the queue.
     put_wait_queue: WaitQueue,
@@ -225,21 +220,21 @@ pub struct MPMCOQueueCustom<
     read_wait_queue: WaitQueue,
 }
 
-// SAFETY: MPMCOQueue's implementation guarantees that elements of buffer are never accessed unsafely from more than one
+// SAFETY: SPSCOQueue's implementation guarantees that elements of buffer are never accessed unsafely from more than one
 // thread at a time.
 unsafe impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Sync
-    for MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
 }
 unsafe impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Send
-    for MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
-    MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
-    /// Create a new [`MPMCOQueue`] with the specified number of strong and weak observer slots.
+    /// Create a new [`SPSCOQueue`] with the specified number of strong and weak observer slots.
     pub fn new_with_waiters(
         size: usize,
         max_strong_observers: usize,
@@ -261,7 +256,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         } else {
             None
         };
-        Arc::new_cyclic(|this| MPMCOQueueCustom {
+        Arc::new_cyclic(|this| SPSCOQueue {
             this: this.clone(),
             buffer: (0..size).map(|_| Element::uninit()).collect(),
             head_index: CachePadded::new(AtomicUsize::new(usize::MAX)),
@@ -273,7 +268,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             len_mask: size - 1,
             len_bits: size.trailing_zeros(),
             weak_observer_states: weak_reader_states,
-            attachment_state: Mutex::new(MPMCOQueueAttachmentState {
+            attachment_state: Mutex::new(SPSCOQueueAttachmentState {
                 free_strong_observer_heads: (0..max_strong_observers).collect(),
                 free_weak_observer_bits: (0..max_weak_observers).collect(),
                 has_consumer: false,
@@ -284,7 +279,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         })
     }
 
-    /// Create a new [`MPMCOQueue`] with a specific size and numbers of supported observers. This will use default wake
+    /// Create a new [`SPSCOQueue`] with a specific size and numbers of supported observers. This will use default wake
     /// mechanisms.
     pub fn new(size: usize, max_strong_observers: usize, max_weak_observers: usize) -> Arc<Self>
     where
@@ -556,7 +551,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 
     fn get_this(
         &self,
-    ) -> Result<Arc<MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>, OQueueAttachError> {
+    ) -> Result<Arc<SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>, OQueueAttachError> {
         self.this
             .upgrade()
             .ok_or_else(|| OQueueAttachError::AllocationFailed {
@@ -567,7 +562,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 }
 
 impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> OQueue<T>
-    for MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         let mut state = self.attachment_state.lock();
@@ -578,7 +573,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             })
         } else {
             state.has_producer = true;
-            Ok(Box::new(MPMCProducer {
+            Ok(Box::new(SPSCProducer {
                 oqueue: self.get_this()?,
                 _phantom: PhantomData,
             }) as _)
@@ -596,7 +591,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             state.has_consumer = true;
             self.head_index
                 .store(self.tail_index.load(Ordering::Relaxed), Ordering::Release);
-            Ok(Box::new(MPMCConsumer {
+            Ok(Box::new(SPSCConsumer {
                 oqueue: self.get_this()?,
                 _phantom: PhantomData,
             }) as _)
@@ -609,7 +604,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         if let Some(slot) = free_list.pop() {
             self.strong_observer_heads[slot]
                 .store(self.tail_index.load(Ordering::Relaxed), Ordering::Release);
-            Ok(Box::new(MPMCStrongObserver {
+            Ok(Box::new(SPSCStrongObserver {
                 oqueue: self.get_this()?,
                 observer_index: slot,
                 _phantom: PhantomData,
@@ -629,7 +624,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         let mut state = self.attachment_state.lock();
         let free_list = &mut state.free_weak_observer_bits;
         if let Some(slot) = free_list.pop() {
-            Ok(Box::new(MPMCWeakObserver {
+            Ok(Box::new(SPSCWeakObserver {
                 oqueue: self.get_this()?,
                 observer_index: slot,
                 _phantom: PhantomData,
@@ -643,15 +638,15 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     }
 }
 
-/// The producer handle for [`MPMCOQueue`].
-pub struct MPMCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+/// The producer handle for [`SPSCOQueue`].
+pub struct SPSCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+    oqueue: Arc<SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
-    for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn drop(&mut self) {
         let mut state = self.oqueue.attachment_state.lock();
@@ -660,7 +655,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
         self.oqueue.can_put().is_some()
@@ -672,7 +667,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Producer<T>
-    for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn produce(&self, data: T) {
         // let mut i = 0;
@@ -689,7 +684,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> P
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
-        // SAFETY: MPMCProducer is Send, but not Sync, so this can only ever be called from a single thread at a time.
+        // SAFETY: SPSCProducer is Send, but not Sync, so this can only ever be called from a single thread at a time.
         let res = unsafe { self.oqueue.try_produce(data) };
         if res.is_none() {
             self.oqueue.read_wait_queue.wake_all();
@@ -698,15 +693,15 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> P
     }
 }
 
-/// The consumer handle for [`MPMCOQueue`].
-pub struct MPMCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+/// The consumer handle for [`SPSCOQueue`].
+pub struct SPSCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+    oqueue: Arc<SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
-    for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn drop(&mut self) {
         let mut state = self.oqueue.attachment_state.lock();
@@ -716,7 +711,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
         self.oqueue.can_take().is_some()
@@ -728,7 +723,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Consumer<T>
-    for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn consume(&self) -> T {
         self.oqueue
@@ -737,7 +732,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> C
     }
 
     fn try_consume(&self) -> Option<T> {
-        // SAFETY: MPMCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
+        // SAFETY: SPSCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
         let res = unsafe { self.oqueue.try_consume() };
         if res.is_some() {
             self.oqueue.put_wait_queue.wake_one();
@@ -750,16 +745,16 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> C
     // }
 }
 
-/// The strong-observer handle for [`MPMCOQueue`].
-pub struct MPMCStrongObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+/// The strong-observer handle for [`SPSCOQueue`].
+pub struct SPSCStrongObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+    oqueue: Arc<SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     observer_index: usize,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
         self.oqueue.can_take().is_some()
@@ -771,7 +766,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> StrongObserver<T>
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn strong_observe(&self) -> T {
         self.oqueue
@@ -780,7 +775,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
     }
 
     fn try_strong_observe(&self) -> Option<T> {
-        // SAFETY: MPMCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
+        // SAFETY: SPSCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
         let res = unsafe { self.oqueue.try_strong_observe(self.observer_index) };
         if res.is_some() {
             self.oqueue.put_wait_queue.wake_one();
@@ -794,7 +789,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn drop(&mut self) {
         let mut state = self.oqueue.attachment_state.lock();
@@ -804,16 +799,16 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
     }
 }
 
-/// The weak-observer handle for [`MPMCOQueue`].
-pub struct MPMCWeakObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueueCustom<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+/// The weak-observer handle for [`SPSCOQueue`].
+pub struct SPSCWeakObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+    oqueue: Arc<SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     observer_index: usize,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
-    for MPMCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn drop(&mut self) {
         let mut state = self.oqueue.attachment_state.lock();
@@ -823,7 +818,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
         self.oqueue.can_take().is_some()
@@ -835,10 +830,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> WeakObserver<T>
-    for MPMCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+    for SPSCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn weak_observe(&self, cursor: Cursor) -> Option<T> {
-        // SAFETY: MPMCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
+        // SAFETY: SPSCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
         unsafe { self.oqueue.weak_observe(self.observer_index, cursor) }
     }
 
@@ -869,23 +864,23 @@ mod test {
     use crate::{orpc::oqueue::generic_test, prelude::*};
     #[ktest]
     fn test_produce_consume() {
-        generic_test::test_produce_consume(MPMCOQueueCustom::<_>::new(2, 0, 0));
+        generic_test::test_produce_consume(SPSCOQueue::<_>::new(2, 0, 0));
     }
 
     #[ktest]
     fn test_produce_strong_observe() {
-        generic_test::test_produce_strong_observe(MPMCOQueueCustom::<_>::new(2, 1, 0));
+        generic_test::test_produce_strong_observe(SPSCOQueue::<_>::new(2, 1, 0));
     }
 
     #[ktest]
     fn test_produce_weak_observe() {
-        generic_test::test_produce_weak_observe(MPMCOQueueCustom::<_>::new(2, 0, 1));
+        generic_test::test_produce_weak_observe(SPSCOQueue::<_>::new(2, 0, 1));
     }
 
     #[ktest]
     fn test_all() {
-        generic_test::test_produce_consume(MPMCOQueueCustom::<_>::new(2, 1, 1));
-        generic_test::test_produce_strong_observe(MPMCOQueueCustom::<_>::new(2, 1, 1));
-        generic_test::test_produce_weak_observe(MPMCOQueueCustom::<_>::new(2, 1, 1));
+        generic_test::test_produce_consume(SPSCOQueue::<_>::new(2, 1, 1));
+        generic_test::test_produce_strong_observe(SPSCOQueue::<_>::new(2, 1, 1));
+        generic_test::test_produce_weak_observe(SPSCOQueue::<_>::new(2, 1, 1));
     }
 }
