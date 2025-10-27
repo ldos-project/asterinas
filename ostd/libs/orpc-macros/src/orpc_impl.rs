@@ -18,7 +18,7 @@ pub fn orpc_impl_macro_impl(
             syn::ImplItem::Method(method) => {
                 match ORPCMethodKind::of(&method.sig) {
                     Some(ORPCMethodKind::Orpc { .. }) => {
-                        process_orpc_method(&mut method_implementations, &mut errors, method);
+                        method_implementations.push(process_orpc_method(method));
                     }
                     Some(ORPCMethodKind::OQueue { .. }) => {
                         // We need the trait name, which requires that this impl be of a trait (not inherent). This this
@@ -82,11 +82,7 @@ pub fn orpc_impl_macro_impl(
 }
 
 /// Generate the method implementation for an ORPC method.
-fn process_orpc_method(
-    method_implementations: &mut Vec<proc_macro2::TokenStream>,
-    _errors: &mut [proc_macro2::TokenStream],
-    method: &syn::ImplItemMethod,
-) {
+fn process_orpc_method(method: &syn::ImplItemMethod) -> proc_macro2::TokenStream {
     let syn::ImplItemMethod {
         attrs,
         vis,
@@ -95,19 +91,38 @@ fn process_orpc_method(
         block: body,
     } = method;
 
-    let ret_type = &sig.output;
-
     // Don't check for illegal signatures. Those will already have been checked at the trait definition.
 
+    let new_body = generate_orpc_method_body(sig, body);
+
+    quote_spanned! { method.span() =>
+        #(#attrs)*
+        #vis
+        #defaultness
+        #sig {
+            #new_body
+        }
+    }
+}
+
+/// Generate the body of an ORPC method implementation from the original body and signature. This is
+/// used for both impls ([`process_orpc_method`]) and default implementations in traits
+/// ([`crate::orpc_trait::process_orpc_method`]).
+pub(crate) fn generate_orpc_method_body(
+    sig: &syn::Signature,
+    body: &syn::Block,
+) -> proc_macro2::TokenStream {
+    let ret_type = &sig.output;
     let base_ref: Expr = parse_quote! { ::ostd::orpc::framework::Server::orpc_server_base(self) };
     let abort_check = quote_spanned! { sig.span() =>
         if #base_ref.is_aborted() {
+            #[allow(clippy::useless_conversion)]
             return ::core::result::Result::Err(::ostd::orpc::framework::errors::RPCError::ServerMissing.into());
         }
     };
     let enter_server_context = quote_spanned! { sig.span() =>
             let _server_context = ::ostd::orpc::framework::CurrentServer::enter_server_context(
-                self
+                #base_ref
             );
     };
     let error_cases = quote! {
@@ -121,25 +136,16 @@ fn process_orpc_method(
         }
     };
 
-    let new_body = quote_spanned! { body.span() =>
+    quote_spanned! { body.span() =>
         #abort_check
 
         match ::ostd::panic::catch_unwind(|| {
             #enter_server_context
-            (|| #ret_type #body)()
+            let body = (|| #ret_type #body);
+            body()
         }) #error_cases
 
-    };
-
-    method_implementations.push(quote_spanned! { method.span() =>
-        #[allow(clippy::redundant_closure_call, clippy::useless_conversion)]
-        #(#attrs)*
-        #vis
-        #defaultness
-        #sig {
-            #new_body
-        }
-    });
+    }
 }
 
 /// Generate the method implementation for an OQueue access method. The method just extract the OQueueRef from inside
