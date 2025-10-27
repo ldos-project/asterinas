@@ -65,7 +65,7 @@ cfg-if = "1.0"
 # TODO: fork this crate to rewrite all the (unnecessary) unsafe usage
 fixed = "1.28.0"
 
-[target.x86_64-unknown-none.dependencies]
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 tdx-guest = { version = "0.2.1", optional = true }
 
 [target.riscv64gc-unknown-none-elf.dependencies]
