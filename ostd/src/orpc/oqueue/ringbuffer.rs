@@ -670,8 +670,8 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> P
     for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn produce(&self, data: T) {
-        // let mut i = 0;
         let mut d = Some(data);
+        // let mut i = 0;
         self.oqueue
             .put_wait_queue
             .wait_until(|| match self.try_produce(d.take().unwrap()) {
