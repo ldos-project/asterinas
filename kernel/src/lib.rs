@@ -157,7 +157,7 @@ fn init_thread() {
         console.disable();
     };
 
-    const N_PRODUCERS: usize = 2;
+    const N_PRODUCERS: usize = 1;
     const N_MESSAGES: usize = 1024;
     const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
 
@@ -168,6 +168,7 @@ fn init_thread() {
 
     println!("Starting consumer");
     // Start consumer
+    // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
     let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
     let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
     cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
