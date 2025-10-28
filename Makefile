@@ -445,19 +445,23 @@ check: initramfs format_check workspace_project_coverage_check lint_check clippy
 
 # Here we build our mount cache
 # TODO make this rule depend on the dockerfile version see #34
-${DOCKER_RUST_CACHE_LOCATION}:
-	mkdir $@
+${DOCKER_RUST_CACHE_LOCATION}/generated:
+	mkdir -p ${DOCKER_RUST_CACHE_LOCATION}
 	docker create --name dummy $(DOCKER_IMAGE_TAG)
 	docker cp dummy:/root/.cargo ${CARGO_CACHE}
 	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
 	docker rm dummy
+	# Touch a file at the end to create some degree of "atomicity". If the cache
+	# location exists but hasn't been initialized yet, we still need to run this
+	# rule to initialize it.
+	touch $@
 
 .PHONY: docker
-docker: | ${DOCKER_RUST_CACHE_LOCATION}
+docker: | ${DOCKER_RUST_CACHE_LOCATION}/generated
 	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
 .PHONY: docker_start
-docker_start: | ${DOCKER_RUST_CACHE_LOCATION}
+docker_start: | ${DOCKER_RUST_CACHE_LOCATION}/generated
 	docker ps -a | grep $(DOCKER_CONTAINER_NAME) || \
 		docker run -d --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG) sleep infinity
 
