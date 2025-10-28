@@ -27,7 +27,10 @@
 //!
 //! This module provides API to detect such "sleep-like" actions.
 
+use alloc::{borrow::ToOwned, format};
 use core::sync::atomic::Ordering;
+
+use crate::task::preempt::cpu_local::PREEMPT_OUTER_INC_LOCATION;
 
 /// Marks a function as one that might sleep.
 ///
@@ -39,9 +42,14 @@ pub fn might_sleep() {
     if (preempt_count != 0 || !is_local_irq_enabled)
         && !crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed)
     {
+        // SAFETY: preempt count > 0 to migration is not possible.
+        let location = unsafe { PREEMPT_OUTER_INC_LOCATION.as_mut_ptr().as_mut() }
+            .unwrap()
+            .take();
+        let location = location.map_or("".to_owned(), |l| format!("{}", l));
         panic!(
-            "This function might break atomic mode (preempt_count = {}, is_local_irq_enabled = {})",
-            preempt_count, is_local_irq_enabled
+            "This function might break atomic mode: preempt_count = {} (set at {}), is_local_irq_enabled = {}",
+            preempt_count, location, is_local_irq_enabled
         );
     }
 }
