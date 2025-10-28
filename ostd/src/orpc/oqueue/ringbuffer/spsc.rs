@@ -362,15 +362,15 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         self.try_consume_for_head(head)
     }
 
-    fn can_take(&self) -> Option<usize> {
-        self.can_take_for_head(&self.head_index)
+    fn can_produce(&self) -> Option<usize> {
+        self.can_produce_for_head(&self.head_index)
     }
 
     /// Determine if there is data for this head to take, returning `None` if not and the head index
     /// if so. This function performs an acquire ordered read on the tail index meaning that any
     /// operations following this will observe data written to the buffer between the returned head
     /// and the tail at the time of this call.
-    fn can_take_for_head(&self, head: &AtomicUsize) -> Option<usize> {
+    fn can_produce_for_head(&self, head: &AtomicUsize) -> Option<usize> {
         // Read the head. This is relaxed because there is no other writer to the head.
         let current_head = head.load(Ordering::Relaxed);
         let current_head_slot = self.mod_len(current_head);
@@ -399,7 +399,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     where
         T: Copy + Send,
     {
-        let current_head = self.can_take_for_head(head)?;
+        let current_head = self.can_produce_for_head(head)?;
         let current_head_slot = self.mod_len(current_head);
 
         let slot_cell = &self.buffer[current_head_slot];
@@ -666,7 +666,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for SPSCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.can_take().is_some()
+        self.oqueue.can_produce().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -709,7 +709,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for SPSCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.can_take().is_some()
+        self.oqueue.can_produce().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -773,7 +773,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     for SPSCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.can_take().is_some()
+        self.oqueue.can_produce().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
