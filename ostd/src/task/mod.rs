@@ -14,7 +14,6 @@ use core::{
     borrow::Borrow,
     cell::{Cell, RefCell, SyncUnsafeCell},
     ops::Deref,
-    panic::RefUnwindSafe,
     ptr::NonNull,
     sync::atomic::AtomicBool,
 };
@@ -65,7 +64,7 @@ pub struct Task {
 
     schedule_info: TaskScheduleInfo,
 
-    server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe>>>>,
+    server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send>>>>,
 }
 
 impl core::fmt::Debug for Task {
@@ -100,9 +99,7 @@ impl Task {
     /// # SAFETY
     ///
     /// This is only safe if it is NOT done concurrently
-    pub unsafe fn server(
-        &self,
-    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+    pub unsafe fn server(&self) -> &RefCell<Option<Arc<dyn Server + Sync + Send + 'static>>> {
         unsafe { self.server.get() }
     }
 
@@ -362,9 +359,7 @@ impl CurrentTask {
     }
 
     /// Get a reference to the current server managing this task.
-    pub fn server(
-        &self,
-    ) -> &RefCell<Option<Arc<dyn Server + Sync + Send + RefUnwindSafe + 'static>>> {
+    pub fn server(&self) -> &RefCell<Option<Arc<dyn Server + Sync + Send + 'static>>> {
         // SAFETY: This is the current task, so we have safe access to mutate the server attached to
         // the task. See [`CurrentTask::new`].
         unsafe { self.as_ref().server() }

@@ -13,7 +13,6 @@ use alloc::string::String;
 use core::{
     any::Any,
     ops::{Add, Sub},
-    panic::{RefUnwindSafe, UnwindSafe},
 };
 
 use snafu::Snafu;
@@ -54,7 +53,7 @@ impl Sub<usize> for Cursor {
 }
 
 /// A producer handle to a queue. This allow putting values into the queue. Producers are also called producers.
-pub trait Producer<T>: Send + UnwindSafe + Blocker {
+pub trait Producer<T>: Send + Blocker {
     /// Produce a value. This sends `data` to a `Consumer` and makes it available for observation.
     fn produce(&self, data: T);
 
@@ -65,7 +64,7 @@ pub trait Producer<T>: Send + UnwindSafe + Blocker {
 
 /// A consumer handle to a oqueue. This allows taking or receiving values from the oqueue such that no other consumer will
 /// receive the same value ("exactly once to exactly one" semantics).
-pub trait Consumer<T>: Send + UnwindSafe + Blocker {
+pub trait Consumer<T>: Send + Blocker {
     /// Consume a value. This is also called receiving a message.
     ///
     /// This has "exactly once to exactly one consumer" semantics.
@@ -79,7 +78,7 @@ pub trait Consumer<T>: Send + UnwindSafe + Blocker {
 /// consumers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
 /// behind on observing elements it will cause the oqueue to block producers, so strong observers must make sure they
 /// process data promptly.
-pub trait StrongObserver<T>: Send + UnwindSafe + Blocker {
+pub trait StrongObserver<T>: Send + Blocker {
     /// Observe some data. The caller must be subscribed as a strict observer.
     ///
     /// This has "exactly once to each observer" semantics.
@@ -97,7 +96,7 @@ pub trait StrongObserver<T>: Send + UnwindSafe + Blocker {
 /// When used as a blocker this will wake if there is unobserved data in the queue. Code using this should make sure
 /// they always read up to the most recent value before attempting to block. In the simplest case this is:
 /// `observer.weak_observe(self.recent_cursor())`.
-pub trait WeakObserver<T>: Send + UnwindSafe + Blocker {
+pub trait WeakObserver<T>: Send + Blocker {
     /// Observe the data at the given index in the full history of the oqueue. If the data has already been discarded
     /// this will return `None`. This is guaranteed to always return either `None` or the actual value that existed at
     /// the given index.
@@ -160,7 +159,7 @@ pub enum OQueueAttachError {
 /// Weak observers can still observe the messages.
 ///
 /// NOTE: Due to the needs to ORPC, OQueues should generally implement `RefUnwindSafe`.
-pub trait OQueue<T>: Any + Sync + Send + RefUnwindSafe {
+pub trait OQueue<T>: Any + Sync + Send {
     /// Attach to the oqueue as a producer. An error represents either that producers are not supported or that producers
     /// are supported but all supported producers are already attached (for instance, if a second producer tries to
     /// attach to a single-producer oqueue implementation).

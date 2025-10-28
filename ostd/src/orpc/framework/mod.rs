@@ -7,7 +7,6 @@ mod integration_test;
 use alloc::{sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
-    panic::{RefUnwindSafe, UnwindSafe},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -18,7 +17,7 @@ use crate::{
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
-pub trait Server: Sync + Send + RefUnwindSafe + 'static {
+pub trait Server: Sync + Send + 'static {
     /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
     /// use it.
     ///
@@ -39,7 +38,7 @@ pub struct ServerBase {
     server_threads: Mutex<Vec<Arc<Task>>>,
     /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
     /// is available.
-    weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>,
+    weak_this: Weak<dyn Server + Sync + Send + 'static>,
 }
 
 impl ServerBase {
@@ -48,7 +47,7 @@ impl ServerBase {
     ///
     /// Create a new `ServerBase` with a cyclical reference to the server containing it.
     #[doc(hidden)]
-    pub fn new(weak_this: Weak<dyn Server + Sync + Send + RefUnwindSafe + 'static>) -> Self {
+    pub fn new(weak_this: Weak<dyn Server + Sync + Send + 'static>) -> Self {
         Self {
             aborted: Default::default(),
             server_threads: Mutex::new(Default::default()),
@@ -95,15 +94,15 @@ impl ServerBase {
     }
 
     /// Get a strong reference to `self`.
-    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>> {
+    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send>> {
         self.weak_this.upgrade()
     }
 }
 
 /// Start a new server thread. This should only be called while spawning a server.
-pub fn spawn_thread<T: Server + Send + RefUnwindSafe + 'static>(
+pub fn spawn_thread<T: Server + Send + 'static>(
     server: Arc<T>,
-    body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + UnwindSafe + 'static,
+    body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
 ) {
     TaskOptions::new({
         move || {
@@ -173,7 +172,7 @@ impl CurrentServer {
 
 /// Guard for entering a server context. When dropped, the current tasks's server is set to
 /// `self.0`.
-pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + RefUnwindSafe + Send>>);
+pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + Send>>);
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
@@ -213,13 +212,13 @@ mod test {
         thread_exited: AtomicBool,
     }
 
-    impl<F: Fn() + Sync + Send + RefUnwindSafe + 'static> Server for TestServer<F> {
+    impl<F: Fn() + Sync + Send + 'static> Server for TestServer<F> {
         fn orpc_server_base(&self) -> &ServerBase {
             &self.base
         }
     }
 
-    impl<F: Fn() + Sync + Send + RefUnwindSafe + 'static> TestServer<F> {
+    impl<F: Fn() + Sync + Send + 'static> TestServer<F> {
         fn main_thread(&self) -> Result<(), Whatever> {
             (self.f)();
             Ok(())
