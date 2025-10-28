@@ -90,10 +90,10 @@ pub fn orpc_server_macro_impl(
         impl #generics #ident {
             #[doc = "\
 Create a new instance of Self constructed using `f`. `f` takes the ORPC internal data
-for this server and should return an instance of the server.
+for this server and a weak reference to `self` and should return an instance of the server.
 For example,
 ```ignore
-let server = Self::new_with(|orpc_internal| Self {
+let server = Self::new_with(|orpc_internal, weak_this| Self {
     increment,
     atomic_count,
     orpc_internal,
@@ -101,11 +101,11 @@ let server = Self::new_with(|orpc_internal| Self {
 ```
 "]
             #vis fn new_with(
-                f: impl FnOnce(#orpc_internal_struct_ident) -> Self,
+                f: impl FnOnce(#orpc_internal_struct_ident, &::alloc::sync::Weak<Self>) -> Self,
             ) -> ::alloc::sync::Arc::<Self> {
                 let server = ::alloc::sync::Arc::<Self>::new_cyclic(|weak_this| {
                     let orpc_internal = #internal_init;
-                    f(orpc_internal)
+                    f(orpc_internal, weak_this)
                 });
                 server
             }
