@@ -208,13 +208,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     SPSCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     /// Create a new [`SPSCOQueue`] with the specified number of strong and weak observer slots.
-    pub fn new_with_waiters(
-        size: usize,
-        max_strong_observers: usize,
-        max_weak_observers: usize,
-        put_wait_queue: WaitQueue,
-        read_wait_queue: WaitQueue,
-    ) -> Arc<Self> {
+    pub fn new(size: usize, max_strong_observers: usize, max_weak_observers: usize) -> Arc<Self> {
         if !STRONG_OBSERVERS {
             assert_eq!(max_strong_observers, 0);
         }
@@ -247,24 +241,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 has_consumer: false,
                 has_producer: false,
             }),
-            put_wait_queue,
-            read_wait_queue,
+            put_wait_queue: Default::default(),
+            read_wait_queue: Default::default(),
         })
-    }
-
-    /// Create a new [`SPSCOQueue`] with a specific size and numbers of supported observers. This will use default wake
-    /// mechanisms.
-    pub fn new(size: usize, max_strong_observers: usize, max_weak_observers: usize) -> Arc<Self>
-    where
-        WaitQueue: Default,
-    {
-        Self::new_with_waiters(
-            size,
-            max_strong_observers,
-            max_weak_observers,
-            Default::default(),
-            Default::default(),
-        )
     }
 
     /// Compute the given `index % buffer.len()`. Internally, this uses a bit-mask computed during construction of the
