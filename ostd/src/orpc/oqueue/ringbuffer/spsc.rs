@@ -262,7 +262,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     /// space for data and the current tail index otherwise. This performs an acquire ordered read
     /// on the head, meaning that every slots between the returned tail and the head at time of
     /// reading can safely be written.
-    fn can_put(&self) -> Option<usize> {
+    fn can_produce(&self) -> Option<usize> {
         // Get the tail index. We can use relaxed ordering since there can't be any other thread writing this value.
         let current_tail = self.tail_index.load(Ordering::Relaxed);
         // Get the head index. This must be acquire ordering to guarantee writes into the buffer slot below cannot be
@@ -298,7 +298,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     where
         T: Send,
     {
-        let Some(current_tail) = self.can_put() else {
+        let Some(current_tail) = self.can_produce() else {
             return Some(data);
         };
         let current_tail_slot = self.mod_len(current_tail);
@@ -610,7 +610,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.can_put().is_some()
+        self.oqueue.can_produce().is_some()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
