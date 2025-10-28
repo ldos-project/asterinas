@@ -59,8 +59,14 @@ impl<T> Slot<T> {
         // SAFETY: This assumes that the self.store has be previously called
         unsafe {
             let data = ptr::read(self.value.data.get()).assume_init();
-            // TODO(aneesh): is the following necessary?
-            // (*self.value.data.get()).assume_init_drop();
+            data
+        }
+    }
+
+    unsafe fn get_maybe_uninit(&self) -> MaybeUninit<T> {
+        // SAFETY: This assumes that the self.store has be previously called
+        unsafe {
+            let data = ptr::read(self.value.data.get());
             data
         }
     }
@@ -321,7 +327,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             return None;
         }
 
-        let v = unsafe { self.slots[self.idx(index)].get() };
+        let v = unsafe { self.slots[self.idx(index)].get_maybe_uninit().assume_init() };
         // Check if the turn changed while reading. This means that the value we read above is
         // not guaranteed to be the value at `index`, so we should throw it away and return failure.
         if self.slots[self.idx(index)].turn.load(Ordering::Acquire) != sturn {
