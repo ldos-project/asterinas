@@ -691,10 +691,6 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> C
         }
         res
     }
-
-    // fn enqueue_for_take(&self, waker: Arc<crate::sync::Waker>) {
-    //     self.oqueue.read_wait_queue.enqueue(waker);
-    // }
 }
 
 /// The strong-observer handle for [`SPSCOQueue`].
@@ -734,10 +730,6 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
         }
         res
     }
-
-    // fn enqueue_for_strong_observe(&self, waker: Arc<crate::sync::Waker>) {
-    //     self.oqueue.read_wait_queue.enqueue(waker);
-    // }
 }
 
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
