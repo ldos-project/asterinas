@@ -43,17 +43,33 @@ pub(in crate::task) fn get_guard_count() -> u32 {
     PREEMPT_INFO.load() & GUARD_COUNT_MASK
 }
 
+#[track_caller]
 pub(in crate::task) fn inc_guard_count() {
     PREEMPT_INFO.add_assign(1);
+    #[cfg(debug_assertions)]
+    if get_guard_count() == 1 {
+        // SAFETY: Preemption is disabled because guard count is == 1
+        let location = unsafe { PREEMPT_OUTER_INC_LOCATION.as_mut_ptr().as_mut() }.unwrap();
+        if location.is_none() {
+            location.replace(core::panic::Location::caller());
+        }
+    }
 }
 
 pub(in crate::task) fn dec_guard_count() {
     debug_assert!(get_guard_count() > 0);
+    #[cfg(debug_assertions)]
+    if get_guard_count() == 1 {
+        // SAFETY: Preemption is disabled because guard count is == 1
+        let location = unsafe { PREEMPT_OUTER_INC_LOCATION.as_mut_ptr().as_mut() }.unwrap();
+        location.take();
+    }
     PREEMPT_INFO.sub_assign(1);
 }
 
 cpu_local_cell! {
     static PREEMPT_INFO: u32 = NEED_PREEMPT_MASK;
+    pub(crate) static PREEMPT_OUTER_INC_LOCATION: Option<&'static core::panic::Location<'static>> = None;
 }
 
 const NEED_PREEMPT_MASK: u32 = 1 << 31;
