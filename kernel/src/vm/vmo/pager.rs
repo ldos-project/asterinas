@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::mm::UFrame;
+use ostd::{mm::UFrame, orpc::orpc_trait};
 
 use crate::prelude::*;
 
@@ -13,6 +13,7 @@ use crate::prelude::*;
 /// notify the attached pager that the frame has been updated.
 /// Finally, when a frame is no longer needed (i.e., on decommits),
 /// the frame pager will also be notified.
+#[orpc_trait]
 pub trait Pager: Send + Sync {
     /// Ask the pager to provide a frame at a specified index.
     ///
