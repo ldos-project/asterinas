@@ -43,6 +43,9 @@ benchmarks = [
 for q in q_impls:
     for benchmark in benchmarks:
         for tc in thread_counts:
+            if tc == 1 and benchmark == "mixed_bench":
+                continue
+            print(f"[RUN] {q=} {benchmark=} {tc=}")
             setup(tc, q_impls[q], benchmark)
             os.system(
                 f"RELEASE=1 make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log"

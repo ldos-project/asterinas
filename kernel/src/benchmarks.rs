@@ -170,11 +170,12 @@ pub fn mixed_bench(
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
             move || {
-                for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
+                for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     producer.produce(0);
                 }
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_one();
+                println!("PRODUCER DONE");
             }
         })
         .cpu_affinity(cpu_set)
@@ -190,11 +191,12 @@ pub fn mixed_bench(
             let completed_wq = completed_wq.clone();
             let consumer = q.attach_consumer().unwrap();
             move || {
-                for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
+                for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     let _ = consumer.consume();
                 }
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_one();
+                println!("CONSUMER DONE");
             }
         })
         .cpu_affinity(cpu_set)
