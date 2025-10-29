@@ -58,7 +58,7 @@ impl Sub<usize> for Cursor {
 }
 
 /// A producer handle to a queue. This allow putting values into the queue. Producers are also called producers.
-pub trait Producer<T>: Send + UnwindSafe + Blocker {
+pub trait Producer<T>: Any + Send + UnwindSafe + Blocker {
     /// Produce a value. This sends `data` to a `Consumer` and makes it available for observation.
     fn produce(&self, data: T);
 
@@ -69,7 +69,7 @@ pub trait Producer<T>: Send + UnwindSafe + Blocker {
 
 /// A consumer handle to a oqueue. This allows taking or receiving values from the oqueue such that no other consumer will
 /// receive the same value ("exactly once to exactly one" semantics).
-pub trait Consumer<T>: Send + UnwindSafe + Blocker {
+pub trait Consumer<T>: Any + Send + UnwindSafe + Blocker {
     /// Consume a value. This is also called receiving a message.
     ///
     /// This has "exactly once to exactly one consumer" semantics.

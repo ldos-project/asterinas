@@ -340,7 +340,7 @@ impl<T: Send + UnwindSafe> Blocker for LockingProducer<T> {
     }
 }
 
-impl<T: Send + UnwindSafe> Producer<T> for LockingProducer<T> {
+impl<T: Send + UnwindSafe + 'static> Producer<T> for LockingProducer<T> {
     fn produce(&self, data: T) {
         let mut d = Some(data);
 
@@ -387,7 +387,7 @@ impl<T: UnwindSafe> Drop for LockingConsumer<T> {
     }
 }
 
-impl<T: Send + UnwindSafe> Consumer<T> for LockingConsumer<T> {
+impl<T: Send + UnwindSafe + 'static> Consumer<T> for LockingConsumer<T> {
     fn consume(&self) -> T {
         self.block_until(|| self.try_consume())
     }
@@ -423,7 +423,7 @@ impl<T: UnwindSafe> Drop for CloningLockingConsumer<T> {
     }
 }
 
-impl<T: Send + Clone + UnwindSafe> Consumer<T> for CloningLockingConsumer<T> {
+impl<T: Send + Clone + UnwindSafe + 'static> Consumer<T> for CloningLockingConsumer<T> {
     fn consume(&self) -> T {
         self.block_until(|| self.try_consume())
     }
