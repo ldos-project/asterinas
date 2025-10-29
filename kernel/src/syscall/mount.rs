@@ -3,8 +3,8 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        exfat::{ExfatFS, ExfatMountOptions},
-        ext2::Ext2,
+        // exfat::{ExfatFS, ExfatMountOptions},
+        // ext2::Ext2,
         fs_resolver::{AT_FDCWD, FsPath},
         overlayfs::OverlayFS,
         path::Dentry,
@@ -168,20 +168,20 @@ fn get_fs(
         .to_str()
         .map_err(|_| Error::with_message(Errno::ENODEV, "Invalid file system type"))?;
     match fs_type {
-        "ext2" => {
-            let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
-                Error::with_message(Errno::ENOENT, "device for ext2 does not exist"),
-            )?;
-            let ext2_fs = Ext2::open(device)?;
-            Ok(ext2_fs)
-        }
-        "exfat" => {
-            let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
-                Error::with_message(Errno::ENOENT, "device for exfat does not exist"),
-            )?;
-            let exfat_fs = ExfatFS::open(device, ExfatMountOptions::default())?;
-            Ok(exfat_fs)
-        }
+        // "ext2" => {
+        //     let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
+        //         Error::with_message(Errno::ENOENT, "device for ext2 does not exist"),
+        //     )?;
+        //     let ext2_fs = Ext2::open(device)?;
+        //     Ok(ext2_fs)
+        // }
+        // "exfat" => {
+        //     let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
+        //         Error::with_message(Errno::ENOENT, "device for exfat does not exist"),
+        //     )?;
+        //     let exfat_fs = ExfatFS::open(device, ExfatMountOptions::default())?;
+        //     Ok(exfat_fs)
+        // }
         "overlay" => {
             let overlay_fs = create_overlayfs(data.as_ref(), ctx)?;
             Ok(overlay_fs)
