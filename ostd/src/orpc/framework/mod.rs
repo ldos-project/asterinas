@@ -7,13 +7,15 @@ mod integration_test;
 use alloc::{sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
+    ops::DerefMut,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
+    cpu_local_cell,
     prelude::{Arc, Box},
     sync::Mutex,
-    task::{Task, TaskOptions, scheduler},
+    task::{Task, TaskOptions, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -161,22 +163,62 @@ impl CurrentServer {
         // TODO:PERFORMANCE:The overhead of using a strong reference here is potentially significant. Instead, we should
         // probably use unsafe to just use a pointer, assuming we can guarantee dynamic scoping and rule out leaking the
         // reference.
-        let curr_task = Task::current().unwrap();
-        let previous_server = curr_task.server().take();
-        if let Some(s) = orpc_server_base.get_ref() {
-            curr_task.server().replace(Some(s));
+        if let Some(curr_task) = Task::current() {
+            let server_cell = curr_task.server();
+            Self::new_guard(orpc_server_base, server_cell.borrow_mut().deref_mut(), None)
+        } else {
+            let _preempt_guard = disable_preempt();
+            let server_ptr = NONTASK_CPU_SERVER.as_mut_ptr();
+            let server_ref = unsafe { server_ptr.as_mut() }.unwrap();
+            Self::new_guard(orpc_server_base, server_ref, Some(server_ptr))
         }
-        CurrentServerChangeGuard(previous_server)
     }
+
+    fn new_guard(
+        orpc_server_base: &ServerBase,
+        server_cell: &mut Option<Arc<dyn Server + Send + Sync + 'static>>,
+        nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+    ) -> CurrentServerChangeGuard {
+        let previous_server = server_cell.take();
+        if let Some(s) = orpc_server_base.get_ref() {
+            *server_cell = Some(s);
+        }
+        CurrentServerChangeGuard {
+            previous_server,
+            nontask_cpu_server_cell,
+        }
+    }
+}
+
+cpu_local_cell! {
+    static NONTASK_CPU_SERVER: Option<Arc<dyn Server + Sync + Send + 'static>> = None;
 }
 
 /// Guard for entering a server context. When dropped, the current tasks's server is set to
 /// `self.0`.
-pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + Send>>);
+pub struct CurrentServerChangeGuard {
+    /// The previous server before the change this guards. This is the "pushed" server.
+    previous_server: Option<Arc<dyn Server + Sync + Send>>,
+    /// A check value used to verify that the same CPU drops the guard as created it.
+    ///
+    /// TODO(arthurp): Remove this once we can be sure non-task contexts can never migrate.
+    nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+}
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
-        Task::current().unwrap().server().replace(self.0.clone());
+        if let Some(nontask_cpu_server_cell) = self.nontask_cpu_server_cell {
+            let _preempt_guard = disable_preempt();
+            let server_ptr = NONTASK_CPU_SERVER.as_mut_ptr();
+            assert_eq!(server_ptr, nontask_cpu_server_cell);
+            let server_ref = unsafe { server_ptr.as_mut() }.unwrap();
+            *server_ref = self.previous_server.take();
+        } else {
+            Task::current()
+                .expect("entered server context with task, but leaving without task")
+                .server()
+                .replace(self.previous_server.take());
+        }
     }
 }
 
