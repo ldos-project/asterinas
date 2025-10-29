@@ -137,6 +137,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         })
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity.into()
+    }
+
     /// "turn" is similar to a generation counter.
     /// N.B.: The way rigtorp/MPMCQueue uses the term turn here is misleading. `Slot`s have a turn,
     /// but this is really the generation. The actual "turn" is either (2 * self.turn(index)) or
@@ -721,6 +725,10 @@ impl<T> Rigtorp<T> {
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
         })
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.into()
     }
 
     /// "turn" is similar to a generation counter.
