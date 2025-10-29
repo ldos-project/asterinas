@@ -161,8 +161,10 @@ pub fn mixed_bench(
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
 ) {
+    const N_THREADS_PER_TYPE: usize = (benchmark_consts::N_THREADS / 2);
+
     // Start all producers
-    for tid in 0..(benchmark_consts::N_THREADS / 2) {
+    for tid in 0..N_THREADS_PER_TYPE {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
         ThreadOptions::new({
@@ -175,7 +177,6 @@ pub fn mixed_bench(
                 }
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_one();
-                println!("PRODUCER DONE");
             }
         })
         .cpu_affinity(cpu_set)
@@ -183,9 +184,9 @@ pub fn mixed_bench(
     }
 
     // Start all consumers
-    for tid in 0..(benchmark_consts::N_THREADS / 2) {
+    for tid in 0..N_THREADS_PER_TYPE {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        cpu_set.add(ostd::cpu::CpuId::try_from(N_THREADS_PER_TYPE + tid + 1).unwrap());
         ThreadOptions::new({
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
@@ -196,7 +197,6 @@ pub fn mixed_bench(
                 }
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_one();
-                println!("CONSUMER DONE");
             }
         })
         .cpu_affinity(cpu_set)
