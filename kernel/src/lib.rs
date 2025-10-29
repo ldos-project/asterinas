@@ -28,6 +28,8 @@
 #![feature(associated_type_defaults)]
 #![register_tool(component_access_control)]
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
@@ -128,50 +130,143 @@ fn ap_init() {
         .spawn();
 }
 
-trait MyTrait: Any {
-    fn do_work(&mut self);
-}
+#[allow(dead_code)]
+mod test_bench_overhead {
+    use super::*;
+    trait MyTrait: Any {
+        fn do_work(&mut self);
+    }
 
-struct MyStruct {
-    calls: usize,
-}
+    struct MyStruct {
+        calls: usize,
+    }
 
-impl MyTrait for MyStruct {
+    impl MyTrait for MyStruct {
+        #[inline(never)]
+        fn do_work(&mut self) {
+            self.calls += 1;
+        }
+    }
+
+    struct MyStruct2 {
+        calls: usize,
+    }
+
+    impl MyTrait for MyStruct2 {
+        #[inline(never)]
+        fn do_work(&mut self) {
+            self.calls += 2;
+        }
+    }
+
     #[inline(never)]
-    fn do_work(&mut self) {
-        self.calls += 1;
+    fn bench_call_overhead(s: &mut Box<MyStruct>) {
+        let now = time::clocks::RealTimeClock::get().read_time();
+        for _ in 0..1000000 {
+            s.do_work();
+        }
+        let end = time::clocks::RealTimeClock::get().read_time();
+        println!("1M direct calls in {:?}", end - now);
     }
-}
 
-struct MyStruct2 {
-    calls: usize,
-}
-
-impl MyTrait for MyStruct2 {
     #[inline(never)]
-    fn do_work(&mut self) {
-        self.calls += 2;
+    fn bench_dyn_call_overhead(s: &mut Box<dyn MyTrait>) {
+        let now = time::clocks::RealTimeClock::get().read_time();
+        for _ in 0..1000000 {
+            s.do_work();
+        }
+        let end = time::clocks::RealTimeClock::get().read_time();
+        println!("1M dyn calls in in {:?}", end - now);
     }
 }
 
-#[inline(never)]
-fn bench_call_overhead(s: &mut Box<MyStruct>) {
-    let now = time::clocks::RealTimeClock::get().read_time();
-    for _ in 0..1000000 {
-        s.do_work();
+#[allow(dead_code)]
+fn produce_bench(
+    q: &Arc<dyn OQueue<u64>>,
+    completed: &Arc<AtomicUsize>,
+    completed_wq: &Arc<ostd::sync::WaitQueue>,
+) -> usize {
+    const N_PRODUCERS: usize = 4;
+    const N_MESSAGES: usize = 200000;
+    const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
+
+    println!("Starting producers");
+    // Start all producers
+    for tid in 0..N_PRODUCERS {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let producer = q.attach_producer().unwrap();
+            // let producer = q.clone(); //.attach_producer().unwrap();
+            move || {
+                let now = time::clocks::RealTimeClock::get().read_time();
+                for _ in 0..N_MESSAGES_PER_PRODUCER {
+                    producer.produce(0);
+                }
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[producer-{}-{:?}] sent msg in {:?}",
+                    tid,
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
     }
-    let end = time::clocks::RealTimeClock::get().read_time();
-    println!("1M direct calls in {:?}", end - now);
+    N_PRODUCERS
 }
 
-#[inline(never)]
-fn bench_dyn_call_overhead(s: &mut Box<dyn MyTrait>) {
-    let now = time::clocks::RealTimeClock::get().read_time();
-    for _ in 0..1000000 {
-        s.do_work();
+#[allow(dead_code)]
+fn consume_bench(
+    q: &Arc<dyn OQueue<u64>>,
+    completed: &Arc<AtomicUsize>,
+    completed_wq: &Arc<ostd::sync::WaitQueue>,
+) -> usize {
+    const N_CONSUMERS: usize = 4;
+    const N_MESSAGES: usize = 200000;
+    const N_MESSAGES_PER_CONSUMER: usize = N_MESSAGES / N_CONSUMERS;
+
+    println!("Populating queue");
+    let producer = q.attach_producer().unwrap();
+    for _ in 0..N_MESSAGES {
+        producer.produce(0);
     }
-    let end = time::clocks::RealTimeClock::get().read_time();
-    println!("1M dyn calls in in {:?}", end - now);
+
+    // Start all producers
+    for tid in 0..N_CONSUMERS {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                let now = time::clocks::RealTimeClock::get().read_time();
+                for _ in 0..N_MESSAGES_PER_CONSUMER {
+                    let _ = consumer.consume();
+                }
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[consumer-{}-{:?}] recv msg in {:?}",
+                    tid,
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    N_CONSUMERS
 }
 
 fn init_thread() {
@@ -203,11 +298,7 @@ fn init_thread() {
         console.disable();
     };
 
-    const N_PRODUCERS: usize = 4;
-    const N_MESSAGES: usize = 200000;
-    const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
-
-    let completed = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
     let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
 
     // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
@@ -215,87 +306,16 @@ fn init_thread() {
     let q = ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64, false, false>::new(2 << 20, 0);
     //let q = ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(1024);
 
-    println!("Starting producers");
-    // Start all producers
-    for tid in 0..N_PRODUCERS {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
-        ThreadOptions::new({
-            let completed = completed.clone();
-            let completed_wq = completed_wq.clone();
-            let producer = q.attach_producer().unwrap();
-            // let producer = q.clone(); //.attach_producer().unwrap();
-            move || {
-                let now = time::clocks::RealTimeClock::get().read_time();
-                for _ in 0..N_MESSAGES_PER_PRODUCER {
-                    producer.produce(0);
-                }
-                let end = time::clocks::RealTimeClock::get().read_time();
-                println!(
-                    "[producer-{}-{:?}] sent msg in {:?}",
-                    tid,
-                    ostd::cpu::CpuId::current_racy(),
-                    end - now
-                );
-                completed.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                completed_wq.wake_all();
-            }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
-    }
-
-    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-    cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
-
-    // Start consumer
-    println!("Starting consumer");
-    // ThreadOptions::new({
-    // let consumer = q.attach_consumer().unwrap();
-    //let consumer: Arc<dyn ostd::orpc::oqueue::ringbuffer::mpmc::Queue<u64>> =
-    //    q.attach_consumer().unwrap();
-    // let consumer_any: Box<dyn Any> = consumer;
-    // let consumer: Box<ostd::orpc::oqueue::ringbuffer::MPMCConsumer<u64, false, false>> =
-    //     consumer_any.downcast().unwrap();
-    // let consumer = q.clone(); //.attach_consumer().unwrap();
-    //move || {
-    // for _ in 0..N_MESSAGES {
-    //     consumer.consume();
-    //     // println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
-    // }
-
-    //}
-    // })
-    // .cpu_affinity(cpu_set)
-    // .spawn();
+    let q: Arc<dyn OQueue<u64>> = q;
+    // produce_bench(&q, &completed, &completed_wq);
+    let complete = consume_bench(&q, &completed, &completed_wq);
 
     println!("Waiting for benchmark to complete");
     // Exit after benchmark completes
-    completed_wq
-        .wait_until(|| (completed.load(core::sync::atomic::Ordering::Relaxed) == 2).then_some(()));
+    completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == complete).then_some(()));
 
     println!("done");
     exit_qemu(QemuExitCode::Success);
-
-    let initproc = spawn_init_process(
-        karg.get_initproc_path().unwrap(),
-        karg.get_initproc_argv().to_vec(),
-        karg.get_initproc_envp().to_vec(),
-    )
-    .expect("Run init process failed.");
-
-    // Wait till initproc become zombie.
-    while !initproc.status().is_zombie() {
-        ostd::task::halt_cpu();
-    }
-
-    // TODO: exit via qemu isa debug device should not be the only way.
-    let exit_code = if initproc.status().exit_code() == 0 {
-        QemuExitCode::Success
-    } else {
-        QemuExitCode::Failed
-    };
-    exit_qemu(exit_code);
 }
 
 fn print_banner() {
