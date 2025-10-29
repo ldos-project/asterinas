@@ -618,7 +618,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Producer<T>
+impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Producer<T>
     for SPSCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn produce(&self, data: T) {
@@ -674,7 +674,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Consumer<T>
+impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Consumer<T>
     for SPSCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn consume(&self) -> T {

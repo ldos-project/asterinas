@@ -5,7 +5,7 @@
 
 #![no_std]
 #![no_main]
-#![deny(unsafe_code)]
+// #![deny(unsafe_code)]
 #![feature(btree_cursors)]
 #![feature(btree_extract_if)]
 #![feature(debug_closure_helpers)]
@@ -34,7 +34,7 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
-    orpc::oqueue::OQueue,
+    orpc::oqueue::{Consumer, OQueue, Producer},
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -128,6 +128,52 @@ fn ap_init() {
         .spawn();
 }
 
+trait MyTrait: Any {
+    fn do_work(&mut self);
+}
+
+struct MyStruct {
+    calls: usize,
+}
+
+impl MyTrait for MyStruct {
+    #[inline(never)]
+    fn do_work(&mut self) {
+        self.calls += 1;
+    }
+}
+
+struct MyStruct2 {
+    calls: usize,
+}
+
+impl MyTrait for MyStruct2 {
+    #[inline(never)]
+    fn do_work(&mut self) {
+        self.calls += 2;
+    }
+}
+
+#[inline(never)]
+fn bench_call_overhead(s: &mut Box<MyStruct>) {
+    let now = time::clocks::RealTimeClock::get().read_time();
+    for _ in 0..1000000 {
+        s.do_work();
+    }
+    let end = time::clocks::RealTimeClock::get().read_time();
+    println!("1M direct calls in {:?}", end - now);
+}
+
+#[inline(never)]
+fn bench_dyn_call_overhead(s: &mut Box<dyn MyTrait>) {
+    let now = time::clocks::RealTimeClock::get().read_time();
+    for _ in 0..1000000 {
+        s.do_work();
+    }
+    let end = time::clocks::RealTimeClock::get().read_time();
+    println!("1M dyn calls in in {:?}", end - now);
+}
+
 fn init_thread() {
     println!("[kernel] Spawn init thread");
     // Work queue should be initialized before interrupt is enabled,
@@ -157,80 +203,76 @@ fn init_thread() {
         console.disable();
     };
 
-    const N_PRODUCERS: usize = 1;
-    const N_MESSAGES: usize = 1024;
+    const N_PRODUCERS: usize = 4;
+    const N_MESSAGES: usize = 200000;
     const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
 
-    let stats = Arc::new(Mutex::new([0u128; N_MESSAGES]));
-
-    let completed = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let completed = Arc::new(core::sync::atomic::AtomicUsize::new(0));
     let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
 
-    println!("Starting consumer");
-    // Start consumer
     // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
-    let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
-    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-    cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
-    ThreadOptions::new({
-        let completed = completed.clone();
-        let completed_wq = completed_wq.clone();
-        let consumer = q.attach_consumer().unwrap();
-        move || {
-            for _ in 0..N_MESSAGES {
-                consumer.consume();
-                println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
-            }
+    // let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
+    let q = ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64, false, false>::new(2 << 20, 0);
+    //let q = ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(1024);
 
-            completed.store(true, core::sync::atomic::Ordering::Relaxed);
-            completed_wq.wake_all();
-        }
-    })
-    .cpu_affinity(cpu_set)
-    .spawn();
     println!("Starting producers");
     // Start all producers
     for tid in 0..N_PRODUCERS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 2).unwrap());
+        cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
         ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
-            let stats = stats.clone();
+            // let producer = q.clone(); //.attach_producer().unwrap();
             move || {
-                let mut l_stats = [0u128; N_MESSAGES_PER_PRODUCER];
-                for i in 0..N_MESSAGES_PER_PRODUCER {
-                    let now = time::clocks::RealTimeClock::get().read_time();
+                let now = time::clocks::RealTimeClock::get().read_time();
+                for _ in 0..N_MESSAGES_PER_PRODUCER {
                     producer.produce(0);
-                    let end = time::clocks::RealTimeClock::get().read_time();
-                    println!(
-                        "[producer-{}-{:?}] sent msg in {:?}",
-                        tid,
-                        ostd::cpu::CpuId::current_racy(),
-                        end - now
-                    );
-                    l_stats[i] = (end - now).as_nanos();
                 }
-
-                let mut g_stats = stats.lock();
-                for i in 0..N_MESSAGES_PER_PRODUCER {
-                    g_stats[tid * N_MESSAGES_PER_PRODUCER + i] = l_stats[i];
-                }
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[producer-{}-{:?}] sent msg in {:?}",
+                    tid,
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                completed_wq.wake_all();
             }
         })
         .cpu_affinity(cpu_set)
         .spawn();
     }
 
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
+
+    // Start consumer
+    println!("Starting consumer");
+    // ThreadOptions::new({
+    // let consumer = q.attach_consumer().unwrap();
+    //let consumer: Arc<dyn ostd::orpc::oqueue::ringbuffer::mpmc::Queue<u64>> =
+    //    q.attach_consumer().unwrap();
+    // let consumer_any: Box<dyn Any> = consumer;
+    // let consumer: Box<ostd::orpc::oqueue::ringbuffer::MPMCConsumer<u64, false, false>> =
+    //     consumer_any.downcast().unwrap();
+    // let consumer = q.clone(); //.attach_consumer().unwrap();
+    //move || {
+    // for _ in 0..N_MESSAGES {
+    //     consumer.consume();
+    //     // println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
+    // }
+
+    //}
+    // })
+    // .cpu_affinity(cpu_set)
+    // .spawn();
+
     println!("Waiting for benchmark to complete");
     // Exit after benchmark completes
-    completed_wq.wait_until(|| {
-        completed
-            .load(core::sync::atomic::Ordering::Relaxed)
-            .then_some(())
-    });
-
-    let g_stats = stats.lock();
-    println!("{:?}", *g_stats);
+    completed_wq
+        .wait_until(|| (completed.load(core::sync::atomic::Ordering::Relaxed) == 2).then_some(()));
 
     println!("done");
     exit_qemu(QemuExitCode::Success);
