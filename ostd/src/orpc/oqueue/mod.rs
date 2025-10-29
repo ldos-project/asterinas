@@ -174,6 +174,20 @@ pub trait OQueue<T>: Any + Sync + Send {
     /// no more weak-observer are allowed on this specific oqueue (for example, if there are a limited number of
     /// weak-observer slots on the oqueue.).
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError>;
+
+    /// Produce a value into the OQueue directly without attaching. This is equivalent to attaching
+    /// then producing:
+    /// ```ignore
+    /// self.attach_producer()?.produce(v)
+    /// ```
+    ///
+    /// By default, this will actually create an ephemeral attachment, but some OQueues will
+    /// optimize it.
+    fn produce(&self, v: T) -> Result<(), OQueueAttachError> {
+        let producer = self.attach_producer()?;
+        producer.produce(v);
+        Ok(())
+    }
 }
 
 /// A reference to an OQueue. This must be cloned when a new reference is needed. It is `Send`, but not `Sync`. (It
