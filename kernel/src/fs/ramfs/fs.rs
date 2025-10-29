@@ -49,20 +49,17 @@ impl RamFS {
     pub fn new() -> Arc<Self> {
         Arc::new_cyclic(|weak_fs| Self {
             sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX),
-            root: Arc::new_cyclic(|weak_root| RamInode {
-                inner: Inner::new_dir(weak_root.clone(), weak_root.clone()),
-                metadata: SpinLock::new(InodeMeta::new_dir(
+            root: RamInode::new_inode_with(
+                |this| Inner::new_dir(this.clone(), this.clone()),
+                InodeMeta::new_dir(
                     InodeMode::from_bits_truncate(0o755),
                     Uid::new_root(),
                     Gid::new_root(),
-                )),
-                ino: ROOT_INO,
-                typ: InodeType::Dir,
-                this: weak_root.clone(),
-                fs: weak_fs.clone(),
-                extension: Extension::new(),
-                xattr: RamXattr::new(),
-            }),
+                ),
+                weak_fs.clone(),
+                InodeType::Dir,
+                ROOT_INO,
+            ),
             inode_allocator: AtomicU64::new(ROOT_INO + 1),
         })
     }
@@ -387,6 +384,34 @@ impl DirEntry {
 }
 
 impl RamInode {
+    fn new_inode_with(
+        inner: impl FnOnce(&Weak<RamInode>) -> Inner,
+        meta: InodeMeta,
+        fs: Weak<RamFS>,
+        typ: InodeType,
+        ino: u64,
+    ) -> Arc<RamInode> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: inner(weak_self),
+            metadata: SpinLock::new(meta),
+            ino,
+            typ,
+            this: weak_self.clone(),
+            fs,
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_inode(
+        inner: impl FnOnce(&Weak<RamInode>) -> Inner,
+        meta: InodeMeta,
+        fs: &Arc<RamFS>,
+        typ: InodeType,
+    ) -> Arc<Self> {
+        Self::new_inode_with(inner, meta, Arc::downgrade(fs), typ, fs.alloc_id())
+    }
+
     fn new_dir(
         fs: &Arc<RamFS>,
         mode: InodeMode,
@@ -394,42 +419,30 @@ impl RamInode {
         gid: Gid,
         parent: &Weak<RamInode>,
     ) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_dir(weak_self.clone(), parent.clone()),
-            metadata: SpinLock::new(InodeMeta::new_dir(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::Dir,
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        Self::new_inode(
+            |this| Inner::new_dir(this.clone(), parent.clone()),
+            InodeMeta::new_dir(mode, uid, gid),
+            fs,
+            InodeType::Dir,
+        )
     }
 
     fn new_file(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_file(weak_self.clone()),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::File,
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        Self::new_inode(
+            |this| Inner::new_file(this.clone()),
+            InodeMeta::new(mode, uid, gid),
+            fs,
+            InodeType::File,
+        )
     }
 
     fn new_symlink(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_symlink(),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::SymLink,
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        Self::new_inode(
+            |_| Inner::new_symlink(),
+            InodeMeta::new(mode, uid, gid),
+            fs,
+            InodeType::SymLink,
+        )
     }
 
     fn new_device(
@@ -439,42 +452,31 @@ impl RamInode {
         gid: Gid,
         device: Arc<dyn Device>,
     ) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_device(device.clone()),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::from(device.type_()),
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        let inode_type = InodeType::from(device.type_());
+        Self::new_inode(
+            |_| Inner::new_device(device),
+            InodeMeta::new(mode, uid, gid),
+            fs,
+            inode_type,
+        )
     }
 
     fn new_socket(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_socket(),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::Socket,
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        Self::new_inode(
+            |_| Inner::new_socket(),
+            InodeMeta::new(mode, uid, gid),
+            fs,
+            InodeType::Socket,
+        )
     }
 
     fn new_named_pipe(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_named_pipe(),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
-            ino: fs.alloc_id(),
-            typ: InodeType::NamedPipe,
-            this: weak_self.clone(),
-            fs: Arc::downgrade(fs),
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        Self::new_inode(
+            |_| Inner::new_named_pipe(),
+            InodeMeta::new(mode, uid, gid),
+            fs,
+            InodeType::NamedPipe,
+        )
     }
 
     fn find(&self, name: &str) -> Result<Arc<Self>> {
