@@ -17,6 +17,7 @@ pub const N_MESSAGES: usize = N_MESSAGES_PER_THREAD * N_THREADS;
 
 pub fn get_oq() -> Arc<dyn OQueue<u64>> {{
     let q = {queue};
+    assert!(q.capacity() >= N_MESSAGES);
     let q: Arc<dyn OQueue<u64>> = q;
     q
 }}
@@ -27,11 +28,17 @@ pub fn get_oq() -> Arc<dyn OQueue<u64>> {{
 
 
 thread_counts = [1, 2, 4, 8, 16, 32]
-q_impls = {"mpmc_oq": MPMCOQueue, "rigtorp": RigtorpQueue}
-benchmarks = ["consume_bench", "produce_bench"]
+q_impls = {
+        "mpmc_oq": MPMCOQueue,
+        "rigtorp": RigtorpQueue,
+        }
+benchmarks = [
+        "consume_bench",
+        # "produce_bench",
+]
 
 for q in q_impls:
     for benchmark in benchmarks:
         for tc in thread_counts:
             setup(tc, q_impls[q], benchmark)
-            os.system(f"RELEASE=1 make 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log")
+            os.system(f"RELEASE=1 make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log")
