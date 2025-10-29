@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 
 use ostd::orpc::oqueue::OQueue;
 
+pub use super::benchmarks::consume_bench as benchfn;
+
 pub const N_THREADS: usize = 32;
 pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
 pub const N_MESSAGES: usize = N_MESSAGES_PER_THREAD * N_THREADS;
