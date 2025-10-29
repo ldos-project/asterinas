@@ -6,12 +6,12 @@ use core::{
 };
 
 use align_ext::AlignExt;
-use aster_block::bio::BioWaiter;
 use aster_rights::Full;
 use aster_util::slot_vec::SlotVec;
 use hashbrown::HashMap;
 use ostd::{
     mm::{UntypedMem, VmIo},
+    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
@@ -23,10 +23,14 @@ use crate::{
         file_handle::FileLike,
         named_pipe::NamedPipe,
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
+        server_traits::{
+            AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable,
+            PageIOObservableOQueues, PageStore, PageStoreOQueues,
+        },
         utils::{
-            CStr256, CachePage, DirentVisitor, Extension, FallocMode, FileSystem, FsFlags, Inode,
-            InodeMode, InodeType, IoctlCmd, Metadata, MknodType, PageCache, PageCacheBackend,
-            Permission, SuperBlock, XattrName, XattrNamespace, XattrSetFlags,
+            CStr256, DirentVisitor, Extension, FallocMode, FileSystem, FsFlags, Inode, InodeMode,
+            InodeType, IoctlCmd, Metadata, MknodType, Permission, SuperBlock, XattrName,
+            XattrNamespace, XattrSetFlags,
         },
     },
     prelude::*,
@@ -89,6 +93,7 @@ impl FileSystem for RamFS {
 }
 
 /// An inode of `RamFs`.
+#[orpc_server(PageStore, PageIOObservable)]
 struct RamInode {
     /// Inode inner specifics
     inner: Inner,
@@ -111,7 +116,7 @@ struct RamInode {
 /// Inode inner specifics.
 enum Inner {
     Dir(RwLock<DirEntry>),
-    File(PageCache),
+    File(crate::fs::utils::PageCache),
     SymLink(SpinLock<String>),
     Device(Arc<dyn Device>),
     Socket,
@@ -124,7 +129,7 @@ impl Inner {
     }
 
     pub fn new_file(this: Weak<RamInode>) -> Self {
-        Self::File(PageCache::new(this).unwrap())
+        Self::File(crate::fs::utils::PageCache::new(this).unwrap())
     }
 
     pub fn new_symlink() -> Self {
@@ -150,7 +155,7 @@ impl Inner {
         }
     }
 
-    fn as_file(&self) -> Option<&PageCache> {
+    fn as_file(&self) -> Option<&crate::fs::utils::PageCache> {
         match self {
             Self::File(page_cache) => Some(page_cache),
             _ => None,
@@ -391,7 +396,7 @@ impl RamInode {
         typ: InodeType,
         ino: u64,
     ) -> Arc<RamInode> {
-        Arc::new_cyclic(|weak_self| RamInode {
+        Self::new_with(|orpc_internal, weak_self| RamInode {
             inner: inner(weak_self),
             metadata: SpinLock::new(meta),
             ino,
@@ -400,6 +405,7 @@ impl RamInode {
             fs,
             extension: Extension::new(),
             xattr: RamXattr::new(),
+            orpc_internal,
         })
     }
 
@@ -495,24 +501,40 @@ impl RamInode {
     }
 }
 
-impl PageCacheBackend for RamInode {
-    fn read_page_async(&self, _idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+#[orpc_impl]
+impl PageIOObservable for RamInode {
+    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+}
+
+#[orpc_impl]
+impl PageStore for RamInode {
+    fn read_page_async(&self, handle: AsyncReadRequest) -> Result<()> {
+        // TODO:OPTIMIZATION: Avoid the clone.
+        self.page_reads_oqueue().produce(handle.handle.clone())?;
         // Initially, any block/page in a RamFs inode contains all zeros
-        frame
+        handle
+            .handle
+            .frame
             .writer()
             .to_fallible()
-            .fill_zeros(frame.size())
+            .fill_zeros(handle.handle.frame.size())
             .unwrap();
-        Ok(BioWaiter::new())
+        handle.reply_handle.produce(handle.handle);
+        Ok(())
     }
 
-    fn write_page_async(&self, _idx: usize, _frame: &CachePage) -> Result<BioWaiter> {
-        // do nothing
-        Ok(BioWaiter::new())
+    fn write_page_async(&self, handle: AsyncWriteRequest) -> Result<()> {
+        // TODO:OPTIMIZATION: Avoid the clone.
+        self.page_writes_oqueue().produce(handle.handle.clone())?;
+        if let Some(reply_handle) = handle.reply_handle {
+            reply_handle.produce(handle.handle);
+        }
+        Ok(())
     }
 
-    fn npages(&self) -> usize {
-        self.metadata.lock().blocks
+    fn npages(&self) -> Result<usize> {
+        Ok(self.metadata.lock().blocks)
     }
 }
 
