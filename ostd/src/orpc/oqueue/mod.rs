@@ -8,6 +8,7 @@ pub mod generic_test;
 
 pub mod locking;
 pub mod registry;
+pub mod reply;
 
 use alloc::string::String;
 use core::{
