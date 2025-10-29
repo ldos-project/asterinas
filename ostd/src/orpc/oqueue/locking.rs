@@ -566,6 +566,12 @@ mod test {
     }
 
     #[ktest]
+    fn test_direct_produce_consume_locking() {
+        let oqueue = LockingQueue::new(2);
+        test_direct_produce_consume(oqueue);
+    }
+
+    #[ktest]
     fn test_send_multi_receive_blocker_locking() {
         let oqueue1 = LockingQueue::new(10);
         let oqueue2 = LockingQueue::new(10);
