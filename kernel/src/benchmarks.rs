@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+//
 use alloc::sync::Arc;
 use core::{
     any::Any,
@@ -73,7 +75,6 @@ pub fn produce_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
-            // let producer = q.clone(); //.attach_producer().unwrap();
             move || {
                 let now = time::clocks::RealTimeClock::get().read_time();
                 for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
@@ -125,7 +126,7 @@ pub fn consume_bench(
     });
     completed.store(0, Ordering::Relaxed);
 
-    // Start all producers
+    // Start all consumers
     for tid in 0..benchmark_consts::N_THREADS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
@@ -147,6 +148,53 @@ pub fn consume_bench(
                 );
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+}
+
+#[allow(dead_code)]
+pub fn mixed_bench(
+    q: &Arc<dyn OQueue<u64>>,
+    completed: &Arc<AtomicUsize>,
+    completed_wq: &Arc<ostd::sync::WaitQueue>,
+) {
+    // Start all producers
+    for tid in 0..(benchmark_consts::N_THREADS / 2) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let producer = q.attach_producer().unwrap();
+            move || {
+                for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_one();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    for tid in 0..(benchmark_consts::N_THREADS / 2) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
+                    let _ = consumer.consume();
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_one();
             }
         })
         .cpu_affinity(cpu_set)

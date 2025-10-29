@@ -162,16 +162,11 @@ fn init_thread() {
         console.disable();
     };
 
+    let now = time::clocks::RealTimeClock::get().read_time();
     let completed = Arc::new(AtomicUsize::new(0));
     let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
 
-    // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
-    // let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
-    // let q = ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64>::new(2 << 20, 0);
-    // let q = ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(2 << 20);
-
     let q: Arc<dyn OQueue<u64>> = benchmark_consts::get_oq();
-    // produce_bench(&q, &completed, &completed_wq);
     benchmark_consts::benchfn(&q, &completed, &completed_wq);
 
     println!("Waiting for benchmark to complete");
@@ -179,8 +174,9 @@ fn init_thread() {
     completed_wq.wait_until(|| {
         (completed.load(Ordering::Relaxed) == benchmark_consts::N_THREADS).then_some(())
     });
+    let end = time::clocks::RealTimeClock::get().read_time();
 
-    println!("done");
+    println!("[total] {:?}", end - now);
     exit_qemu(QemuExitCode::Success);
 }
 

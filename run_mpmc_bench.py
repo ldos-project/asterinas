@@ -6,6 +6,8 @@ RigtorpQueue = "ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(2 << 2
 
 def setup(n_threads: int, queue: str, benchmark: str):
     benchmark_consts_rs = f"""\
+// SPDX-License-Identifier: MPL-2.0
+// DO NOT EDIT BY HAND! See run_mpmc_bench.py
 use alloc::sync::Arc;
 
 use ostd::orpc::oqueue::OQueue;
@@ -29,16 +31,19 @@ pub fn get_oq() -> Arc<dyn OQueue<u64>> {{
 
 thread_counts = [1, 2, 4, 8, 16, 32]
 q_impls = {
-        "mpmc_oq": MPMCOQueue,
-        "rigtorp": RigtorpQueue,
-        }
+    "mpmc_oq": MPMCOQueue,
+    "rigtorp": RigtorpQueue,
+}
 benchmarks = [
-        "consume_bench",
-        # "produce_bench",
+    "mixed_bench",
+    # "consume_bench",
+    # "produce_bench",
 ]
 
 for q in q_impls:
     for benchmark in benchmarks:
         for tc in thread_counts:
             setup(tc, q_impls[q], benchmark)
-            os.system(f"RELEASE=1 make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log")
+            os.system(
+                f"RELEASE=1 make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log"
+            )
