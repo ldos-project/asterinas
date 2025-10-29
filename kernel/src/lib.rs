@@ -34,6 +34,7 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::oqueue::OQueue,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -138,7 +139,7 @@ fn init_thread() {
 
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
-    fs::lazy_init();
+    // fs::lazy_init();
     ipc::init();
     // driver::pci::virtio::block::block_device_test();
     let thread = ThreadOptions::new(|| {
@@ -155,6 +156,84 @@ fn init_thread() {
     if let Some(console) = FRAMEBUFFER_CONSOLE.get() {
         console.disable();
     };
+
+    const N_PRODUCERS: usize = 1;
+    const N_MESSAGES: usize = 1024;
+    const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
+
+    let stats = Arc::new(Mutex::new([0u128; N_MESSAGES]));
+
+    let completed = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+
+    println!("Starting consumer");
+    // Start consumer
+    // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
+    let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let completed_wq = completed_wq.clone();
+        let consumer = q.attach_consumer().unwrap();
+        move || {
+            for _ in 0..N_MESSAGES {
+                consumer.consume();
+                println!("[consumer-{:?}] got msg", ostd::cpu::CpuId::current_racy());
+            }
+
+            completed.store(true, core::sync::atomic::Ordering::Relaxed);
+            completed_wq.wake_all();
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+    println!("Starting producers");
+    // Start all producers
+    for tid in 0..N_PRODUCERS {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 2).unwrap());
+        ThreadOptions::new({
+            let producer = q.attach_producer().unwrap();
+            let stats = stats.clone();
+            move || {
+                let mut l_stats = [0u128; N_MESSAGES_PER_PRODUCER];
+                for i in 0..N_MESSAGES_PER_PRODUCER {
+                    let now = time::clocks::RealTimeClock::get().read_time();
+                    producer.produce(0);
+                    let end = time::clocks::RealTimeClock::get().read_time();
+                    println!(
+                        "[producer-{}-{:?}] sent msg in {:?}",
+                        tid,
+                        ostd::cpu::CpuId::current_racy(),
+                        end - now
+                    );
+                    l_stats[i] = (end - now).as_nanos();
+                }
+
+                let mut g_stats = stats.lock();
+                for i in 0..N_MESSAGES_PER_PRODUCER {
+                    g_stats[tid * N_MESSAGES_PER_PRODUCER + i] = l_stats[i];
+                }
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    println!("Waiting for benchmark to complete");
+    // Exit after benchmark completes
+    completed_wq.wait_until(|| {
+        completed
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .then_some(())
+    });
+
+    let g_stats = stats.lock();
+    println!("{:?}", *g_stats);
+
+    println!("done");
+    exit_qemu(QemuExitCode::Success);
 
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),

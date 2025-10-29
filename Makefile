@@ -162,6 +162,7 @@ ifeq ($(ENABLE_KVM), 1)
 	ifeq ($(KVM_EXISTS), 1)
 		ifeq ($(ARCH), x86_64)
 			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
+			CARGO_OSDK_COMMON_ARGS += --qemu-args="-smp 4"
 		endif
 	endif
 endif
@@ -445,15 +446,16 @@ check: initramfs format_check workspace_project_coverage_check lint_check clippy
 
 # Here we build our mount cache
 # TODO make this rule depend on the dockerfile version see #34
-${DOCKER_RUST_CACHE_LOCATION}:
-	mkdir $@
+${DOCKER_RUST_CACHE_LOCATION}/generated:
+	mkdir -p ${DOCKER_RUST_CACHE_LOCATION}
 	docker create --name dummy $(DOCKER_IMAGE_TAG)
 	docker cp dummy:/root/.cargo ${CARGO_CACHE}
 	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
 	docker rm dummy
+	touch $@
 
 .PHONY: docker
-docker: | ${DOCKER_RUST_CACHE_LOCATION}
+docker: | ${DOCKER_RUST_CACHE_LOCATION}/generated
 	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
 .PHONY: docker_start
