@@ -38,6 +38,15 @@ pub(crate) fn test_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
     assert_eq!(producer.try_produce(test_message), None);
 }
 
+pub(crate) fn test_direct_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
+    let consumer = oqueue.attach_consumer().unwrap();
+    let test_message = TestMessage { x: 42 };
+
+    oqueue.produce(test_message);
+
+    assert_eq!(consumer.consume(), test_message);
+}
+
 pub(crate) fn test_produce_strong_observe(oqueue: Arc<dyn OQueue<TestMessage>>) {
     let producer = oqueue.attach_producer().unwrap();
     let consumer = oqueue.attach_consumer().unwrap();
