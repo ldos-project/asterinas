@@ -43,6 +43,7 @@ pub(crate) fn test_direct_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>
     let test_message = TestMessage { x: 42 };
 
     oqueue.produce(test_message);
+    assert!(oqueue.try_produce(test_message).unwrap().is_some());
 
     assert_eq!(consumer.consume(), test_message);
 }
