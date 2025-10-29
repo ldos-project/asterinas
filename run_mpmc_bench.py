@@ -1,0 +1,37 @@
+import os
+
+MPMCOQueue = "ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64>::new(2 << 20, 0)"
+RigtorpQueue = "ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(2 << 20)"
+
+
+def setup(n_threads: int, queue: str, benchmark: str):
+    benchmark_consts_rs = f"""\
+use alloc::sync::Arc;
+
+use ostd::orpc::oqueue::OQueue;
+pub use super::benchmarks::{benchmark} as benchfn;
+
+pub const N_THREADS: usize = {n_threads};
+pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
+pub const N_MESSAGES: usize = N_MESSAGES_PER_THREAD * N_THREADS;
+
+pub fn get_oq() -> Arc<dyn OQueue<u64>> {{
+    let q = {queue};
+    let q: Arc<dyn OQueue<u64>> = q;
+    q
+}}
+"""
+
+    with open("kernel/src/benchmark_consts.rs", "w") as f:
+        f.write(benchmark_consts_rs)
+
+
+thread_counts = [1, 2, 4, 8, 16, 32]
+q_impls = {"mpmc_oq": MPMCOQueue, "rigtorp": RigtorpQueue}
+benchmarks = ["consume_bench", "produce_bench"]
+
+for q in q_impls:
+    for benchmark in benchmarks:
+        for tc in thread_counts:
+            setup(tc, q_impls[q], benchmark)
+            os.system(f"RELEASE=1 make 2>&1 | tee {q}_{benchmark}_throughput_{tc}.log")
