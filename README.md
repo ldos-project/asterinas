@@ -82,6 +82,10 @@ Developer docs for LDOS's Asterinas are the [advanced instructions](docs/src/ker
 - development environment setup (TODO see #46)
 - GDB setup information
 
+You may find the files in `editor-config` useful in setting up your development environment. The
+unusual build system requires some additional configuration to allow `rust-analyzer` to run
+correctly.
+
 ## The Book
 
 See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.
