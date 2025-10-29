@@ -76,6 +76,8 @@ mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
+mod benchmark_consts;
+
 #[ostd::main]
 #[controlled]
 pub fn main() {
@@ -185,14 +187,10 @@ fn produce_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
-) -> usize {
-    const N_PRODUCERS: usize = 4;
-    const N_MESSAGES: usize = 200000;
-    const N_MESSAGES_PER_PRODUCER: usize = N_MESSAGES / N_PRODUCERS;
-
+) {
     println!("Starting producers");
     // Start all producers
-    for tid in 0..N_PRODUCERS {
+    for tid in 0..benchmark_consts::N_THREADS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
         ThreadOptions::new({
@@ -202,7 +200,7 @@ fn produce_bench(
             // let producer = q.clone(); //.attach_producer().unwrap();
             move || {
                 let now = time::clocks::RealTimeClock::get().read_time();
-                for _ in 0..N_MESSAGES_PER_PRODUCER {
+                for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
                     producer.produce(0);
                 }
                 let end = time::clocks::RealTimeClock::get().read_time();
@@ -219,7 +217,6 @@ fn produce_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
-    N_PRODUCERS
 }
 
 #[allow(dead_code)]
@@ -227,19 +224,31 @@ fn consume_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
-) -> usize {
-    const N_CONSUMERS: usize = 4;
-    const N_MESSAGES: usize = 200000;
-    const N_MESSAGES_PER_CONSUMER: usize = N_MESSAGES / N_CONSUMERS;
-
+) {
     println!("Populating queue");
-    let producer = q.attach_producer().unwrap();
-    for _ in 0..N_MESSAGES {
-        producer.produce(0);
+    for tid in 0..N_THREADS {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let producer = q.attach_producer().unwrap();
+            move || {
+                for _ in 0..N_MESSAGES_PER_THREAD {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
     }
+    completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == N_THREADS).then_some(()));
+    completed.store(0, Ordering::Relaxed);
 
     // Start all producers
-    for tid in 0..N_CONSUMERS {
+    for tid in 0..N_THREAD {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
         ThreadOptions::new({
@@ -248,7 +257,7 @@ fn consume_bench(
             let consumer = q.attach_consumer().unwrap();
             move || {
                 let now = time::clocks::RealTimeClock::get().read_time();
-                for _ in 0..N_MESSAGES_PER_CONSUMER {
+                for _ in 0..N_MESSAGES_PER_THREAD {
                     let _ = consumer.consume();
                 }
                 let end = time::clocks::RealTimeClock::get().read_time();
@@ -265,8 +274,6 @@ fn consume_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
-
-    N_CONSUMERS
 }
 
 fn init_thread() {
@@ -303,16 +310,16 @@ fn init_thread() {
 
     // let q = ostd::orpc::oqueue::ringbuffer::SPSCOQueue::<u64>::new(1024, 10, 0);
     // let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(10, 0);
-    let q = ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64, false, false>::new(2 << 20, 0);
-    //let q = ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(1024);
+    // let q = ostd::orpc::oqueue::ringbuffer::MPMCOQueue::<u64>::new(2 << 20, 0);
+    // let q = ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(2 << 20);
 
-    let q: Arc<dyn OQueue<u64>> = q;
+    let q: Arc<dyn OQueue<u64>> = benchmarking_consts::get_oq();
     // produce_bench(&q, &completed, &completed_wq);
     let complete = consume_bench(&q, &completed, &completed_wq);
 
     println!("Waiting for benchmark to complete");
     // Exit after benchmark completes
-    completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == complete).then_some(()));
+    completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == benchmark_consts::N_THREADS).then_some(()));
 
     println!("done");
     exit_qemu(QemuExitCode::Success);
