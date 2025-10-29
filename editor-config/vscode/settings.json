@@ -15,19 +15,9 @@
         "-Zbuild-std=core,alloc,compiler_builtins",
         "-Zbuild-std-features=compiler-builtins-mem"
     ],
-    "rust-analyzer.showUnlinkedFileNotification": false,
-    "search.exclude": {
-        "**/*.code-search": false,
-        "**/bower_components": false,
-        "**/node_modules": false
-    },
-    "search.useIgnoreFiles": false,
-    "files.exclude": {
-        "**/.DS_Store": false,
-        "**/.git": false,
-        "**/.hg": false,
-        "**/.svn": false,
-        "**/CVS": false,
-        "**/Thumbs.db": false
-    }
+    "rust-analyzer.cargo.cfgs": [
+        "debug_assertions",
+        "miri",
+        "ktest"
+    ]
 }
