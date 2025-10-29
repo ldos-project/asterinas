@@ -435,7 +435,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity
+        self.oqueue.size() < self.oqueue.capacity.into()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -534,7 +534,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity
+        self.oqueue.size() < self.oqueue.capacity.into()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -597,10 +597,10 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> W
         // or maybe even min(self.tails.load)?
         let Cursor(i) = self.recent_cursor();
         // Return the most recent - the buffer size or zero if the buffer isn't full yet.
-        if i < self.oqueue.capacity {
+        if i < self.oqueue.capacity.into() {
             Cursor(0)
         } else {
-            Cursor(i - (self.oqueue.capacity - 1))
+            Cursor(i - (usize::from(self.oqueue.capacity) - 1))
         }
     }
 }
