@@ -47,6 +47,25 @@ impl dyn BlockDevice {
         bio.submit(self)
     }
 
+    /// Asynchronously reads contiguous blocks starting from the `bid`. When complete call
+    /// `complete_fn`.
+    pub fn read_blocks_async_with_callback(
+        &self,
+        bid: Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<(), BioEnqueueError> {
+        let bio = Bio::new_with_closure(
+            BioType::Read,
+            Sid::from(bid),
+            vec![bio_segment],
+            complete_fn,
+        );
+        // The result of the operation in handled by the callback, so we can drop the waiter.
+        let _ = bio.submit(self)?;
+        Ok(())
+    }
+
     /// Synchronously writes contiguous blocks starting from the `bid`.
     pub fn write_blocks(
         &self,
@@ -76,6 +95,25 @@ impl dyn BlockDevice {
             Some(general_complete_fn),
         );
         bio.submit(self)
+    }
+
+    /// Asynchronously writes contiguous blocks starting from the `bid`. When complete call
+    /// `complete_fn`.
+    pub fn write_blocks_async_with_callback(
+        &self,
+        bid: Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<(), BioEnqueueError> {
+        let bio = Bio::new_with_closure(
+            BioType::Write,
+            Sid::from(bid),
+            vec![bio_segment],
+            complete_fn,
+        );
+        // The result of the operation in handled by the callback, so we can drop the waiter.
+        let _ = bio.submit(self)?;
+        Ok(())
     }
 
     /// Issues a sync request

@@ -33,6 +33,8 @@ pub struct PageCache {
     manager: Arc<PageCacheManager>,
 }
 
+/// If true, use the original Asterinas built-in read-ahead policy. Otherwise. disable it. ORPC
+/// policies can run regardless of this value.
 const USE_BUILTIN_POLICY: bool = true;
 
 impl PageCache {

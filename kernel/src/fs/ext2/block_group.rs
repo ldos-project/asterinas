@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use id_alloc::IdAlloc;
-use ostd::{const_assert, mm::UntypedMem};
+use ostd::{
+    const_assert,
+    mm::UntypedMem,
+    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+};
 
 use super::{
     block_ptr::Ext2Bid,
@@ -10,6 +14,7 @@ use super::{
     prelude::*,
     super_block::SuperBlock,
 };
+use crate::fs::server_traits::{self, PageHandle, PageIOObservable, PageStore};
 
 /// Blocks are clustered into block groups in order to reduce fragmentation and minimise
 /// the amount of head seeking when reading a large amount of consecutive data.
@@ -19,6 +24,7 @@ pub(super) struct BlockGroup {
     raw_inodes_cache: PageCache,
 }
 
+#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 struct BlockGroupImpl {
     inode_table_bid: Ext2Bid,
     raw_inodes_size: usize,
@@ -74,7 +80,8 @@ impl BlockGroup {
                 }
             };
 
-            Arc::new(BlockGroupImpl {
+            BlockGroupImpl::new_with(|orpc_internal, _| BlockGroupImpl {
+                orpc_internal,
                 inode_table_bid: metadata.descriptor.inode_table_bid,
                 raw_inodes_size,
                 inner: RwMutex::new(Inner {
@@ -318,37 +325,61 @@ impl Debug for BlockGroup {
     }
 }
 
-impl PageCacheBackend for BlockGroupImpl {
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        let bid = self.inode_table_bid + idx as Ext2Bid;
+#[orpc_impl]
+impl PageIOObservable for BlockGroupImpl {
+    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+}
+
+#[orpc_impl]
+impl PageStore for BlockGroupImpl {
+    fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
+        let bid = self.inode_table_bid + req.handle.idx as Ext2Bid;
         // TODO: Should we allocate the bio segment from the pool on reads?
         // This may require an additional copy to the requested frame in the completion callback.
         let bio_segment = BioSegment::new_from_segment(
-            Segment::from(frame.clone()).into(),
+            Segment::from(req.handle.frame.clone()).into(),
             BioDirection::FromDevice,
         );
-        self.fs
-            .upgrade()
-            .unwrap()
-            .read_blocks_async(bid, bio_segment)
+
+        self.page_reads_oqueue().produce(req.handle.clone())?;
+
+        self.fs.upgrade().unwrap().read_blocks_async_with_callback(
+            bid,
+            bio_segment,
+            move |_| {
+                req.reply_handle.produce(req.handle);
+            },
+        )?;
+
+        Ok(())
     }
 
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        let bid = self.inode_table_bid + idx as Ext2Bid;
+    fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
+        let bid = self.inode_table_bid + req.handle.idx as Ext2Bid;
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         // This requires an additional copy to the pooled bio segment.
         bio_segment
             .writer()
             .unwrap()
-            .write_fallible(&mut frame.reader().to_fallible())?;
+            .write_fallible(&mut req.handle.frame.reader().to_fallible())?;
+
+        self.page_writes_oqueue().produce(req.handle.clone())?;
+
         self.fs
             .upgrade()
             .unwrap()
-            .write_blocks_async(bid, bio_segment)
+            .write_blocks_async_with_callback(bid, bio_segment, move |_| {
+                if let Some(reply_handle) = req.reply_handle {
+                    reply_handle.produce(req.handle);
+                }
+            })?;
+
+        Ok(())
     }
 
-    fn npages(&self) -> usize {
-        self.raw_inodes_size.div_ceil(BLOCK_SIZE)
+    fn npages(&self) -> Result<usize> {
+        Ok(self.raw_inodes_size.div_ceil(BLOCK_SIZE))
     }
 }
 

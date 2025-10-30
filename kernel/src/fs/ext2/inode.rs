@@ -6,8 +6,13 @@
 use alloc::{borrow::ToOwned, rc::Rc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use aster_block::bio::SubmittedBio;
 use inherit_methods_macro::inherit_methods;
-use ostd::{const_assert, mm::UntypedMem};
+use ostd::{
+    const_assert,
+    mm::UntypedMem,
+    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+};
 
 use super::{
     block_ptr::{BID_SIZE, BidPath, BlockPtrs, Ext2Bid, MAX_BLOCK_PTRS},
@@ -21,6 +26,7 @@ use super::{
 use crate::{
     fs::{
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
+        server_traits::{self, PageHandle, PageIOObservable as _},
         utils::{
             Extension, FallocMode, Inode as _, InodeMode, Metadata, Permission, XattrName,
             XattrNamespace, XattrSetFlags,
@@ -1199,15 +1205,16 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = InodeBlockManager {
+        let block_manager = InodeBlockManager::new_with(|orpc_internal, _| InodeBlockManager {
+            orpc_internal,
             nblocks: AtomicUsize::new(desc.blocks_count() as _),
             block_ptrs: RwMutex::new(desc.block_ptrs),
             indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
             fs,
-        };
+        });
         Self {
             desc,
-            block_manager: Arc::new(block_manager),
+            block_manager,
             is_freed: false,
             last_alloc_device_bid: None,
             weak_self,
@@ -1823,6 +1830,7 @@ impl InodeImpl {
 }
 
 /// Manages the inode blocks and block I/O operations.
+#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 struct InodeBlockManager {
     nblocks: AtomicUsize,
     /// Maintains a second copy of block pointers for page cache use, distinct from
@@ -1885,6 +1893,41 @@ impl InodeBlockManager {
         Ok(bio_waiter)
     }
 
+    pub fn read_block_async_with_callback(
+        &self,
+        bid: Ext2Bid,
+        frame: &CachePage,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<()> {
+        let complete_fn_shared_state =
+            Arc::new((AtomicUsize::new(0), Mutex::new(Some(complete_fn))));
+        let (response_counter, _) = complete_fn_shared_state.as_ref();
+
+        for dev_range in DeviceRangeReader::new(self, bid..bid + 1 as Ext2Bid)? {
+            let start_bid = dev_range.start as Ext2Bid;
+            // TODO: Should we allocate the bio segment from the pool on reads?
+            // This may require an additional copy to the requested frame in the completion callback.
+            let bio_segment = BioSegment::new_from_segment(
+                Segment::from(frame.clone()).into(),
+                BioDirection::FromDevice,
+            );
+            response_counter.fetch_add(1, Ordering::Relaxed);
+            self.fs()
+                .read_blocks_async_with_callback(start_bid, bio_segment, {
+                    let complete_fn_shared_state = complete_fn_shared_state.clone();
+                    move |bio| {
+                        let (response_counter, complete_fn) = complete_fn_shared_state.as_ref();
+                        let prev = response_counter.fetch_sub(1, Ordering::Relaxed);
+                        if prev == 1 {
+                            complete_fn.lock().take().unwrap()(bio)
+                        }
+                    }
+                })?;
+        }
+
+        Ok(())
+    }
+
     /// Writes one or multiple blocks from the segment start from `bid` asynchronously.
     pub fn write_blocks_async(
         &self,
@@ -1934,6 +1977,41 @@ impl InodeBlockManager {
         Ok(bio_waiter)
     }
 
+    pub fn write_block_async_with_callback(
+        &self,
+        bid: Ext2Bid,
+        frame: &CachePage,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<()> {
+        let complete_fn_shared_state =
+            Arc::new((AtomicUsize::new(0), Mutex::new(Some(complete_fn))));
+        let (response_counter, _) = complete_fn_shared_state.as_ref();
+
+        for dev_range in DeviceRangeReader::new(self, bid..bid + 1 as Ext2Bid)? {
+            let start_bid = dev_range.start as Ext2Bid;
+            let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+            // This requires an additional copy to the pooled bio segment.
+            bio_segment
+                .writer()
+                .unwrap()
+                .write_fallible(&mut frame.reader().to_fallible())?;
+
+            response_counter.fetch_add(1, Ordering::Relaxed);
+            self.fs()
+                .write_blocks_async_with_callback(start_bid, bio_segment, {
+                    let complete_fn_shared_state = complete_fn_shared_state.clone();
+                    move |bio| {
+                        let (response_counter, complete_fn) = complete_fn_shared_state.as_ref();
+                        let prev = response_counter.fetch_sub(1, Ordering::Relaxed);
+                        if prev == 1 {
+                            complete_fn.lock().take().unwrap()(bio)
+                        }
+                    }
+                })?;
+        }
+
+        Ok(())
+    }
     pub fn nblocks(&self) -> usize {
         self.nblocks.load(Ordering::Acquire)
     }
@@ -1943,19 +2021,34 @@ impl InodeBlockManager {
     }
 }
 
-impl PageCacheBackend for InodeBlockManager {
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        let bid = idx as Ext2Bid;
-        self.read_block_async(bid, frame)
+#[orpc_impl]
+impl server_traits::PageIOObservable for InodeBlockManager {
+    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+}
+
+#[orpc_impl]
+impl server_traits::PageStore for InodeBlockManager {
+    fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
+        let bid = req.handle.idx as Ext2Bid;
+        self.page_reads_oqueue().produce(req.handle.clone())?;
+        self.read_block_async_with_callback(bid, &req.handle.frame.clone(), move |b| {
+            req.reply_handle.produce(req.handle);
+        })
     }
 
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        let bid = idx as Ext2Bid;
-        self.write_block_async(bid, frame)
+    fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
+        let bid = req.handle.idx as Ext2Bid;
+        self.page_writes_oqueue().produce(req.handle.clone())?;
+        self.write_block_async_with_callback(bid, &req.handle.frame.clone(), move |b| {
+            if let Some(reply_handle) = req.reply_handle {
+                reply_handle.produce(req.handle);
+            }
+        })
     }
 
-    fn npages(&self) -> usize {
-        self.nblocks()
+    fn npages(&self) -> Result<usize> {
+        Ok(self.nblocks())
     }
 }
 
