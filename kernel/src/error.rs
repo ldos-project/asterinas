@@ -2,6 +2,8 @@
 
 use core::fmt::Display;
 
+use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
+
 /// Error number.
 ///
 /// This should match the Linux error numbers as defined in `errno.h` and similar.
@@ -344,6 +346,32 @@ impl Display for Error {
             f.write_str(msg)?;
         }
         Ok(())
+    }
+}
+
+impl From<RPCError> for Error {
+    fn from(value: RPCError) -> Self {
+        match value {
+            RPCError::Panic { message: _ } => {
+                Self::with_message(Errno::ECONNABORTED, "ORPC server panicked")
+            }
+            RPCError::ServerMissing => {
+                Self::with_message(Errno::ECONNREFUSED, "ORPC server missing")
+            }
+        }
+    }
+}
+
+impl From<OQueueAttachError> for Error {
+    fn from(value: OQueueAttachError) -> Self {
+        match value {
+            OQueueAttachError::Unsupported { .. } => {
+                Self::with_message(Errno::ECONNREFUSED, "OQueue attachment unsupported")
+            }
+            OQueueAttachError::AllocationFailed { .. } => {
+                Self::with_message(Errno::ECONNREFUSED, "OQueue attachment allocation failed")
+            }
+        }
     }
 }
 
