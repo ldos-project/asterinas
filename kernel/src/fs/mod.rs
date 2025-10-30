@@ -3,8 +3,8 @@
 pub mod device;
 pub mod devpts;
 pub mod epoll;
-// pub mod exfat;
-// pub mod ext2;
+pub mod exfat;
+pub mod ext2;
 pub mod file_handle;
 pub mod file_table;
 pub mod fs_resolver;
@@ -26,8 +26,8 @@ use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
     fs::{
-        // exfat::{ExfatFS, ExfatMountOptions},
-        // ext2::Ext2,
+        exfat::{ExfatFS, ExfatMountOptions},
+        ext2::Ext2,
         fs_resolver::FsPath,
     },
     prelude::*,
@@ -51,20 +51,20 @@ fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
 }
 
 pub fn lazy_init() {
-    // let ext2_device_name = "vext2";
-    // let exfat_device_name = "vexfat";
+    let ext2_device_name = "vext2";
+    let exfat_device_name = "vexfat";
 
-    // if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
-    //     let ext2_fs = Ext2::open(block_device_ext2).unwrap();
-    //     let target_path = FsPath::try_from("/ext2").unwrap();
-    //     println!("[kernel] Mount Ext2 fs at {:?} ", target_path);
-    //     self::rootfs::mount_fs_at(ext2_fs, &target_path).unwrap();
-    // }
+    if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
+        let ext2_fs = Ext2::open(block_device_ext2).unwrap();
+        let target_path = FsPath::try_from("/ext2").unwrap();
+        println!("[kernel] Mount Ext2 fs at {:?} ", target_path);
+        self::rootfs::mount_fs_at(ext2_fs, &target_path).unwrap();
+    }
 
-    // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
-    //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
-    //     let target_path = FsPath::try_from("/exfat").unwrap();
-    //     println!("[kernel] Mount ExFat fs at {:?} ", target_path);
-    //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
-    // }
+    if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
+        let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
+        let target_path = FsPath::try_from("/exfat").unwrap();
+        println!("[kernel] Mount ExFat fs at {:?} ", target_path);
+        self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
+    }
 }
