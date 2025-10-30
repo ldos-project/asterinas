@@ -7,16 +7,15 @@ use alloc::{
     borrow::ToOwned,
     boxed::Box,
     sync::{Arc, Weak},
-    vec::Vec,
 };
 use core::{
     any::type_name,
-    cell::{Cell, UnsafeCell},
+    cell::Cell,
     marker::PhantomData,
     mem::MaybeUninit,
-    panic::{RefUnwindSafe, UnwindSafe},
+    num::NonZero,
     ptr,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crossbeam_utils::CachePadded;
@@ -81,7 +80,7 @@ const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
 
 pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
     this: Weak<Self>,
-    capacity: usize,
+    capacity: NonZero<usize>,
     max_strong_observers: usize,
     slots: Box<[Slot<T>]>,
     /// The index at which elements are produced to.
@@ -118,10 +117,12 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 {
     pub fn new(size: usize, max_strong_observers: usize) -> Arc<Self> {
         assert!(size.is_power_of_two());
+        assert!(size > 0);
 
         Arc::new_cyclic(|this| MPMCOQueue {
             this: this.clone(),
-            capacity: size,
+            // SAFETY: we check that size > 0 above
+            capacity: unsafe { NonZero::new_unchecked(size) },
             max_strong_observers,
             slots: (0..(size + 1)).map(|_| Slot::new()).collect(),
             head: CachePadded::new(AtomicUsize::new(0)),
@@ -163,6 +164,11 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
+    fn get_slot(&self, position: usize) -> &Slot<T> {
+        // SAFETY: self.idx(position) ensures that the index for `slots` is in bounds
+        unsafe { self.slots.get_unchecked(self.idx(position)) }
+    }
+
     fn produce(&self, data: T)
     where
         T: Send,
@@ -170,7 +176,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // Update the head position so that other producers can also write
         let head = self.fetch_head_for_produce();
         // Get the slot we will be writing to
-        let slot = &self.slots[self.idx(head)];
+        let slot = &self.get_slot(head);
         // Wait until the generation count matches the turn. Note that we need an even turn because
         // we are writing.
         while self.turn(head) * 2 != slot.turn.load(Ordering::Acquire) {}
@@ -190,7 +196,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // set, we will just fail below during one of the compare_exchange calls below.
         loop {
             // Get the slot that we'd like to write to
-            let slot = &self.slots[self.idx(head)];
+            let slot = &self.get_slot(head);
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
             if (self.turn(head) * 2) == slot.turn.load(Ordering::Acquire) {
@@ -225,7 +231,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let mut tail = self.tail.load(Ordering::Acquire);
         loop {
             // Get the slot we intend to read from
-            let slot = &self.slots[self.idx(tail)];
+            let slot = &self.get_slot(tail);
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another consumer has beaten this thread to the slot.
             if (self.turn(tail) * 2 + 1) == slot.turn.load(Ordering::Acquire) {
@@ -235,7 +241,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     .is_ok()
                 {
                     // We have exclusive consume access to the slot
-                    let v = unsafe { self.slots[self.idx(tail)].get() };
+                    let v = unsafe { self.get_slot(tail).get() };
                     let mut prev_slot_turn = slot.turn.load(Ordering::Acquire);
                     let next_slot_turn = self.turn(tail) * 2 + 2;
 
@@ -281,7 +287,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // on first read (see attach_strong_observer), what if when the index is consumed (turn >
         // id), we reset the pointer to head and retry?
         let tail = self.strong_observer_tails[observer_id].load(Ordering::Acquire);
-        let slot = &self.slots[self.idx(tail)];
+        let slot = &self.get_slot(tail);
         if (self.turn(tail) * 2 + 1) != slot.turn.load(Ordering::Acquire) {
             return None;
         }
@@ -345,7 +351,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
 
         // Get the current turn of the slot.
-        let sturn = self.slots[self.idx(index)].turn.load(Ordering::Relaxed);
+        let sturn = self.get_slot(index).turn.load(Ordering::Relaxed);
         // If the turn of the slot is either (the current turn and readable), or (the next turn and
         // writable (but not yet written)), then attempt to read.
         let expected_turn = 2 * self.turn(index) + 1;
@@ -353,10 +359,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             return None;
         }
 
-        let v = unsafe { self.slots[self.idx(index)].get_maybe_uninit().assume_init() };
+        let v = unsafe { self.get_slot(index).get_maybe_uninit().assume_init() };
         // Check if the turn changed while reading. This means that the value we read above is
         // not guaranteed to be the value at `index`, so we should throw it away and return failure.
-        if self.slots[self.idx(index)].turn.load(Ordering::Acquire) != sturn {
+        if self.get_slot(index).turn.load(Ordering::Acquire) != sturn {
             return None;
         }
         return Some(v);
@@ -385,7 +391,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity
+        self.oqueue.size() < self.oqueue.capacity.into()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -484,7 +490,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity
+        self.oqueue.size() < self.oqueue.capacity.into()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
@@ -547,10 +553,10 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> W
         // or maybe even min(self.tails.load)?
         let Cursor(i) = self.recent_cursor();
         // Return the most recent - the buffer size or zero if the buffer isn't full yet.
-        if i < self.oqueue.capacity {
+        if i < self.oqueue.capacity.into() {
             Cursor(0)
         } else {
-            Cursor(i - (self.oqueue.capacity - 1))
+            Cursor(i - (usize::from(self.oqueue.capacity) - 1))
         }
     }
 }
