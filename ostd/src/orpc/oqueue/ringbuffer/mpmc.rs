@@ -255,6 +255,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn try_observe(&self, observer_id: usize) -> Option<T> {
+        // TODO(aneesh) instead of just reading the index @ this observer which is hard to guarantee
+        // on first read (see attach_strong_observer), what if when the index is consumed (turn >
+        // id), we reset the pointer to head and retry?
         let tail = self.strong_observer_tails[observer_id].load(Ordering::Acquire);
         let slot = &self.slots[self.idx(tail)];
         if (self.turn(tail) * 2 + 1) != slot.turn.load(Ordering::Acquire) {
