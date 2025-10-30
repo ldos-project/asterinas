@@ -73,6 +73,12 @@ impl<T> Slot<T> {
     }
 }
 
+/// The sentinel value acts as a lock. When [`MPMCOQueue::head`] is this value or larger, writes to
+/// the queue will be blocked. This is used to ensure that StrongObservers can be initialized with a
+/// valid index and avoid races where the StrongObserver index is a value that has already been
+/// consumed.
+const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
+
 pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
     this: Weak<Self>,
     capacity: usize,
@@ -144,12 +150,25 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         index % self.capacity
     }
 
+    /// Get the current head value, spinning if it is MPMCOQUEUE_HEAD_SENTINEL. i.e. this method
+    /// will never return MPMCOQUEUE_HEAD_SENTINEL.
+    fn fetch_head_for_produce(&self) -> usize {
+        loop {
+            let head = self.head.fetch_add(1, Ordering::Acquire);
+            if head >= MPMCOQUEUE_HEAD_SENTINEL {
+                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {}
+            } else {
+                break head;
+            }
+        }
+    }
+
     fn produce(&self, data: T)
     where
         T: Send,
     {
         // Update the head position so that other producers can also write
-        let head = self.head.fetch_add(1, Ordering::Acquire);
+        let head = self.fetch_head_for_produce();
         // Get the slot we will be writing to
         let slot = &self.slots[self.idx(head)];
         // Wait until the generation count matches the turn. Note that we need an even turn because
@@ -165,7 +184,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         T: Send,
     {
         // Get the current head position
-        let mut head = self.head.load(Ordering::Acquire);
+        let mut head = self.fetch_head_for_produce();
+
+        // We don't need to check for sentinels from this point onwards. If the sentinal value is
+        // set, we will just fail below during one of the compare_exchange calls below.
         loop {
             // Get the slot that we'd like to write to
             let slot = &self.slots[self.idx(head)];
@@ -299,7 +321,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn size(&self) -> usize {
-        self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
+        self.head.load(Ordering::Relaxed) as usize - self.tail.load(Ordering::Relaxed)
     }
 
     fn empty(&self) -> bool {
@@ -316,7 +338,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     where
         T: Copy + Send,
     {
-        let mut index = cursor.index();
+        let index = cursor.index();
 
         if self.empty() && self.head.load(Ordering::Relaxed) == 0 {
             return None;
@@ -326,7 +348,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let sturn = self.slots[self.idx(index)].turn.load(Ordering::Relaxed);
         // If the turn of the slot is either (the current turn and readable), or (the next turn and
         // writable (but not yet written)), then attempt to read.
-        let expected_turn = (2 * self.turn(index) + 1);
+        let expected_turn = 2 * self.turn(index) + 1;
         if sturn != expected_turn && sturn != (expected_turn + 1) {
             return None;
         }
@@ -335,7 +357,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // Check if the turn changed while reading. This means that the value we read above is
         // not guaranteed to be the value at `index`, so we should throw it away and return failure.
         if self.slots[self.idx(index)].turn.load(Ordering::Acquire) != sturn {
-            index += 1;
             return None;
         }
         return Some(v);
@@ -561,20 +582,13 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         } else {
             let observer_id = *n_observers;
             (*n_observers) += 1;
-            loop {
-                let obs_pos = self.head.load(Ordering::Acquire);
-                // This MUST happen before we read the tail value
-                self.strong_observer_tails[observer_id].store(obs_pos, Ordering::Release);
-                // If the tail value indicates that the position for this observer has been
-                // consumed, try again
-                let tail = self.tail.load(Ordering::Relaxed);
-                if tail < obs_pos {
-                    break;
-                } else if self.head.load(Ordering::Acquire) == obs_pos {
-                    // the queue is empty
-                    break;
-                }
-            }
+            // By swapping with the sentinel here we lock all producers, preventing the value at
+            // `obs_pos` from being written to.
+            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
+            // After this store, consumers cannot consume past the index `obs_pos`.
+            self.strong_observer_tails[observer_id].store(obs_pos, Ordering::SeqCst);
+            // Allow producers to write to this position again
+            self.head.swap(obs_pos, Ordering::Release);
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {
