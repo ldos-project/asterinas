@@ -13,6 +13,7 @@ use core::{
     any::type_name,
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
+    mem::MaybeUninit,
     panic::{RefUnwindSafe, UnwindSafe},
     ptr,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -556,9 +557,21 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             })
         } else {
             let observer_id = *n_observers;
-            self.strong_observer_tails[observer_id]
-                .store(self.tail.load(Ordering::Relaxed), Ordering::Relaxed);
             (*n_observers) += 1;
+            loop {
+                let obs_pos = self.head.load(Ordering::Acquire);
+                // This MUST happen before we read the tail value
+                self.strong_observer_tails[observer_id].store(obs_pos, Ordering::Release);
+                // If the tail value indicates that the position for this observer has been
+                // consumed, try again
+                let tail = self.tail.load(Ordering::Relaxed);
+                if tail < obs_pos {
+                    break;
+                } else if self.head.load(Ordering::Acquire) == obs_pos {
+                    // the queue is empty
+                    break;
+                }
+            }
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {
