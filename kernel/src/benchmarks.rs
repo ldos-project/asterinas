@@ -65,7 +65,7 @@ pub fn produce_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
-) {
+) -> usize {
     println!("Starting producers");
     // Start all producers
     for tid in 0..benchmark_consts::N_THREADS {
@@ -94,6 +94,8 @@ pub fn produce_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
+
+    benchmark_consts::N_THREADS
 }
 
 #[allow(dead_code)]
@@ -101,7 +103,7 @@ pub fn consume_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
-) {
+) -> usize {
     println!("Populating queue");
     for tid in 0..benchmark_consts::N_THREADS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -153,6 +155,7 @@ pub fn consume_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
+    benchmark_consts::N_THREADS
 }
 
 #[allow(dead_code)]
@@ -160,8 +163,8 @@ pub fn mixed_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
     completed_wq: &Arc<ostd::sync::WaitQueue>,
-) {
-    const N_THREADS_PER_TYPE: usize = (benchmark_consts::N_THREADS / 2);
+) -> usize {
+    const N_THREADS_PER_TYPE: usize = benchmark_consts::N_THREADS / 2;
 
     // Start all producers
     for tid in 0..N_THREADS_PER_TYPE {
@@ -202,4 +205,75 @@ pub fn mixed_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
+    benchmark_consts::N_THREADS
+}
+
+#[allow(dead_code)]
+pub fn weak_obs_bench(
+    q: &Arc<dyn OQueue<u64>>,
+    completed: &Arc<AtomicUsize>,
+    completed_wq: &Arc<ostd::sync::WaitQueue>,
+) -> usize {
+    const N_THREADS_PER_TYPE: usize = benchmark_consts::N_THREADS / 2;
+
+    // Start all producers
+    for tid in 0..N_THREADS_PER_TYPE {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let producer = q.attach_producer().unwrap();
+            move || {
+                for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_one();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(N_THREADS_PER_TYPE + 2).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let completed_wq = completed_wq.clone();
+        let consumer = q.attach_consumer().unwrap();
+        move || {
+            for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                let _ = consumer.consume();
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+            completed_wq.wake_one();
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    // Start all consumers
+    for tid in 0..(N_THREADS_PER_TYPE - 1) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(N_THREADS_PER_TYPE + tid + 2).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let weak_observer = q.attach_weak_observer().unwrap();
+            move || {
+                let mut cnt = 0;
+                for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                    cnt += weak_observer.weak_observe_recent(1).len();
+                }
+                crate::prelude::println!("weak observed {} values", cnt);
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_one();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+    benchmark_consts::N_THREADS
 }
