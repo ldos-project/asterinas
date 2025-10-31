@@ -67,15 +67,19 @@ pub fn produce_bench(
     completed_wq: &Arc<ostd::sync::WaitQueue>,
 ) -> usize {
     println!("Starting producers");
+    let barrier = Arc::new(AtomicUsize::new(benchmark_consts::N_THREADS));
     // Start all producers
     for tid in 0..benchmark_consts::N_THREADS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
         ThreadOptions::new({
+            let barrier = barrier.clone();
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
             move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
                 let now = time::clocks::RealTimeClock::get().read_time();
                 for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
                     producer.produce(0);
@@ -128,6 +132,7 @@ pub fn consume_bench(
     });
     completed.store(0, Ordering::Relaxed);
 
+    let barrier = Arc::new(AtomicUsize::new(benchmark_consts::N_THREADS));
     // Start all consumers
     for tid in 0..benchmark_consts::N_THREADS {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -136,7 +141,10 @@ pub fn consume_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let consumer = q.attach_consumer().unwrap();
+            let barrier = barrier.clone();
             move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
                 let now = time::clocks::RealTimeClock::get().read_time();
                 for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
                     let _ = consumer.consume();
@@ -166,6 +174,8 @@ pub fn mixed_bench(
 ) -> usize {
     const N_THREADS_PER_TYPE: usize = benchmark_consts::N_THREADS / 2;
 
+    let barrier = Arc::new(AtomicUsize::new(benchmark_consts::N_THREADS));
+
     // Start all producers
     for tid in 0..N_THREADS_PER_TYPE {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -174,7 +184,10 @@ pub fn mixed_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
+            let barrier = barrier.clone();
             move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
                 for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     producer.produce(0);
                 }
@@ -194,7 +207,10 @@ pub fn mixed_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let consumer = q.attach_consumer().unwrap();
+            let barrier = barrier.clone();
             move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
                 for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     let _ = consumer.consume();
                 }
@@ -216,6 +232,8 @@ pub fn weak_obs_bench(
 ) -> usize {
     const N_THREADS_PER_TYPE: usize = benchmark_consts::N_THREADS / 2;
 
+    let barrier = Arc::new(AtomicUsize::new(benchmark_consts::N_THREADS));
+
     // Start all producers
     for tid in 0..N_THREADS_PER_TYPE {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -224,7 +242,10 @@ pub fn weak_obs_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
+            let barrier = barrier.clone();
             move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
                 for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     producer.produce(0);
                 }
@@ -243,7 +264,10 @@ pub fn weak_obs_bench(
         let completed = completed.clone();
         let completed_wq = completed_wq.clone();
         let consumer = q.attach_consumer().unwrap();
+        let barrier = barrier.clone();
         move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
             for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                 let _ = consumer.consume();
             }
@@ -255,10 +279,13 @@ pub fn weak_obs_bench(
     .spawn();
 
     // Start all consumers
-    for tid in 0..(N_THREADS_PER_TYPE - 1) {
+    for tid in 0..(N_THREADS_PER_TYPE.wrapping_sub(1)) {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(N_THREADS_PER_TYPE + tid + 2).unwrap());
+        let barrier = barrier.clone();
         ThreadOptions::new({
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let weak_observer = q.attach_weak_observer().unwrap();
