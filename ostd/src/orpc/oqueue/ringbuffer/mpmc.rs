@@ -4,6 +4,7 @@
 //! modification is the support for strong/weak observers.
 
 use alloc::{
+    alloc::{alloc, handle_alloc_error},
     borrow::ToOwned,
     boxed::Box,
     sync::{Arc, Weak},
@@ -111,10 +112,37 @@ unsafe impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Send
 {
 }
 
+fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
+    let elem_size = core::mem::size_of::<Slot<T>>();
+    let total_size = elem_size * len;
+
+    // Layout with page alignment
+    let layout = core::alloc::Layout::from_size_align(total_size, 4096).expect("invalid layout");
+
+    unsafe {
+        let ptr = alloc(layout);
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+
+        // Initialize each element
+        let mut current = ptr as *mut Slot<T>;
+        for _ in 0..len {
+            ptr::write(current, Slot::new());
+            current = current.add(1);
+        }
+
+        // Turn into a Box<[Slot<T>]> safely
+        let slice = core::slice::from_raw_parts_mut(ptr as *mut Slot<T>, len);
+        Box::from_raw(slice)
+    }
+}
+
 // MPMC OQueue implementation based on rigtorp
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
+    ///
     pub fn new(size: usize, max_strong_observers: usize) -> Arc<Self> {
         assert!(size.is_power_of_two());
         assert!(size > 0);
@@ -124,7 +152,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             // SAFETY: we check that size > 0 above
             capacity: unsafe { NonZero::new_unchecked(size) },
             max_strong_observers,
-            slots: (0..(size + 1)).map(|_| Slot::new()).collect(),
+            slots: allocate_page_aligned_array(size),
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
             strong_observer_tails: (0..max_strong_observers)
