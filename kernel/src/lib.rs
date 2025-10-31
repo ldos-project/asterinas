@@ -162,21 +162,21 @@ fn init_thread() {
         console.disable();
     };
 
-    let now = time::clocks::RealTimeClock::get().read_time();
-    let completed = Arc::new(AtomicUsize::new(0));
-    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+    for _ in 0..10 {
+        let now = time::clocks::RealTimeClock::get().read_time();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
 
-    let q: Arc<dyn OQueue<u64>> = benchmark_consts::get_oq();
-    let n_threads = benchmark_consts::benchfn(&q, &completed, &completed_wq);
+        let q: Arc<dyn OQueue<u64>> = benchmark_consts::get_oq();
+        let n_threads = benchmark_consts::benchfn(&q, &completed, &completed_wq);
 
-    println!("Waiting for benchmark to complete");
-    // Exit after benchmark completes
-    completed_wq.wait_until(|| {
-        (completed.load(Ordering::Relaxed) == n_threads).then_some(())
-    });
-    let end = time::clocks::RealTimeClock::get().read_time();
+        println!("Waiting for benchmark to complete");
+        // Exit after benchmark completes
+        completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == n_threads).then_some(()));
+        let end = time::clocks::RealTimeClock::get().read_time();
 
-    println!("[total] {:?}", end - now);
+        println!("[total] {:?}", end - now);
+    }
     exit_qemu(QemuExitCode::Success);
 }
 
