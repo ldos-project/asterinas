@@ -34,8 +34,6 @@ impl<T> Element<T> {
 
 impl<T: Default> Default for Element<T> {
     fn default() -> Self {
-        Self {
-            data: UnsafeCell::new(MaybeUninit::uninit()),
-        }
+        Self::uninit()
     }
 }
