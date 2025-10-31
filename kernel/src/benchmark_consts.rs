@@ -6,10 +6,10 @@ use super::*;
 
 pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
 pub struct BenchConsts {
-    n_threads: usize,
-    n_messages: usize,
-    q_type: bool,
-    benchmark: String,
+    pub n_threads: usize,
+    pub n_messages: usize,
+    pub q_type: bool,
+    pub benchmark: String,
 }
 impl BenchConsts {
     pub fn new(karg: &super::KCmdlineArg) -> Self {
@@ -58,7 +58,7 @@ impl BenchConsts {
 
             let completed = Arc::new(AtomicUsize::new(0));
             let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
-            let n_threads = benchmark(&q, &completed, &completed_wq);
+            let n_threads = benchmark(self, &q, &completed, &completed_wq);
 
             println!("Waiting for benchmark to complete");
             // Exit after benchmark completes
