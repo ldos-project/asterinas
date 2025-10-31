@@ -271,7 +271,7 @@ run: initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
-	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
+	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) ${BENCH_EXTRA_ARGS}
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), syscall)
 	@tail --lines 100 qemu.log | grep -q "^All syscall tests passed." \
