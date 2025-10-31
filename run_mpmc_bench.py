@@ -38,13 +38,16 @@ benchmarks = [
     "mixed_bench",
     "consume_bench",
     "produce_bench",
+    "weak_obs_bench",
 ]
 
 for i in range(10):
     for q in q_impls:
         for benchmark in benchmarks:
             for tc in thread_counts:
-                if tc == 1 and benchmark == "mixed_bench":
+                if tc < 2 and benchmark == "mixed_bench":
+                    continue
+                if tc < 4 and benchmark == "weak_obs_bench":
                     continue
                 print(f"[RUN] {q=} {benchmark=} {tc=}")
                 setup(tc, q_impls[q], benchmark)

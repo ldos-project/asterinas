@@ -167,12 +167,12 @@ fn init_thread() {
     let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
 
     let q: Arc<dyn OQueue<u64>> = benchmark_consts::get_oq();
-    benchmark_consts::benchfn(&q, &completed, &completed_wq);
+    let n_threads = benchmark_consts::benchfn(&q, &completed, &completed_wq);
 
     println!("Waiting for benchmark to complete");
     // Exit after benchmark completes
     completed_wq.wait_until(|| {
-        (completed.load(Ordering::Relaxed) == benchmark_consts::N_THREADS).then_some(())
+        (completed.load(Ordering::Relaxed) == n_threads).then_some(())
     });
     let end = time::clocks::RealTimeClock::get().read_time();
 
