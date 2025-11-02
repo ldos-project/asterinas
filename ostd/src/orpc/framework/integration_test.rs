@@ -77,7 +77,7 @@ mod test {
             increment: usize,
             atomic_count: AtomicUsize,
         ) -> Result<Arc<ServerAState>, Whatever> {
-            let server = Self::new_with(|orpc_internal, _| Self {
+            let server = Self::new_with("", |orpc_internal, _| Self {
                 increment,
                 atomic_count,
                 orpc_internal,
@@ -211,7 +211,7 @@ mod test {
 
         impl TestServer {
             fn spawn() -> Result<Arc<Self>, Whatever> {
-                let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
+                let server = Self::new_with("", |orpc_internal, _| Self { orpc_internal });
                 Ok(server)
             }
         }
@@ -248,7 +248,7 @@ mod test {
 
         impl TestServer {
             fn spawn() -> Result<Arc<Self>, Whatever> {
-                let server = Self::new_with(|orpc_internal, _| Self {
+                let server = Self::new_with("", |orpc_internal, _| Self {
                     x: Default::default(),
                     orpc_internal,
                 });

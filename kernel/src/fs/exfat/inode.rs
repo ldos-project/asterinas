@@ -3,7 +3,7 @@
 #![expect(dead_code)]
 #![expect(unused_variables)]
 
-use alloc::string::String;
+use alloc::{borrow::ToOwned, format, string::String};
 use core::{cmp::Ordering, time::Duration};
 
 pub(super) use align_ext::AlignExt;
@@ -15,7 +15,7 @@ use aster_block::{
 use aster_rights::Full;
 use ostd::{
     mm::{Segment, VmIo},
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{framework::Server as _, oqueue::OQueueRef, orpc_impl, orpc_server},
 };
 
 use super::{
@@ -142,8 +142,8 @@ struct ExfatInodeInner {
 
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
-    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -160,7 +160,7 @@ impl server_traits::PageStore for ExfatInode {
             BioDirection::FromDevice,
         );
         // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce(req.handle.clone())?;
+        self.page_reads_oqueue().produce(req.handle.idx)?;
         inner.fs().block_device().read_blocks_async_with_callback(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
@@ -184,7 +184,7 @@ impl server_traits::PageStore for ExfatInode {
             BioDirection::ToDevice,
         );
         // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce(req.handle.clone())?;
+        self.page_writes_oqueue().produce(req.handle.idx)?;
         inner.fs().block_device().write_blocks_async_with_callback(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
@@ -679,31 +679,41 @@ impl ExfatInode {
 
         let name = ExfatName::new();
 
-        let inode = Self::new_with(|orpc_internal, weak_self| ExfatInode {
-            orpc_internal,
-            inner: RwMutex::new(ExfatInodeInner {
-                ino: EXFAT_ROOT_INO,
-                dentry_set_position: ExfatChainPosition::default(),
-                dentry_set_size: 0,
-                dentry_entry: 0,
-                inode_type,
-                attr,
-                start_chain: root_chain,
-                size,
-                size_allocated: size,
-                atime: ctime,
-                mtime: ctime,
-                ctime,
-                num_sub_inodes: 0,
-                num_sub_dirs: 0,
-                name,
-                is_deleted: false,
-                parent_hash: 0,
-                fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
-            }),
-            extension: Extension::new(),
-        });
+        let inode = Self::new_with(
+            format!(
+                "{}.{}",
+                fs_weak
+                    .upgrade()
+                    .map(|v| v.path().to_owned())
+                    .unwrap_or_default(),
+                root_chain.cluster_id()
+            ),
+            |orpc_internal, weak_self| ExfatInode {
+                orpc_internal,
+                inner: RwMutex::new(ExfatInodeInner {
+                    ino: EXFAT_ROOT_INO,
+                    dentry_set_position: ExfatChainPosition::default(),
+                    dentry_set_size: 0,
+                    dentry_entry: 0,
+                    inode_type,
+                    attr,
+                    start_chain: root_chain,
+                    size,
+                    size_allocated: size,
+                    atime: ctime,
+                    mtime: ctime,
+                    ctime,
+                    num_sub_inodes: 0,
+                    num_sub_dirs: 0,
+                    name,
+                    is_deleted: false,
+                    parent_hash: 0,
+                    fs: fs_weak,
+                    page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                }),
+                extension: Extension::new(),
+            },
+        );
 
         let inner = inode.inner.upread();
         let fs = inner.fs();
@@ -790,31 +800,34 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = Self::new_with(|orpc_internal, weak_self| ExfatInode {
-            orpc_internal,
-            inner: RwMutex::new(ExfatInodeInner {
-                ino,
-                dentry_set_position,
-                dentry_set_size,
-                dentry_entry,
-                inode_type,
-                attr,
-                start_chain,
-                size,
-                size_allocated,
-                atime,
-                mtime,
-                ctime,
-                num_sub_inodes: 0,
-                num_sub_dirs: 0,
-                name,
-                is_deleted: false,
-                parent_hash,
-                fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
-            }),
-            extension: Extension::new(),
-        });
+        let inode = Self::new_with(
+            format!("{}.{}", fs.path(), name),
+            |orpc_internal, weak_self| ExfatInode {
+                orpc_internal,
+                inner: RwMutex::new(ExfatInodeInner {
+                    ino,
+                    dentry_set_position,
+                    dentry_set_size,
+                    dentry_entry,
+                    inode_type,
+                    attr,
+                    start_chain,
+                    size,
+                    size_allocated,
+                    atime,
+                    mtime,
+                    ctime,
+                    num_sub_inodes: 0,
+                    num_sub_dirs: 0,
+                    name,
+                    is_deleted: false,
+                    parent_hash,
+                    fs: fs_weak,
+                    page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                }),
+                extension: Extension::new(),
+            },
+        );
 
         if matches!(inode_type, InodeType::Dir) {
             let inner = inode.inner.upread();

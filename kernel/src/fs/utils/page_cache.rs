@@ -2,6 +2,7 @@
 
 #![expect(dead_code)]
 
+use alloc::borrow::ToOwned;
 use core::{
     iter,
     ops::{DerefMut, Range},
@@ -12,17 +13,19 @@ use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
 use ostd::{
-    impl_untyped_frame_meta_for,
-    mm::{Frame, FrameAllocOptions, UFrame, VmIo},
-    orpc::{
+    impl_untyped_frame_meta_for, kcmdline::get_kcmdline_arg, mm::{Frame, FrameAllocOptions, UFrame, VmIo}, orpc::{
+        framework::{Server, shutdown::Shutdown},
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
         orpc_impl, orpc_server,
-    },
+    }
 };
 
 use crate::{
-    fs::server_traits::{
-        self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
+    fs::{
+        server_traits::{
+            self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
+        },
+        utils::page_prefetch::ReadaheadPrefetcher,
     },
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
@@ -33,14 +36,21 @@ pub struct PageCache {
     manager: Arc<PageCacheManager>,
 }
 
-/// If true, use the original Asterinas built-in read-ahead policy. Otherwise. disable it. ORPC
-/// policies can run regardless of this value.
-const USE_BUILTIN_POLICY: bool = true;
+/// If true, use the original Asterinas built-in read-ahead policy. Otherwise, disable it. ORPC
+/// policies can run regardless of this value. This uses the kernel command-line argument
+/// "prefetchpolicy".
+fn get_prefetch_policy() -> bool {
+    match get_kcmdline_arg("prefetchpolicy") {
+        Some(value) => value == "enabled",
+        None => false, // Default to disabled if the argument is not present
+    }
+}
 
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
+    #[track_caller]
     pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
-        let manager = PageCacheManager::spawn(backend, USE_BUILTIN_POLICY);
+        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -52,8 +62,9 @@ impl PageCache {
     ///
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
+    #[track_caller]
     pub fn with_capacity(capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
-        let manager = PageCacheManager::spawn(backend, USE_BUILTIN_POLICY);
+        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -337,14 +348,16 @@ impl OutstandingRequests {
         &mut self,
         pages: &mut LruCache<usize, CachePage>,
         backend: &Arc<dyn PageStore>,
-        async_idx: usize,
+        idx: usize,
     ) -> Result<()> {
+        println!("Async read: {idx}");
+
         let async_page = CachePage::alloc_uninit()?;
-        pages.put(async_idx, async_page.clone());
+        pages.put(idx, async_page.clone());
         let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair()?;
         backend.read_page_async(AsyncReadRequest {
             handle: PageHandle {
-                idx: async_idx,
+                idx,
                 frame: async_page,
             },
             reply_handle: reply_producer,
@@ -368,6 +381,22 @@ impl OutstandingRequests {
 struct PageCacheManager {
     backend: Weak<dyn PageStore>,
     inner: Mutex<PageCacheManagerInner>,
+    prefetcher: Mutex<Option<Arc<dyn Shutdown>>>,
+}
+
+impl Drop for PageCacheManager {
+    fn drop(&mut self) {
+        println!(
+            "Dropping {:?}",
+            self.prefetcher
+                .lock()
+                .as_ref()
+                .map(|s| s.orpc_server_base())
+        );
+        if let Some(prefetcher) = self.prefetcher.lock().take() {
+            let _ = prefetcher.shutdown();
+        }
+    }
 }
 
 /// The synchronized state of [`PageCacheManager`]. This holds the state and behavior that is
@@ -424,8 +453,13 @@ impl PageCacheManagerInner {
 }
 
 impl PageCacheManager {
-    pub fn spawn(backend: Weak<dyn PageStore>, use_builtin_policy: bool) -> Arc<Self> {
-        Self::new_with(|orpc_internal, _| Self {
+    #[track_caller]
+    pub fn spawn(backend: Weak<dyn PageStore>, use_builtin_policy: bool) -> Result<Arc<Self>> {
+        let path = backend
+            .upgrade()
+            .map(|v| v.path().to_owned())
+            .unwrap_or_else(|| "uninit".to_owned());
+        let server = Self::new_with(path, |orpc_internal, _| Self {
             backend,
             inner: Mutex::new(PageCacheManagerInner {
                 // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
@@ -437,8 +471,15 @@ impl PageCacheManager {
                 },
                 outstanding_requests: Default::default(),
             }),
+            prefetcher: Default::default(),
             orpc_internal,
-        })
+        });
+
+        if !use_builtin_policy {
+            let prefetcher = ReadaheadPrefetcher::spawn(server.clone())?;
+            server.prefetcher.lock().replace(prefetcher);
+        }
+        Ok(server)
     }
 
     pub fn backend(&self) -> Result<Arc<dyn PageStore>> {
@@ -529,6 +570,7 @@ impl PageCacheManager {
         } else {
             // Cond 3.
             // Conducts the sync read operation.
+            println!("Cache miss: {idx}");
             let page = if idx < backend.npages()? {
                 let page = CachePage::alloc_uninit()?;
                 backend.read_page(PageHandle {
@@ -548,10 +590,8 @@ impl PageCacheManager {
         // Invoke built-in policy.
         inner.maybe_builtin_prefetch(idx, &backend)?;
 
-        self.page_reads_oqueue().produce(PageHandle {
-            idx,
-            frame: frame.clone(),
-        })?;
+        println!("read {}", idx);
+        self.page_reads_oqueue().produce(idx)?;
 
         Ok(frame.into())
     }
@@ -571,8 +611,8 @@ impl Debug for PageCacheManager {
 
 #[orpc_impl]
 impl PageIOObservable for PageCacheManager {
-    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
-    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
 }
 
 // XXX: How is Pager handled in ORPC? Do I also need to refactor that?
@@ -585,10 +625,7 @@ impl Pager for PageCacheManager {
     fn update_page(&self, idx: usize) -> Result<()> {
         let pages = &mut self.inner.lock().pages;
         if let Some(page) = pages.get_mut(&idx) {
-            self.page_writes_oqueue().produce(PageHandle {
-                idx,
-                frame: page.clone(),
-            })?;
+            self.page_writes_oqueue().produce(idx)?;
             page.store_state(PageState::Dirty);
         } else {
             warn!("The page {} is not in page cache", idx);

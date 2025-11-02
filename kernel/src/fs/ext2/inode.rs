@@ -3,7 +3,7 @@
 #![expect(dead_code)]
 #![expect(unused_variables)]
 
-use alloc::{borrow::ToOwned, rc::Rc};
+use alloc::{borrow::ToOwned, format, rc::Rc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::bio::SubmittedBio;
@@ -1205,13 +1205,22 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = InodeBlockManager::new_with(|orpc_internal, _| InodeBlockManager {
-            orpc_internal,
-            nblocks: AtomicUsize::new(desc.blocks_count() as _),
-            block_ptrs: RwMutex::new(desc.block_ptrs),
-            indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
-            fs,
-        });
+        let block_manager = InodeBlockManager::new_with(
+            format!(
+                "{}.{}",
+                fs.upgrade()
+                    .map(|fs| fs.block_device().metadata().name)
+                    .unwrap_or_default(),
+                "inode"
+            ),
+            |orpc_internal, _| InodeBlockManager {
+                orpc_internal,
+                nblocks: AtomicUsize::new(desc.blocks_count() as _),
+                block_ptrs: RwMutex::new(desc.block_ptrs),
+                indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
+                fs,
+            },
+        );
         Self {
             desc,
             block_manager,
@@ -2023,15 +2032,15 @@ impl InodeBlockManager {
 
 #[orpc_impl]
 impl server_traits::PageIOObservable for InodeBlockManager {
-    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
-    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
 impl server_traits::PageStore for InodeBlockManager {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_reads_oqueue().produce(req.handle.clone())?;
+        self.page_reads_oqueue().produce(req.handle.idx)?;
         self.read_block_async_with_callback(bid, &req.handle.frame.clone(), move |b| {
             req.reply_handle.produce(req.handle);
         })
@@ -2039,7 +2048,7 @@ impl server_traits::PageStore for InodeBlockManager {
 
     fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_writes_oqueue().produce(req.handle.clone())?;
+        self.page_writes_oqueue().produce(req.handle.idx)?;
         self.write_block_async_with_callback(bid, &req.handle.frame.clone(), move |b| {
             if let Some(reply_handle) = req.reply_handle {
                 reply_handle.produce(req.handle);

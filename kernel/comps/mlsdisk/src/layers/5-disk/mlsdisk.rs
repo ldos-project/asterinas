@@ -15,6 +15,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use alloc::borrow::ToOwned;
 use ostd::mm::VmIo;
 use ostd_pod::Pod;
 
@@ -159,6 +160,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
         use aster_block::{BLOCK_SIZE, BlockDeviceMeta, SECTOR_SIZE};
 
         BlockDeviceMeta {
+            name: "mls".to_owned(),
             max_nr_segments_per_bio: usize::MAX,
             nr_sectors: (BLOCK_SIZE / SECTOR_SIZE) * self.total_blocks(),
         }

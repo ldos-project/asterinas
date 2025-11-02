@@ -21,6 +21,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(trait_upcasting)]
 #![feature(unbounded_shifts)]
+#![feature(closure_track_caller)]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
@@ -55,6 +56,7 @@ pub mod timer;
 pub mod trap;
 pub mod user;
 pub mod util;
+pub mod kcmdline;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

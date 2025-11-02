@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::format;
+
+use aster_virtio::device::block;
 use id_alloc::IdAlloc;
 use ostd::{
     const_assert,
@@ -80,16 +83,19 @@ impl BlockGroup {
                 }
             };
 
-            BlockGroupImpl::new_with(|orpc_internal, _| BlockGroupImpl {
-                orpc_internal,
-                inode_table_bid: metadata.descriptor.inode_table_bid,
-                raw_inodes_size,
-                inner: RwMutex::new(Inner {
-                    metadata: Dirty::new(metadata),
-                    inode_cache: BTreeMap::new(),
-                }),
-                fs,
-            })
+            BlockGroupImpl::new_with(
+                format!("{}.{}", block_device.metadata().name, idx),
+                |orpc_internal, _| BlockGroupImpl {
+                    orpc_internal,
+                    inode_table_bid: metadata.descriptor.inode_table_bid,
+                    raw_inodes_size,
+                    inner: RwMutex::new(Inner {
+                        metadata: Dirty::new(metadata),
+                        inode_cache: BTreeMap::new(),
+                    }),
+                    fs,
+                },
+            )
         };
 
         let raw_inodes_cache =
@@ -327,8 +333,8 @@ impl Debug for BlockGroup {
 
 #[orpc_impl]
 impl PageIOObservable for BlockGroupImpl {
-    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
-    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -342,7 +348,7 @@ impl PageStore for BlockGroupImpl {
             BioDirection::FromDevice,
         );
 
-        self.page_reads_oqueue().produce(req.handle.clone())?;
+        self.page_reads_oqueue().produce(req.handle.idx)?;
 
         self.fs.upgrade().unwrap().read_blocks_async_with_callback(
             bid,
@@ -364,7 +370,7 @@ impl PageStore for BlockGroupImpl {
             .unwrap()
             .write_fallible(&mut req.handle.frame.reader().to_fallible())?;
 
-        self.page_writes_oqueue().produce(req.handle.clone())?;
+        self.page_writes_oqueue().produce(req.handle.idx)?;
 
         self.fs
             .upgrade()

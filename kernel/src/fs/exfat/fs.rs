@@ -73,7 +73,9 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = Self::new_with(|orpc_internal, weak_self| ExfatFS {
+        let exfat_fs = Self::new_with(
+            block_device.metadata().name,
+            |orpc_internal, weak_self| ExfatFS {
             orpc_internal,
             block_device,
             super_block,
@@ -377,8 +379,8 @@ impl ExfatFS {
 
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatFS {
-    fn page_reads_oqueue(&self) -> OQueueRef<PageHandle>;
-    fn page_writes_oqueue(&self) -> OQueueRef<PageHandle>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -393,7 +395,7 @@ impl PageStore for ExfatFS {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce(req.handle.clone())?;
+        self.page_reads_oqueue().produce(req.handle.idx)?;
 
         self.block_device.read_blocks_async_with_callback(
             BlockId::new(req.handle.idx as u64),
@@ -416,7 +418,7 @@ impl PageStore for ExfatFS {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce(req.handle.clone())?;
+        self.page_writes_oqueue().produce(req.handle.idx)?;
 
         self.block_device.write_blocks_async_with_callback(
             BlockId::new(req.handle.idx as u64),

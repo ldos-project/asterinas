@@ -26,6 +26,7 @@
 #![feature(trait_alias)]
 #![feature(trait_upcasting)]
 #![feature(associated_type_defaults)]
+#![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
@@ -72,6 +73,7 @@ pub mod time;
 mod util;
 pub(crate) mod vdso;
 pub mod vm;
+pub(crate) mod orpc_utils;
 
 #[ostd::main]
 #[controlled]

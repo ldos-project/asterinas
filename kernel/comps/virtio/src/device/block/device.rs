@@ -96,6 +96,7 @@ impl aster_block::BlockDevice for BlockDevice {
 
     fn metadata(&self) -> BlockDeviceMeta {
         BlockDeviceMeta {
+            name: self.device.request_device_id(),
             max_nr_segments_per_bio: self.queue.max_nr_segments_per_bio(),
             nr_sectors: self.device.config_manager.capacity_sectors(),
         }

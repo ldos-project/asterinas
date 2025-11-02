@@ -127,6 +127,7 @@ impl BlockSet for RawDisk {
 
 #[cfg(ktest)]
 mod test {
+    use alloc::borrow::ToOwned;
     use aster_block::{
         BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
         bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
@@ -183,6 +184,7 @@ mod test {
 
         fn metadata(&self) -> BlockDeviceMeta {
             BlockDeviceMeta {
+                name: "ram".to_owned(),
                 max_nr_segments_per_bio: usize::MAX,
                 nr_sectors: self.blocks.size() / SECTOR_SIZE,
             }

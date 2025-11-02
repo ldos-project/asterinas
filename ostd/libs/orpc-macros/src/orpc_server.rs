@@ -80,7 +80,7 @@ pub fn orpc_server_macro_impl(
     // The initializer for the ORPC internals struct for this server type
     let internal_init = quote! {
         #orpc_internal_struct_ident {
-            base: ::ostd::orpc::framework::ServerBase::new(weak_this.clone()),
+            base: ::ostd::orpc::framework::ServerBase::new(weak_this.clone(), path, spawn_location),
             #(#oqueue_field_names: ::core::default::Default::default()),*
         }
     };
@@ -100,13 +100,17 @@ let server = Self::new_with(|orpc_internal, weak_this| Self {
 })?;
 ```
 "]
+            #[track_caller]
             #vis fn new_with(
+                path: impl ::core::borrow::Borrow<::ostd::orpc::framework::Path>,
                 f: impl FnOnce(#orpc_internal_struct_ident, &::alloc::sync::Weak<Self>) -> Self,
             ) -> ::alloc::sync::Arc::<Self> {
-                let server = ::alloc::sync::Arc::<Self>::new_cyclic(|weak_this| {
-                    let orpc_internal = #internal_init;
-                    f(orpc_internal, weak_this)
-                });
+                let spawn_location = ::snafu::Location::default();
+                let server = ::alloc::sync::Arc::<Self>::new_cyclic(
+                    |weak_this| {
+                        let orpc_internal = #internal_init;
+                        f(orpc_internal, weak_this)
+                    });
                 server
             }
         }

@@ -3,20 +3,39 @@
 pub mod errors;
 
 mod integration_test;
+pub mod shutdown;
 
-use alloc::{sync::Weak, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, sync::Weak, vec::Vec};
 use core::{
-    fmt::Display,
+    borrow::Borrow,
+    fmt::{Debug, Display},
     ops::DerefMut,
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use snafu::Location;
+
 use crate::{
-    cpu_local_cell,
+    cpu_local_cell, early_println,
+    orpc::framework::errors::RPCError,
     prelude::{Arc, Box},
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
 };
+
+pub type Path = str;
+
+pub trait WeakServerExt {
+    fn path(&self) -> Result<String, RPCError>;
+}
+
+impl<T: Server> WeakServerExt for Weak<T> {
+    fn path(&self) -> Result<String, RPCError> {
+        self.upgrade()
+            .map(|s| s.path().to_owned())
+            .ok_or(RPCError::ServerMissing)
+    }
+}
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
 pub trait Server: Sync + Send + 'static {
@@ -27,11 +46,22 @@ pub trait Server: Sync + Send + 'static {
     /// class pointer of this server.
     #[doc(hidden)]
     fn orpc_server_base(&self) -> &ServerBase;
+
+    /// Get the path of this server.
+    fn path(&self) -> &Path {
+        &self.orpc_server_base().path
+    }
 }
 
 /// The information and state included in every server. The name comes form it being the "base class" state for all
 /// servers.
 pub struct ServerBase {
+    /// The location where the spawn function for the server was called. This is best effort in the
+    /// sense that capturing the currect location is rather fragile. But it may still be useful for
+    /// debugging.
+    spawn_location: Location,
+    /// The path of this server.
+    path: String,
     /// True if the server has been aborted. This usually occurs because a method or thread panicked.
     aborted: AtomicBool,
     /// The servers threads. These are used to verify that all treads have reported themselves as attached and to wake
@@ -43,14 +73,38 @@ pub struct ServerBase {
     weak_this: Weak<dyn Server + Sync + Send + 'static>,
 }
 
+impl Debug for ServerBase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ServerBase")
+            .field("spawn_location", &self.spawn_location)
+            .field("path", &self.path)
+            .field("aborted", &self.aborted)
+            .field("server_threads", &self.server_threads)
+            .finish()
+    }
+}
+
+impl Display for ServerBase {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} ({})", self.path, self.spawn_location)
+    }
+}
+
 impl ServerBase {
     /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
     /// code must use it.
     ///
     /// Create a new `ServerBase` with a cyclical reference to the server containing it.
     #[doc(hidden)]
-    pub fn new(weak_this: Weak<dyn Server + Sync + Send + 'static>) -> Self {
+    #[track_caller]
+    pub fn new(
+        weak_this: Weak<dyn Server + Sync + Send + 'static>,
+        path: impl Borrow<Path>,
+        spawn_location: Location,
+    ) -> Self {
         Self {
+            spawn_location,
+            path: path.borrow().to_owned(),
             aborted: Default::default(),
             server_threads: Mutex::new(Default::default()),
             weak_this,
@@ -106,8 +160,10 @@ pub fn spawn_thread<T: Server + Send + 'static>(
     server: Arc<T>,
     body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
 ) {
+    early_println!("Starting thread");
     TaskOptions::new({
         move || {
+            early_println!("Starting thread");
             if let Result::Err(payload) = crate::panic::catch_unwind({
                 let server = server.clone();
                 move || {
@@ -224,6 +280,7 @@ impl Drop for CurrentServerChangeGuard {
 
 #[cfg(ktest)]
 mod test {
+    use alloc::borrow::ToOwned;
     use core::{
         sync::atomic::{AtomicBool, Ordering},
         time::Duration,
@@ -299,7 +356,7 @@ mod test {
         fn spawn(f: F) -> Result<Arc<Self>, Whatever> {
             let server = Arc::<Self>::new_cyclic(|weak_this| Self {
                 f,
-                base: ServerBase::new(weak_this.clone()),
+                base: ServerBase::new(weak_this.clone(), "", Location::default()),
                 thread_exited: AtomicBool::new(false),
             });
             Self::orpc_start_threads(&server)?;

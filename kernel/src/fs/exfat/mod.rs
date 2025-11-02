@@ -15,7 +15,7 @@ pub use inode::ExfatInode;
 
 #[cfg(ktest)]
 mod test {
-    use alloc::fmt::Debug;
+    use alloc::{borrow::ToOwned, fmt::Debug};
 
     use aster_block::{
         BlockDevice, BlockDeviceMeta,
@@ -102,6 +102,7 @@ mod test {
 
         fn metadata(&self) -> BlockDeviceMeta {
             BlockDeviceMeta {
+                name: "exfat_ram".to_owned(),
                 max_nr_segments_per_bio: usize::MAX,
                 nr_sectors: self.sectors_count(),
             }
