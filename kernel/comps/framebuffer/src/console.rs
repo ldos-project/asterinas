@@ -94,7 +94,7 @@ impl FramebufferConsole {
         let mut state = self.state.lock();
         if x > state.backend.width() - FONT_WIDTH || y > state.backend.height() - FONT_HEIGHT {
             log::warn!("Invalid framebuffer cursor position: ({}, {})", x, y);
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         state.x_pos = x;
         state.y_pos = y;

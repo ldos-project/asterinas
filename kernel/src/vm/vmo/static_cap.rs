@@ -128,7 +128,10 @@ impl<R: TRights> Vmo<TRightSet<R>> {
 impl<R: TRights> VmIo for Vmo<TRightSet<R>> {
     fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()> {
         self.check_rights(Rights::READ)?;
-        self.0.read(offset, writer)?;
+        match self.0.read(offset, writer) {
+            Ok(it) => it,
+            Err(err) => return Err(err.into()),
+        };
         Ok(())
     }
 

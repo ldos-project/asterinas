@@ -2,6 +2,7 @@
 
 use core::{fmt::Display, panic::Location};
 
+use aster_logger::println;
 use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
 
 /// Error number.
@@ -406,7 +407,11 @@ impl From<ostd::Error> for Error {
         match ostd_error {
             ostd::Error::AccessDenied => Error::new(Errno::EFAULT),
             ostd::Error::NoMemory => Error::new(Errno::ENOMEM),
-            ostd::Error::InvalidArgs => Error::new(Errno::EINVAL),
+            ostd::Error::InvalidArgs { location } => Error {
+                errno: Errno::EINVAL,
+                msg: None,
+                location,
+            },
             ostd::Error::IoError => Error::new(Errno::EIO),
             ostd::Error::NotEnoughResources => Error::new(Errno::EBUSY),
             ostd::Error::PageFault => Error::new(Errno::EFAULT),
@@ -525,15 +530,20 @@ impl From<cpio_decoder::error::Error> for Error {
 }
 
 impl From<Error> for ostd::Error {
+    #[track_caller]
     fn from(error: Error) -> Self {
         match error.errno {
             Errno::EACCES => ostd::Error::AccessDenied,
             Errno::EIO => ostd::Error::IoError,
             Errno::ENOMEM => ostd::Error::NoMemory,
             Errno::EFAULT => ostd::Error::PageFault,
-            Errno::EINVAL => ostd::Error::InvalidArgs,
+            Errno::EINVAL => ostd::Error::InvalidArgs {
+                location: error.location,
+            },
             Errno::EBUSY => ostd::Error::NotEnoughResources,
-            _ => ostd::Error::InvalidArgs,
+            _ => ostd::Error::InvalidArgs {
+                location: error.location,
+            },
         }
     }
 }

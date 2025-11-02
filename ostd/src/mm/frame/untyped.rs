@@ -100,7 +100,7 @@ macro_rules! impl_untyped_for {
                 // Do bound check with potential integer overflow in mind
                 let max_offset = offset.checked_add(read_len).ok_or(Error::Overflow)?;
                 if max_offset > self.size() {
-                    return Err(Error::InvalidArgs);
+                    return Err(Error::invalid_args());
                 }
                 let len = self
                     .reader()
@@ -116,7 +116,7 @@ macro_rules! impl_untyped_for {
                 // Do bound check with potential integer overflow in mind
                 let max_offset = offset.checked_add(write_len).ok_or(Error::Overflow)?;
                 if max_offset > self.size() {
-                    return Err(Error::InvalidArgs);
+                    return Err(Error::invalid_args());
                 }
                 let len = self
                     .writer()

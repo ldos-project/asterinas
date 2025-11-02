@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::fmt::Display;
+use core::{fmt::Display, panic::Location};
 
 use crate::mm::page_table::PageTableError;
 
@@ -8,7 +8,9 @@ use crate::mm::page_table::PageTableError;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Error {
     /// Invalid arguments provided.
-    InvalidArgs,
+    InvalidArgs {
+        location: &'static Location<'static>,
+    },
     /// Insufficient memory available.
     NoMemory,
     /// Page fault occurred.
@@ -27,10 +29,21 @@ pub enum Error {
     KVirtAreaAllocError,
 }
 
+impl Error {
+    #[track_caller]
+    pub fn invalid_args() -> Self {
+        Self::InvalidArgs {
+            location: Location::caller(),
+        }
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidArgs => write!(f, "invalid arguments provided"),
+            Self::InvalidArgs { location } => {
+                write!(f, "invalid arguments provided ({})", location)
+            }
             Self::NoMemory => write!(f, "insufficient memory available"),
             Self::PageFault => write!(f, "page fault occurred"),
             Self::AccessDenied => write!(f, "access to a resource is denied"),

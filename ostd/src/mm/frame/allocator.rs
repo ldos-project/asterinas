@@ -93,7 +93,7 @@ impl FrameAllocOptions {
         F: FnMut(Paddr) -> M,
     {
         if nframes == 0 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         let layout = Layout::from_size_align(nframes * PAGE_SIZE, PAGE_SIZE).unwrap();
         let segment = get_global_frame_allocator()

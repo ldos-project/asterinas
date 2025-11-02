@@ -73,7 +73,7 @@ impl IoApic {
     /// the entry is in use.
     pub(super) fn enable(&mut self, index: u8, irq: &IrqLine) -> Result<()> {
         if index >= self.access.max_redirection_entry() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let value = self.access.read(Self::TABLE_REG_BASE + 2 * index);
@@ -118,7 +118,7 @@ impl IoApic {
     /// the entry is not in use.
     pub(super) fn disable(&mut self, index: u8) -> Result<()> {
         if index >= self.access.max_redirection_entry() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         // "Bit 16: Interrupt Mask - R/W. When this bit is 1, the interrupt signal is masked."

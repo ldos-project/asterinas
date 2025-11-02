@@ -175,7 +175,7 @@ impl VmIo for IoMem {
             .checked_sub(offset)
             .is_none_or(|remain| remain < writer.avail())
         {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         self.reader()
@@ -194,7 +194,7 @@ impl VmIo for IoMem {
             .checked_sub(offset)
             .is_none_or(|remain| remain < reader.remain())
         {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         self.writer()

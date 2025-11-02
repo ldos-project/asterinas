@@ -45,7 +45,7 @@ impl MmioCommonDevice {
     /// Reads the version number from the I/O memory.
     pub fn read_version(&self) -> Result<VirtioMmioVersion> {
         VirtioMmioVersion::try_from(mmio_read_version(&self.io_mem)?)
-            .map_err(|_| Error::InvalidArgs)
+            .map_err(|_| Error::invalid_args())
     }
 
     /// Returns an immutable reference to the IRQ line.
