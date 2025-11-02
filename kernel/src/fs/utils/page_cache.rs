@@ -13,7 +13,7 @@ use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
 use ostd::{
-    impl_untyped_frame_meta_for, kcmdline::get_kcmdline_arg, mm::{Frame, FrameAllocOptions, UFrame, VmIo}, orpc::{
+    error_result, impl_untyped_frame_meta_for, kcmdline::get_kcmdline_arg, mm::{Frame, FrameAllocOptions, UFrame, VmIo}, orpc::{
         framework::{Server, shutdown::Shutdown},
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
         orpc_impl, orpc_server,
@@ -143,7 +143,7 @@ impl Drop for PageCache {
         // The default destruction procedure exhibits slow performance.
         // In contrast, resizing the `VMO` to zero greatly accelerates the process.
         // We need to find out the underlying cause of this discrepancy.
-        let _ = self.pages.resize(0);
+        error_result!(self.pages.resize(0));
     }
 }
 
@@ -394,7 +394,7 @@ impl Drop for PageCacheManager {
                 .map(|s| s.orpc_server_base())
         );
         if let Some(prefetcher) = self.prefetcher.lock().take() {
-            let _ = prefetcher.shutdown();
+            error_result!(prefetcher.shutdown());
         }
     }
 }
