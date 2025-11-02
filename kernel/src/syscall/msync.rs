@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use align_ext::AlignExt;
+use ostd::ignore_err;
 
 use super::SyscallReturn;
 use crate::{prelude::*, thread::kernel_thread::ThreadOptions};
@@ -85,7 +86,7 @@ pub fn sys_msync(start: Vaddr, size: usize, flag: i32, ctx: &Context) -> Result<
     let task_fn = move || {
         for inode in inodes {
             // TODO: Sync a necessary range instead of syncing the whole inode.
-            let _ = inode.sync_all();
+            ignore_err!(inode.sync_all());
         }
     };
 

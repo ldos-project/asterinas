@@ -66,6 +66,8 @@ fn create_n_tty(index: u32, device: Arc<dyn AnyConsoleDevice>) -> Arc<Tty<Consol
         move |mut reader: VmReader<Infallible>| {
             let mut chs = vec![0u8; reader.remain()];
             reader.read(&mut VmWriter::from(chs.as_mut_slice()));
+            // This drops the error without reporting, because attempting to report a tty error by
+            // printing could cause problems.
             let _ = tty.push_input(chs.as_slice());
         },
     )));
