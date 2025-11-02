@@ -4,6 +4,7 @@
 
 pub mod callback_counter;
 mod either;
+pub mod log_result;
 mod macros;
 pub(crate) mod ops;
 pub(crate) mod range_alloc;
