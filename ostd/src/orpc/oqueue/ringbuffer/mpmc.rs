@@ -752,7 +752,7 @@ impl<T> Rigtorp<T> {
         Arc::new_cyclic(|this| Rigtorp {
             this: this.clone(),
             capacity: NonZero::new(size).unwrap(),
-            slots: (0..(size + 1)).map(|_| Slot::new()).collect(),
+            slots: allocate_page_aligned_array(size),
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
         })
