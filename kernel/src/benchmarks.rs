@@ -233,8 +233,6 @@ pub fn weak_obs_bench(
 ) -> usize {
     let n_threads_per_type: usize = bc.n_threads / 2;
 
-    let barrier = Arc::new(AtomicUsize::new(bc.n_threads));
-
     // Start all producers
     for tid in 0..n_threads_per_type {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -243,10 +241,7 @@ pub fn weak_obs_bench(
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let producer = q.attach_producer().unwrap();
-            let barrier = barrier.clone();
             move || {
-                barrier.fetch_sub(1, Ordering::Acquire);
-                while barrier.load(Ordering::Relaxed) > 0 {}
                 for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     producer.produce(0);
                 }
@@ -265,10 +260,7 @@ pub fn weak_obs_bench(
         let completed = completed.clone();
         let completed_wq = completed_wq.clone();
         let consumer = q.attach_consumer().unwrap();
-        let barrier = barrier.clone();
         move || {
-            barrier.fetch_sub(1, Ordering::Acquire);
-            while barrier.load(Ordering::Relaxed) > 0 {}
             for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                 let _ = consumer.consume();
             }
@@ -283,10 +275,7 @@ pub fn weak_obs_bench(
     for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
         let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
         cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
-        let barrier = barrier.clone();
         ThreadOptions::new({
-            barrier.fetch_sub(1, Ordering::Acquire);
-            while barrier.load(Ordering::Relaxed) > 0 {}
             let completed = completed.clone();
             let completed_wq = completed_wq.clone();
             let weak_observer = q.attach_weak_observer().unwrap();

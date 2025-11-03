@@ -13,10 +13,10 @@ benchmarks = [
     "mixed_bench",
     "consume_bench",
     "produce_bench",
-    "weak_obs_bench",
+    # "weak_obs_bench",
 ]
 
-for i in range(10):
+for i in range(1):
     for q in q_impls:
         for benchmark in benchmarks:
             for tc in thread_counts:
