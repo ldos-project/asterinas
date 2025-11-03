@@ -29,9 +29,9 @@ make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
-cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33" --kcmd-args='bench.n_threads=16' --kcmd-args='bench.q_type=rigtorp' --kcmd-args='bench.benchmark=weak_obs_bench'
-[Info] [normal] Forwarded QEMU guest port: 46747->22; 23043->8080 37426->6379 3793->5201 43286->31234 7576->31236 3171->11211
-[Info] [test] Forwarded QEMU guest port: 16005->22; 26896->8080 21769->6379 25215->5201 25437->31234 61784->31236 39149->11211
+cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33" --kcmd-args='bench.n_threads=4' --kcmd-args='bench.q_type=mpmc_oq' --kcmd-args='bench.benchmark=weak_obs_bench'
+[Info] [normal] Forwarded QEMU guest port: 27266->22; 18414->8080 9188->6379 44342->5201 4562->31234 2567->31236 5520->11211
+[Info] [test] Forwarded QEMU guest port: 36117->22; 15313->8080 60210->6379 5565->5201 63679->31234 17442->31236 55147->11211
 warning: unstable feature specified for `-Ctarget-feature`: `ermsb`
   |
   = note: this feature is not stably supported; its behavior can change in the future
@@ -149,14 +149,14 @@ warning: missing documentation for a method
 warning: `ostd` (lib) generated 15 warnings (1 duplicate) (run `cargo fix --lib -p ostd` to apply 2 suggestions)
 warning: `aster-softirq` (lib) generated 1 warning (1 duplicate)
 warning: `aster-console` (lib) generated 1 warning (1 duplicate)
-warning: `aster-block` (lib) generated 1 warning (1 duplicate)
 warning: `aster-util` (lib) generated 1 warning (1 duplicate)
+warning: `aster-block` (lib) generated 1 warning (1 duplicate)
 warning: `aster-input` (lib) generated 1 warning (1 duplicate)
-warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
 warning: `aster-systree` (lib) generated 1 warning (1 duplicate)
-warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
-warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
+warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
 warning: `xarray` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
 warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
    --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:320:37
     |
@@ -190,8 +190,8 @@ warning: use of deprecated associated function `aes_gcm::aead::generic_array::Ge
     |                                     ^^^^^^^^^^
 
 warning: `aster-bigtcp` (lib) generated 1 warning (1 duplicate)
-warning: `aster-time` (lib) generated 1 warning (1 duplicate)
 warning: `aster-mlsdisk` (lib) generated 6 warnings (1 duplicate)
+warning: `aster-time` (lib) generated 1 warning (1 duplicate)
 warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
 warning: `aster-framebuffer` (lib) generated 1 warning (1 duplicate)
 warning: `aster-network` (lib) generated 1 warning (1 duplicate)
@@ -238,7 +238,7 @@ warning: function `create_init_task` is never used
 
 warning: `aster-nix` (lib) generated 7 warnings (1 duplicate) (run `cargo fix --lib -p aster-nix` to apply 2 suggestions)
 warning: `aster-nix-osdk-bin` (bin "aster-nix-osdk-bin") generated 1 warning (1 duplicate)
-    Finished `release` profile [optimized] target(s) in 1.04s
+    Finished `release` profile [optimized] target(s) in 1.97s
 grub-mkrescue: warning: cannot open directory `/usr/local/grub/share/locale': No such file or directory.
 xorriso 1.5.4 : RockRidge filesystem manipulator, libburnia project.
 
@@ -246,11 +246,11 @@ Drive current: -outdev 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso
 Media current: stdio file, overwriteable
 Media status : is blank
 Media summary: 0 sessions, 0 data blocks, 0 data, 34.6g free
-Added to ISO image: directory '/'='/tmp/grub.CLrGuM'
+Added to ISO image: directory '/'='/tmp/grub.C7kVzO'
 xorriso : UPDATE :     298 files added in 1 seconds
 Added to ISO image: directory '/'='/root/asterinas/target/osdk/iso_root'
 xorriso : UPDATE :     303 files added in 1 seconds
-xorriso : UPDATE :  30.74% done
+xorriso : UPDATE :  32.90% done
 ISO image produced: 22166 sectors
 Written to medium : 22166 sectors at LBA 0
 Writing to 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso' completed successfully.
@@ -282,7 +282,7 @@ Running QEMU: Command {
         "-chardev",
         "stdio,id=mux,mux=on,signal=off,logfile=qemu.log",
         "-netdev",
-        "user,id=net01,hostfwd=tcp::46747-:22,hostfwd=tcp::23043-:8080,hostfwd=tcp::37426-:6379,hostfwd=tcp::3793-:5201,hostfwd=tcp::43286-:31234,hostfwd=tcp::7576-:31236,hostfwd=tcp::3171-:11211",
+        "user,id=net01,hostfwd=tcp::27266-:22,hostfwd=tcp::18414-:8080,hostfwd=tcp::9188-:6379,hostfwd=tcp::44342-:5201,hostfwd=tcp::4562-:31234,hostfwd=tcp::2567-:31236,hostfwd=tcp::5520-:11211",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-device",
@@ -975,7 +975,7 @@ BdsDxe: starting BoosDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from Pc
 t0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
 WARNING: no console will be available to OS
 WARNING: no console will be available to OS
-error: no suitable video mode found.
+error: no suitableerror: no suitable video mode found.
 [kernel] OSTD initialized. Preparing components.
 [kernel] unpacking the initramfs.cpio.gz to rootfs ...
 [kernel] rootfs is ready
@@ -990,93 +990,33 @@ WARNING: no console will be available to OS
 
 [0m
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.377228788s
+weak observed 113642 values
+[total] 600.262034ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.84222995s
+weak observed 97225 values
+[total] 681.070518ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.486368597s
+weak observed 107809 values
+[total] 929.162461ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.569415968s
+weak observed 110706 values
+[total] 909.922048ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.537569776s
+weak observed 99622 values
+[total] 516.875169ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.578012394s
+weak observed 98109 values
+[total] 681.736741ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.569535506s
+weak observed 109607 values
+[total] 690.587738ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 2.203735224s
+weak observed 113666 values
+[total] 699.562536ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.372538135s
+weak observed 102257 values
+[total] 659.312142ms
 Waiting for benchmark to complete
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-weak observed 0 values
-[total] 1.686920714s
+weak observed 117662 values
+[total] 663.864472ms
 [

@@ -30,15 +30,15 @@ make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33" --kcmd-args='bench.n_threads=32' --kcmd-args='bench.q_type=mpmc_oq' --kcmd-args='bench.benchmark=weak_obs_bench'
-[Info] [normal] Forwarded QEMU guest port: 36706->22; 25512->8080 43107->6379 1671->5201 37161->31234 32896->31236 19870->11211
-[Info] [test] Forwarded QEMU guest port: 14062->22; 46610->8080 11320->6379 9134->5201 11526->31234 45522->31236 45366->11211
+[Info] [normal] Forwarded QEMU guest port: 52080->22; 64608->8080 62588->6379 13942->5201 44129->31234 20070->31236 17560->11211
+[Info] [test] Forwarded QEMU guest port: 60149->22; 14644->8080 19850->6379 55669->5201 9014->31234 28299->31236 10323->11211
 warning: unstable feature specified for `-Ctarget-feature`: `ermsb`
   |
   = note: this feature is not stably supported; its behavior can change in the future
 
-warning: `align_ext` (lib) generated 1 warning
+warning: `linux-boot-params` (lib) generated 1 warning
 warning: `ostd-test` (lib) generated 1 warning (1 duplicate)
-warning: `linux-boot-params` (lib) generated 1 warning (1 duplicate)
+warning: `align_ext` (lib) generated 1 warning (1 duplicate)
 warning: `typeflags-util` (lib) generated 1 warning (1 duplicate)
 warning: `int-to-c-enum` (lib) generated 1 warning (1 duplicate)
 warning: `aster-rights` (lib) generated 1 warning (1 duplicate)
@@ -147,16 +147,16 @@ warning: missing documentation for a method
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: `ostd` (lib) generated 15 warnings (1 duplicate) (run `cargo fix --lib -p ostd` to apply 2 suggestions)
-warning: `aster-console` (lib) generated 1 warning (1 duplicate)
 warning: `aster-softirq` (lib) generated 1 warning (1 duplicate)
+warning: `aster-console` (lib) generated 1 warning (1 duplicate)
 warning: `aster-util` (lib) generated 1 warning (1 duplicate)
 warning: `aster-block` (lib) generated 1 warning (1 duplicate)
-warning: `aster-input` (lib) generated 1 warning (1 duplicate)
-warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
 warning: `aster-systree` (lib) generated 1 warning (1 duplicate)
-warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
+warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
+warning: `aster-input` (lib) generated 1 warning (1 duplicate)
 warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
 warning: `xarray` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
 warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
    --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:320:37
     |
@@ -190,10 +190,10 @@ warning: use of deprecated associated function `aes_gcm::aead::generic_array::Ge
     |                                     ^^^^^^^^^^
 
 warning: `aster-bigtcp` (lib) generated 1 warning (1 duplicate)
-warning: `aster-framebuffer` (lib) generated 1 warning (1 duplicate)
-warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
 warning: `aster-mlsdisk` (lib) generated 6 warnings (1 duplicate)
+warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
 warning: `aster-time` (lib) generated 1 warning (1 duplicate)
+warning: `aster-framebuffer` (lib) generated 1 warning (1 duplicate)
 warning: `aster-network` (lib) generated 1 warning (1 duplicate)
 warning: `aster-virtio` (lib) generated 1 warning (1 duplicate)
 warning: unused imports: `Consumer`, `OQueue`, and `Producer`
@@ -238,7 +238,7 @@ warning: function `create_init_task` is never used
 
 warning: `aster-nix` (lib) generated 7 warnings (1 duplicate) (run `cargo fix --lib -p aster-nix` to apply 2 suggestions)
 warning: `aster-nix-osdk-bin` (bin "aster-nix-osdk-bin") generated 1 warning (1 duplicate)
-    Finished `release` profile [optimized] target(s) in 1.17s
+    Finished `release` profile [optimized] target(s) in 1.02s
 grub-mkrescue: warning: cannot open directory `/usr/local/grub/share/locale': No such file or directory.
 xorriso 1.5.4 : RockRidge filesystem manipulator, libburnia project.
 
@@ -246,13 +246,13 @@ Drive current: -outdev 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso
 Media current: stdio file, overwriteable
 Media status : is blank
 Media summary: 0 sessions, 0 data blocks, 0 data, 34.6g free
-Added to ISO image: directory '/'='/tmp/grub.NWqczp'
+Added to ISO image: directory '/'='/tmp/grub.VgXyKn'
 xorriso : UPDATE :     298 files added in 1 seconds
 Added to ISO image: directory '/'='/root/asterinas/target/osdk/iso_root'
 xorriso : UPDATE :     303 files added in 1 seconds
-xorriso : UPDATE :  32.05% done
-ISO image produced: 22170 sectors
-Written to medium : 22170 sectors at LBA 0
+xorriso : UPDATE :  32.76% done
+ISO image produced: 22166 sectors
+Written to medium : 22166 sectors at LBA 0
 Writing to 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso' completed successfully.
 
 Running QEMU: Command {
@@ -282,7 +282,7 @@ Running QEMU: Command {
         "-chardev",
         "stdio,id=mux,mux=on,signal=off,logfile=qemu.log",
         "-netdev",
-        "user,id=net01,hostfwd=tcp::36706-:22,hostfwd=tcp::25512-:8080,hostfwd=tcp::43107-:6379,hostfwd=tcp::1671-:5201,hostfwd=tcp::37161-:31234,hostfwd=tcp::32896-:31236,hostfwd=tcp::19870-:11211",
+        "user,id=net01,hostfwd=tcp::52080-:22,hostfwd=tcp::64608-:8080,hostfwd=tcp::62588-:6379,hostfwd=tcp::13942-:5201,hostfwd=tcp::44129-:31234,hostfwd=tcp::20070-:31236,hostfwd=tcp::17560-:11211",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-device",
@@ -969,12 +969,12 @@ qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:E
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
-[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[2J[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
-sDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
-BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
-BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
-WARNING: no console will be availabWARNING: no console will be availale to OS
-ble to OS
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01HJ[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting Booxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from Pt0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+ciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+WARNING: no console will be available to OS
+WARNING: no console will be available to OS
 error: no suitable video mode found.
 [kernel] OSTD initialized. Preparing components.
 [kernel] unpacking the initramfs.cpio.gz to rootfs ...
@@ -990,173 +990,173 @@ WARNING: no console will be availabWARNING: no console will be availale to OS
 
 [0m
 Waiting for benchmark to complete
-weak observed 26232 values
-weak observed 26516 values
-weak observed 26978 values
-weak observed 27035 values
-weak observed 27580 values
-weak observed 26744 values
-weak observed 27165 values
-weak observed 26899 values
-weak observed 27198 values
-weak observed 28438 values
-weak observed 27947 values
-weak observed 28237 values
-weak observed 28597 values
-weak observed 28477 values
-weak observed 28236 values
-[total] 3.736612998s
+weak observed 23893 values
+weak observed 24308 values
+weak observed 24171 values
+weak observed 24947 values
+weak observed 24856 values
+weak observed 24524 values
+weak observed 25024 values
+weak observed 25081 values
+weak observed 25524 values
+weak observed 25517 values
+weak observed 26357 values
+weak observed 26280 values
+weak observed 25570 values
+weak observed 26392 values
+weak observed 25599 values
+[total] 3.374469384s
 Waiting for benchmark to complete
-weak observed 25571 values
-weak observed 26582 values
-weak observed 27318 values
-weak observed 28071 values
-weak observed 29029 values
-weak observed 29712 values
-weak observed 29832 values
-weak observed 29086 values
-weak observed 30962 values
-weak observed 30676 values
-weak observed 34385 values
-weak observed 38261 values
-weak observed 38773 values
-weak observed 38538 values
-weak observed 42168 values
-[total] 2.835047161s
+weak observed 21535 values
+weak observed 22497 values
+weak observed 24037 values
+weak observed 22893 values
+weak observed 24584 values
+weak observed 24719 values
+weak observed 24955 values
+weak observed 33196 values
+weak observed 33675 values
+weak observed 33688 values
+weak observed 34078 values
+weak observed 34324 values
+weak observed 34859 values
+weak observed 36278 values
+weak observed 36030 values
+[total] 2.745815453s
 Waiting for benchmark to complete
-weak observed 27267 values
-weak observed 27984 values
-weak observed 28238 values
-weak observed 29059 values
-weak observed 29781 values
-weak observed 29722 values
-weak observed 30190 values
-weak observed 29877 values
-weak observed 30374 values
-weak observed 30426 values
-weak observed 31202 values
-weak observed 31705 values
-weak observed 32067 values
-weak observed 31175 values
-weak observed 32198 values
-[total] 2.64943861s
+weak observed 22171 values
+weak observed 27725 values
+weak observed 28188 values
+weak observed 29545 values
+weak observed 28353 values
+weak observed 29252 values
+weak observed 28994 values
+weak observed 29956 values
+weak observed 29426 values
+weak observed 29936 values
+weak observed 29957 values
+weak observed 30755 values
+weak observed 30261 values
+weak observed 29666 values
+weak observed 31444 values
+[total] 2.904865071s
 Waiting for benchmark to complete
-weak observed 54019 values
-weak observed 54030 values
-weak observed 57756 values
-weak observed 57631 values
-weak observed 57643 values
-weak observed 57715 values
-weak observed 57952 values
-weak observed 49611 values
-weak observed 49685 values
-weak observed 57966 values
-weak observed 58216 values
-weak observed 57999 values
-weak observed 51075 values
-weak observed 55321 values
-weak observed 57831 values
-[total] 238.087994ms
+weak observed 28363 values
+weak observed 28417 values
+weak observed 28174 values
+weak observed 28856 values
+weak observed 29276 values
+weak observed 29364 values
+weak observed 29428 values
+weak observed 29371 values
+weak observed 30464 values
+weak observed 30517 values
+weak observed 30388 values
+weak observed 31060 values
+weak observed 32261 values
+weak observed 31524 values
+weak observed 33298 values
+[total] 2.663987652s
 Waiting for benchmark to complete
-weak observed 28717 values
-weak observed 30232 values
-weak observed 30335 values
-weak observed 30772 values
-weak observed 30143 values
-weak observed 30635 values
-weak observed 29862 values
-weak observed 30696 values
-weak observed 31010 values
-weak observed 31810 values
-weak observed 31165 values
-weak observed 31793 values
-weak observed 31755 values
-weak observed 32479 values
-weak observed 30956 values
-[total] 2.916170955s
+weak observed 24657 values
+weak observed 29814 values
+weak observed 29719 values
+weak observed 29860 values
+weak observed 30188 values
+weak observed 30386 values
+weak observed 30352 values
+weak observed 30194 values
+weak observed 31095 values
+weak observed 31331 values
+weak observed 30649 values
+weak observed 31847 values
+weak observed 31635 values
+weak observed 30782 values
+weak observed 30885 values
+[total] 2.920068834s
 Waiting for benchmark to complete
-weak observed 22514 values
-weak observed 29437 values
-weak observed 29617 values
-weak observed 30446 values
-weak observed 30375 values
-weak observed 30477 values
-weak observed 30977 values
-weak observed 31180 values
-weak observed 30942 values
-weak observed 31579 values
-weak observed 31012 values
-weak observed 30530 values
-weak observed 31611 values
-weak observed 32097 values
-weak observed 32225 values
-[total] 2.928062119s
+weak observed 20748 values
+weak observed 27445 values
+weak observed 27655 values
+weak observed 27781 values
+weak observed 28449 values
+weak observed 28600 values
+weak observed 29012 values
+weak observed 28872 values
+weak observed 28883 values
+weak observed 28858 values
+weak observed 29076 values
+weak observed 31327 values
+weak observed 29257 values
+weak observed 30125 values
+weak observed 30928 values
+[total] 2.970730608s
 Waiting for benchmark to complete
-weak observed 22594 values
-weak observed 29430 values
-weak observed 29425 values
-weak observed 30283 values
-weak observed 30645 values
-weak observed 30774 values
-weak observed 30450 values
-weak observed 31608 values
-weak observed 31720 values
-weak observed 31562 values
-weak observed 31470 values
-weak observed 31032 values
-weak observed 31588 values
-weak observed 31451 values
-weak observed 31669 values
-[total] 2.942053131s
+weak observed 126922 values
+weak observed 21212 values
+weak observed 22006 values
+weak observed 24548 values
+weak observed 26019 values
+weak observed 28918 values
+weak observed 29733 values
+weak observed 29444 values
+weak observed 29484 values
+weak observed 30178 values
+weak observed 29636 values
+weak observed 30181 values
+weak observed 31143 values
+weak observed 30950 values
+weak observed 30565 values
+[total] 3.037776352s
 Waiting for benchmark to complete
-weak observed 22364 values
-weak observed 28798 values
-weak observed 29119 values
-weak observed 29235 values
-weak observed 29592 values
-weak observed 29456 values
-weak observed 29009 values
-weak observed 29667 values
-weak observed 30456 values
-weak observed 30676 values
-weak observed 31059 values
-weak observed 31221 values
-weak observed 31410 values
-weak observed 32712 values
-weak observed 31074 values
-[total] 3.025974031s
+weak observed 22600 values
+weak observed 25743 values
+weak observed 26558 values
+weak observed 28692 values
+weak observed 28995 values
+weak observed 28781 values
+weak observed 28872 values
+weak observed 29399 values
+weak observed 28348 values
+weak observed 29150 values
+weak observed 29979 values
+weak observed 29267 values
+weak observed 30615 values
+weak observed 27759 values
+weak observed 28701 values
+[total] 3.140811857s
 Waiting for benchmark to complete
-weak observed 21077 values
-weak observed 27876 values
-weak observed 28103 values
-weak observed 28553 values
-weak observed 30006 values
-weak observed 29982 values
-weak observed 30442 values
-weak observed 30220 values
-weak observed 29896 values
-weak observed 30014 values
-weak observed 30117 values
-weak observed 28621 values
-weak observed 29873 values
-weak observed 30331 values
-weak observed 30828 values
-[total] 3.115754182s
+weak observed 110654 values
+weak observed 109358 values
+weak observed 109478 values
+weak observed 21411 values
+weak observed 25854 values
+weak observed 27106 values
+weak observed 28606 values
+weak observed 29678 values
+weak observed 29525 values
+weak observed 31531 values
+weak observed 30489 values
+weak observed 31261 values
+weak observed 31222 values
+weak observed 33497 values
+weak observed 33875 values
+[total] 2.743361671s
 Waiting for benchmark to complete
-weak observed 23658 values
-weak observed 27950 values
-weak observed 28421 values
-weak observed 28338 values
-weak observed 29177 values
-weak observed 28511 values
-weak observed 29180 values
-weak observed 29479 values
-weak observed 29629 values
-weak observed 29576 values
-weak observed 29906 values
-weak observed 29884 values
-weak observed 30240 values
-weak observed 30296 values
-weak observed 30732 values
-[total] 3.297291166s
-[
+weak observed 24977 values
+weak observed 25675 values
+weak observed 26416 values
+weak observed 26508 values
+weak observed 26930 values
+weak observed 26864 values
+weak observed 27228 values
+weak observed 27690 values
+weak observed 27641 values
+weak observed 28885 values
+weak observed 29266 values
+weak observed 29410 values
+weak observed 29229 values
+weak observed 30458 values
+weak observed 30284 values
+[total] 3.713448199s
+[32

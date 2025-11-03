@@ -30,15 +30,15 @@ make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 make[3]: Nothing to be done for 'all'.
 cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33" --kcmd-args='bench.n_threads=8' --kcmd-args='bench.q_type=rigtorp' --kcmd-args='bench.benchmark=weak_obs_bench'
-[Info] [normal] Forwarded QEMU guest port: 50439->22; 60803->8080 55510->6379 51757->5201 25167->31234 32019->31236 64838->11211
-[Info] [test] Forwarded QEMU guest port: 26315->22; 2425->8080 63149->6379 13778->5201 36788->31234 38655->31236 1039->11211
+[Info] [normal] Forwarded QEMU guest port: 27077->22; 44279->8080 61673->6379 19337->5201 27974->31234 22134->31236 25175->11211
+[Info] [test] Forwarded QEMU guest port: 13046->22; 18326->8080 54946->6379 47197->5201 53772->31234 53774->31236 59957->11211
 warning: unstable feature specified for `-Ctarget-feature`: `ermsb`
   |
   = note: this feature is not stably supported; its behavior can change in the future
 
-warning: `ostd-test` (lib) generated 1 warning
+warning: `align_ext` (lib) generated 1 warning
+warning: `ostd-test` (lib) generated 1 warning (1 duplicate)
 warning: `linux-boot-params` (lib) generated 1 warning (1 duplicate)
-warning: `align_ext` (lib) generated 1 warning (1 duplicate)
 warning: `int-to-c-enum` (lib) generated 1 warning (1 duplicate)
 warning: `typeflags-util` (lib) generated 1 warning (1 duplicate)
 warning: `jhash` (lib) generated 1 warning (1 duplicate)
@@ -149,14 +149,14 @@ warning: missing documentation for a method
 warning: `ostd` (lib) generated 15 warnings (1 duplicate) (run `cargo fix --lib -p ostd` to apply 2 suggestions)
 warning: `aster-console` (lib) generated 1 warning (1 duplicate)
 warning: `aster-softirq` (lib) generated 1 warning (1 duplicate)
-warning: `aster-block` (lib) generated 1 warning (1 duplicate)
 warning: `aster-util` (lib) generated 1 warning (1 duplicate)
+warning: `aster-block` (lib) generated 1 warning (1 duplicate)
+warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
 warning: `aster-input` (lib) generated 1 warning (1 duplicate)
 warning: `aster-systree` (lib) generated 1 warning (1 duplicate)
-warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
 warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
-warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
 warning: `xarray` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
 warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
    --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:320:37
     |
@@ -190,9 +190,9 @@ warning: use of deprecated associated function `aes_gcm::aead::generic_array::Ge
     |                                     ^^^^^^^^^^
 
 warning: `aster-bigtcp` (lib) generated 1 warning (1 duplicate)
-warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
 warning: `aster-mlsdisk` (lib) generated 6 warnings (1 duplicate)
 warning: `aster-framebuffer` (lib) generated 1 warning (1 duplicate)
+warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
 warning: `aster-time` (lib) generated 1 warning (1 duplicate)
 warning: `aster-network` (lib) generated 1 warning (1 duplicate)
 warning: `aster-virtio` (lib) generated 1 warning (1 duplicate)
@@ -238,7 +238,7 @@ warning: function `create_init_task` is never used
 
 warning: `aster-nix` (lib) generated 7 warnings (1 duplicate) (run `cargo fix --lib -p aster-nix` to apply 2 suggestions)
 warning: `aster-nix-osdk-bin` (bin "aster-nix-osdk-bin") generated 1 warning (1 duplicate)
-    Finished `release` profile [optimized] target(s) in 1.10s
+    Finished `release` profile [optimized] target(s) in 1.08s
 grub-mkrescue: warning: cannot open directory `/usr/local/grub/share/locale': No such file or directory.
 xorriso 1.5.4 : RockRidge filesystem manipulator, libburnia project.
 
@@ -246,13 +246,13 @@ Drive current: -outdev 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso
 Media current: stdio file, overwriteable
 Media status : is blank
 Media summary: 0 sessions, 0 data blocks, 0 data, 34.6g free
-Added to ISO image: directory '/'='/tmp/grub.3aliyn'
+Added to ISO image: directory '/'='/tmp/grub.5YtmOk'
 xorriso : UPDATE :     298 files added in 1 seconds
 Added to ISO image: directory '/'='/root/asterinas/target/osdk/iso_root'
 xorriso : UPDATE :     303 files added in 1 seconds
-xorriso : UPDATE :  31.61% done
-ISO image produced: 22170 sectors
-Written to medium : 22170 sectors at LBA 0
+xorriso : UPDATE :  32.39% done
+ISO image produced: 22166 sectors
+Written to medium : 22166 sectors at LBA 0
 Writing to 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso' completed successfully.
 
 Running QEMU: Command {
@@ -282,7 +282,7 @@ Running QEMU: Command {
         "-chardev",
         "stdio,id=mux,mux=on,signal=off,logfile=qemu.log",
         "-netdev",
-        "user,id=net01,hostfwd=tcp::50439-:22,hostfwd=tcp::60803-:8080,hostfwd=tcp::55510-:6379,hostfwd=tcp::51757-:5201,hostfwd=tcp::25167-:31234,hostfwd=tcp::32019-:31236,hostfwd=tcp::64838-:11211",
+        "user,id=net01,hostfwd=tcp::27077-:22,hostfwd=tcp::44279-:8080,hostfwd=tcp::61673-:6379,hostfwd=tcp::19337-:5201,hostfwd=tcp::27974-:31234,hostfwd=tcp::22134-:31236,hostfwd=tcp::25175-:11211",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-device",
@@ -969,9 +969,9 @@ qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:E
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
 qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
-[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[2J[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
-FFF,0x0)
-BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H2J[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+dsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
 BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
 WARNING: no console will be available to OS
 WARNING: no console will be available to OS
@@ -993,30 +993,50 @@ Waiting for benchmark to complete
 weak observed 0 values
 weak observed 0 values
 weak observed 0 values
-[total] 734.423527ms
+[total] 722.8234ms
 Waiting for benchmark to complete
 weak observed 0 values
 weak observed 0 values
 weak observed 0 values
-[total] 762.327626ms
+[total] 894.809175ms
 Waiting for benchmark to complete
 weak observed 0 values
 weak observed 0 values
 weak observed 0 values
-[total] 821.180813ms
+[total] 825.070904ms
 Waiting for benchmark to complete
 weak observed 0 values
 weak observed 0 values
 weak observed 0 values
-[total] 847.814405ms
+[total] 1.052647009s
 Waiting for benchmark to complete
 weak observed 0 values
 weak observed 0 values
 weak observed 0 values
-[total] 801.535818ms
-[32m[     5.666][0m [31mERROR[0m: [39mFailed to allocate a large slot[0m
-[32m[     5.667][0m [31mERROR[0m: [39mHeap allocation error, layout = Layout {
-    size: 0x20000100,
-    align: 128 (1 << 7),
-}[0m
-[make: *** [Makefile:272: run] Error 1
+[total] 917.790277ms
+Waiting for benchmark to complete
+weak observed 0 values
+weak observed 0 values
+weak observed 0 values
+[total] 809.852754ms
+Waiting for benchmark to complete
+weak observed 0 values
+weak observed 0 values
+weak observed 0 values
+[total] 114.029385ms
+Waiting for benchmark to complete
+weak observed 0 values
+weak observed 0 values
+weak observed 0 values
+[total] 921.023325ms
+Waiting for benchmark to complete
+weak observed 0 values
+weak observed 0 values
+weak observed 0 values
+[total] 896.748103ms
+Waiting for benchmark to complete
+weak observed 0 values
+weak observed 0 values
+weak observed 0 values
+[total] 780.967306ms
+[
