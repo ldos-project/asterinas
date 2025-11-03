@@ -7,10 +7,7 @@ pub mod shutdown;
 
 use alloc::{borrow::ToOwned, string::String, sync::Weak, vec::Vec};
 use core::{
-    borrow::Borrow,
-    fmt::{Debug, Display},
-    ops::DerefMut,
-    sync::atomic::{AtomicBool, Ordering},
+    any::Any, borrow::Borrow, fmt::{Debug, Display}, ops::DerefMut, sync::atomic::{AtomicBool, Ordering}
 };
 
 use snafu::Location;
@@ -38,7 +35,7 @@ impl<T: Server> WeakServerExt for Weak<T> {
 }
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
-pub trait Server: Sync + Send + 'static {
+pub trait Server: Any + Sync + Send + 'static {
     /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
     /// use it.
     ///

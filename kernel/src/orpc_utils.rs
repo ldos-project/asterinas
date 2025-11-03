@@ -18,15 +18,30 @@ pub fn spawn_thread<T: Server + Send + 'static>(
                 let _server_context =
                     CurrentServer::enter_server_context(server.orpc_server_base());
                 if let Result::Err(e) = body() {
-                    info!("Server thread ({}) exited: {}", server.orpc_server_base(), e);
+                    info!(
+                        "Server thread ({}) exited: {}",
+                        server.orpc_server_base(),
+                        e
+                    );
                     Server::orpc_server_base(server.as_ref()).abort(&e);
                 }
             }
         }) {
             let err = errors::RPCError::from_panic(payload);
-            error!("Server thread ({}) panicked: {}", server.orpc_server_base(), err);
+            error!(
+                "Server thread ({}) panicked: {}",
+                server.orpc_server_base(),
+                err
+            );
             Server::orpc_server_base(server.as_ref()).abort(&err);
         }
+    })
+    // TODO(arthurp): This sets server threads to be real-time threads with a medium priority. This
+    // prevents them from being blocked by user threads, but is probably not the right solution in
+    // general.
+    .sched_policy(crate::sched::SchedPolicy::RealTime {
+        rt_prio: 50.try_into().unwrap(),
+        rt_policy: Default::default(),
     })
     .spawn();
 }

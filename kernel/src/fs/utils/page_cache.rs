@@ -13,11 +13,14 @@ use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
 use ostd::{
-    error_result, impl_untyped_frame_meta_for, kcmdline::get_kcmdline_arg, mm::{Frame, FrameAllocOptions, UFrame, VmIo}, orpc::{
+    error_result, impl_untyped_frame_meta_for,
+    kcmdline::get_kcmdline_arg,
+    mm::{Frame, FrameAllocOptions, UFrame, VmIo},
+    orpc::{
         framework::{Server, shutdown::Shutdown},
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
         orpc_impl, orpc_server,
-    }
+    },
 };
 
 use crate::{
@@ -25,7 +28,7 @@ use crate::{
         server_traits::{
             self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
         },
-        utils::page_prefetch::ReadaheadPrefetcher,
+        utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
@@ -36,13 +39,27 @@ pub struct PageCache {
     manager: Arc<PageCacheManager>,
 }
 
-/// If true, use the original Asterinas built-in read-ahead policy. Otherwise, disable it. ORPC
-/// policies can run regardless of this value. This uses the kernel command-line argument
-/// "prefetchpolicy".
-fn get_prefetch_policy() -> bool {
-    match get_kcmdline_arg("prefetchpolicy") {
-        Some(value) => value == "enabled",
-        None => false, // Default to disabled if the argument is not present
+/// Enum representing different prefetch policies.
+#[derive(Debug, PartialEq, Eq)]
+enum PrefetchPolicy {
+    Builtin,
+    Readahead,
+    Strided,
+}
+
+/// Retrieves the prefetch policy based on the kernel command-line argument "prefetch_policy".
+///
+/// # Returns
+///
+/// - `PrefetchPolicy::Builtin`: If the argument is "builtin" or not present.
+/// - `PrefetchPolicy::Readahead`: If the argument is "readahead".
+/// - `PrefetchPolicy::Strided`: If the argument is "strided".
+fn get_prefetch_policy() -> PrefetchPolicy {
+    match get_kcmdline_arg("prefetch_policy") {
+        Some("builtin") => PrefetchPolicy::Builtin,
+        Some("readahead") => PrefetchPolicy::Readahead,
+        Some("strided") => PrefetchPolicy::Strided,
+        _ => PrefetchPolicy::Builtin, // Default to Builtin if the argument is not present
     }
 }
 
@@ -381,7 +398,8 @@ impl OutstandingRequests {
 struct PageCacheManager {
     backend: Weak<dyn PageStore>,
     inner: Mutex<PageCacheManagerInner>,
-    prefetcher: Mutex<Option<Arc<dyn Shutdown>>>,
+    prefetcher: Mutex<Option<(Arc<dyn Shutdown>, PrefetchPolicy)>>,
+    weak_this: Weak<PageCacheManager>,
 }
 
 impl Drop for PageCacheManager {
@@ -391,10 +409,10 @@ impl Drop for PageCacheManager {
             self.prefetcher
                 .lock()
                 .as_ref()
-                .map(|s| s.orpc_server_base())
+                .map(|s| s.0.orpc_server_base())
         );
         if let Some(prefetcher) = self.prefetcher.lock().take() {
-            error_result!(prefetcher.shutdown());
+            error_result!(prefetcher.0.shutdown());
         }
     }
 }
@@ -454,17 +472,17 @@ impl PageCacheManagerInner {
 
 impl PageCacheManager {
     #[track_caller]
-    pub fn spawn(backend: Weak<dyn PageStore>, use_builtin_policy: bool) -> Result<Arc<Self>> {
+    pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
         let path = backend
             .upgrade()
             .map(|v| v.path().to_owned())
             .unwrap_or_else(|| "uninit".to_owned());
-        let server = Self::new_with(path, |orpc_internal, _| Self {
+        let server = Self::new_with(path, |orpc_internal, weak_this| Self {
             backend,
             inner: Mutex::new(PageCacheManagerInner {
                 // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
                 pages: LruCache::unbounded(),
-                builtin_prefetch_policy: if use_builtin_policy {
+                builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
                     Some(BuiltinPrefetchPolicy::new())
                 } else {
                     None
@@ -472,12 +490,12 @@ impl PageCacheManager {
                 outstanding_requests: Default::default(),
             }),
             prefetcher: Default::default(),
+            weak_this: weak_this.clone(),
             orpc_internal,
         });
 
-        if !use_builtin_policy {
-            let prefetcher = ReadaheadPrefetcher::spawn(server.clone())?;
-            server.prefetcher.lock().replace(prefetcher);
+        if policy != PrefetchPolicy::Builtin {
+            server.change_policy(policy)?;
         }
         Ok(server)
     }
@@ -541,6 +559,8 @@ impl PageCacheManager {
         let inner = inner.deref_mut();
         let backend = self.backend()?;
 
+        self.page_reads_oqueue().produce(idx)?;
+
         // Handle any requests that have already completed.
         inner.outstanding_requests.check_requests(&mut inner.pages);
 
@@ -590,10 +610,39 @@ impl PageCacheManager {
         // Invoke built-in policy.
         inner.maybe_builtin_prefetch(idx, &backend)?;
 
-        println!("read {}", idx);
-        self.page_reads_oqueue().produce(idx)?;
+        // if idx > 180 {
+        //     error_result!(self.change_policy(PrefetchPolicy::Strided));
+        // }
 
         Ok(frame.into())
+    }
+
+    fn change_policy(&self, policy: PrefetchPolicy) -> Result<()> {
+        let mut prefetcher_state = self.prefetcher.lock();
+        if let Some((_, kind)) = prefetcher_state.as_ref() {
+            if *kind == policy {
+                return Ok(());
+            }
+        }
+        if let Some(s) = prefetcher_state.take() {
+            println!("Shutting down");
+            error_result!(s.0.shutdown());
+            println!("Shut down");
+        }
+        let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
+        println!("Starting new policy");
+        let prefetcher = match policy {
+            PrefetchPolicy::Readahead => {
+                ReadaheadPrefetcher::spawn(this)? as _
+            }
+            PrefetchPolicy::Strided => {
+                StridedPrefetcher::spawn(this)? as _
+            }
+            _ => Err(Error::unreachable())?,
+        };
+        println!("Started new policy");
+        *prefetcher_state = Some((prefetcher, policy));
+        Ok(())
     }
 }
 
@@ -671,6 +720,12 @@ impl server_traits::PageCache for PageCacheManager {
     fn prefetch(&self, idx: usize) -> Result<()> {
         let mut inner = self.inner.lock();
         let inner = inner.deref_mut();
+
+        // If the page is in the cache (including if it is being loaded) do nothing.
+        if let Some(_) = inner.pages.get(&idx) {
+            return Ok(());
+        }
+
         inner
             .outstanding_requests
             .request_async(&mut inner.pages, &self.backend()?, idx)?;

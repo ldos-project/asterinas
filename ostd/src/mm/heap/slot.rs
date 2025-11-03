@@ -86,7 +86,7 @@ impl HeapSlot {
             .zeroed(false)
             .alloc_segment_with(nframes, |_| LargeAllocFrameMeta)
             .map_err(|_| {
-                log::error!("Failed to allocate a large slot");
+                log::error!("Failed to allocate a large slot: size={}", size);
                 AllocError
             })?;
 

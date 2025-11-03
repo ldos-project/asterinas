@@ -3,7 +3,7 @@ use core::sync::atomic::AtomicBool;
 
 use orpc_macros::orpc_trait;
 
-use crate::orpc::{framework::errors::RPCError, oqueue::{OQueueRef, locking::ObservableLockingQueue, reply::ReplyQueue}};
+use crate::{error_result, orpc::{framework::{CurrentServer, errors::RPCError}, oqueue::{OQueueRef, locking::ObservableLockingQueue, reply::ReplyQueue}}};
 
 /// Trait that allows a server to be shut down gracefully.
 #[orpc_trait]
@@ -45,6 +45,8 @@ pub trait Shutdown {
 /// ```
 pub struct ShutdownState {
     is_shutdown: AtomicBool,
+    /// An OQueue which produces a value when server shutdown is requested. This is used to wake up
+    /// the server so it can shutdown.
     pub shutdown_oqueue: OQueueRef<()>
 }
 
@@ -58,15 +60,15 @@ impl ShutdownState {
     /// Marks the server as shut down.
     pub fn shutdown(&self) {
         self.is_shutdown.store(true, core::sync::atomic::Ordering::Release);
-        self.shutdown_oqueue.produce(());
+        error_result!(self.shutdown_oqueue.produce(()));
     }
 
-    /// Checks if the server has been shut down.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RPCError::ServerMissing` if the server is not shut down.
+    /// Checks if the server has been shutdown. If it has, return an error to make it easy to exit
+    /// the server using `?`.
+    /// 
+    /// For convenience, this is also an abort point (see [`CurrentServer::abort_point`]).
     pub fn check(&self) -> Result<(), RPCError> {
+        CurrentServer::abort_point();
         if !self.is_shutdown.load(core::sync::atomic::Ordering::Acquire) {
             Ok(())
         } else {
