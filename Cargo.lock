@@ -203,6 +203,7 @@ dependencies = [
  "aster-logger",
  "aster-mlsdisk",
  "aster-network",
+ "aster-raid",
  "aster-rights",
  "aster-rights-proc",
  "aster-softirq",
@@ -244,6 +245,14 @@ dependencies = [
  "typeflags-util",
  "xarray",
  "xmas-elf",
+]
+
+[[package]]
+name = "aster-raid"
+version = "0.1.0"
+dependencies = [
+ "aster-block",
+ "ostd",
 ]
 
 [[package]]

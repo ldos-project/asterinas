@@ -9,6 +9,7 @@ edition = "2024"
 align_ext = { path = "../ostd/libs/align_ext" }
 aster-input = { path = "comps/input" }
 aster-block = { path = "comps/block" }
+aster-raid = { path = "comps/raid" }
 aster-network = { path = "comps/network" }
 aster-console = { path = "comps/console" }
 aster-framebuffer = { path = "comps/framebuffer" }
@@ -74,6 +75,7 @@ riscv = { version = "0.11.1", features = ["s-mode"] }
 [features]
 all = ["cvm_guest"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
+raid_test = []
 
 [lints]
 workspace = true

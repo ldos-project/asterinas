@@ -20,6 +20,7 @@ SCHEME ?= ""
 SMP ?= 1
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
+ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
 # End of global build options.
 
@@ -137,6 +138,11 @@ ifneq ($(SCHEME), "")
 CARGO_OSDK_COMMON_ARGS += --scheme $(SCHEME)
 else
 CARGO_OSDK_COMMON_ARGS += --boot-method="$(BOOT_METHOD)"
+endif
+
+# Feature for RAID test.
+ifeq ($(ENABLE_RAID_TEST),1)
+FEATURES := $(strip $(FEATURES) raid_test)
 endif
 
 ifdef FEATURES

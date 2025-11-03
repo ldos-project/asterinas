@@ -67,4 +67,123 @@ pub fn lazy_init() {
         println!("[kernel] Mount ExFat fs at {:?} ", target_path);
         self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
     }
+
+    #[cfg(feature = "raid_test")]
+    init_raid1_test_device();
+}
+
+#[cfg(feature = "raid_test")]
+const RAID_TEST_DEVICE_NAME: &str = "raid1-test";
+
+#[cfg(feature = "raid_test")]
+const RAID_TEST_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
+
+#[cfg(feature = "raid_test")]
+fn init_raid1_test_device() {
+    use aster_raid::Raid1Device;
+
+    info!(
+        "[raid-test] initializing RAID-1 '{}' with members {:?}",
+        RAID_TEST_DEVICE_NAME, RAID_TEST_MEMBER_NAMES
+    );
+
+    let mut members = Vec::with_capacity(RAID_TEST_MEMBER_NAMES.len());
+
+    for &name in RAID_TEST_MEMBER_NAMES {
+        match start_block_device(name) {
+            Ok(device) => {
+                info!("[raid-test] member '{}' online", name);
+                members.push(device);
+            }
+            Err(err) => {
+                warn!(
+                    "[raid-test] failed to start member '{}': {:?}. RAID-1 test disabled",
+                    name, err
+                );
+                return;
+            }
+        }
+    }
+
+    let raid = Raid1Device::register(RAID_TEST_DEVICE_NAME, members);
+    let worker = raid.clone();
+    let task_fn = move || loop {
+        worker.handle_requests();
+    };
+    crate::ThreadOptions::new(task_fn).spawn();
+
+    info!(
+        "[raid-test] RAID-1 device '{}' registered and worker thread spawned",
+        RAID_TEST_DEVICE_NAME
+    );
+
+    run_raid1_smoke_test(&raid);
+}
+
+#[cfg(feature = "raid_test")]
+fn run_raid1_smoke_test(raid: &Arc<Raid1Device>) {
+    use aster_block::{
+        self,
+        bio::{Bio, BioDirection, BioSegment, BioStatus, BioType},
+        id::Sid,
+    };
+    use ostd::mm::VmIo;
+
+    const START_SID: Sid = Sid::new(0); // start from the first sector. 
+
+    // initialize an array to write to the device
+    let mut pattern = [0u8; aster_block::BLOCK_SIZE];
+    for (idx, byte) in pattern.iter_mut().enumerate() {
+        *byte = idx as u8;
+    }
+
+    let mut write_segment = BioSegment::alloc(1, BioDirection::ToDevice);  // allocate one block for writing (DMA-backed).
+    if let Err(err) = write_segment.write_bytes(0, &pattern) {  // fills the buffer with the pattern. 
+        warn!("[raid-test] failed to populate write buffer: {:?}", err);
+        return;
+    }
+
+    let write_bio = Bio::new(BioType::Write, START_SID, vec![write_segment], None);
+    match write_bio.submit_and_wait(raid.as_ref()) {  // actual write to get data from the segment and write to the raid array. 
+        Ok(BioStatus::Complete) => {
+            info!("[raid-test] write bio completed successfully");
+        }
+        Ok(other) => {
+            warn!("[raid-test] unexpected write status: {:?}", other);
+            return;
+        }
+        Err(err) => {
+            warn!("[raid-test] failed to submit write bio: {:?}", err);
+            return;
+        }
+    }
+
+    let read_segment = BioSegment::alloc(1, BioDirection::FromDevice);
+    let read_clone = read_segment.clone();
+    let read_bio = Bio::new(BioType::Read, START_SID, vec![read_clone], None);
+    match read_bio.submit_and_wait(raid.as_ref()) {
+        Ok(BioStatus::Complete) => {
+            info!("[raid-test] read bio completed successfully");
+        }
+        Ok(other) => {
+            warn!("[raid-test] unexpected read status: {:?}", other);
+            return;
+        }
+        Err(err) => {
+            warn!("[raid-test] failed to submit read bio: {:?}", err);
+            return;
+        }
+    }
+
+    let mut read_back = [0u8; aster_block::BLOCK_SIZE];
+    if let Err(err) = read_segment.read_bytes(0, &mut read_back) {
+        warn!("[raid-test] failed to read back buffer: {:?}", err);
+        return;
+    }
+
+    if read_back == pattern {
+        info!("[raid-test] read/write verification succeeded");
+    } else {
+        warn!("[raid-test] data mismatch detected during RAID-1 smoke test");
+    }
 }
