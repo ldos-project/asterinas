@@ -22,6 +22,7 @@ pub mod utils;
 
 use aster_block::BlockDevice;
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
+use aster_raid::Raid1Device;
 
 use crate::{
     fs::{
@@ -80,8 +81,6 @@ const RAID_TEST_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
 
 #[cfg(feature = "raid_test")]
 fn init_raid1_test_device() {
-    use aster_raid::Raid1Device;
-
     info!(
         "[raid-test] initializing RAID-1 '{}' with members {:?}",
         RAID_TEST_DEVICE_NAME, RAID_TEST_MEMBER_NAMES
@@ -96,7 +95,7 @@ fn init_raid1_test_device() {
                 members.push(device);
             }
             Err(err) => {
-                warn!(
+                error!(
                     "[raid-test] failed to start member '{}': {:?}. RAID-1 test disabled",
                     name, err
                 );

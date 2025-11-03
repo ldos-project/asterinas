@@ -17,6 +17,8 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
+RAID0_IMAGE := $(BUILD_DIR)/raid0.img
+RAID1_IMAGE := $(BUILD_DIR)/raid1.img
 INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/root \
 	$(INITRAMFS)/tmp \
@@ -186,11 +188,19 @@ $(EXT2_IMAGE):
 	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
-	@fallocate -l 64M $(EXFAT_IMAGE)
+	@dd if=/dev/zero of=$(EXFAT_IMAGE) bs=64M count=1
 	@mkfs.exfat $(EXFAT_IMAGE)
 
+$(RAID0_IMAGE):
+	@dd if=/dev/zero of=$(RAID0_IMAGE) bs=64M count=1
+	@mke2fs $(RAID0_IMAGE)
+
+$(RAID1_IMAGE):
+	@dd if=/dev/zero of=$(RAID1_IMAGE) bs=64M count=1
+	@mke2fs $(RAID1_IMAGE)
+
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(RAID0_IMAGE) $(RAID1_IMAGE)
 
 .PHONY: format
 format:
