@@ -271,26 +271,49 @@ pub fn weak_obs_bench(
     .cpu_affinity(cpu_set)
     .spawn();
 
-    // Start all consumers
-    for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
-        ThreadOptions::new({
-            let completed = completed.clone();
-            let completed_wq = completed_wq.clone();
-            let weak_observer = q.attach_weak_observer().unwrap();
-            move || {
-                let mut cnt = 0;
-                for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
-                    cnt += weak_observer.weak_observe_recent(1).len();
+    if bc.q_type {
+        // Start all consumers
+        for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+            let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+            cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
+            ThreadOptions::new({
+                let completed = completed.clone();
+                let completed_wq = completed_wq.clone();
+                let weak_observer = q.attach_weak_observer().unwrap();
+                move || {
+                    let mut cnt = 0;
+                    for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                        cnt += weak_observer.weak_observe_recent(1).len();
+                    }
+                    crate::prelude::println!("weak observed {} values", cnt);
+                    completed.fetch_add(1, Ordering::Relaxed);
+                    completed_wq.wake_one();
                 }
-                crate::prelude::println!("weak observed {} values", cnt);
-                completed.fetch_add(1, Ordering::Relaxed);
-                completed_wq.wake_one();
-            }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
+            })
+            .cpu_affinity(cpu_set)
+            .spawn();
+        }
+    } else {
+        for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+            let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+            cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
+            ThreadOptions::new({
+                let completed = completed.clone();
+                let completed_wq = completed_wq.clone();
+                let weak_observer = q.attach_consumer().unwrap();
+                move || {
+                    let mut cnt = 0;
+                    for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                        cnt += weak_observer.consume();
+                    }
+                    crate::prelude::println!("weak observed {} values", cnt);
+                    completed.fetch_add(1, Ordering::Relaxed);
+                    completed_wq.wake_one();
+                }
+            })
+            .cpu_affinity(cpu_set)
+            .spawn();
+        }
     }
     bc.n_threads
 }

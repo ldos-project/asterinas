@@ -10,10 +10,10 @@ q_impls = {
     "rigtorp": RigtorpQueue,
 }
 benchmarks = [
-    "mixed_bench",
-    "consume_bench",
-    "produce_bench",
-    # "weak_obs_bench",
+    # "mixed_bench",
+    # "consume_bench",
+    # "produce_bench",
+    "weak_obs_bench",
 ]
 
 for i in range(1):
