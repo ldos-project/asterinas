@@ -87,10 +87,12 @@ impl Raid1Device {
         }
     }
 
-    /// Process the read request for the RAID-1 devices by selecting block devices to read in a round robin manner.
-    /// Parent is the fs block io request layer, and the child is the block device mirror layer for the bio.
+    /// Process the read request asynchronously: submit each BIO to a (possibly different)
+    /// member device and overlap their I/O, then complete parents after all submissions.
     fn process_read(&self, request: BioRequest) {
-        // parent request are submitted by the fs layer. And the child requrest are for each block device mirror.
+        // Submit all children first to overlap device I/O.
+        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
+
         for parent in request.bios() {
             // iterate through all the fs submitted block io requests.
             let member = self.select_read_member(parent.sid_range()); // for each request, select which block device to read from in a round robin manner. 
@@ -101,11 +103,17 @@ impl Raid1Device {
                 Self::clone_segments(parent), // which segments to put the data after reading from the selected block device, segments indexing the (main) memory.
                 None,
             );
-            // submit the child request to the selected block device, then wait for the completion synchronously. This is a blocking call, and could be converted to asynchronous later with submit().
-            let status = match child.submit_and_wait(member.as_ref()) {
-                // as_ref() borrows the inner trait object as &dyn BlockDevice.
-                Ok(status) => status,
-                Err(_) => BioStatus::IoError,
+            match child.submit(member.as_ref()) {
+                Ok(waiter) => pending.push((parent, waiter)),
+                Err(_) => parent.complete(BioStatus::IoError),
+            }
+        }
+
+        // Wait for each submitted child and complete the corresponding parent.
+        for (parent, waiter) in pending.into_iter() {
+            let status = match waiter.wait() {
+                Some(s) => s, // guaranteed to be Complete on success
+                None => BioStatus::IoError,
             };
             // report the completion status of the child request to the fs layer.
             parent.complete(status);
