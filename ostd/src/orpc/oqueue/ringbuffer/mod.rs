@@ -1,14 +1,8 @@
-use core::{
-    cell::UnsafeCell,
-    mem::MaybeUninit,
-    panic::{RefUnwindSafe, UnwindSafe},
-};
+use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 pub mod mpmc;
-pub mod spsc;
 
 pub use mpmc::{MPMCConsumer, MPMCOQueue, MPMCProducer, MPMCStrongObserver, MPMCWeakObserver};
-pub use spsc::{SPSCConsumer, SPSCOQueue, SPSCProducer, SPSCStrongObserver, SPSCWeakObserver};
 
 /// A single element (slot for storing a value) in a ring buffer.
 #[derive(Debug)]
