@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 pub mod mpmc;

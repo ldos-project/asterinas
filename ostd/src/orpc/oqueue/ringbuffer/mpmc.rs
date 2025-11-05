@@ -20,6 +20,7 @@ use core::{
 };
 
 use crossbeam_utils::CachePadded;
+// SPDX-License-Identifier: MPL-2.0
 
 use super::Element;
 use crate::{
