@@ -186,7 +186,7 @@ $(EXT2_IMAGE):
 	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
-	@fallocate -l 64M $(EXFAT_IMAGE)
+	@fallocate -x -l 64M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 .PHONY: build
