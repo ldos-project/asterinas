@@ -2,7 +2,6 @@ use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
     panic::{RefUnwindSafe, UnwindSafe},
-    ptr,
 };
 
 pub mod mpmc;
@@ -19,10 +18,6 @@ struct Element<T> {
     /// buffer. This assumes correct synchronization using the various atomic values used by the ring buffer.
     data: UnsafeCell<MaybeUninit<T>>,
 }
-
-// TODO(aneesh)
-impl<T> UnwindSafe for Element<T> {}
-impl<T> RefUnwindSafe for Element<T> {}
 
 impl<T> Element<T> {
     fn uninit() -> Element<T> {
