@@ -1,4 +1,7 @@
-use alloc::{format, sync::{Arc, Weak}};
+use alloc::{
+    format,
+    sync::{Arc, Weak},
+};
 
 use aster_logger::println;
 use ostd::orpc::{
@@ -39,7 +42,9 @@ impl ReadaheadPrefetcher {
         });
 
         spawn_thread(server.clone(), {
-            let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
+            let read_observer = cache
+                .page_reads_oqueue()
+                .attach_strong_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -48,17 +53,17 @@ impl ReadaheadPrefetcher {
             let server = server.clone();
 
             move || {
-                println!(
-                    "readahead thread {} (for cache: {})",
-                    server.path(),
-                    cache.orpc_server_base()
-                );
+                // println!(
+                //     "readahead thread {} (for cache: {})",
+                //     server.path(),
+                //     cache.orpc_server_base()
+                // );
                 loop {
                     server.shutdown_state.check()?;
                     select!(
                         if let idx = read_observer.try_strong_observe() {
-                            println!("Prefetching based on {}", idx);
-                            cache.prefetch(idx + 4)?;
+                            println!("Prefetching: {}", idx + 1);
+                            cache.prefetch(idx + 1)?;
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
                     );
@@ -91,8 +96,12 @@ impl StridedPrefetcher {
         });
 
         spawn_thread(server.clone(), {
-            let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
-            let read_weak_observer = cache.page_reads_oqueue().attach_weak_observer()?;
+            let read_observer = cache
+                .page_reads_oqueue()
+                .attach_strong_observer()?;
+            let read_weak_observer = cache
+                .page_reads_oqueue()
+                .attach_weak_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -101,11 +110,11 @@ impl StridedPrefetcher {
             let server = server.clone();
 
             move || {
-                println!(
-                    "Strided thread {} (for cache: {})",
-                    server.path(),
-                    cache.orpc_server_base()
-                );
+                // println!(
+                //     "Strided thread {} (for cache: {})",
+                //     server.path(),
+                //     cache.orpc_server_base()
+                // );
                 loop {
                     server.shutdown_state.check()?;
                     select!(
@@ -114,8 +123,8 @@ impl StridedPrefetcher {
                             let history = read_weak_observer.weak_observe_range(recent - 2, recent);
                             if history.len() >= 2 {
                                 let stride = history[1] - history[0];
-                                println!("Prefetching based on {} and stride {}", idx, stride);
-                                cache.prefetch(idx + stride*4)?;
+                                println!("Prefetching: {} (for stride {})", idx + stride, stride);
+                                cache.prefetch(idx + stride)?;
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}

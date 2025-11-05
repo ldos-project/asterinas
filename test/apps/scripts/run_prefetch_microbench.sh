@@ -19,7 +19,7 @@ KB=1024
 MB=$(( 1024 * 1024 ))
 GB=$(( 1024 * 1024 * 1024 ))
 
-SLEEP=0
+SLEEP=1
 
 CMD="/test/prefetch-microbench/stream /ext2/largefile \
     0,$KB,$((12 * $KB)),$COUNT,$SLEEP"
@@ -32,6 +32,9 @@ CMD="/test/prefetch-microbench/stream /ext2/largefile \
 #     0,$KB,$((1 * $KB)),$COUNT,$SLEEP"
 
 echo $CMD
-command time $CMD
+$CMD
 
-sleep 3
+# sleep 3
+
+
+# dd if=/dev/zero of=/ext2/largefile bs=1M count=256; sync

@@ -333,6 +333,7 @@ impl OutstandingRequests {
         c: &mut Box<dyn Consumer<PageHandle>>,
     ) -> bool {
         if let Some(PageHandle { idx, frame }) = c.try_consume() {
+            println!("  (Completed async read: {idx})");
             Self::store_uptodate(pages, idx, frame);
             true
         } else {
@@ -367,7 +368,7 @@ impl OutstandingRequests {
         backend: &Arc<dyn PageStore>,
         idx: usize,
     ) -> Result<()> {
-        println!("Async read: {idx}");
+        // println!("Async read: {idx}");
 
         let async_page = CachePage::alloc_uninit()?;
         pages.put(idx, async_page.clone());
@@ -559,7 +560,7 @@ impl PageCacheManager {
         let inner = inner.deref_mut();
         let backend = self.backend()?;
 
-        self.page_reads_oqueue().produce(idx)?;
+        error_result!(self.page_reads_oqueue().try_produce(idx));
 
         // Handle any requests that have already completed.
         inner.outstanding_requests.check_requests(&mut inner.pages);
@@ -569,7 +570,7 @@ impl PageCacheManager {
         // 2. The requested page is currently being read (generally due to a prefetch).
         // 3. The requested page is on disk, need a sync read operation here.
         let frame = if let Some(page) = inner.pages.get(&idx) {
-            println!("Cache hit: {idx}");
+            println!("Cache hit: {idx} ({:?})", page.load_state());
             // Cond 1 & 2.
             if let PageState::Uninit = page.load_state() {
                 // Cond 2: We should wait for the previous readahead.
@@ -625,12 +626,12 @@ impl PageCacheManager {
             }
         }
         if let Some(s) = prefetcher_state.take() {
-            println!("Shutting down");
+            // println!("Shutting down");
             error_result!(s.0.shutdown());
-            println!("Shut down");
+            // println!("Shut down");
         }
         let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
-        println!("Starting new policy");
+        // println!("Starting new policy");
         let prefetcher = match policy {
             PrefetchPolicy::Readahead => {
                 ReadaheadPrefetcher::spawn(this)? as _
@@ -640,7 +641,7 @@ impl PageCacheManager {
             }
             _ => Err(Error::unreachable())?,
         };
-        println!("Started new policy");
+        // println!("Started new policy");
         *prefetcher_state = Some((prefetcher, policy));
         Ok(())
     }

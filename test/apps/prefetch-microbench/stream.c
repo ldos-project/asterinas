@@ -58,7 +58,7 @@ void *reader_thread(void *arg)
 		fseek(file, args->stride - bytes_read, SEEK_CUR);
 
 		if (args->sleep_time > 0) {
-			struct timespec time = { 0, args->sleep_time };
+			struct timespec time = { args->sleep_time, 0 };
 			nanosleep(&time, NULL);
 		}
 	}
