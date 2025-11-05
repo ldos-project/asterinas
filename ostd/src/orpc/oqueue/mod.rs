@@ -9,6 +9,7 @@ pub mod generic_test;
 pub mod locking;
 pub mod registry;
 pub mod reply;
+/// OQueue implementations that use lock-free ringbuffers for efficient space management
 pub mod ringbuffer;
 
 use alloc::string::String;

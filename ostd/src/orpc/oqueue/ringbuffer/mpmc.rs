@@ -310,24 +310,20 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             // There might be multiple threads updating this slot at the same time. Do a
             // compare_exchange instead of store because we don't want to overwrite a
             // newer value if some other consumer got to it first.
-            loop {
-                // N.B. (aneesh): I'm not entirely sure why SeqCst is used here, but it matches
-                // rigtorp/MPMCQueue
-                if let Err(slot_turn) = slot.turn.compare_exchange(
-                    prev_slot_turn,
-                    next_slot_turn,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    // This slot was updated by another consumer/observer, so we don't need to
-                    // update it anymore.
-                    if slot_turn >= next_slot_turn {
-                        break;
-                    }
-                    prev_slot_turn = slot_turn;
-                } else {
+            // N.B. (aneesh): I'm not entirely sure why SeqCst is used here, but it matches
+            // rigtorp/MPMCQueue
+            while let Err(slot_turn) = slot.turn.compare_exchange(
+                prev_slot_turn,
+                next_slot_turn,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                // This slot was updated by another consumer/observer, so we don't need to
+                // update it anymore.
+                if slot_turn >= next_slot_turn {
                     break;
                 }
+                prev_slot_turn = slot_turn;
             }
         }
     }
@@ -424,7 +420,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn size(&self) -> usize {
-        self.head.load(Ordering::Relaxed) as usize - self.tail.load(Ordering::Relaxed)
+        self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 
     fn empty(&self) -> bool {
