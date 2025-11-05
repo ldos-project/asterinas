@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+/// Ringbuffer based implementations of OQueue
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 pub mod mpmc;

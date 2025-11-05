@@ -20,8 +20,8 @@ use core::{
 };
 
 use crossbeam_utils::CachePadded;
-// SPDX-License-Identifier: MPL-2.0
 
+// SPDX-License-Identifier: MPL-2.0
 use super::Element;
 use crate::{
     orpc::oqueue::{
@@ -60,18 +60,12 @@ impl<T> Slot<T> {
     /// called.
     unsafe fn get(&self) -> T {
         // SAFETY: This assumes that the self.store has be previously called
-        unsafe {
-            let data = ptr::read(self.value.data.get()).assume_init();
-            data
-        }
+        unsafe { ptr::read(self.value.data.get()).assume_init() }
     }
 
     unsafe fn get_maybe_uninit(&self) -> MaybeUninit<T> {
         // SAFETY: This assumes that the self.store has be previously called
-        unsafe {
-            let data = ptr::read(self.value.data.get());
-            data
-        }
+        unsafe { ptr::read(self.value.data.get()) }
     }
 }
 
@@ -270,9 +264,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             if self.turn(head, false) == slot.turn.load(Ordering::Acquire) {
                 // N.B. (aneesh): I'm not entirely sure why SeqCst is used here, but it matches
                 // rigtorp/MPMCQueue
-                if let Ok(_) =
-                    self.head
-                        .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
+                if self
+                    .head
+                    .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
                 {
                     // We have exclusive write access to the slot, safe to write.
                     unsafe { slot.store(data) };
@@ -304,7 +299,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let mut prev_slot_turn = curr_slot_turn;
         // Check if there's any StrongObservers that have not yet read this slot.
         if (IS_CONSUMER || self.tail.load(Ordering::Acquire) >= (tail + 1))
-            && (self.strong_observer_tails.len() == 0
+            && (self.strong_observer_tails.is_empty()
                 || self.strong_observer_tails.iter().all(|t| {
                     // The slowest tail updates the slot. The check for the other tail values
                     // must be >= and not just >, because it's better for two threads to attempt
@@ -433,7 +428,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn empty(&self) -> bool {
-        self.size() <= 0
+        self.size() == 0
     }
 
     /// Observe a value in the queue based on a cursor. If value isn't available return `None`. This can happen if
@@ -467,7 +462,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         if self.get_slot(index).turn.load(Ordering::Acquire) != slot_turn {
             return None;
         }
-        return Some(unsafe { v.assume_init() });
+        Some(unsafe { v.assume_init() })
     }
 
     fn get_this(
