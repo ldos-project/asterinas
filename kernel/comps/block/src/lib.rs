@@ -39,6 +39,7 @@ pub mod id;
 mod impl_block_device;
 mod prelude;
 pub mod request_queue;
+mod test_utils;
 
 use component::{ComponentInitError, init_component};
 use ostd::sync::SpinLock;

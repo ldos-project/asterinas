@@ -47,6 +47,25 @@ impl dyn BlockDevice {
         bio.submit(self)
     }
 
+    /// Asynchronously reads contiguous blocks starting from the `bid`. When complete call
+    /// `complete_fn`.
+    pub fn read_blocks_async_with_closure(
+        &self,
+        bid: Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<(), BioEnqueueError> {
+        let bio = Bio::new_with_closure(
+            BioType::Read,
+            Sid::from(bid),
+            vec![bio_segment],
+            complete_fn,
+        );
+        // The result of the operation in handled by the callback, so we can drop the waiter.
+        let _ = bio.submit(self)?;
+        Ok(())
+    }
+
     /// Synchronously writes contiguous blocks starting from the `bid`.
     pub fn write_blocks(
         &self,
@@ -76,6 +95,25 @@ impl dyn BlockDevice {
             Some(general_complete_fn),
         );
         bio.submit(self)
+    }
+
+    /// Asynchronously writes contiguous blocks starting from the `bid`. When complete call
+    /// `complete_fn`.
+    pub fn write_blocks_async_with_closure(
+        &self,
+        bid: Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<(), BioEnqueueError> {
+        let bio = Bio::new_with_closure(
+            BioType::Write,
+            Sid::from(bid),
+            vec![bio_segment],
+            complete_fn,
+        );
+        // The result of the operation in handled by the callback, so we can drop the waiter.
+        let _ = bio.submit(self)?;
+        Ok(())
     }
 
     /// Issues a sync request
@@ -218,5 +256,59 @@ fn general_complete_fn(bio: &SubmittedBio) {
             bio.type_(),
             err_status
         ),
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::{id::Bid, test_utils::FakeBlockDevice};
+
+    /// An atomic counter used to track how many times a callback has been called. This must be
+    /// static to work with static `fn`s passed to Bio.
+    static CALLBACK_INVOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    /// Test asynchronous read_blocks with closure method.
+    #[ktest]
+    fn read_blocks_async_with_closure() {
+        let bid = Bid::new(2);
+        let bio_segment = BioSegment::alloc(1, BioDirection::FromDevice);
+        let block_device: &dyn BlockDevice = &FakeBlockDevice;
+
+        let complete_fn = |bio: &SubmittedBio| {
+            assert_eq!(bio.type_(), BioType::Read);
+            assert_eq!(bio.status(), BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        };
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        block_device
+            .read_blocks_async_with_closure(bid, bio_segment, complete_fn)
+            .unwrap();
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test asynchronous write_blocks with closure method.
+    #[ktest]
+    fn write_blocks_async_with_closure() {
+        let bid = Bid::new(2);
+        let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+        let block_device: &dyn BlockDevice = &FakeBlockDevice;
+
+        let complete_fn = |bio: &SubmittedBio| {
+            assert_eq!(bio.type_(), BioType::Write);
+            assert_eq!(bio.status(), BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        };
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        block_device
+            .write_blocks_async_with_closure(bid, bio_segment, complete_fn)
+            .unwrap();
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }
 }
