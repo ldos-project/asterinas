@@ -28,6 +28,7 @@ use crate::{
         WeakObserver,
     },
     sync::{Mutex, WaitQueue, Waker},
+    task::Task,
 };
 
 /// A single element of the ringbuffer that tracks the last "turn" that updated it.
@@ -79,10 +80,19 @@ impl<T> Slot<T> {
 /// consumed.
 const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
 
+/// MPMCOQueue allows conccurrent producers and consumers. For any produced message it is guaranteed
+/// that it will be read by exactly one consumer, all strong observers, and zero or more weak
+/// observers. A consumed message cannot be viewed by a future strong observer, but could be viewed
+/// by a weak observer.
 pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
     this: Weak<Self>,
     capacity: NonZero<usize>,
     max_strong_observers: usize,
+    /// A producer "owns" a slot if it successfully incremented head to one index past the slot and
+    /// the slot is marked as ready for writing (even turn). A consumer "owns" a slot if it
+    /// successfully incremented tail to one index past the slot and the slot is marked as ready for
+    /// reading (odd turn).All other slots are "unowned". Note that the turn of a slot will be
+    /// updated from reading to writing only when the slowest consumer or strong observer visits it.
     slots: Box<[Slot<T>]>,
     /// The index at which elements are produced to.
     head: CachePadded<AtomicUsize>,
@@ -93,8 +103,6 @@ pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVE
     /// handles, but will be written to by exactly one handle. Unlike a Consumer, each message is
     /// read once by every StrongObserver.
     strong_observer_tails: Box<[CachePadded<AtomicUsize>]>,
-    // TODO(aneesh): do strong_observer_tails actually have to be atomic? It's guaranteed that they
-    // have only a single writer.
     n_strong_observers: Mutex<usize>,
 
     /// Wait queue for threads waiting to put into the queue.
@@ -112,9 +120,16 @@ unsafe impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Send
 {
 }
 
+// Page aligned allocations are needed for large allocations because the buddy allocator in
+// ostd is very simple, and misaligned allocations can lead to fragmentation because the allocator
+// doesn't coalesce often enough.
 fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
     let elem_size = core::mem::size_of::<Slot<T>>();
     let total_size = elem_size * len;
+
+    if total_size < 4096 {
+        return (0..(len + 1)).map(|_| Slot::new()).collect();
+    }
 
     // Layout with page alignment
     let layout = core::alloc::Layout::from_size_align(total_size, 4096).expect("invalid layout");
@@ -142,8 +157,9 @@ fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
 impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
-    ///
+    /// Create a new MPMCOQueue with a maximum size and a maximum number of strong observers.
     pub fn new(size: usize, max_strong_observers: usize) -> Arc<Self> {
+        assert!(max_strong_observers == 0 || STRONG_OBSERVERS);
         assert!(size.is_power_of_two());
         assert!(size > 0);
 
@@ -164,18 +180,19 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         })
     }
 
+    /// Get the capacity of the queue
     pub fn capacity(&self) -> usize {
         self.capacity.into()
     }
 
-    /// "turn" is similar to a generation counter.
-    /// N.B.: The way rigtorp/MPMCQueue uses the term turn here is misleading. `Slot`s have a turn,
-    /// but this is really the generation. The actual "turn" is either (2 * self.turn(index)) or
-    /// (2 * self.turn(index) + 1) for producers and consumers respectively. If I could rename it,
-    /// it would be "generation", but this ensures consistency with the rigtorp implementation to
-    /// make it easier for new readers to pick up.
-    fn turn(&self, index: usize) -> usize {
-        index / self.capacity
+    /// "turn" is similar to a generation counter with an extra bit for indicating whether we expect
+    /// the slot to be readable or writable.
+    fn turn(&self, index: usize, reading: bool) -> usize {
+        2 * (index / self.capacity) + if reading { 1 } else { 0 }
+    }
+
+    fn next_turn(&self, index: usize, reading: bool) -> usize {
+        self.turn(index, reading) + 2
     }
 
     /// The physical index in the ringbuffer.
@@ -189,7 +206,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         loop {
             let head = self.head.fetch_add(1, Ordering::Acquire);
             if head >= MPMCOQUEUE_HEAD_SENTINEL {
-                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {}
+                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
+                    Task::yield_now();
+                }
             } else {
                 break head;
             }
@@ -201,6 +220,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         unsafe { self.slots.get_unchecked(self.idx(position)) }
     }
 
+    /// Produce an element onto the queue
     pub fn produce(&self, data: T)
     where
         T: Send,
@@ -211,10 +231,18 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let slot = &self.get_slot(head);
         // Wait until the generation count matches the turn. Note that we need an even turn because
         // we are writing.
-        while self.turn(head) * 2 != slot.turn.load(Ordering::Acquire) {}
+        let mut counter = 0;
+        while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
+            counter += 1;
+            if counter % 1024 == 0 {
+                counter = 0;
+                Task::yield_now();
+            }
+            core::hint::spin_loop();
+        }
         unsafe { slot.store(data) };
         // Mark the slot as writeable
-        slot.turn.store(self.turn(head) * 2 + 1, Ordering::Release);
+        slot.turn.store(self.turn(head, true), Ordering::Release);
     }
 
     fn try_produce(&self, data: T) -> Option<T>
@@ -222,7 +250,14 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         T: Send,
     {
         // Get the current head position
-        let mut head = self.fetch_head_for_produce();
+        let mut head = loop {
+            let head = self.head.load(Ordering::Acquire);
+            if head >= MPMCOQUEUE_HEAD_SENTINEL {
+                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {}
+            } else {
+                break head;
+            }
+        };
 
         // We don't need to check for sentinels from this point onwards. If the sentinal value is
         // set, we will just fail below during one of the compare_exchange calls below.
@@ -231,7 +266,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             let slot = &self.get_slot(head);
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
-            if (self.turn(head) * 2) == slot.turn.load(Ordering::Acquire) {
+            if self.turn(head, false) == slot.turn.load(Ordering::Acquire) {
+                // N.B. (aneesh): I'm not entirely sure why SeqCst is used here, but it matches
+                // rigtorp/MPMCQueue
                 if let Ok(_) =
                     self.head
                         .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -239,7 +276,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     // We have exclusive write access to the slot, safe to write.
                     unsafe { slot.store(data) };
                     // Mark the slot as writeable
-                    slot.turn.store(self.turn(head) * 2 + 1, Ordering::Release);
+                    slot.turn.store(self.turn(head, true), Ordering::Release);
                     return None;
                 }
             } else {
@@ -255,37 +292,39 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
-    pub fn consume(&self) -> T {
-        let tail = self.tail.fetch_add(1, Ordering::Acquire);
+    fn mark_slot_as_read<const IS_CONSUMER: bool>(
+        &self,
+        curr_slot_turn: usize,
+        next_slot_turn: usize,
+        tail: usize,
+    ) {
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-        let mut prev_slot_turn;
-        loop {
-            prev_slot_turn = slot.turn.load(Ordering::Acquire);
-            if (self.turn(tail) * 2 + 1) == prev_slot_turn {
-                break;
-            }
-        }
-        let v = unsafe { slot.get() };
-        let next_slot_turn = self.turn(tail) * 2 + 2;
+
+        let mut prev_slot_turn = curr_slot_turn;
         // Check if there's any StrongObservers that have not yet read this slot.
-        if !STRONG_OBSERVERS {
-            slot.turn.store(next_slot_turn, Ordering::Release);
-        } else if self.strong_observer_tails.iter().all(|t| {
-            // The slowest tail updates the slot. The check for the other tail values
-            // must be >= and not just >, because it's better for two threads to attempt
-            // to redundantly update the slot than to have the slot never update.
-            t.load(Ordering::Acquire) >= (tail + 1)
-        }) {
+        if (IS_CONSUMER || self.tail.load(Ordering::Acquire) >= (tail + 1))
+            && (self.strong_observer_tails.len() == 0
+                || self.strong_observer_tails.iter().all(|t| {
+                    // The slowest tail updates the slot. The check for the other tail values
+                    // must be >= and not just >, because it's better for two threads to attempt
+                    // to redundantly update the slot than to have the slot never update.
+                    t.load(Ordering::Acquire) >= (tail + 1)
+                }))
+        {
             // There might be multiple threads updating this slot at the same time. Do a
             // compare_exchange instead of store because we don't want to overwrite a
             // newer value if some other consumer got to it first.
             loop {
+                // N.B. (aneesh): I'm not entirely sure why SeqCst is used here, but it matches
+                // rigtorp/MPMCQueue
                 if let Err(slot_turn) = slot.turn.compare_exchange(
                     prev_slot_turn,
                     next_slot_turn,
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 ) {
+                    // This slot was updated by another consumer/observer, so we don't need to
+                    // update it anymore.
                     if slot_turn >= next_slot_turn {
                         break;
                     }
@@ -294,6 +333,34 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     break;
                 }
             }
+        }
+    }
+
+    /// Consume an element from the queue
+    pub fn consume(&self) -> T {
+        let tail = self.tail.fetch_add(1, Ordering::Acquire);
+        let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
+        let mut prev_slot_turn;
+        let mut counter = 0;
+        loop {
+            prev_slot_turn = slot.turn.load(Ordering::Acquire);
+            if self.turn(tail, true) == prev_slot_turn {
+                break;
+            }
+            counter += 1;
+            if counter % 1024 == 0 {
+                counter = 0;
+                Task::yield_now();
+            }
+            core::hint::spin_loop();
+        }
+        let v = unsafe { slot.get() };
+        let next_slot_turn = self.next_turn(tail, false);
+        // Check if there's any StrongObservers that have not yet read this slot.
+        if !STRONG_OBSERVERS {
+            slot.turn.store(next_slot_turn, Ordering::Release);
+        } else {
+            self.mark_slot_as_read::<true>(prev_slot_turn, next_slot_turn, tail);
         }
         v
     }
@@ -309,7 +376,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             let slot = &self.get_slot(tail);
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another consumer has beaten this thread to the slot.
-            if (self.turn(tail) * 2 + 1) == slot.turn.load(Ordering::Acquire) {
+            if self.turn(tail, true) == slot.turn.load(Ordering::Acquire) {
                 if self
                     .tail
                     .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -317,36 +384,15 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 {
                     // We have exclusive consume access to the slot
                     let v = unsafe { self.get_slot(tail).get() };
-                    let mut prev_slot_turn = slot.turn.load(Ordering::Acquire);
-                    let next_slot_turn = self.turn(tail) * 2 + 2;
+                    let prev_slot_turn = slot.turn.load(Ordering::Acquire);
+                    let next_slot_turn = self.next_turn(tail, false);
 
                     // Check if there's any StrongObservers that have not yet read this slot.
                     if !STRONG_OBSERVERS {
-                        slot.turn.store(self.turn(tail) * 2 + 2, Ordering::Release);
-                    } else if self.strong_observer_tails.iter().all(|t| {
-                        // The slowest tail updates the slot. The check for the other tail values
-                        // must be >= and not just >, because it's better for two threads to attempt
-                        // to redundantly update the slot than to have the slot never update.
-                        t.load(Ordering::Acquire) >= (tail + 1)
-                    }) {
-                        // There might be multiple threads updating this slot at the same time. Do a
-                        // compare_exchange instead of store because we don't want to overwrite a
-                        // newer value if some other consumer got to it first.
-                        loop {
-                            if let Err(slot_turn) = slot.turn.compare_exchange(
-                                prev_slot_turn,
-                                next_slot_turn,
-                                Ordering::SeqCst,
-                                Ordering::SeqCst,
-                            ) {
-                                if slot_turn >= next_slot_turn {
-                                    break;
-                                }
-                                prev_slot_turn = slot_turn;
-                            } else {
-                                break;
-                            }
-                        }
+                        slot.turn
+                            .store(self.next_turn(tail, false), Ordering::Release);
+                    } else {
+                        self.mark_slot_as_read::<true>(prev_slot_turn, next_slot_turn, tail);
                     }
 
                     return Some(v);
@@ -367,40 +413,16 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // id), we reset the pointer to head and retry?
         let tail = self.strong_observer_tails[observer_id].load(Ordering::Acquire);
         let slot = &self.get_slot(tail);
-        if (self.turn(tail) * 2 + 1) != slot.turn.load(Ordering::Acquire) {
+        if self.turn(tail, true) != slot.turn.load(Ordering::Acquire) {
             return None;
         }
-        self.strong_observer_tails[observer_id].fetch_add(1, Ordering::Acquire);
-
         // SAFETY: the check above guarantees that this slot contains valid data
         let v = unsafe { slot.get() };
 
-        let mut prev_slot_turn = slot.turn.load(Ordering::Acquire);
-        let next_slot_turn = self.turn(tail) * 2 + 2;
-
-        // See try_consume for details about the slot turn update protocol here.
-        if self.tail.load(Ordering::Acquire) >= (tail + 1)
-            && self
-                .strong_observer_tails
-                .iter()
-                .all(|t| t.load(Ordering::Acquire) >= (tail + 1))
-        {
-            loop {
-                // Do a compare_exchange instead of store because we don't want to overwrite a newer
-                // value if some other consumer got to it first.
-                if let Err(slot_turn) = slot.turn.compare_exchange(
-                    prev_slot_turn,
-                    next_slot_turn,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    if slot_turn >= next_slot_turn {
-                        break;
-                    }
-                    prev_slot_turn = slot_turn;
-                }
-            }
-        }
+        self.strong_observer_tails[observer_id].fetch_add(1, Ordering::Acquire);
+        let prev_slot_turn = slot.turn.load(Ordering::Acquire);
+        let next_slot_turn = self.next_turn(tail, false);
+        self.mark_slot_as_read::<false>(prev_slot_turn, next_slot_turn, tail);
 
         Some(v)
     }
@@ -430,21 +452,21 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
 
         // Get the current turn of the slot.
-        let sturn = self.get_slot(index).turn.load(Ordering::Relaxed);
+        let slot_turn = self.get_slot(index).turn.load(Ordering::Relaxed);
         // If the turn of the slot is either (the current turn and readable), or (the next turn and
         // writable (but not yet written)), then attempt to read.
-        let expected_turn = 2 * self.turn(index) + 1;
-        if sturn != expected_turn && sturn != (expected_turn + 1) {
+        let expected_turn = self.turn(index, true);
+        if slot_turn != expected_turn && slot_turn != (expected_turn + 1) {
             return None;
         }
 
-        let v = unsafe { self.get_slot(index).get_maybe_uninit().assume_init() };
+        let v = unsafe { self.get_slot(index).get_maybe_uninit() };
         // Check if the turn changed while reading. This means that the value we read above is
         // not guaranteed to be the value at `index`, so we should throw it away and return failure.
-        if self.get_slot(index).turn.load(Ordering::Acquire) != sturn {
+        if self.get_slot(index).turn.load(Ordering::Acquire) != slot_turn {
             return None;
         }
-        return Some(v);
+        return Some(unsafe { v.assume_init() });
     }
 
     fn get_this(
@@ -483,17 +505,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
 {
     fn produce(&self, data: T) {
         self.oqueue.produce(data);
-        // let mut d = data;
-        // self.oqueue
-        //     .put_wait_queue
-        //     .wait_until(|| match self.try_produce(d.take().unwrap()) {
-        //         Some(returned) => {
-        //             d = Some(returned);
-        //             None
-        //         }
-        //         None => Some(()),
-        //     });
-        // self.oqueue.read_wait_queue.wake_all();
+        self.oqueue.read_wait_queue.wake_all();
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
@@ -528,23 +540,18 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn consume(&self) -> T {
-        self.oqueue.consume()
-        // .read_wait_queue
-        // .wait_until(|| self.try_consume())
+        let v = self.oqueue.consume();
+        self.oqueue.put_wait_queue.wake_one();
+        v
     }
 
     fn try_consume(&self) -> Option<T> {
-        // SAFETY: SPSCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
         let res = self.oqueue.try_consume();
         if res.is_some() {
             self.oqueue.put_wait_queue.wake_one();
         }
         res
     }
-
-    // fn enqueue_for_take(&self, waker: Arc<crate::sync::Waker>) {
-    //     self.oqueue.read_wait_queue.enqueue(waker);
-    // }
 }
 
 /// The strong observer handle for [`MPMCOQueue`].
@@ -628,8 +635,6 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> W
     }
 
     fn oldest_cursor(&self) -> Cursor {
-        // TODO(aneesh) can this just be self.head.load(Relaxed) - self.size()?
-        // or maybe even min(self.tails.load)?
         let Cursor(i) = self.recent_cursor();
         // Return the most recent - the buffer size or zero if the buffer isn't full yet.
         if i < self.oqueue.capacity.into() {
@@ -729,271 +734,5 @@ mod test {
         let oqueue1 = MPMCOQueue::<_>::new(16, 5);
         let oqueue2 = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
-    }
-}
-
-pub struct Rigtorp<T> {
-    this: Weak<Self>,
-    capacity: NonZero<usize>,
-    slots: Box<[Slot<T>]>,
-    head: CachePadded<AtomicUsize>,
-    tail: CachePadded<AtomicUsize>,
-}
-
-unsafe impl<T> Sync for Rigtorp<T> {}
-unsafe impl<T> Send for Rigtorp<T> {}
-
-impl<T> Rigtorp<T> {
-    /// new
-    pub fn new(size: usize) -> Arc<Self> {
-        assert!(size.is_power_of_two());
-        assert!(size > 0);
-
-        Arc::new_cyclic(|this| Rigtorp {
-            this: this.clone(),
-            capacity: NonZero::new(size).unwrap(),
-            slots: (0..(size + 1)).map(|_| Slot::new()).collect(),
-            head: CachePadded::new(AtomicUsize::new(0)),
-            tail: CachePadded::new(AtomicUsize::new(0)),
-        })
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity.into()
-    }
-
-    /// "turn" is similar to a generation counter.
-    /// N.B.: The way rigtorp/MPMCQueue uses the term turn here is misleading. `Slot`s have a turn,
-    /// but this is really the generation. The actual "turn" is either (2 * self.turn(index)) or
-    /// (2 * self.turn(index) + 1) for producers and consumers respectively. If I could rename it,
-    /// it would be "generation", but this ensures consistency with the rigtorp implementation to
-    /// make it easier for new readers to pick up.
-    fn turn(&self, index: usize) -> usize {
-        index / self.capacity
-    }
-
-    /// The physical index in the ringbuffer.
-    fn idx(&self, index: usize) -> usize {
-        index % self.capacity
-    }
-
-    /// produce
-    pub fn produce(&self, data: T)
-    where
-        T: Send,
-    {
-        // Update the head position so that other producers can also write
-        let head = self.head.fetch_add(1, Ordering::Acquire);
-        // Get the slot we will be writing to
-        let slot = unsafe { &self.slots.get_unchecked(self.idx(head)) };
-        // Wait until the generation count matches the turn. Note that we need an even turn because
-        // we are writing.
-        while self.turn(head) * 2 != slot.turn.load(Ordering::Acquire) {}
-        unsafe { slot.store(data) };
-        // Mark the slot as writeable
-        slot.turn.store(self.turn(head) * 2 + 1, Ordering::Release);
-    }
-
-    /// try_produce
-    pub fn try_produce(&self, data: T) -> Option<T>
-    where
-        T: Send,
-    {
-        // Get the current head position
-        let mut head = self.head.load(Ordering::Acquire);
-        loop {
-            // Get the slot that we'd like to write to
-            let slot = unsafe { &self.slots.get_unchecked(self.idx(head)) };
-            // If it is our turn, attempt to atomically update the counter while checking to see if
-            // another producer has beaten this thread to the slot.
-            if (self.turn(head) * 2) == slot.turn.load(Ordering::Acquire) {
-                if let Ok(_) =
-                    self.head
-                        .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
-                {
-                    // We have exclusive write access to the slot, safe to write.
-                    unsafe { slot.store(data) };
-                    // Mark the slot as writeable
-                    slot.turn.store(self.turn(head) * 2 + 1, Ordering::Release);
-                    return None;
-                }
-            } else {
-                // It was not our turn, but we can opportunistically try again.
-                let prev_head = head;
-                head = self.head.load(Ordering::Acquire);
-                // If it is not our turn and the `head` has not moved, the queue must be full.
-                // Return the value back to the user.
-                if head == prev_head {
-                    return Some(data);
-                }
-            }
-        }
-    }
-
-    ///
-    pub fn consume(&self) -> T {
-        let tail = self.tail.fetch_add(1, Ordering::Acquire);
-        let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-        while (self.turn(tail) * 2 + 1) != slot.turn.load(Ordering::Acquire) {}
-        let v = unsafe { slot.get() };
-        slot.turn.store(self.turn(tail) * 2 + 2, Ordering::Release);
-        v
-    }
-
-    /// try_consume
-    pub fn try_consume(&self) -> Option<T> {
-        // Get the current tail position
-        let mut tail = self.tail.load(Ordering::Acquire);
-        loop {
-            // Get the slot we intend to read from
-            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-            // If it is our turn, attempt to atomically update the counter while checking to see if
-            // another consumer has beaten this thread to the slot.
-            if (self.turn(tail) * 2 + 1) == slot.turn.load(Ordering::Acquire) {
-                if self
-                    .tail
-                    .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    // We have exclusive consume access to the slot
-                    let v = unsafe { self.slots[self.idx(tail)].get() };
-                    let mut prev_slot_turn = slot.turn.load(Ordering::Acquire);
-                    let next_slot_turn = self.turn(tail) * 2 + 2;
-
-                    // There might be multiple threads updating this slot at the same time. Do a
-                    // compare_exchange instead of store because we don't want to overwrite a
-                    // newer value if some other consumer got to it first.
-                    loop {
-                        if let Err(slot_turn) = slot.turn.compare_exchange(
-                            prev_slot_turn,
-                            next_slot_turn,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            if slot_turn >= next_slot_turn {
-                                break;
-                            }
-                            prev_slot_turn = slot_turn;
-                        }
-                    }
-
-                    return Some(v);
-                }
-            } else {
-                let prev_tail = tail;
-                tail = self.tail.load(Ordering::Acquire);
-                if tail == prev_tail {
-                    return None;
-                }
-            }
-        }
-    }
-
-    ///
-    pub fn size(&self) -> usize {
-        self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
-    }
-
-    ///
-    pub fn empty(&self) -> bool {
-        self.size() <= 0
-    }
-
-    ///
-    // pub fn attach_producer(&self) -> Option<Arc<Self>> {
-    //     self.this.upgrade()
-    // }
-
-    // ///
-    // pub fn attach_consumer(&self) -> Option<Arc<Self>> {
-    //     self.this.upgrade()
-    // }
-
-    pub fn get_this(&self) -> Arc<Self> {
-        self.this.upgrade().unwrap()
-    }
-}
-
-/// The producer handle for [`Rigtorp`].
-pub struct RigtorpProducer<T> {
-    oqueue: Arc<Rigtorp<T>>,
-    // Make this Send, but not Sync
-    _phantom: PhantomData<Cell<()>>,
-}
-
-impl<T: Copy + Send> Blocker for RigtorpProducer<T> {
-    fn should_try(&self) -> bool {
-        true
-    }
-
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        panic!("!");
-    }
-}
-
-impl<T: Copy + Send + 'static> Producer<T> for RigtorpProducer<T> {
-    fn produce(&self, data: T) {
-        self.oqueue.produce(data);
-    }
-
-    fn try_produce(&self, data: T) -> Option<T> {
-        panic!("!");
-    }
-}
-
-/// The consumer handle for [`Rigtorp`].
-pub struct RigtorpConsumer<T> {
-    oqueue: Arc<Rigtorp<T>>,
-    // Make this Send, but not Sync
-    _phantom: PhantomData<Cell<()>>,
-}
-
-impl<T: Copy + Send> Blocker for RigtorpConsumer<T> {
-    fn should_try(&self) -> bool {
-        true
-    }
-
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
-        panic!("!");
-    }
-}
-
-impl<T: Copy + Send + 'static> Consumer<T> for RigtorpConsumer<T> {
-    fn consume(&self) -> T {
-        self.oqueue.consume()
-    }
-
-    fn try_consume(&self) -> Option<T> {
-        panic!("!");
-    }
-}
-
-impl<T: Copy + Send + 'static> OQueue<T> for Rigtorp<T> {
-    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
-        Ok(Box::new(RigtorpProducer {
-            oqueue: self.get_this(),
-            _phantom: PhantomData,
-        }) as _)
-    }
-
-    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        Ok(Box::new(RigtorpConsumer {
-            oqueue: self.get_this(),
-            _phantom: PhantomData,
-        }) as _)
-    }
-
-    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
-        Err(OQueueAttachError::AllocationFailed {
-            table_type: type_name::<Self>().to_owned(),
-            message: "no observer".to_owned(),
-        })
-    }
-
-    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
-        Err(OQueueAttachError::AllocationFailed {
-            table_type: type_name::<Self>().to_owned(),
-            message: "no observer".to_owned(),
-        })
     }
 }
