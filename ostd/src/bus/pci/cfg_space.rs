@@ -163,13 +163,13 @@ pub enum Bar {
 impl Bar {
     pub(super) fn new(location: PciDeviceLocation, index: u8) -> Result<Self> {
         if index >= 6 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         // Get the original value first, then write all 1 to the register to get the length
         let raw = location.read32(index as u16 * 4 + PciDeviceCommonCfgOffset::Bar0 as u16);
         if raw == 0 {
             // no BAR
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         Ok(if raw & 1 == 0 {
             Self::Memory(Arc::new(MemoryBar::new(&location, index)?))
@@ -252,7 +252,7 @@ impl MemoryBar {
                 ((raw & !0xF) as u64) | ((location.read32(offset + 4) as u64) << 32)
             }
             _ => {
-                return Err(Error::InvalidArgs);
+                return Err(Error::invalid_args());
             }
         };
         // length
@@ -306,11 +306,11 @@ impl IoBar {
     pub fn read<T: PortRead>(&self, offset: u32) -> Result<T> {
         // Check alignment
         if (self.base + offset) % size_of::<T>() as u32 != 0 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         // Check overflow
         if self.size < size_of::<T>() as u32 || offset > self.size - size_of::<T>() as u32 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         // SAFETY: The range of ports accessed is within the scope managed by the IoBar and
         // an out-of-bounds check is performed.
@@ -321,11 +321,11 @@ impl IoBar {
     pub fn write<T: PortWrite>(&self, offset: u32, value: T) -> Result<()> {
         // Check alignment
         if (self.base + offset) % size_of::<T>() as u32 != 0 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         // Check overflow
         if size_of::<T>() as u32 > self.size || offset > self.size - size_of::<T>() as u32 {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         // SAFETY: The range of ports accessed is within the scope managed by the IoBar and
         // an out-of-bounds check is performed.

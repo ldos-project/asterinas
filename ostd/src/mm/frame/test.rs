@@ -314,7 +314,7 @@ mod segment {
     fn empty_segment_creation() {
         let result = FrameAllocOptions::new().alloc_segment(0);
         assert!(
-            matches!(result, Err(Error::InvalidArgs)),
+            matches!(result, Err(Error::InvalidArgs { .. })),
             "Expected `InvalidArgs` error when allocating a zero-sized segment"
         );
     }

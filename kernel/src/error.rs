@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::fmt::Display;
+use core::{fmt::Display, panic::Location};
 
+use aster_logger::println;
 use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
 
 /// Error number.
@@ -299,17 +300,25 @@ pub enum Errno {
 pub struct Error {
     errno: Errno,
     msg: Option<&'static str>,
+    location: &'static Location<'static>,
 }
 
 impl Error {
+    #[track_caller]
     pub const fn new(errno: Errno) -> Self {
-        Error { errno, msg: None }
+        Error {
+            errno,
+            msg: None,
+            location: Location::caller(),
+        }
     }
 
+    #[track_caller]
     pub const fn with_message(errno: Errno, msg: &'static str) -> Self {
         Error {
             errno,
             msg: Some(msg),
+            location: Location::caller(),
         }
     }
 
@@ -320,6 +329,7 @@ impl Error {
     /// instead of `v.unwrap()` use `v.ok_or_else(Error::unknown)?`.
     ///
     /// Use [`Error::unreachable`] if the state is specifically unreachable.
+    #[track_caller]
     pub const fn unknown() -> Error {
         Error::with_message(Errno::ENOTRECOVERABLE, "unknown failure")
     }
@@ -327,6 +337,7 @@ impl Error {
     /// An error which should never be returned, because it's return is not reachable. This should
     /// be used in place of [`unreachable!`] when at all possible. For example, instead of
     /// `v.unwrap()` use `v.ok_or_else(Error::unreachable)?`.
+    #[track_caller]
     pub const fn unreachable() -> Error {
         Error::with_message(Errno::ENOTRECOVERABLE, "reached unreachable code")
     }
@@ -345,11 +356,13 @@ impl Display for Error {
             f.write_str(": ")?;
             f.write_str(msg)?;
         }
+        write!(f, "({})", self.location)?;
         Ok(())
     }
 }
 
 impl From<RPCError> for Error {
+    #[track_caller]
     fn from(value: RPCError) -> Self {
         match value {
             RPCError::Panic { message: _ } => {
@@ -363,6 +376,7 @@ impl From<RPCError> for Error {
 }
 
 impl From<OQueueAttachError> for Error {
+    #[track_caller]
     fn from(value: OQueueAttachError) -> Self {
         match value {
             OQueueAttachError::Unsupported { .. } => {
@@ -388,11 +402,16 @@ impl AsRef<Error> for Error {
 }
 
 impl From<ostd::Error> for Error {
+    #[track_caller]
     fn from(ostd_error: ostd::Error) -> Self {
         match ostd_error {
             ostd::Error::AccessDenied => Error::new(Errno::EFAULT),
             ostd::Error::NoMemory => Error::new(Errno::ENOMEM),
-            ostd::Error::InvalidArgs => Error::new(Errno::EINVAL),
+            ostd::Error::InvalidArgs { location } => Error {
+                errno: Errno::EINVAL,
+                msg: None,
+                location,
+            },
             ostd::Error::IoError => Error::new(Errno::EIO),
             ostd::Error::NotEnoughResources => Error::new(Errno::EBUSY),
             ostd::Error::PageFault => Error::new(Errno::EFAULT),
@@ -404,6 +423,7 @@ impl From<ostd::Error> for Error {
 }
 
 impl From<(ostd::Error, usize)> for Error {
+    #[track_caller]
     // Used in fallible memory read/write API
     fn from(ostd_error: (ostd::Error, usize)) -> Self {
         Error::from(ostd_error.0)
@@ -411,6 +431,7 @@ impl From<(ostd::Error, usize)> for Error {
 }
 
 impl From<aster_block::bio::BioEnqueueError> for Error {
+    #[track_caller]
     fn from(error: aster_block::bio::BioEnqueueError) -> Self {
         match error {
             aster_block::bio::BioEnqueueError::IsFull => {
@@ -427,6 +448,7 @@ impl From<aster_block::bio::BioEnqueueError> for Error {
 }
 
 impl From<aster_block::bio::BioStatus> for Error {
+    #[track_caller]
     fn from(err_status: aster_block::bio::BioStatus) -> Self {
         match err_status {
             aster_block::bio::BioStatus::NotSupported => {
@@ -444,36 +466,42 @@ impl From<aster_block::bio::BioStatus> for Error {
 }
 
 impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
     fn from(_: core::num::TryFromIntError) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid integer")
     }
 }
 
 impl From<core::str::Utf8Error> for Error {
+    #[track_caller]
     fn from(_: core::str::Utf8Error) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid utf-8 string")
     }
 }
 
 impl From<alloc::string::FromUtf8Error> for Error {
+    #[track_caller]
     fn from(_: alloc::string::FromUtf8Error) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid utf-8 string")
     }
 }
 
 impl From<core::ffi::FromBytesUntilNulError> for Error {
+    #[track_caller]
     fn from(_: core::ffi::FromBytesUntilNulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<core::ffi::FromBytesWithNulError> for Error {
+    #[track_caller]
     fn from(_: core::ffi::FromBytesWithNulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<cpio_decoder::error::Error> for Error {
+    #[track_caller]
     fn from(cpio_error: cpio_decoder::error::Error) -> Self {
         match cpio_error {
             cpio_decoder::error::Error::MagicError => {
@@ -502,32 +530,40 @@ impl From<cpio_decoder::error::Error> for Error {
 }
 
 impl From<Error> for ostd::Error {
+    #[track_caller]
     fn from(error: Error) -> Self {
         match error.errno {
             Errno::EACCES => ostd::Error::AccessDenied,
             Errno::EIO => ostd::Error::IoError,
             Errno::ENOMEM => ostd::Error::NoMemory,
             Errno::EFAULT => ostd::Error::PageFault,
-            Errno::EINVAL => ostd::Error::InvalidArgs,
+            Errno::EINVAL => ostd::Error::InvalidArgs {
+                location: error.location,
+            },
             Errno::EBUSY => ostd::Error::NotEnoughResources,
-            _ => ostd::Error::InvalidArgs,
+            _ => ostd::Error::InvalidArgs {
+                location: error.location,
+            },
         }
     }
 }
 
 impl From<alloc::ffi::NulError> for Error {
+    #[track_caller]
     fn from(_: alloc::ffi::NulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<int_to_c_enum::TryFromIntError> for Error {
+    #[track_caller]
     fn from(_: int_to_c_enum::TryFromIntError) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid enum value")
     }
 }
 
 impl From<aster_systree::Error> for Error {
+    #[track_caller]
     fn from(err: aster_systree::Error) -> Self {
         use aster_systree::Error::*;
         match err {

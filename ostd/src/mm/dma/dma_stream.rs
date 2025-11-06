@@ -145,7 +145,7 @@ impl DmaStream {
                 Ok(())
             } else {
                 if _byte_range.end > self.nbytes() {
-                    return Err(Error::InvalidArgs);
+                    return Err(Error::invalid_args());
                 }
                 if self.inner.is_cache_coherent {
                     return Ok(());
@@ -319,14 +319,14 @@ impl<Dma: AsRef<DmaStream>> DmaStreamSlice<Dma> {
 impl<Dma: AsRef<DmaStream> + Send + Sync> VmIo for DmaStreamSlice<Dma> {
     fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<(), Error> {
         if writer.avail() + offset > self.len {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         self.stream.as_ref().read(self.offset + offset, writer)
     }
 
     fn write(&self, offset: usize, reader: &mut VmReader) -> Result<(), Error> {
         if reader.remain() + offset > self.len {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
         self.stream.as_ref().write(self.offset + offset, reader)
     }

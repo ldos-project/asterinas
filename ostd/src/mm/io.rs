@@ -510,7 +510,7 @@ impl<'a> VmReader<'a, Infallible> {
     /// this method will return `Err`.
     pub fn read_val<T: Pod>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let mut val = T::new_uninit();
@@ -533,7 +533,7 @@ impl<'a> VmReader<'a, Infallible> {
     /// requirements of type `T`.
     pub fn read_once<T: PodOnce>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let cursor = self.cursor.cast::<T>();
@@ -590,7 +590,7 @@ impl VmReader<'_, Fallible> {
     /// the original starting position.
     pub fn read_val<T: Pod>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let mut val = T::new_uninit();
@@ -739,7 +739,7 @@ impl<'a> VmWriter<'a, Infallible> {
     /// this method will return `Err`.
     pub fn write_val<T: Pod>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let mut reader = VmReader::from(new_val.as_bytes());
@@ -757,7 +757,7 @@ impl<'a> VmWriter<'a, Infallible> {
     /// requirements of type `T`.
     pub fn write_once<T: PodOnce>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let cursor = self.cursor.cast::<T>();
@@ -847,7 +847,7 @@ impl VmWriter<'_, Fallible> {
     /// the original starting position.
     pub fn write_val<T: Pod>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return Err(Error::invalid_args());
         }
 
         let mut reader = VmReader::from(new_val.as_bytes());

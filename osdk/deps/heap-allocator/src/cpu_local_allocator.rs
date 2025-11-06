@@ -99,7 +99,7 @@ static ALLOCATOR_32: CpuLocalAllocator<32> = CpuLocalAllocator::new();
 /// Currently, the size of `T` must be no larger than 32 bytes.
 pub fn alloc_cpu_local<T>(mut init_values: impl FnMut(CpuId) -> T) -> Result<CpuLocalBox<T>> {
     let size = core::mem::size_of::<T>();
-    let class = CommonSizeClass::from_size(size).ok_or(Error::InvalidArgs)?;
+    let class = CommonSizeClass::from_size(size).ok_or(Error::invalid_args())?;
     let cpu_local = match class {
         CommonSizeClass::Bytes8 => ALLOCATOR_8.alloc::<T>(&mut init_values),
         CommonSizeClass::Bytes16 => ALLOCATOR_16.alloc::<T>(&mut init_values),
@@ -108,7 +108,7 @@ pub fn alloc_cpu_local<T>(mut init_values: impl FnMut(CpuId) -> T) -> Result<Cpu
         // Since cache lines are normally 64 bytes, when allocating CPU-local
         // objects with larger sizes, we should allocate a `Vec` with size
         // `num_cpus()` instead.
-        _ => Err(Error::InvalidArgs),
+        _ => Err(Error::invalid_args()),
     }?;
     Ok(CpuLocalBox(Some(cpu_local)))
 }
