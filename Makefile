@@ -336,7 +336,14 @@ ktest_%: initramfs $(CARGO_OSDK)
 	tail --lines 10 qemu.log | grep -q "^\\[ktest runner\\] All crates tested." \
 		|| (echo "Test failed" && exit 1); \
 
-.PHONY: ktest
+ktest_help:
+	@echo "Run the target ktest for all ktests. Run one the targets listed below for only one crate."
+	@echo
+	@printf "%-30s\t%s\n" "Crate" "Ktest target"
+	@echo
+	@paste <(printf "%-30s\n" $(OSDK_CRATES)) <(printf "ktest_%s\n" $(OSDK_KTEST_TARGETS))
+
+.PHONY: ktest ktest_help
 ktest: $(addprefix ktest_, $(OSDK_KTEST_TARGETS))
 
 # For each non-OSDK crate, invoke a rule which runs docs
