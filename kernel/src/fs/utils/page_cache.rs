@@ -52,8 +52,8 @@ impl PageCache {
     }
 
     /// Returns the Vmo object.
-    // TODO: The capability is too high，restrict it to eliminate the possibility of misuse.
-    //       For example, the `resize` api should be forbidded.
+    // TODO: The capability is too high, restrict it to eliminate the possibility of misuse.
+    //       For example, the `resize` api should be forbidden.
     pub fn pages(&self) -> &Vmo<Full> {
         &self.pages
     }
@@ -187,6 +187,11 @@ impl ReadaheadWindow {
     }
 }
 
+/// A management object which tracks the state of the prefetcher, including asynchronous read handles
+/// ([`waiter`](`ReadaheadState::waiter`)).
+///
+/// This implements a simple policy where pages are prefetched if there are sequential reads. The number of pages to
+/// prefetch increases as more sequential reads happen.
 struct ReadaheadState {
     /// Current readahead window.
     ra_window: Option<ReadaheadWindow>,
@@ -330,9 +335,17 @@ impl ReadaheadState {
     }
 }
 
+/// The page cache including both the cached pages and the readahead state and a reference to the backend to perform the
+/// actual loads. This references the backend weakly.
+///
+/// ### Locking Discipline
+///
+/// The lock ordering is: `pages`, `ra_state`.
 struct PageCacheManager {
     pages: Mutex<LruCache<usize, CachePage>>,
     backend: Weak<dyn PageCacheBackend>,
+    // TODO: This seems to be locked only when `pages` is also locked. So we could combine them into a struct within a
+    // single `Mutex`. This would eliminate the need for the locking discipline listed above.
     ra_state: Mutex<ReadaheadState>,
 }
 
@@ -346,10 +359,14 @@ impl PageCacheManager {
     }
 
     pub fn backend(&self) -> Arc<dyn PageCacheBackend> {
+        // TODO: This assumes the backend is still available which is not locally guaranteed. It is only true because
+        // PageCacheManagers never outlive the backend used to create them. For example, see
+        // kernel/src/fs/ext2/block_group.rs BlockGroup. Users of this should probably no-op and log if there is no
+        // backend.
         self.backend.upgrade().unwrap()
     }
 
-    // Discard pages without writing them back to disk.
+    /// Discard pages without writing them back to disk.
     pub fn discard_range(&self, range: Range<usize>) {
         let page_idx_range = get_page_idx_range(&range);
         let mut pages = self.pages.lock();
@@ -388,6 +405,8 @@ impl PageCacheManager {
         Ok(())
     }
 
+    /// Load a page performing read ahead if appropriate. The page may be loaded from the page cache
+    /// or read synchronously as part of this call.
     fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
         let mut pages = self.pages.lock();
         let mut ra_state = self.ra_state.lock();
@@ -396,9 +415,9 @@ impl PageCacheManager {
         if ra_state.prev_readahead_is_completed() {
             ra_state.wait_for_prev_readahead(&mut pages)?;
         }
-        // There are three possible conditions that could be encountered upon reaching here.
+        // There are three possible conditions that could be encountered upon reaching here:
         // 1. The requested page is ready for read in page cache.
-        // 2. The requested page is in previous readahead range, not ready for now.
+        // 2. The requested page is currently being read (generally due to a prefetch).
         // 3. The requested page is on disk, need a sync read operation here.
         let frame = if let Some(page) = pages.get(&idx) {
             // Cond 1 & 2.
