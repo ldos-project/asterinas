@@ -52,14 +52,10 @@ pub fn all_devices() -> Vec<(String, Arc<dyn AnyConsoleDevice>)> {
         .collect()
 }
 
-pub fn all_devices_lock<'a>()
--> SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled> {
-    COMPONENT
-        .get()
-        .unwrap()
-        .console_device_table
-        .disable_irq()
-        .lock()
+type ConsoleDeviceTable = BTreeMap<String, Arc<dyn AnyConsoleDevice>>;
+
+pub fn all_devices_lock<'a>() -> Option<SpinLockGuard<'a, ConsoleDeviceTable, LocalIrqDisabled>> {
+    Some(COMPONENT.get()?.console_device_table.disable_irq().lock())
 }
 
 static COMPONENT: Once<Component> = Once::new();
@@ -73,7 +69,7 @@ fn component_init() -> Result<(), ComponentInitError> {
 
 #[derive(Debug)]
 struct Component {
-    console_device_table: SpinLock<BTreeMap<String, Arc<dyn AnyConsoleDevice>>>,
+    console_device_table: SpinLock<ConsoleDeviceTable>,
 }
 
 impl Component {
