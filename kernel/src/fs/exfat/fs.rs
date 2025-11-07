@@ -7,13 +7,16 @@ use core::{num::NonZeroUsize, ops::Range, sync::atomic::AtomicU64};
 
 use aster_block::{
     BlockDevice,
-    bio::{BioDirection, BioSegment, BioWaiter},
+    bio::{BioDirection, BioSegment},
     id::BlockId,
 };
 use hashbrown::HashMap;
 use lru::LruCache;
-use ostd::mm::Segment;
 pub(super) use ostd::mm::VmIo;
+use ostd::{
+    mm::Segment,
+    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+};
 
 use super::{
     bitmap::ExfatBitmap,
@@ -25,12 +28,14 @@ use super::{
 use crate::{
     fs::{
         exfat::{constants::*, inode::Ino},
-        utils::{CachePage, FileSystem, FsFlags, Inode, PageCache, PageCacheBackend, SuperBlock},
+        server_traits::{self, PageIOObservable as _, PageStore},
+        utils::{FileSystem, FsFlags, Inode, PageCache, SuperBlock},
     },
     prelude::*,
 };
 
 #[derive(Debug)]
+#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 pub struct ExfatFS {
     block_device: Arc<dyn BlockDevice>,
     super_block: ExfatSuperBlock,
@@ -40,17 +45,19 @@ pub struct ExfatFS {
     upcase_table: Arc<SpinLock<ExfatUpcaseTable>>,
 
     mount_option: ExfatMountOptions,
-    //Used for inode allocation.
+    /// Used for inode allocation.
     highest_inode_number: AtomicU64,
 
-    //inodes are indexed by their hash_value.
+    /// inodes are indexed by their hash_value.
     inodes: RwMutex<HashMap<usize, Arc<ExfatInode>>>,
 
-    //Cache for fat table
+    /// Cache for fat table
     fat_cache: RwLock<LruCache<ClusterID, ClusterID>>,
     meta_cache: PageCache,
 
-    //A global lock, We need to hold the mutex before accessing bitmap or inode, otherwise there will be deadlocks.
+    /// A global lock, We need to hold the mutex before accessing bitmap or inode, otherwise there will be deadlocks.
+    ///
+    /// TODO(arthurp): Replace ad-hoc lock with lock enclosing the appropriate data.
     mutex: Mutex<()>,
 }
 
@@ -66,7 +73,8 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = Arc::new_cyclic(|weak_self| ExfatFS {
+        let exfat_fs = Self::new_with(|orpc_internal, weak_self| ExfatFS {
+            orpc_internal,
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),
@@ -367,37 +375,64 @@ impl ExfatFS {
     }
 }
 
-impl PageCacheBackend for ExfatFS {
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        if self.fs_size() < idx * PAGE_SIZE {
+#[orpc_impl]
+impl server_traits::PageIOObservable for ExfatFS {
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+}
+
+#[orpc_impl]
+impl PageStore for ExfatFS {
+    fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
+        if self.fs_size() < req.handle.idx * PAGE_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid read size")
         }
         let bio_segment = BioSegment::new_from_segment(
-            Segment::from(frame.clone()).into(),
+            Segment::from(req.handle.frame.clone()).into(),
             BioDirection::FromDevice,
         );
-        let waiter = self
-            .block_device
-            .read_blocks_async(BlockId::new(idx as u64), bio_segment)?;
-        Ok(waiter)
+
+        // Produce the handle to the ORPC queue
+        self.page_reads_oqueue().produce(req.handle.idx)?;
+
+        self.block_device.read_blocks_async_with_closure(
+            BlockId::new(req.handle.idx as u64),
+            bio_segment,
+            move |b| {
+                req.reply_handle.produce(req.handle);
+            },
+        )?;
+
+        Ok(())
     }
 
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
-        if self.fs_size() < idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid write size")
+    fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
+        if self.fs_size() < req.handle.idx * PAGE_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
         let bio_segment = BioSegment::new_from_segment(
-            Segment::from(frame.clone()).into(),
+            Segment::from(req.handle.frame.clone()).into(),
             BioDirection::ToDevice,
         );
-        let waiter = self
-            .block_device
-            .write_blocks_async(BlockId::new(idx as u64), bio_segment)?;
-        Ok(waiter)
+
+        // Produce the handle to the ORPC queue
+        self.page_writes_oqueue().produce(req.handle.idx)?;
+
+        self.block_device.write_blocks_async_with_closure(
+            BlockId::new(req.handle.idx as u64),
+            bio_segment,
+            move |b| {
+                if let Some(reply_handle) = req.reply_handle {
+                    reply_handle.produce(req.handle);
+                }
+            },
+        )?;
+
+        Ok(())
     }
 
-    fn npages(&self) -> usize {
-        self.fs_size() / PAGE_SIZE
+    fn npages(&self) -> Result<usize> {
+        Ok(self.fs_size() / PAGE_SIZE)
     }
 }
 

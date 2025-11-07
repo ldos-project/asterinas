@@ -2,6 +2,8 @@
 
 #![expect(dead_code)]
 
+use aster_block::bio::SubmittedBio;
+
 use super::{
     block_group::{BlockGroup, RawGroupDescriptor},
     block_ptr::Ext2Bid,
@@ -321,6 +323,21 @@ impl Ext2 {
         Ok(waiter)
     }
 
+    /// Reads contiguous blocks starting from the `bid` asynchronously with a custom callback.
+    pub(super) fn read_blocks_async_with_closure(
+        &self,
+        bid: Ext2Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<()> {
+        self.block_device.read_blocks_async_with_closure(
+            Bid::new(bid as u64),
+            bio_segment,
+            complete_fn,
+        )?;
+        Ok(())
+    }
+
     /// Writes contiguous blocks starting from the `bid` synchronously.
     pub(super) fn write_blocks(&self, bid: Ext2Bid, bio_segment: BioSegment) -> Result<()> {
         let status = self
@@ -342,6 +359,21 @@ impl Ext2 {
             .block_device
             .write_blocks_async(Bid::new(bid as u64), bio_segment)?;
         Ok(waiter)
+    }
+
+    /// Writes contiguous blocks starting from the `bid` asynchronously with a custom callback.
+    pub(super) fn write_blocks_async_with_closure(
+        &self,
+        bid: Ext2Bid,
+        bio_segment: BioSegment,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Result<()> {
+        self.block_device.write_blocks_async_with_closure(
+            Bid::new(bid as u64),
+            bio_segment,
+            complete_fn,
+        )?;
+        Ok(())
     }
 
     /// Writes back the metadata to the block device.

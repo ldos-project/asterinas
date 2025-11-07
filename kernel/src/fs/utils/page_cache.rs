@@ -4,20 +4,33 @@
 
 use core::{
     iter,
-    ops::Range,
+    ops::{DerefMut, Range},
+    str::FromStr,
     sync::atomic::{AtomicU8, Ordering},
 };
 
 use align_ext::AlignExt;
-use aster_block::bio::{BioStatus, BioWaiter};
 use aster_rights::Full;
 use lru::LruCache;
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
+    orpc::{
+        framework::shutdown::Shutdown,
+        oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
+        orpc_impl, orpc_server,
+    },
+    task::Task,
 };
 
 use crate::{
+    fs::{
+        server_traits::{
+            self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
+        },
+        utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
+    },
+    kcmdline,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -27,10 +40,50 @@ pub struct PageCache {
     manager: Arc<PageCacheManager>,
 }
 
+/// Enum representing different prefetch policies.
+#[derive(Debug, PartialEq, Eq)]
+enum PrefetchPolicy {
+    /// Use the builtin readahead policy from Asterinas.
+    Builtin,
+    /// Use a trivial stride 1 read ahead policy.
+    Readahead,
+    /// Use a stride aware prefetcher that attempts to detect the stride.
+    Strided,
+    /// Use no prefetcher at all.
+    None,
+}
+
+impl FromStr for PrefetchPolicy {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "builtin" => Ok(PrefetchPolicy::Builtin),
+            "readahead" => Ok(PrefetchPolicy::Readahead),
+            "strided" => Ok(PrefetchPolicy::Strided),
+            "none" => Ok(PrefetchPolicy::None),
+            _ => Err(Error::with_message(
+                Errno::EINVAL,
+                "Invalid prefetch policy name",
+            )),
+        }
+    }
+}
+
+/// Retrieves the prefetch policy based on the kernel command-line argument
+/// "page_cache.prefetch_policy". The options are: `builtin` (default), `readahead`, `strided`, or
+/// `none`. (See [`PrefetchPolicy`])
+fn get_prefetch_policy() -> PrefetchPolicy {
+    kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "prefetch_policy"))
+        .unwrap_or(PrefetchPolicy::Builtin)
+}
+
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
-    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        let manager = Arc::new(PageCacheManager::new(backend));
+    #[track_caller]
+    pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -42,8 +95,9 @@ impl PageCache {
     ///
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
-    pub fn with_capacity(capacity: usize, backend: Weak<dyn PageCacheBackend>) -> Result<Self> {
-        let manager = Arc::new(PageCacheManager::new(backend));
+    #[track_caller]
+    pub fn with_capacity(capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -52,8 +106,8 @@ impl PageCache {
     }
 
     /// Returns the Vmo object.
-    // TODO: The capability is too high，restrict it to eliminate the possibility of misuse.
-    //       For example, the `resize` api should be forbidded.
+    // TODO: The capability is too high, restrict it to eliminate the possibility of misuse.
+    //       For example, the `resize` api should be forbidden.
     pub fn pages(&self) -> &Vmo<Full> {
         &self.pages
     }
@@ -68,11 +122,6 @@ impl PageCache {
     /// them to the backend.
     pub fn discard_range(&self, range: Range<usize>) {
         self.manager.discard_range(range)
-    }
-
-    /// Returns the backend.
-    pub fn backend(&self) -> Arc<dyn PageCacheBackend> {
-        self.manager.backend()
     }
 
     /// Resizes the current page cache to a target size.
@@ -187,18 +236,21 @@ impl ReadaheadWindow {
     }
 }
 
-struct ReadaheadState {
+/// A management object which tracks the state of the prefetcher, including asynchronous read handles
+/// ([`waiter`](`ReadaheadState::waiter`)).
+///
+/// This implements a simple policy where pages are prefetched if there are sequential reads. The number of pages to
+/// prefetch increases as more sequential reads happen.
+struct BuiltinPrefetchPolicy {
     /// Current readahead window.
     ra_window: Option<ReadaheadWindow>,
     /// Maximum window size.
     max_size: usize,
     /// The last page visited, used to determine sequential I/O.
     prev_page: Option<usize>,
-    /// Readahead requests waiter.
-    waiter: BioWaiter,
 }
 
-impl ReadaheadState {
+impl BuiltinPrefetchPolicy {
     const INIT_WINDOW_SIZE: usize = 4;
     const DEFAULT_MAX_SIZE: usize = 32;
 
@@ -207,7 +259,6 @@ impl ReadaheadState {
             ra_window: None,
             max_size: Self::DEFAULT_MAX_SIZE,
             prev_page: None,
-            waiter: BioWaiter::new(),
         }
     }
 
@@ -224,55 +275,10 @@ impl ReadaheadState {
         }
     }
 
-    /// The number of bio requests in waiter.
-    /// This number will be zero if there are no previous readahead.
-    pub fn request_number(&self) -> usize {
-        self.waiter.nreqs()
-    }
-
-    /// Checks for the previous readahead.
-    /// Returns true if the previous readahead has been completed.
-    pub fn prev_readahead_is_completed(&self) -> bool {
-        let nreqs = self.request_number();
-        if nreqs == 0 {
-            return false;
-        }
-
-        for i in 0..nreqs {
-            if self.waiter.status(i) == BioStatus::Submit {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Waits for the previous readahead.
-    pub fn wait_for_prev_readahead(
-        &mut self,
-        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
-    ) -> Result<()> {
-        if matches!(self.waiter.wait(), Some(BioStatus::Complete)) {
-            let Some(window) = &self.ra_window else {
-                return_errno!(Errno::EINVAL)
-            };
-            for idx in window.readahead_range() {
-                if let Some(page) = pages.get_mut(&idx) {
-                    page.store_state(PageState::UpToDate);
-                }
-            }
-            self.waiter.clear();
-        } else {
-            return_errno!(Errno::EIO)
-        }
-
-        Ok(())
-    }
-
-    /// Determines whether a new readahead should be performed.
-    /// We only consider readahead for sequential I/O now.
-    /// There should be at most one in-progress readahead.
+    /// Determines whether a new readahead should be performed. We only consider readahead for
+    /// sequential I/O now. There should be at most one in-progress readahead.
     pub fn should_readahead(&self, idx: usize, max_page: usize) -> bool {
-        if self.request_number() == 0 && self.is_sequential(idx) {
+        if self.is_sequential(idx) {
             if let Some(cur_window) = &self.ra_window {
                 let trigger_readahead =
                     idx == cur_window.lookahead_index() || idx == cur_window.readahead_index();
@@ -300,114 +306,287 @@ impl ReadaheadState {
         self.ra_window = Some(new_window);
     }
 
-    /// Conducts the new readahead.
-    /// Sends the relevant read request and sets the relevant page in the page cache to `Uninit`.
-    pub fn conduct_readahead(
-        &mut self,
-        pages: &mut MutexGuard<LruCache<usize, CachePage>>,
-        backend: Arc<dyn PageCacheBackend>,
-    ) -> Result<()> {
-        let Some(window) = &self.ra_window else {
-            return_errno!(Errno::EINVAL)
-        };
-        for async_idx in window.readahead_range() {
-            let mut async_page = CachePage::alloc_uninit()?;
-            let pg_waiter = backend.read_page_async(async_idx, &async_page)?;
-            if pg_waiter.nreqs() > 0 {
-                self.waiter.concat(pg_waiter);
-            } else {
-                // Some backends (e.g. RamFS) do not issue requests, but fill the page directly.
-                async_page.store_state(PageState::UpToDate);
-            }
-            pages.put(async_idx, async_page);
-        }
-        Ok(())
-    }
-
     /// Sets the last page visited.
     pub fn set_prev_page(&mut self, idx: usize) {
         self.prev_page = Some(idx);
     }
 }
 
-struct PageCacheManager {
-    pages: Mutex<LruCache<usize, CachePage>>,
-    backend: Weak<dyn PageCacheBackend>,
-    ra_state: Mutex<ReadaheadState>,
+/// Manager for outstanding read requests. This is used for managing prefetch requests.
+#[derive(Default)]
+struct OutstandingRequests {
+    /// Outstanding requests in the form of the consumers that receive the reply. Each one is
+    /// expected to receive exactly one reply.
+    outstanding: Vec<Box<dyn Consumer<PageHandle>>>,
 }
 
-impl PageCacheManager {
-    pub fn new(backend: Weak<dyn PageCacheBackend>) -> Self {
-        Self {
-            pages: Mutex::new(LruCache::unbounded()),
-            backend,
-            ra_state: Mutex::new(ReadaheadState::new()),
+impl Debug for OutstandingRequests {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OutstandingRequests")
+            .field("n_outstanding", &self.outstanding.len())
+            .finish()
+    }
+}
+
+impl OutstandingRequests {
+    /// Waits for outstanding requests and updates `pages` based on result of the readahead.
+    pub fn wait_for_requests(&mut self, pages: &mut LruCache<usize, CachePage>) {
+        for consumer in self.outstanding.drain(..) {
+            let PageHandle { idx, frame } = consumer.consume();
+            Self::store_uptodate(pages, idx, frame);
         }
     }
 
-    pub fn backend(&self) -> Arc<dyn PageCacheBackend> {
-        self.backend.upgrade().unwrap()
+    /// Check for completed requests, but do not wait.
+    pub fn check_requests(&mut self, pages: &mut LruCache<usize, CachePage>) {
+        self.outstanding
+            .retain_mut(|c| !Self::check_single_request(pages, c));
     }
 
-    // Discard pages without writing them back to disk.
+    /// Handle any response for a request and return true iff it has been fully processed.
+    fn check_single_request(
+        pages: &mut LruCache<usize, Frame<CachePageMeta>>,
+        c: &mut Box<dyn Consumer<PageHandle>>,
+    ) -> bool {
+        if let Some(PageHandle { idx, frame }) = c.try_consume() {
+            Self::store_uptodate(pages, idx, frame);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Set the page to up-to-date. This exists as a function to include some assertions.
+    fn store_uptodate(
+        _pages: &mut LruCache<usize, Frame<CachePageMeta>>,
+        _idx: usize,
+        frame: Frame<CachePageMeta>,
+    ) {
+        frame.store_state(PageState::UpToDate);
+        // These two pages should be the same. Assert that they are as a sanity check.
+        #[cfg(debug_assertions)]
+        if let Some(page) = _pages.get_mut(&_idx) {
+            assert_eq!(frame.start_paddr(), page.start_paddr());
+            assert_eq!(page.load_state(), PageState::UpToDate);
+        }
+    }
+
+    /// True iff there are outstanding requests.
+    pub fn has_requests(&self) -> bool {
+        !self.outstanding.is_empty()
+    }
+
+    /// Submit an async read request.
+    pub fn request_async(
+        &mut self,
+        pages: &mut LruCache<usize, CachePage>,
+        backend: &Arc<dyn PageStore>,
+        idx: usize,
+    ) -> Result<()> {
+        let async_page = CachePage::alloc_uninit()?;
+        pages.put(idx, async_page.clone());
+        let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair()?;
+        backend.read_page_async(AsyncReadRequest {
+            handle: PageHandle {
+                idx,
+                frame: async_page,
+            },
+            reply_handle: reply_producer,
+        })?;
+
+        if !Self::check_single_request(pages, &mut reply_consumer) {
+            self.outstanding.push(reply_consumer);
+        }
+
+        Ok(())
+    }
+}
+
+/// The page cache including both the cached pages and the readahead state and a reference to the
+/// backend to perform the actual loads. This references the backend weakly.
+#[orpc_server(
+    crate::vm::vmo::Pager,
+    server_traits::PageCache,
+    server_traits::PageIOObservable
+)]
+struct PageCacheManager {
+    backend: Weak<dyn PageStore>,
+    inner: Mutex<PageCacheManagerInner>,
+    prefetcher: Mutex<Option<(Arc<dyn Shutdown>, PrefetchPolicy)>>,
+    weak_this: Weak<PageCacheManager>,
+}
+
+impl Drop for PageCacheManager {
+    fn drop(&mut self) {
+        if let Some(prefetcher) = self.prefetcher.lock().take() {
+            let _ = prefetcher.0.shutdown();
+        }
+    }
+}
+
+/// The synchronized state of [`PageCacheManager`]. This holds the state and behavior that is
+/// protected by the mutex.
+struct PageCacheManagerInner {
+    // XXX: The cache never actually uses the "LRU-ness" to evict pages.
+    pages: LruCache<usize, CachePage>,
+    builtin_prefetch_policy: Option<BuiltinPrefetchPolicy>,
+    outstanding_requests: OutstandingRequests,
+}
+
+impl PageCacheManagerInner {
+    /// Conducts the new readahead. Sends the relevant read request and sets the relevant page in
+    /// the page cache to `Uninit`.
+    pub fn conduct_readahead(&mut self, backend: &Arc<dyn PageStore>) -> Result<()> {
+        let Some(policy) = &mut self.builtin_prefetch_policy else {
+            return Err(Error::unreachable());
+        };
+        let Some(window) = &policy.ra_window else {
+            return_errno!(Errno::EINVAL)
+        };
+        for async_idx in window.readahead_range() {
+            self.outstanding_requests
+                .request_async(&mut self.pages, backend, async_idx)?;
+        }
+        Ok(())
+    }
+
+    /// Issue any prefetches that the built-in prefetcher requests. This is a no-op if the built-in
+    /// prefetcher is disabled.
+    pub fn maybe_builtin_prefetch(
+        &mut self,
+        idx: usize,
+        backend: &Arc<dyn PageStore>,
+    ) -> Result<()> {
+        if let Some(policy) = &mut self.builtin_prefetch_policy {
+            // Read ahead if there are no outstanding requests and the policy has determined it
+            // should read ahead.
+            if !self.outstanding_requests.has_requests()
+                && policy.should_readahead(idx, backend.npages()?)
+            {
+                policy.setup_window(idx, backend.npages()?);
+                self.conduct_readahead(backend)?;
+            }
+            // Need to reborrow because of call to conduct_readahead.
+            self.builtin_prefetch_policy
+                .as_mut()
+                .unwrap()
+                .set_prev_page(idx);
+        }
+        Ok(())
+    }
+}
+
+impl PageCacheManager {
+    #[track_caller]
+    pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
+        let policy = if Task::current().is_none() {
+            PrefetchPolicy::None
+        } else {
+            policy
+        };
+
+        let server = Self::new_with(|orpc_internal, weak_this| Self {
+            backend,
+            inner: Mutex::new(PageCacheManagerInner {
+                // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
+                pages: LruCache::unbounded(),
+                builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
+                    Some(BuiltinPrefetchPolicy::new())
+                } else {
+                    None
+                },
+                outstanding_requests: Default::default(),
+            }),
+            prefetcher: Default::default(),
+            weak_this: weak_this.clone(),
+            orpc_internal,
+        });
+
+        if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
+            server.change_policy(policy)?;
+        }
+        Ok(server)
+    }
+
+    pub fn backend(&self) -> Result<Arc<dyn PageStore>> {
+        self.backend.upgrade().ok_or_else(Error::unknown)
+    }
+
+    /// Discard pages without writing them back to disk.
     pub fn discard_range(&self, range: Range<usize>) {
         let page_idx_range = get_page_idx_range(&range);
-        let mut pages = self.pages.lock();
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
         for idx in page_idx_range {
             pages.pop(&idx);
         }
     }
 
+    /// Write a range of pages to the backend synchronously. They remain in the cache.
     pub fn evict_range(&self, range: Range<usize>) -> Result<()> {
         let page_idx_range = get_page_idx_range(&range);
 
-        let mut bio_waiter = BioWaiter::new();
-        let mut pages = self.pages.lock();
-        let backend = self.backend();
-        let backend_npages = backend.npages();
+        let mut consumers = Vec::with_capacity(range.len());
+        // TODO(arthurp): This locks the entire cache. That's probably a performance problem.
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
+        let backend = self.backend()?;
+        let backend_npages = backend.npages()?;
         for idx in page_idx_range.start..page_idx_range.end {
             if let Some(page) = pages.peek(&idx) {
                 if page.load_state() == PageState::Dirty && idx < backend_npages {
-                    let waiter = backend.write_page_async(idx, page)?;
-                    bio_waiter.concat(waiter);
+                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+                    backend.write_page_async(AsyncWriteRequest {
+                        handle: PageHandle {
+                            idx,
+                            frame: page.clone(),
+                        },
+                        reply_handle: Some(reply_handle),
+                    })?;
+                    consumers.push(reply_consumer);
                 }
             }
         }
 
-        if !matches!(bio_waiter.wait(), Some(BioStatus::Complete)) {
-            // Do not allow partial failure
-            return_errno!(Errno::EIO);
+        for consumer in consumers {
+            let PageHandle { idx: _, frame } = consumer.consume();
+            frame.store_state(PageState::UpToDate);
         }
 
-        for (_, page) in pages
-            .iter_mut()
-            .filter(|(idx, _)| page_idx_range.contains(*idx))
-        {
-            page.store_state(PageState::UpToDate);
-        }
         Ok(())
     }
 
-    fn ondemand_readahead(&self, idx: usize) -> Result<UFrame> {
-        let mut pages = self.pages.lock();
-        let mut ra_state = self.ra_state.lock();
-        let backend = self.backend();
-        // Checks for the previous readahead.
-        if ra_state.prev_readahead_is_completed() {
-            ra_state.wait_for_prev_readahead(&mut pages)?;
-        }
-        // There are three possible conditions that could be encountered upon reaching here.
+    /// Load a page. The page may be loaded from the page cache or read synchronously as part of
+    /// this call. If the built-in prefetch policy is enabled, this will trigger readaheads as
+    /// needed.
+    fn read_page(&self, idx: usize) -> Result<UFrame> {
+        let mut inner = self.inner.lock();
+        let inner = inner.deref_mut();
+        let backend = self.backend()?;
+
+        self.page_reads_oqueue().try_produce(idx)?;
+
+        // Handle any requests that have already completed.
+        inner.outstanding_requests.check_requests(&mut inner.pages);
+
+        // There are three possible conditions that could be encountered upon reaching here:
         // 1. The requested page is ready for read in page cache.
-        // 2. The requested page is in previous readahead range, not ready for now.
+        // 2. The requested page is currently being read (generally due to a prefetch).
         // 3. The requested page is on disk, need a sync read operation here.
-        let frame = if let Some(page) = pages.get(&idx) {
+        let frame = if let Some(page) = inner.pages.get(&idx) {
             // Cond 1 & 2.
             if let PageState::Uninit = page.load_state() {
                 // Cond 2: We should wait for the previous readahead.
                 // If there is no previous readahead, an error must have occurred somewhere.
-                assert!(ra_state.request_number() != 0);
-                ra_state.wait_for_prev_readahead(&mut pages)?;
-                pages.get(&idx).ok_or_else(Error::unreachable)?.clone()
+                assert!(inner.outstanding_requests.has_requests());
+                inner
+                    .outstanding_requests
+                    .wait_for_requests(&mut inner.pages);
+                inner
+                    .pages
+                    .get(&idx)
+                    .ok_or_else(Error::unreachable)?
+                    .clone()
             } else {
                 // Cond 1.
                 page.clone()
@@ -415,43 +594,81 @@ impl PageCacheManager {
         } else {
             // Cond 3.
             // Conducts the sync read operation.
-            let page = if idx < backend.npages() {
-                let mut page = CachePage::alloc_uninit()?;
-                backend.read_page(idx, &page)?;
+            let page = if idx < backend.npages()? {
+                let page = CachePage::alloc_uninit()?;
+                backend.read_page(PageHandle {
+                    idx,
+                    frame: page.clone(),
+                })?;
                 page.store_state(PageState::UpToDate);
                 page
             } else {
                 CachePage::alloc_zero(PageState::Uninit)?
             };
             let frame = page.clone();
-            pages.put(idx, page);
+            inner.pages.put(idx, page);
             frame
         };
-        if ra_state.should_readahead(idx, backend.npages()) {
-            ra_state.setup_window(idx, backend.npages());
-            ra_state.conduct_readahead(&mut pages, backend)?;
-        }
-        ra_state.set_prev_page(idx);
+
+        // Invoke built-in policy.
+        inner.maybe_builtin_prefetch(idx, &backend)?;
+
         Ok(frame.into())
+    }
+
+    fn change_policy(&self, policy: PrefetchPolicy) -> Result<()> {
+        let mut prefetcher_state = self.prefetcher.lock();
+        if let Some((_, kind)) = prefetcher_state.as_ref() {
+            if *kind == policy || *kind == PrefetchPolicy::Builtin || *kind == PrefetchPolicy::None
+            {
+                return Ok(());
+            }
+        }
+        if let Some(s) = prefetcher_state.take() {
+            s.0.shutdown()?;
+        }
+        let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
+        let prefetcher = match policy {
+            // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace read
+            // ahead distance (4) with something less arbitrary.
+            PrefetchPolicy::Readahead => ReadaheadPrefetcher::spawn(this, 4)? as _,
+            PrefetchPolicy::Strided => StridedPrefetcher::spawn(this, 4)? as _,
+            _ => Err(Error::unreachable())?,
+        };
+        *prefetcher_state = Some((prefetcher, policy));
+        Ok(())
     }
 }
 
 impl Debug for PageCacheManager {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         f.debug_struct("PageCacheManager")
-            .field("pages", &self.pages.lock())
+            .field("pages", &self.inner.lock().pages)
+            .field(
+                "outstanding_requests",
+                &self.inner.lock().outstanding_requests,
+            )
             .finish()
     }
 }
 
+#[orpc_impl]
+impl PageIOObservable for PageCacheManager {
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+}
+
+// XXX: How is Pager handled in ORPC? Do I also need to refactor that?
+#[orpc_impl]
 impl Pager for PageCacheManager {
     fn commit_page(&self, idx: usize) -> Result<UFrame> {
-        self.ondemand_readahead(idx)
+        self.read_page(idx)
     }
 
     fn update_page(&self, idx: usize) -> Result<()> {
-        let mut pages = self.pages.lock();
+        let pages = &mut self.inner.lock().pages;
         if let Some(page) = pages.get_mut(&idx) {
+            self.page_writes_oqueue().produce(idx)?;
             page.store_state(PageState::Dirty);
         } else {
             warn!("The page {} is not in page cache", idx);
@@ -461,14 +678,14 @@ impl Pager for PageCacheManager {
     }
 
     fn decommit_page(&self, idx: usize) -> Result<()> {
-        let page_result = self.pages.lock().pop(&idx);
+        let page_result = self.inner.lock().pages.pop(&idx);
         if let Some(page) = page_result {
             if let PageState::Dirty = page.load_state() {
                 let Some(backend) = self.backend.upgrade() else {
                     return Ok(());
                 };
-                if idx < backend.npages() {
-                    backend.write_page(idx, &page)?;
+                if idx < backend.npages()? {
+                    backend.write_page(PageHandle { idx, frame: page })?;
                 }
             }
         }
@@ -477,12 +694,36 @@ impl Pager for PageCacheManager {
     }
 
     fn commit_overwrite(&self, idx: usize) -> Result<UFrame> {
-        if let Some(page) = self.pages.lock().get(&idx) {
+        if let Some(page) = self.inner.lock().pages.get(&idx) {
             return Ok(page.clone().into());
         }
 
         let page = CachePage::alloc_uninit()?;
-        Ok(self.pages.lock().get_or_insert(idx, || page).clone().into())
+        Ok(self
+            .inner
+            .lock()
+            .pages
+            .get_or_insert(idx, || page)
+            .clone()
+            .into())
+    }
+}
+
+#[orpc_impl]
+impl server_traits::PageCache for PageCacheManager {
+    fn prefetch(&self, idx: usize) -> Result<()> {
+        let mut inner = self.inner.lock();
+        let inner = inner.deref_mut();
+
+        // If the page is in the cache (including if it is being loaded) do nothing.
+        if inner.pages.get(&idx).is_some() {
+            return Ok(());
+        }
+
+        inner
+            .outstanding_requests
+            .request_async(&mut inner.pages, &self.backend()?, idx)?;
+        Ok(())
     }
 }
 
@@ -530,7 +771,7 @@ pub trait CachePageExt {
     }
 
     /// Stores a new state for the cache page.
-    fn store_state(&mut self, new_state: PageState) {
+    fn store_state(&self, new_state: PageState) {
         self.metadata().state.store(new_state, Ordering::Relaxed);
     }
 }
@@ -580,34 +821,5 @@ impl AtomicPageState {
 
     pub fn store(&self, val: PageState, order: Ordering) {
         self.state.store(val as u8, order);
-    }
-}
-
-/// This trait represents the backend for the page cache.
-pub trait PageCacheBackend: Sync + Send {
-    /// Reads a page from the backend asynchronously.
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter>;
-    /// Writes a page to the backend asynchronously.
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter>;
-    /// Returns the number of pages in the backend.
-    fn npages(&self) -> usize;
-}
-
-impl dyn PageCacheBackend {
-    /// Reads a page from the backend synchronously.
-    fn read_page(&self, idx: usize, frame: &CachePage) -> Result<()> {
-        let waiter = self.read_page_async(idx, frame)?;
-        match waiter.wait() {
-            Some(BioStatus::Complete) => Ok(()),
-            _ => return_errno!(Errno::EIO),
-        }
-    }
-    /// Writes a page to the backend synchronously.
-    fn write_page(&self, idx: usize, frame: &CachePage) -> Result<()> {
-        let waiter = self.write_page_async(idx, frame)?;
-        match waiter.wait() {
-            Some(BioStatus::Complete) => Ok(()),
-            _ => return_errno!(Errno::EIO),
-        }
     }
 }
