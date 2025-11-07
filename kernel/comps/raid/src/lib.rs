@@ -1,4 +1,5 @@
-//! SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
+
 //! RAID-1 virtual block device
 //!
 //! This module implements a simple RAID-1 adapter that exposes a single logical
@@ -82,7 +83,7 @@ impl Raid1Device {
     }
 
     /// Dequeues and processes the next request from the staging queue.
-    pub fn handle_requests(&self) {
+    pub fn handle_request(&self) {
         let request = self.queue.dequeue();
         self.process_request(request);
     }
@@ -120,7 +121,8 @@ impl Raid1Device {
             );
             match child.submit(member.as_ref()) {
                 Ok(waiter) => pending.push((parent, waiter)),
-                Err(_) => parent.complete(BioStatus::IoError),
+                // Err(_) => parent.complete(BioStatus::IoError),
+                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
             }
         }
 
@@ -242,17 +244,12 @@ impl Raid1Device {
 
         match current {
             Some(existing) => {
-                if Self::status_priority(candidate) > Self::status_priority(*existing) {
+                if candidate.priority() > (*existing).priority() {
                     *current = Some(candidate);
                 }
             }
             None => *current = Some(candidate),
         }
-    }
-
-    /// Assigns a priority to a `BioStatus` for aggregation purposes.
-    fn status_priority(status: BioStatus) -> u8 {
-        status.priority()
     }
 
     /// Checks whether a sector range fits within the logical device capacity.
