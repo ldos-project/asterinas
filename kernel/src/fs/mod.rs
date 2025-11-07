@@ -128,7 +128,8 @@ fn run_raid1_smoke_test(raid: &Arc<Raid1Device>) {
     };
     use ostd::mm::VmIo;
 
-    const START_SID: Sid = Sid::new(0); // start from the first sector. 
+    // start from the first sector. 
+    const START_SID: Sid = Sid::new(0); 
 
     // initialize an array to write to the device
     let mut pattern = [0u8; aster_block::BLOCK_SIZE];
@@ -136,14 +137,19 @@ fn run_raid1_smoke_test(raid: &Arc<Raid1Device>) {
         *byte = idx as u8;
     }
 
-    let mut write_segment = BioSegment::alloc(1, BioDirection::ToDevice);  // allocate one block for writing (DMA-backed).
-    if let Err(err) = write_segment.write_bytes(0, &pattern) {  // fills the buffer with the pattern. 
+    // allocate one block for writing (DMA-backed).
+    let mut write_segment = BioSegment::alloc(1, BioDirection::ToDevice);  
+    
+    // start from the first sector. 
+    if let Err(err) = write_segment.write_bytes(0, &pattern) { 
         warn!("[raid-test] failed to populate write buffer: {:?}", err);
         return;
     }
 
     let write_bio = Bio::new(BioType::Write, START_SID, vec![write_segment], None);
-    match write_bio.submit_and_wait(raid.as_ref()) {  // actual write to get data from the segment and write to the raid array. 
+
+    // submit the write bio to the raid device and wait for it to complete.
+    match write_bio.submit_and_wait(raid.as_ref()) {  
         Ok(BioStatus::Complete) => {
             info!("[raid-test] write bio completed successfully");
         }
