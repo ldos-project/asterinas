@@ -2,6 +2,7 @@
 
 //! Utility types and methods.
 
+pub mod callback_counter;
 mod either;
 mod macros;
 pub(crate) mod ops;
