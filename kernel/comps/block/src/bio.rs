@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::boxed::Box;
 use core::fmt::Display;
 
 use align_ext::AlignExt;
@@ -13,7 +14,7 @@ use ostd::{
     },
     sync::{SpinLock, WaitQueue},
 };
-use spin::Once;
+use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
 use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
@@ -40,6 +41,36 @@ impl Bio {
         start_sid: Sid,
         segments: Vec<BioSegment>,
         complete_fn: Option<fn(&SubmittedBio)>,
+    ) -> Self {
+        Self::new_with_completion_fn(
+            type_,
+            start_sid,
+            segments,
+            complete_fn.map(|f| CompletionFn::Pointer(f)),
+        )
+    }
+
+    pub fn new_with_closure(
+        type_: BioType,
+        start_sid: Sid,
+        segments: Vec<BioSegment>,
+        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+    ) -> Self {
+        Self::new_with_completion_fn(
+            type_,
+            start_sid,
+            segments,
+            Some(CompletionFn::Closure(Mutex::new(Some(Box::new(
+                complete_fn,
+            ))))),
+        )
+    }
+
+    fn new_with_completion_fn(
+        type_: BioType,
+        start_sid: Sid,
+        segments: Vec<BioSegment>,
+        complete_fn: Option<CompletionFn>,
     ) -> Self {
         let nsectors = segments
             .iter()
@@ -292,8 +323,33 @@ impl SubmittedBio {
         assert!(result.is_ok());
 
         self.0.wait_queue.wake_all();
-        if let Some(complete_fn) = self.0.complete_fn {
-            complete_fn(self);
+        if let Some(complete_fn) = &self.0.complete_fn {
+            complete_fn.call(self);
+        }
+    }
+}
+
+type CompletionClosure = Box<dyn FnOnce(&SubmittedBio) + Send + 'static>;
+
+enum CompletionFn {
+    Pointer(fn(&SubmittedBio)),
+    Closure(Mutex<Option<CompletionClosure>>),
+}
+
+impl CompletionFn {
+    fn call(&self, bio: &SubmittedBio) {
+        match self {
+            Self::Pointer(func) => func(bio),
+            Self::Closure(func) => func.lock().take().unwrap()(bio),
+        }
+    }
+}
+
+impl Debug for CompletionFn {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            Self::Pointer(func) => f.debug_tuple("Pointer").field(func).finish(),
+            Self::Closure(_) => f.debug_tuple("Closure").finish(),
         }
     }
 }
@@ -307,7 +363,7 @@ struct BioInner {
     /// The memory segments in this `Bio`
     segments: Vec<BioSegment>,
     /// The I/O completion method
-    complete_fn: Option<fn(&SubmittedBio)>,
+    complete_fn: Option<CompletionFn>,
     /// The I/O status
     status: AtomicU32,
     /// The wait queue for I/O completion
@@ -780,5 +836,63 @@ impl<const N: u16> AlignedUsize<N> {
     /// Returns the alignment.
     pub fn align(&self) -> usize {
         N as usize
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::test_utils::FakeBlockDevice;
+
+    /// An atomic counter used to track how many times a callback has been called. This must be
+    /// static to work with static `fn`s passed to Bio.
+    static CALLBACK_INVOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    /// Test that a closure passed to `new_with_closure` is called when `complete` is called.
+    #[ktest]
+    fn bio_new_with_closure() {
+        let type_ = BioType::Read;
+        let start_sid = Sid::new(2);
+        let segments = vec![BioSegment::alloc(1, BioDirection::FromDevice)];
+        let complete_fn = |bio: &SubmittedBio| {
+            assert_eq!(bio.type_(), BioType::Read);
+            assert_eq!(bio.sid_range().start, Sid::new(2));
+            assert_eq!(bio.status(), BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        };
+
+        let bio = Bio::new_with_closure(type_, start_sid, segments.clone(), complete_fn);
+        assert_eq!(bio.type_(), type_);
+        assert_eq!(bio.sid_range().start, start_sid);
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        let _ = bio.submit(&FakeBlockDevice);
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that a fn pointer passed to `new` is called when `complete` is called.
+    #[ktest]
+    fn bio_new_with_fn_callback() {
+        let type_ = BioType::Write;
+        let start_sid = Sid::new(2);
+        let segments = vec![BioSegment::alloc(1, BioDirection::ToDevice)];
+        fn complete_fn(bio: &SubmittedBio) {
+            assert_eq!(bio.type_(), BioType::Write);
+            assert_eq!(bio.sid_range().start, Sid::new(2));
+            assert_eq!(bio.status(), BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let bio = Bio::new(type_, start_sid, segments.clone(), Some(complete_fn));
+        assert_eq!(bio.type_(), type_);
+        assert_eq!(bio.sid_range().start, start_sid);
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        let _ = bio.submit(&FakeBlockDevice);
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }
 }
