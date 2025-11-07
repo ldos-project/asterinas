@@ -376,6 +376,21 @@ pub enum BioStatus {
     IoError = 5,
 }
 
+impl BioStatus {
+    /// Returns the priority of this status for aggregation purposes.
+    /// Higher number means higher severity.
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::IoError => 5,
+            Self::NoSpace => 4,
+            Self::Complete => 3,
+            Self::NotSupported => 2,
+            Self::Init => 1,
+            Self::Submit => 0,
+        }
+    }
+}
+
 /// `BioSegment` is the basic memory unit of a block I/O request.
 #[derive(Debug, Clone)]
 pub struct BioSegment {

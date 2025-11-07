@@ -19,7 +19,7 @@
 
 extern crate alloc;
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::{
     cmp,
     ops::Range,
@@ -77,7 +77,7 @@ impl Raid1Device {
     pub fn register(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Arc<Self> {
         let device = Self::new(members);
         // Register under a stable name and return a shared handle.
-        aster_block::register_device(String::from(name), device.clone());
+        aster_block::register_device(name.to_owned(), device.clone());
         device
     }
 
@@ -252,12 +252,7 @@ impl Raid1Device {
 
     /// Assigns a priority to a `BioStatus` for aggregation purposes.
     fn status_priority(status: BioStatus) -> u8 {
-        match status {
-            BioStatus::IoError => 3,
-            BioStatus::NoSpace => 2,
-            BioStatus::NotSupported => 1,
-            _ => 0,
-        }
+        status.priority()
     }
 
     /// Checks whether a sector range fits within the logical device capacity.
