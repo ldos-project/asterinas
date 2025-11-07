@@ -26,6 +26,7 @@
 #![feature(trait_alias)]
 #![feature(trait_upcasting)]
 #![feature(associated_type_defaults)]
+#![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
@@ -63,6 +64,7 @@ pub mod fs;
 pub mod ipc;
 pub mod kcmdline;
 pub mod net;
+pub(crate) mod orpc_utils;
 pub mod prelude;
 mod process;
 mod sched;

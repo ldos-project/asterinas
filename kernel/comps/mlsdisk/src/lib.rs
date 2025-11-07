@@ -127,6 +127,8 @@ impl BlockSet for RawDisk {
 
 #[cfg(ktest)]
 mod test {
+    use alloc::borrow::ToOwned;
+
     use aster_block::{
         BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
         bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
