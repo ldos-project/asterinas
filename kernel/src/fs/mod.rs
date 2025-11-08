@@ -104,10 +104,19 @@ fn init_raid1_test_device() {
         }
     }
 
-    let raid = Raid1Device::register(RAID_TEST_DEVICE_NAME, members);
+    let raid = match Raid1Device::register(RAID_TEST_DEVICE_NAME, members) {
+        Ok(dev) => dev,
+        Err(e) => {
+            error!(
+                "[raid-test] failed to register RAID-1 device '{}': {:?}",
+                RAID_TEST_DEVICE_NAME, e
+            );
+            return;
+        }
+    };
     let worker = raid.clone();
     let task_fn = move || loop {
-        worker.handle_requests();
+        worker.handle_request();
     };
     crate::ThreadOptions::new(task_fn).spawn();
 

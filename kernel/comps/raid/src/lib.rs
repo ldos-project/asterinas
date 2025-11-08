@@ -47,17 +47,22 @@ pub struct Raid1Device {
     read_cursor: AtomicUsize,
 }
 
+#[derive(Debug)]
+pub enum Raid1DeviceError {
+    NotEnoughMembers,
+}
+
 impl Raid1Device {
     /// Creates a new RAID-1 device backed by `members`.
     ///
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Arc<Self> {
-        assert!(
-            members.len() >= 2,
-            "Raid1Device requires at least two members"
-        );
+    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
+        if members.len() < 2 {
+            return Err(Raid1DeviceError::NotEnoughMembers);
+        }
+
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
         // Initialize the admission queue using the strictest segment limit.
@@ -65,21 +70,21 @@ impl Raid1Device {
             metadata.max_nr_segments_per_bio,
         );
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             members,
             queue,
             metadata,
             read_cursor: AtomicUsize::new(0),
-        })
+        }))
     }
 
     /// Registers a RAID-1 device into the global block device table so it can
     /// be opened by upper layers (e.g., filesystems).
-    pub fn register(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Arc<Self> {
-        let device = Self::new(members);
+    pub fn register(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
+        let device = Self::new(members)?;
         // Register under a stable name and return a shared handle.
         aster_block::register_device(name.to_owned(), device.clone());
-        device
+        Ok(device)
     }
 
     /// Dequeues and processes the next request from the staging queue.

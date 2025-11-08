@@ -383,10 +383,10 @@ impl BioStatus {
         match self {
             Self::IoError => 5,
             Self::NoSpace => 4,
-            Self::Complete => 3,
-            Self::NotSupported => 2,
-            Self::Init => 1,
-            Self::Submit => 0,
+            Self::NotSupported => 3,
+            Self::Init => 2,
+            Self::Submit => 1,
+            Self::Complete => 0,
         }
     }
 }
