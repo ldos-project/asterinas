@@ -88,7 +88,7 @@ impl Raid1Device {
     }
 
     /// Dequeues and processes the next request from the staging queue.
-    pub fn handle_request(&self) {
+    pub fn handle_requests(&self) {
         let request = self.queue.dequeue();
         self.process_request(request);
     }
