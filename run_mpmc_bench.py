@@ -10,10 +10,11 @@ q_impls = {
     "rigtorp": RigtorpQueue,
 }
 benchmarks = [
-    # "mixed_bench",
-    # "consume_bench",
-    # "produce_bench",
+    "mixed_bench",
+    "consume_bench",
+    "produce_bench",
     "weak_obs_bench",
+    "strong_obs_bench",
 ]
 
 for i in range(1):
@@ -22,7 +23,7 @@ for i in range(1):
             for tc in thread_counts:
                 if tc < 2 and benchmark == "mixed_bench":
                     continue
-                if tc < 4 and benchmark == "weak_obs_bench":
+                if tc < 4 and benchmark in ["weak_obs_bench", "strong_obs_bench"]:
                     continue
                 print(f"[RUN] {q=} {benchmark=} {tc=}")
                 bench_extra_args = " ".join(
@@ -32,6 +33,5 @@ for i in range(1):
                         f"--kcmd-args='bench.benchmark={benchmark}'",
                     ]
                 )
-                os.system(
-                    f'RELEASE=1 BENCH_EXTRA_ARGS="{bench_extra_args}" make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}_run_{i}.log'
-                )
+                cmd = f'RELEASE=1 BENCH_EXTRA_ARGS="{bench_extra_args}" make run 2>&1 | tee {q}_{benchmark}_throughput_{tc}_run_{i}.log'
+                os.system(cmd)

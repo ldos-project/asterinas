@@ -162,6 +162,7 @@ ifeq ($(ENABLE_KVM), 1)
 	ifeq ($(KVM_EXISTS), 1)
 		ifeq ($(ARCH), x86_64)
 			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
+			CARGO_OSDK_COMMON_ARGS += --qemu-args="-smp 33"
 		endif
 	endif
 endif
@@ -270,7 +271,7 @@ run: initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
-	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
+	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) ${BENCH_EXTRA_ARGS}
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), syscall)
 	@tail --lines 100 qemu.log | grep -q "^All syscall tests passed." \
@@ -451,9 +452,6 @@ ${DOCKER_RUST_CACHE_LOCATION}/generated:
 	docker cp dummy:/root/.cargo ${CARGO_CACHE}
 	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
 	docker rm dummy
-	# Touch a file at the end to create some degree of "atomicity". If the cache
-	# location exists but hasn't been initialized yet, we still need to run this
-	# rule to initialize it.
 	touch $@
 
 .PHONY: docker
@@ -461,7 +459,7 @@ docker: | ${DOCKER_RUST_CACHE_LOCATION}/generated
 	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
 
 .PHONY: docker_start
-docker_start: | ${DOCKER_RUST_CACHE_LOCATION}/generated
+docker_start: | ${DOCKER_RUST_CACHE_LOCATION}
 	docker ps -a | grep $(DOCKER_CONTAINER_NAME) || \
 		docker run -d --name $(DOCKER_CONTAINER_NAME) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG) sleep infinity
 

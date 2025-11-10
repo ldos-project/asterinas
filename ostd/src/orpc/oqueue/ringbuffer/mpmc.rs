@@ -340,6 +340,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         next_slot_turn: usize,
         tail: usize,
     ) {
+        // if IS_CONSUMER {
+        //     crate::prelude::println!("[{}]  marking slot {} as read", IS_CONSUMER, self.idx(tail));
+        // }
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
 
         let mut prev_slot_turn = curr_slot_turn;
@@ -385,12 +388,17 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             if self.turn(tail, true) == prev_slot_turn {
                 break;
             }
+            // crate::prelude::println!(
+            //     "[CONSUMER] waiting for turn {} curr={}",
+            //     self.turn(tail, true),
+            //     prev_slot_turn
+            // );
             counter += 1;
             if counter % 1024 == 0 {
                 counter = 0;
                 // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
                 // that don't have preemptive schedueling.
-                Task::yield_now();
+                // Task::yield_now();
             }
             core::hint::spin_loop();
         }

@@ -393,6 +393,7 @@ impl<T: Copy + Send + 'static> OQueue<T> for Rigtorp<T> {
     }
 }
 
+//pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
 pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
 pub struct BenchConsts {
     pub n_threads: usize,
@@ -438,6 +439,7 @@ impl BenchConsts {
             "consume_bench" => benchmarks::consume_bench,
             "produce_bench" => benchmarks::produce_bench,
             "weak_obs_bench" => benchmarks::weak_obs_bench,
+            "strong_obs_bench" => benchmarks::strong_obs_bench,
             _ => panic!("Unknown benchmark"),
         };
         for _ in 0..10 {
