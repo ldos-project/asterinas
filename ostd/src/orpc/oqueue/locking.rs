@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     prelude::{Arc, Box, Vec},
-    sync::{Mutex, WaitQueue, Waker},
+    sync::{SpinLock, WaitQueue, Waker},
     task::Task,
 };
 
@@ -23,7 +23,7 @@ use crate::{
 /// OQueue.
 pub struct LockingQueue<T> {
     this: Weak<LockingQueue<T>>,
-    inner: Mutex<LockingOQueueInner<T>>,
+    inner: SpinLock<LockingOQueueInner<T>>,
     buffer_size: usize,
     put_wait_queue: WaitQueue,
     read_wait_queue: WaitQueue,
@@ -39,7 +39,7 @@ impl<T> LockingQueue<T> {
         Arc::new_cyclic(|this| LockingQueue {
             this: this.clone(),
             buffer_size,
-            inner: Mutex::new(LockingOQueueInner {
+            inner: SpinLock::new(LockingOQueueInner {
                 buffer: (0..buffer_size).map(|_| None).collect(),
                 n_consumers: 0,
                 head_index: usize::MAX,
