@@ -5,7 +5,7 @@
 
 #![no_std]
 #![no_main]
-#![deny(unsafe_code)]
+// #![deny(unsafe_code)]
 #![feature(btree_cursors)]
 #![feature(btree_extract_if)]
 #![feature(debug_closure_helpers)]
@@ -28,12 +28,15 @@
 #![feature(associated_type_defaults)]
 #![register_tool(component_access_control)]
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::oqueue::{Consumer, OQueue, Producer},
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -72,6 +75,9 @@ pub mod time;
 mod util;
 pub(crate) mod vdso;
 pub mod vm;
+
+mod benchmark_consts;
+pub mod benchmarks;
 
 #[ostd::main]
 #[controlled]
@@ -138,7 +144,7 @@ fn init_thread() {
 
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
-    fs::lazy_init();
+    // fs::lazy_init();
     ipc::init();
     // driver::pci::virtio::block::block_device_test();
     let thread = ThreadOptions::new(|| {
@@ -156,25 +162,9 @@ fn init_thread() {
         console.disable();
     };
 
-    let initproc = spawn_init_process(
-        karg.get_initproc_path().unwrap(),
-        karg.get_initproc_argv().to_vec(),
-        karg.get_initproc_envp().to_vec(),
-    )
-    .expect("Run init process failed.");
-
-    // Wait till initproc become zombie.
-    while !initproc.status().is_zombie() {
-        ostd::task::halt_cpu();
-    }
-
-    // TODO: exit via qemu isa debug device should not be the only way.
-    let exit_code = if initproc.status().exit_code() == 0 {
-        QemuExitCode::Success
-    } else {
-        QemuExitCode::Failed
-    };
-    exit_qemu(exit_code);
+    let bc = benchmark_consts::BenchConsts::new(&karg);
+    bc.run_benchmark();
+    exit_qemu(QemuExitCode::Success);
 }
 
 fn print_banner() {
