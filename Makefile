@@ -206,6 +206,7 @@ OSDK_CRATES := \
 	osdk/deps/test-kernel \
 	ostd \
 	ostd/libs/linux-bzimage/setup \
+	ostd/tests/early-boot-test-kernel \
 	kernel \
 	kernel/comps/block \
 	kernel/comps/console \
@@ -338,6 +339,12 @@ ktest_%: initramfs $(CARGO_OSDK)
 
 .PHONY: ktest
 ktest: $(addprefix ktest_, $(OSDK_KTEST_TARGETS))
+
+.PHONY: early_boot_test
+early_boot_test: initramfs $(CARGO_OSDK)
+	@dir=ostd/tests/early-boot-test-kernel; \
+	echo "cd $$dir && cargo osdk run"; \
+	(cd $$dir && cargo osdk run) || exit 1; \
 
 # For each non-OSDK crate, invoke a rule which runs docs
 NON_OSDK_DOCS_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
