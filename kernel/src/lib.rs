@@ -189,4 +189,3 @@ fn print_banner() {
     );
     println!("\x1B[0m");
 }
-
