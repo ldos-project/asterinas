@@ -72,7 +72,10 @@ impl<T> Slot<T> {
 /// The sentinel value acts as a lock. When [`MPMCOQueue::head`] is this value or larger, writes to
 /// the queue will be blocked. This is used to ensure that StrongObservers can be initialized with a
 /// valid index and avoid races where the StrongObserver index is a value that has already been
-/// consumed.
+/// consumed. We pick the value 1<<63 so that when producers attempt to do a fetch_add, they don't
+/// need to first do a load. It is unlikely that we will have 1<<63 concurrent producers (even
+/// try_produce will block on the sentinel) in the time it takes to attach a single observer. This
+/// does reduce the limit of elements in the queue from usize::MAX to (1 << 63 - 1).
 const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
 
 /// MPMCOQueue allows conccurrent producers and consumers. For any produced message it is guaranteed
@@ -153,17 +156,18 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     /// Create a new MPMCOQueue with a maximum size and a maximum number of strong observers.
-    pub fn new(size: usize, max_strong_observers: usize) -> Arc<Self> {
+    pub fn new(capacity: usize, max_strong_observers: usize) -> Arc<Self> {
         assert!(max_strong_observers == 0 || STRONG_OBSERVERS);
-        assert!(size.is_power_of_two());
-        assert!(size > 0);
+        assert!(capacity.is_power_of_two());
+        assert!(capacity > 0);
+        assert!(capacity < MPMCOQUEUE_HEAD_SENTINEL);
 
         Arc::new_cyclic(|this| MPMCOQueue {
             this: this.clone(),
             // SAFETY: we check that size > 0 above
-            capacity: unsafe { NonZero::new_unchecked(size) },
+            capacity: unsafe { NonZero::new_unchecked(capacity) },
             max_strong_observers,
-            slots: allocate_page_aligned_array(size),
+            slots: allocate_page_aligned_array(capacity),
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(0)),
             strong_observer_tails: (0..max_strong_observers)
@@ -202,6 +206,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             let head = self.head.fetch_add(1, Ordering::Acquire);
             if head >= MPMCOQUEUE_HEAD_SENTINEL {
                 while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our
+                    // tests that don't have preemptive schedueling.
                     Task::yield_now();
                 }
             } else {
@@ -231,6 +237,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             counter += 1;
             if counter % 1024 == 0 {
                 counter = 0;
+                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                // that don't have preemptive schedueling.
                 Task::yield_now();
             }
             core::hint::spin_loop();
@@ -248,7 +256,11 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let mut head = loop {
             let head = self.head.load(Ordering::Acquire);
             if head >= MPMCOQUEUE_HEAD_SENTINEL {
-                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {}
+                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                    // that don't have preemptive schedueling.
+                    Task::yield_now();
+                }
             } else {
                 break head;
             }
@@ -342,6 +354,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             counter += 1;
             if counter % 1024 == 0 {
                 counter = 0;
+                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                // that don't have preemptive schedueling.
                 Task::yield_now();
             }
             core::hint::spin_loop();
