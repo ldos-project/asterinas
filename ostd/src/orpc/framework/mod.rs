@@ -1,5 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The module containing implementations of the ORPC framework.
+//!
+//! ## Servers
+//!
+//! This module contains the implementation of servers. They are tightly integrated with the OS
+//! scheduler and task structures, since all threads exist within a server (or will in the future).
+//!
+//! ### Servers in early boot
+//!
+//! There are cases where server code may execute without an associated thread. During kernel
+//! component and subsystem initialization, servers may be created and called and these may need to
+//! happen before the first kernel task starts during boot. This may happen during scheduler
+//! initialization, for example. This should be minimized, but in some cases creating a server first
+//! may be preferrable to managing non-server state until it can be moved into a server later in the
+//! boot process.
+//!
+//! NOTE: OQueues are unlikely to ever work in the early boot. However, server method calls do.
+
+// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/109): Understand and minimize
+// early boot servers. This is not trivial because component initializers run before the init task
+// starts (this is true even for components initialized after the scheduler).
+
 pub mod errors;
 
 mod integration_test;
@@ -7,13 +28,15 @@ mod integration_test;
 use alloc::{sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
+    ops::DerefMut,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
+    cpu_local_cell,
     prelude::{Arc, Box},
     sync::Mutex,
-    task::{Task, TaskOptions, scheduler},
+    task::{Task, TaskOptions, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -161,22 +184,71 @@ impl CurrentServer {
         // TODO:PERFORMANCE:The overhead of using a strong reference here is potentially significant. Instead, we should
         // probably use unsafe to just use a pointer, assuming we can guarantee dynamic scoping and rule out leaking the
         // reference.
-        let curr_task = Task::current().unwrap();
-        let previous_server = curr_task.server().take();
-        if let Some(s) = orpc_server_base.get_ref() {
-            curr_task.server().replace(Some(s));
+        if let Some(curr_task) = Task::current() {
+            let server_cell = curr_task.server();
+            Self::new_guard(orpc_server_base, server_cell.borrow_mut().deref_mut(), None)
+        } else {
+            let _preempt_guard = disable_preempt();
+            // See "Servers in early boot" at the top of this file.
+            let server_ptr = NONTASK_CPU_SERVER.as_mut_ptr();
+            // SAFETY: server_ptr is into static CPU local state and never accessed from interrupt
+            // handlers, so it cannot be concurrently accessed and is always initialized.
+            let server_ref = unsafe { server_ptr.as_mut() }.unwrap();
+            Self::new_guard(orpc_server_base, server_ref, Some(server_ptr))
         }
-        CurrentServerChangeGuard(previous_server)
     }
+
+    fn new_guard(
+        orpc_server_base: &ServerBase,
+        server_cell: &mut Option<Arc<dyn Server + Send + Sync + 'static>>,
+        nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+    ) -> CurrentServerChangeGuard {
+        let previous_server = server_cell.take();
+        if let Some(s) = orpc_server_base.get_ref() {
+            *server_cell = Some(s);
+        }
+        CurrentServerChangeGuard {
+            previous_server,
+            nontask_cpu_server_cell,
+        }
+    }
+}
+
+cpu_local_cell! {
+    /// The current server when executing in a context without a task in the early boot. See
+    /// [servers in early boot](`crate::orpc::framework`).
+    static NONTASK_CPU_SERVER: Option<Arc<dyn Server + Sync + Send + 'static>> = None;
 }
 
 /// Guard for entering a server context. When dropped, the current tasks's server is set to
 /// `self.0`.
-pub struct CurrentServerChangeGuard(Option<Arc<dyn Server + Sync + Send>>);
+pub struct CurrentServerChangeGuard {
+    /// The previous server before the change this guards. This is the "pushed" server.
+    previous_server: Option<Arc<dyn Server + Sync + Send>>,
+    /// A check value used to verify that the same CPU drops the guard as created it. See
+    /// [`NONTASK_CPU_SERVER`].
+    ///
+    /// TODO(arthurp): Remove this once we can be sure non-task contexts can never migrate.
+    nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+}
 
 impl Drop for CurrentServerChangeGuard {
     fn drop(&mut self) {
-        Task::current().unwrap().server().replace(self.0.clone());
+        if let Some(nontask_cpu_server_cell) = self.nontask_cpu_server_cell {
+            let _preempt_guard = disable_preempt();
+            // See "Servers in early boot" at the top of this file.
+            let server_ptr = NONTASK_CPU_SERVER.as_mut_ptr();
+            assert_eq!(server_ptr, nontask_cpu_server_cell);
+            // SAFETY: server_ptr is into static CPU local state and never accessed from interrupt
+            // handlers, so it cannot be concurrently accessed and is always initialized.
+            let server_ref = unsafe { server_ptr.as_mut() }.unwrap();
+            *server_ref = self.previous_server.take();
+        } else {
+            Task::current()
+                .expect("entered server context with task, but leaving without task")
+                .server()
+                .replace(self.previous_server.take());
+        }
     }
 }
 
