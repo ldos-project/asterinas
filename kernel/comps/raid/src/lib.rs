@@ -100,8 +100,19 @@ impl Raid1Device {
             BioType::Read => self.process_read(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
-            // BioType::Discard => self.complete_all(request, BioStatus::NotSupported),
-            _ => todo!("Discard (or {:?}) operation not supported", request.type_()),
+            BioType::Discard => self.process_discard(request),
+            _ => self.complete_all(request, BioStatus::NotSupported),
+        }
+    }
+
+    /// Processes discard requests by submitting them to all members and completing them after they finish.
+    fn process_discard(&self, request: BioRequest) {
+        for parent in request.bios() {
+            // Submit the same discard to all members.
+            let status = self.fanout_to_members(parent, BioType::Discard, || {
+                Self::clone_segments(parent)
+            });
+            parent.complete(status);
         }
     }
 
@@ -141,6 +152,13 @@ impl Raid1Device {
             // Report the completion status to the upper layer.
             parent.complete(status);
         }
+    }
+
+    /// Completes all the parents with the same status.
+    fn complete_all(&self, request: BioRequest, status: BioStatus) {
+        for parent in request.bios() {
+            parent.complete(status);
+        }   
     }
 
     /// Processes write requests by fanning out to all mirrors and aggregating
