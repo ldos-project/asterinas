@@ -373,9 +373,10 @@ pub fn strong_obs_bench(
                 barrier.fetch_sub(1, Ordering::Acquire)
             );
             while barrier.load(Ordering::Relaxed) > 0 {}
-            crate::prelude::println!("started consumer");
-            for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+            crate::prelude::println!("started consumer {}", (2 * benchmark_consts::N_MESSAGES_PER_THREAD));
+            for i in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                 let _ = consumer.consume();
+                crate::prelude::println!("[consumer] i={}", i);
             }
             crate::prelude::println!("consumer done");
             completed.fetch_add(1, Ordering::Relaxed);
@@ -396,6 +397,7 @@ pub fn strong_obs_bench(
                 let completed_wq = completed_wq.clone();
                 let strong_observer = q.attach_strong_observer().unwrap();
                 let barrier = barrier.clone();
+                let tid=tid;
                 move || {
                     crate::prelude::println!(
                         "[observer] barrier={}",
@@ -404,9 +406,10 @@ pub fn strong_obs_bench(
                     while barrier.load(Ordering::Relaxed) > 0 {}
                     crate::prelude::println!("started strong_observe");
                     let mut cnt = 0;
-                    for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
+                    for i in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                         strong_observer.strong_observe();
                         cnt += 1;
+                        crate::prelude::println!("[observer-{}] i={}", tid, i);
                     }
                     crate::prelude::println!("strong observed {} values", cnt);
                     completed.fetch_add(1, Ordering::Relaxed);
