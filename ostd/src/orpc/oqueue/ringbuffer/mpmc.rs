@@ -367,6 +367,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
+                if IS_CONSUMER {
+                    crate::prelude::println!("Consumer waiting to mark as read!");
+                }
                 // This slot was updated by another consumer/observer, so we don't need to
                 // update it anymore.
                 if slot_turn >= next_slot_turn {
@@ -388,11 +391,11 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             if self.turn(tail, true) == prev_slot_turn {
                 break;
             }
-            // crate::prelude::println!(
-            //     "[CONSUMER] waiting for turn {} curr={}",
-            //     self.turn(tail, true),
-            //     prev_slot_turn
-            // );
+            crate::prelude::println!(
+                "[CONSUMER] waiting for turn {} curr={}",
+                self.turn(tail, true),
+                prev_slot_turn
+            );
             counter += 1;
             if counter % 1024 == 0 {
                 counter = 0;
