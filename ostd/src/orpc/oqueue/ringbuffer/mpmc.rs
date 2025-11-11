@@ -399,7 +399,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 break;
             }
             crate::prelude::println!(
-                "[CONSUMER] waiting for turn {} curr={}",
+                "[CONSUMER] (tail={}) waiting for turn {} curr={}",
+                tail,
                 self.turn(tail, true),
                 prev_slot_turn
             );
