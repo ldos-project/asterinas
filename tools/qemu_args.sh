@@ -89,8 +89,8 @@ COMMON_QEMU_ARGS="\
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive if=none,format=raw,id=x0,file=./test/build/ext2.img \
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
-    -drive if=none,format=raw,id=r1_0,file=./test/build/raid1_0.img \
-    -drive if=none,format=raw,id=r1_1,file=./test/build/raid1_1.img \
+    -drive if=none,format=raw,id=r1_0,file=./test/build/raid1_0.img,cache=directsync \
+    -drive if=none,format=raw,id=r1_1,file=./test/build/raid1_1.img,cache=directsync \
 "
 
 if [ "$1" = "iommu" ]; then

@@ -17,4 +17,6 @@ if [ -z $BLOCK_UNSUPPORTED_SMP_TESTS ]; then
     ./network.sh # will hang
 fi
 
+./raid1.sh
+
 echo "All general tests passed."
