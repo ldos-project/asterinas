@@ -169,7 +169,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             max_strong_observers,
             slots: allocate_page_aligned_array(capacity),
             head: CachePadded::new(AtomicUsize::new(0)),
-            tail: CachePadded::new(AtomicUsize::new(0)),
+            tail: CachePadded::new(AtomicUsize::new(usize::MAX)),
             strong_observer_tails: (0..max_strong_observers)
                 .map(|_| CachePadded::new(AtomicUsize::new(usize::MAX)))
                 .collect(),
@@ -662,6 +662,24 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        // If the tail is already initialized, no need to initialize it again
+        if self.tail.load(Ordering::Acquire) == usize::MAX {
+            // Prevent any strong observers from being added while the tail is initializing.
+            let _ = self.n_strong_observers.lock();
+
+            // By swapping with the sentinel here we lock all producers, preventing the value at
+            // `obs_pos` from being written to.
+            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
+            // After this store, consumers/observers cannot consume past the index `obs_pos`. We do
+            // a compare exchange in case some other conccurent call to attach_consumer happened
+            // first. In that case, we can just continue and use the initialized value.
+            let _ =
+                self.tail
+                    .compare_exchange(usize::MAX, obs_pos, Ordering::SeqCst, Ordering::SeqCst);
+            // Allow producers to write to this position again
+            self.head.swap(obs_pos, Ordering::Release);
+        }
+
         Ok(Box::new(MPMCConsumer {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
