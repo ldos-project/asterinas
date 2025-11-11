@@ -210,7 +210,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
                     // TODO(aneesh): Revisit the need for yield - this might only be needed in our
                     // tests that don't have preemptive schedueling.
-                    Task::yield_now();
+                    // Task::yield_now();
                 }
             } else {
                 break head;
@@ -258,7 +258,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 counter = 0;
                 // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
                 // that don't have preemptive schedueling.
-                Task::yield_now();
+                // Task::yield_now();
             }
             core::hint::spin_loop();
         }
@@ -281,7 +281,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
                         // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
                         // that don't have preemptive schedueling.
-                        Task::yield_now();
+                        // Task::yield_now();
                     }
                 } else {
                     break head;

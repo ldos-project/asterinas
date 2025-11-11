@@ -372,6 +372,7 @@ pub fn strong_obs_bench(
                 "[consumer] barrier={}",
                 barrier.fetch_sub(1, Ordering::Acquire)
             );
+            ostd::task::Task::yield_now();
             while barrier.load(Ordering::Relaxed) > 0 {}
             crate::prelude::println!("started consumer {}", (2 * benchmark_consts::N_MESSAGES_PER_THREAD));
             for i in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
