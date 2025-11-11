@@ -610,4 +610,28 @@ mod test {
         let oqueue = ObservableLockingQueue::new(2, 5);
         test_produce_strong_observe_only(oqueue);
     }
+
+    #[ktest]
+    fn test_consumer_late_attach_locking() {
+        let oqueue = LockingQueue::new(4);
+        test_consumer_late_attach(oqueue);
+    }
+
+    #[ktest]
+    fn test_consumer_detach_locking() {
+        let oqueue = LockingQueue::new(8);
+        test_consumer_detach(oqueue);
+    }
+
+    #[ktest]
+    fn test_strong_observer_detach_observable_locking() {
+        let oqueue = ObservableLockingQueue::new(8, 5);
+        test_strong_observer_detach(oqueue);
+    }
+
+    #[ktest]
+    fn test_strong_observer_late_attach_observable_locking() {
+        let oqueue = ObservableLockingQueue::new(4, 5);
+        test_strong_observer_late_attach(oqueue);
+    }
 }

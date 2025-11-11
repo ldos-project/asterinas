@@ -230,8 +230,25 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     {
         // Update the head position so that other producers can also write
         let head = self.fetch_head_for_produce();
+
         // Get the slot we will be writing to
         let slot = &self.get_slot(head);
+
+        // Check if there are any consumers/observers that can see this message. It's safe to check
+        // this here because if we've successfully gotten a head value to produce to, it's
+        // guaranteed that all active tails are initialized.
+        if self.tail.load(Ordering::Acquire) > head
+            && self
+                .strong_observer_tails
+                .iter()
+                .all(|t| t.load(Ordering::Acquire) > head)
+        {
+            // Mark the slot as writable so that the produce isn't blocked
+            slot.turn
+                .store(self.next_turn(head, false), Ordering::Release);
+            return;
+        }
+
         // Wait until the generation count matches the turn. Note that we need an even turn because
         // we are writing.
         let mut counter = 0;
@@ -246,7 +263,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             core::hint::spin_loop();
         }
         unsafe { slot.store(data) };
-        // Mark the slot as writeable
+        // Mark the slot as readable
         slot.turn.store(self.turn(head, true), Ordering::Release);
     }
 
@@ -254,25 +271,40 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     where
         T: Send,
     {
-        // Get the current head position
-        let mut head = loop {
-            let head = self.head.load(Ordering::Acquire);
-            if head >= MPMCOQUEUE_HEAD_SENTINEL {
-                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
-                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                    // that don't have preemptive schedueling.
-                    Task::yield_now();
-                }
-            } else {
-                break head;
-            }
-        };
-
         // We don't need to check for sentinels from this point onwards. If the sentinal value is
         // set, we will just fail below during one of the compare_exchange calls below.
         loop {
+            // Get the current head position
+            let head = loop {
+                let head = self.head.load(Ordering::Acquire);
+                if head >= MPMCOQUEUE_HEAD_SENTINEL {
+                    while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
+                        // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                        // that don't have preemptive schedueling.
+                        Task::yield_now();
+                    }
+                } else {
+                    break head;
+                }
+            };
             // Get the slot that we'd like to write to
             let slot = &self.get_slot(head);
+
+            // Check if there are any consumers/observers that can see this message. It's safe to
+            // check this here because if we've successfully gotten a head value to produce to, it's
+            // guaranteed that all active tails are initialized.
+            if self.tail.load(Ordering::Acquire) > head
+                && self
+                    .strong_observer_tails
+                    .iter()
+                    .all(|t| t.load(Ordering::Acquire) > head)
+            {
+                // Mark the slot as writable so that the produce isn't blocked
+                slot.turn
+                    .store(self.next_turn(head, false), Ordering::Release);
+                return None;
+            }
+
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
             if self.turn(head, false) == slot.turn.load(Ordering::Acquire) {
@@ -292,10 +324,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             } else {
                 // It was not our turn, but we can opportunistically try again.
                 let prev_head = head;
-                head = self.head.load(Ordering::Acquire);
+                let next_head = self.head.load(Ordering::Acquire);
                 // If it is not our turn and the `head` has not moved, the queue must be full.
                 // Return the value back to the user.
-                if head == prev_head {
+                if next_head == prev_head {
                     return Some(data);
                 }
             }
@@ -780,5 +812,25 @@ mod test {
     #[ktest]
     fn test_produce_strong_observe_only() {
         generic_test::test_produce_strong_observe_only(MPMCOQueue::<_>::new(1, 1));
+    }
+
+    #[ktest]
+    fn test_consumer_late_attach() {
+        generic_test::test_consumer_late_attach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_consumer_detach() {
+        generic_test::test_consumer_detach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_strong_observer_detach() {
+        generic_test::test_strong_observer_detach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_strong_observer_late_attach() {
+        generic_test::test_strong_observer_late_attach(MPMCOQueue::<_>::new(2, 1));
     }
 }

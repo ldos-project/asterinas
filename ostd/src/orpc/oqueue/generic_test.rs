@@ -331,3 +331,73 @@ pub(crate) fn test_produce_strong_observe_only(oqueue: Arc<dyn OQueue<TestMessag
         assert_eq!(observer.strong_observe(), test_message);
     }
 }
+
+pub(crate) fn test_consumer_late_attach<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
+    let producer = oqueue.attach_producer().unwrap();
+
+    producer.produce(TestMessage { x: 1 });
+
+    let consumer = oqueue.attach_consumer().unwrap();
+
+    producer.produce(TestMessage { x: 2 });
+
+    // Should only receive the second message because we attached after the first.
+    assert_eq!(consumer.consume(), TestMessage { x: 2 });
+    assert_eq!(consumer.try_consume(), None);
+}
+
+pub(crate) fn test_consumer_detach<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
+    let producer = oqueue.attach_producer().unwrap();
+    let consumer = oqueue.attach_consumer().unwrap();
+
+    producer.produce(TestMessage { x: 0 });
+    assert_eq!(consumer.consume(), TestMessage { x: 0 });
+
+    // Detach the consumer.
+    drop(consumer);
+
+    // The queue should no longer be blocked.
+    for i in 0..100 {
+        assert_eq!(
+            producer.try_produce(TestMessage { x: i }),
+            None,
+            "failed at {}",
+            i
+        );
+    }
+}
+
+pub(crate) fn test_strong_observer_late_attach(oqueue: Arc<dyn OQueue<TestMessage>>) {
+    let producer = oqueue.attach_producer().unwrap();
+
+    producer.produce(TestMessage { x: 1 });
+
+    let observer = oqueue.attach_strong_observer().unwrap();
+
+    producer.produce(TestMessage { x: 2 });
+
+    // Should only observe the second message because we attached after the first.
+    assert_eq!(observer.strong_observe(), TestMessage { x: 2 });
+    assert_eq!(observer.try_strong_observe(), None);
+}
+
+pub(crate) fn test_strong_observer_detach(oqueue: Arc<dyn OQueue<TestMessage>>) {
+    let producer = oqueue.attach_producer().unwrap();
+    let observer = oqueue.attach_strong_observer().unwrap();
+
+    producer.produce(TestMessage { x: 0 });
+    assert_eq!(observer.strong_observe(), TestMessage { x: 0 });
+
+    // Detach the observer.
+    drop(observer);
+
+    // The queue should no longer be blocked.
+    for i in 0..100 {
+        assert_eq!(
+            producer.try_produce(TestMessage { x: i }),
+            None,
+            "failed at {}",
+            i
+        );
+    }
+}
