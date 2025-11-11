@@ -604,4 +604,10 @@ mod test {
         let oqueue2 = ObservableLockingQueue::new(10, 5);
         test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
+
+    #[ktest]
+    fn test_produce_strong_observe_only_observable_locking() {
+        let oqueue = ObservableLockingQueue::new(2, 5);
+        test_produce_strong_observe_only(oqueue);
+    }
 }

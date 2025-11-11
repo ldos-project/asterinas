@@ -313,3 +313,21 @@ pub(crate) fn test_send_multi_receive_blocker<T: OQueue<TestMessage>>(
     }
     recv_queue.wait_until(|| recv_completed.load(Ordering::Relaxed).then_some(()));
 }
+
+/// Test produce operations with strong observation, but without any consumer attached. Especially,
+/// if the queue blocks when there is no consumer.
+pub(crate) fn test_produce_strong_observe_only(oqueue: Arc<dyn OQueue<TestMessage>>) {
+    let test_message = TestMessage { x: 42 };
+
+    let producer = oqueue.attach_producer().unwrap();
+    let observer = oqueue.attach_strong_observer().unwrap();
+
+    for i in 0..100 {
+        assert_eq!(
+            producer.try_produce(test_message),
+            None,
+            "failed to produce at iteration {i}"
+        );
+        assert_eq!(observer.strong_observe(), test_message);
+    }
+}

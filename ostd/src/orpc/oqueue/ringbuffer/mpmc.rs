@@ -485,6 +485,23 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 table_type: "".to_owned(),
             })
     }
+
+    /// Attach either a consumer or producer to the queue.
+    /// SAFETY: This method MUST only be called from a single thread at a time.
+    unsafe fn attach_tail(&self, tail: &AtomicUsize) {
+        // If the tail is already initialized, no need to initialize it again
+        if tail.load(Ordering::Acquire) == usize::MAX {
+            // By swapping with the sentinel here we lock all producers, preventing the value at
+            // `obs_pos` from being written to.
+            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
+            // After this store, consumers/observers cannot consume past the index `obs_pos`. We do
+            // a compare exchange in case some other conccurent call to attach_consumer happened
+            // first. In that case, we can just continue and use the initialized value.
+            let _ = tail.compare_exchange(usize::MAX, obs_pos, Ordering::SeqCst, Ordering::SeqCst);
+            // Allow producers to write to this position again
+            self.head.swap(obs_pos, Ordering::Release);
+        }
+    }
 }
 
 /// The producer handle for [`MPMCOQueue`].
@@ -662,23 +679,11 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        // If the tail is already initialized, no need to initialize it again
-        if self.tail.load(Ordering::Acquire) == usize::MAX {
-            // Prevent any strong observers from being added while the tail is initializing.
-            let _ = self.n_strong_observers.lock();
-
-            // By swapping with the sentinel here we lock all producers, preventing the value at
-            // `obs_pos` from being written to.
-            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
-            // After this store, consumers/observers cannot consume past the index `obs_pos`. We do
-            // a compare exchange in case some other conccurent call to attach_consumer happened
-            // first. In that case, we can just continue and use the initialized value.
-            let _ =
-                self.tail
-                    .compare_exchange(usize::MAX, obs_pos, Ordering::SeqCst, Ordering::SeqCst);
-            // Allow producers to write to this position again
-            self.head.swap(obs_pos, Ordering::Release);
-        }
+        // Prevent any strong observers from being added while the tail is initializing. Otherwise
+        // the atomic swap with the head will need some kind of retry.
+        let _ = self.n_strong_observers.lock();
+        // SAFETY: this is safe because we have the lock above.
+        unsafe { self.attach_tail(&self.tail) };
 
         Ok(Box::new(MPMCConsumer {
             oqueue: self.get_this()?,
@@ -696,13 +701,8 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         } else {
             let observer_id = *n_observers;
             (*n_observers) += 1;
-            // By swapping with the sentinel here we lock all producers, preventing the value at
-            // `obs_pos` from being written to.
-            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
-            // After this store, consumers cannot consume past the index `obs_pos`.
-            self.strong_observer_tails[observer_id].store(obs_pos, Ordering::SeqCst);
-            // Allow producers to write to this position again
-            self.head.swap(obs_pos, Ordering::Release);
+            // SAFETY: this is safe because we have the lock above.
+            unsafe { self.attach_tail(&self.strong_observer_tails[observer_id]) };
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {
@@ -758,5 +758,10 @@ mod test {
         let oqueue1 = MPMCOQueue::<_>::new(16, 5);
         let oqueue2 = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
+    }
+
+    #[ktest]
+    fn test_produce_strong_observe_only() {
+        generic_test::test_produce_strong_observe_only(MPMCOQueue::<_>::new(1, 1));
     }
 }
