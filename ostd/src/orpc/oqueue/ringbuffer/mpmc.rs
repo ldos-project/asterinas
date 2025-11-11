@@ -97,6 +97,7 @@ pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVE
     /// The index at which elements are consumed from. Note that unlike StrongObservers, each
     /// message is read once across all consumers.
     tail: CachePadded<AtomicUsize>,
+    n_consumers: Mutex<usize>,
     /// Each tail represents the position of a StrongObserver. Tails may be read by multiple
     /// handles, but will be written to by exactly one handle. Unlike a Consumer, each message is
     /// read once by every StrongObserver.
@@ -170,6 +171,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             slots: allocate_page_aligned_array(capacity),
             head: CachePadded::new(AtomicUsize::new(0)),
             tail: CachePadded::new(AtomicUsize::new(usize::MAX)),
+            n_consumers: Mutex::new(0),
             strong_observer_tails: (0..max_strong_observers)
                 .map(|_| CachePadded::new(AtomicUsize::new(usize::MAX)))
                 .collect(),
@@ -547,6 +549,19 @@ pub struct MPMCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     _phantom: PhantomData<Cell<()>>,
 }
 
+impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
+    for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+{
+    fn drop(&mut self) {
+        let mut n_consumers = self.oqueue.n_consumers.lock();
+        *n_consumers -= 1;
+        if *n_consumers == 0 {
+            // Safe to write here because we hold the lock on n_consumers
+            self.oqueue.tail.store(usize::MAX, Ordering::Relaxed);
+        }
+    }
+}
+
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
@@ -679,6 +694,8 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        let mut n_consumers = self.n_consumers.lock();
+        *n_consumers += 1;
         // Prevent any strong observers from being added while the tail is initializing. Otherwise
         // the atomic swap with the head will need some kind of retry.
         let _ = self.n_strong_observers.lock();
