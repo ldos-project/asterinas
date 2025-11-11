@@ -210,7 +210,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
                     // TODO(aneesh): Revisit the need for yield - this might only be needed in our
                     // tests that don't have preemptive schedueling.
-                    // Task::yield_now();
+                    Task::yield_now();
                 }
             } else {
                 break head;
@@ -258,7 +258,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 counter = 0;
                 // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
                 // that don't have preemptive schedueling.
-                // Task::yield_now();
+                Task::yield_now();
             }
             core::hint::spin_loop();
         }
@@ -281,7 +281,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
                         // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
                         // that don't have preemptive schedueling.
-                        // Task::yield_now();
+                        Task::yield_now();
                     }
                 } else {
                     break head;
@@ -340,9 +340,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         next_slot_turn: usize,
         tail: usize,
     ) {
-        // if IS_CONSUMER {
-        //     crate::prelude::println!("[{}]  marking slot {} as read", IS_CONSUMER, self.idx(tail));
-        // }
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
 
         let mut prev_slot_turn = curr_slot_turn;
@@ -356,13 +353,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     t.load(Ordering::Acquire) >= (tail + 1)
                 }))
         {
-            // if !IS_CONSUMER {
-            //     crate::prelude::println!(
-            //         "Observer={} updating slot, consumer={}",
-            //         tail,
-            //         self.tail.load(Ordering::Relaxed)
-            //     );
-            // }
             // There might be multiple threads updating this slot at the same time. Do a
             // compare_exchange instead of store because we don't want to overwrite a
             // newer value if some other consumer got to it first.
@@ -374,9 +364,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                if IS_CONSUMER {
-                    crate::prelude::println!("Consumer waiting to mark as read!");
-                }
                 // This slot was updated by another consumer/observer, so we don't need to
                 // update it anymore.
                 if slot_turn >= next_slot_turn {
@@ -389,37 +376,40 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 
     /// Consume an element from the queue
     pub fn consume(&self) -> T {
-        let tail = self.tail.fetch_add(1, Ordering::Acquire);
+        let mut tail = self.tail.load(Ordering::Acquire);
+        let v = loop {
+            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
+            let mut counter = 0;
+            while self.turn(tail, true) != slot.turn.load(Ordering::Acquire) {
+                counter += 1;
+                if counter % 1024 == 0 {
+                    counter = 0;
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                    // that don't have preemptive schedueling.
+                    Task::yield_now();
+                }
+                core::hint::spin_loop();
+            }
+            let v = unsafe { slot.get() };
+            if let Err(new_tail) =
+                self.tail
+                    .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                // We failed the compare exchange - this means that some other consumer stole this
+                // value, so we can retry instead.
+                tail = new_tail;
+            } else {
+                break v;
+            }
+        };
+
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-        let mut prev_slot_turn;
-        let mut counter = 0;
-        loop {
-            prev_slot_turn = slot.turn.load(Ordering::Acquire);
-            if self.turn(tail, true) == prev_slot_turn {
-                break;
-            }
-            crate::prelude::println!(
-                "[CONSUMER] (tail={}) waiting for turn {} curr={}",
-                tail,
-                self.turn(tail, true),
-                prev_slot_turn
-            );
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive schedueling.
-                // Task::yield_now();
-            }
-            core::hint::spin_loop();
-        }
-        let v = unsafe { slot.get() };
         let next_slot_turn = self.next_turn(tail, false);
         // Check if there's any StrongObservers that have not yet read this slot.
         if !STRONG_OBSERVERS {
             slot.turn.store(next_slot_turn, Ordering::Release);
         } else {
-            self.mark_slot_as_read::<true>(prev_slot_turn, next_slot_turn, tail);
+            self.mark_slot_as_read::<true>(self.turn(tail, true), next_slot_turn, tail);
         }
         v
     }
