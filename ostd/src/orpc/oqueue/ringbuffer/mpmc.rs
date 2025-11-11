@@ -356,13 +356,13 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     t.load(Ordering::Acquire) >= (tail + 1)
                 }))
         {
-            if !IS_CONSUMER {
-                crate::prelude::println!(
-                    "Observer={} updating slot, consumer={}",
-                    tail,
-                    self.tail.load(Ordering::Relaxed)
-                );
-            }
+            // if !IS_CONSUMER {
+            //     crate::prelude::println!(
+            //         "Observer={} updating slot, consumer={}",
+            //         tail,
+            //         self.tail.load(Ordering::Relaxed)
+            //     );
+            // }
             // There might be multiple threads updating this slot at the same time. Do a
             // compare_exchange instead of store because we don't want to overwrite a
             // newer value if some other consumer got to it first.
