@@ -555,6 +555,15 @@ pub struct MPMCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     _phantom: PhantomData<Cell<()>>,
 }
 
+impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
+    for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+{
+    fn drop(&mut self) {
+        self.oqueue.read_wait_queue.wake_all();
+    }
+}
+
+
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
@@ -601,6 +610,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
             // Safe to write here because we hold the lock on n_consumers
             self.oqueue.tail.store(usize::MAX, Ordering::Relaxed);
         }
+        self.oqueue.put_wait_queue.wake_all();
     }
 }
 
@@ -668,9 +678,11 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
     for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn strong_observe(&self) -> T {
-        self.oqueue
-            .read_wait_queue
-            .wait_until(|| self.try_strong_observe())
+            loop {
+                if let Some(v) = self.try_strong_observe() {
+                    return v;
+                }
+            };
     }
 
     fn try_strong_observe(&self) -> Option<T> {
@@ -764,6 +776,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             (*n_observers) += 1;
             // SAFETY: this is safe because we have the lock above.
             unsafe { self.attach_tail(&self.strong_observer_tails[observer_id]) };
+            crate::prelude::println!("SO attached tail={}", self.strong_observer_tails[observer_id].load(Ordering::Relaxed));
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {

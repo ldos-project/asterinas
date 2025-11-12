@@ -1,0 +1,1259 @@
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33" --kcmd-args='bench.n_threads=32' --kcmd-args='bench.q_type=mpmc_oq' --kcmd-args='bench.benchmark=produce_bench'
+[Info] [normal] Forwarded QEMU guest port: 34949->22; 36597->8080 41150->6379 56480->5201 35321->31234 39957->31236 20152->11211
+[Info] [test] Forwarded QEMU guest port: 58577->22; 57235->8080 28943->6379 35555->5201 53945->31234 12091->31236 64978->11211
+warning: unstable feature specified for `-Ctarget-feature`: `ermsb`
+  |
+  = note: this feature is not stably supported; its behavior can change in the future
+
+warning: `linux-boot-params` (lib) generated 1 warning
+warning: `align_ext` (lib) generated 1 warning (1 duplicate)
+warning: `ostd-test` (lib) generated 1 warning (1 duplicate)
+warning: `int-to-c-enum` (lib) generated 1 warning (1 duplicate)
+warning: `typeflags-util` (lib) generated 1 warning (1 duplicate)
+warning: `jhash` (lib) generated 1 warning (1 duplicate)
+warning: `id-alloc` (lib) generated 1 warning (1 duplicate)
+warning: `aster-rights` (lib) generated 1 warning (1 duplicate)
+warning: `component` (lib) generated 1 warning (1 duplicate)
+warning: `keyable-arc` (lib) generated 1 warning (1 duplicate)
+warning: `cpio-decoder` (lib) generated 1 warning (1 duplicate)
+warning: unused import: `task::Task`
+  --> /root/asterinas/ostd/src/orpc/oqueue/ringbuffer/mpmc.rs:32:5
+   |
+32 |     task::Task,
+   |     ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: `ostd` (lib) generated 2 warnings (1 duplicate) (run `cargo fix --lib -p ostd` to apply 1 suggestion)
+warning: `aster-softirq` (lib) generated 1 warning (1 duplicate)
+warning: `aster-console` (lib) generated 1 warning (1 duplicate)
+warning: `aster-block` (lib) generated 1 warning (1 duplicate)
+warning: `aster-util` (lib) generated 1 warning (1 duplicate)
+warning: `aster-keyboard` (lib) generated 1 warning (1 duplicate)
+warning: `aster-input` (lib) generated 1 warning (1 duplicate)
+warning: `aster-systree` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-frame-allocator` (lib) generated 1 warning (1 duplicate)
+warning: `osdk-heap-allocator` (lib) generated 1 warning (1 duplicate)
+warning: `xarray` (lib) generated 1 warning (1 duplicate)
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:320:37
+    |
+320 |         let key = Key::<Aes128Gcm>::from_slice(key);
+    |                                     ^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:321:41
+    |
+321 |         let nonce = Nonce::<Aes128Gcm>::from_slice(iv);
+    |                                         ^^^^^^^^^^
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:343:37
+    |
+343 |         let key = Key::<Aes128Gcm>::from_slice(key);
+    |                                     ^^^^^^^^^^
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:344:41
+    |
+344 |         let nonce = Nonce::<Aes128Gcm>::from_slice(iv);
+    |                                         ^^^^^^^^^^
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> /root/asterinas/kernel/comps/mlsdisk/src/os/mod.rs:345:37
+    |
+345 |         let tag = Tag::<Aes128Gcm>::from_slice(mac);
+    |                                     ^^^^^^^^^^
+
+warning: `aster-bigtcp` (lib) generated 1 warning (1 duplicate)
+warning: `aster-time` (lib) generated 1 warning (1 duplicate)
+warning: `aster-framebuffer` (lib) generated 1 warning (1 duplicate)
+warning: `aster-mlsdisk` (lib) generated 6 warnings (1 duplicate)
+warning: `aster-logger` (lib) generated 1 warning (1 duplicate)
+warning: `aster-network` (lib) generated 1 warning (1 duplicate)
+warning: `aster-virtio` (lib) generated 1 warning (1 duplicate)
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> /root/asterinas/kernel/src/lib.rs:31:26
+   |
+31 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^  ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `Consumer`, `OQueue`, and `Producer`
+  --> /root/asterinas/kernel/src/lib.rs:39:20
+   |
+39 |     orpc::oqueue::{Consumer, OQueue, Producer},
+   |                    ^^^^^^^^  ^^^^^^  ^^^^^^^^
+
+warning: unused import: `spawn_init_process`
+  --> /root/asterinas/kernel/src/lib.rs:41:24
+   |
+41 | use process::{Process, spawn_init_process};
+   |                        ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Cursor`, `Mutex`, and `WaitQueue`
+  --> /root/asterinas/kernel/src/benchmark_consts.rs:22:23
+   |
+22 |             Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+   |                       ^^^^^^
+...
+26 |     sync::{Mutex, WaitQueue, Waker},
+   |            ^^^^^  ^^^^^^^^^
+
+warning: unused variable: `waker`
+   --> /root/asterinas/kernel/src/benchmark_consts.rs:320:31
+    |
+320 |     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    |                               ^^^^^ help: if this is intentional, prefix it with an underscore: `_waker`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `data`
+   --> /root/asterinas/kernel/src/benchmark_consts.rs:330:27
+    |
+330 |     fn try_produce(&self, data: T) -> Option<T> {
+    |                           ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `waker`
+   --> /root/asterinas/kernel/src/benchmark_consts.rs:347:31
+    |
+347 |     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    |                               ^^^^^ help: if this is intentional, prefix it with an underscore: `_waker`
+
+warning: function `spawn_init_process` is never used
+  --> /root/asterinas/kernel/src/process/process/init_proc.rs:27:8
+   |
+27 | pub fn spawn_init_process(
+   |        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: function `create_init_process` is never used
+  --> /root/asterinas/kernel/src/process/process/init_proc.rs:47:4
+   |
+47 | fn create_init_process(
+   |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `set_session_and_group` is never used
+  --> /root/asterinas/kernel/src/process/process/init_proc.rs:82:4
+   |
+82 | fn set_session_and_group(process: &Arc<Process>) {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `create_init_task` is never used
+   --> /root/asterinas/kernel/src/process/process/init_proc.rs:100:4
+    |
+100 | fn create_init_task(
+    |    ^^^^^^^^^^^^^^^^
+
+warning: method `get_maybe_uninit` is never used
+  --> /root/asterinas/kernel/src/benchmark_consts.rs:91:15
+   |
+68 | impl<T> Slot<T> {
+   | --------------- method in this implementation
+...
+91 |     unsafe fn get_maybe_uninit(&self) -> MaybeUninit<T> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: methods `try_produce`, `try_consume`, `size`, and `empty` are never used
+   --> /root/asterinas/kernel/src/benchmark_consts.rs:189:12
+    |
+137 | impl<T> Rigtorp<T> {
+    | ------------------ methods in this implementation
+...
+189 |     pub fn try_produce(&self, data: T) -> Option<T>
+    |            ^^^^^^^^^^^
+...
+235 |     pub fn try_consume(&self) -> Option<T> {
+    |            ^^^^^^^^^^^
+...
+284 |     pub fn size(&self) -> usize {
+    |            ^^^^
+...
+289 |     pub fn empty(&self) -> bool {
+    |            ^^^^^
+
+warning: `aster-nix` (lib) generated 14 warnings (1 duplicate) (run `cargo fix --lib -p aster-nix` to apply 4 suggestions)
+warning: `aster-nix-osdk-bin` (bin "aster-nix-osdk-bin") generated 1 warning (1 duplicate)
+    Finished `release` profile [optimized] target(s) in 1.59s
+grub-mkrescue: warning: cannot open directory `/usr/local/grub/share/locale': No such file or directory.
+xorriso 1.5.4 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data, 55.7g free
+Added to ISO image: directory '/'='/tmp/grub.HNFrPV'
+xorriso : UPDATE :     298 files added in 1 seconds
+Added to ISO image: directory '/'='/root/asterinas/target/osdk/iso_root'
+xorriso : UPDATE :     303 files added in 1 seconds
+xorriso : UPDATE :  31.48% done
+ISO image produced: 22172 sectors
+Written to medium : 22172 sectors at LBA 0
+Writing to 'stdio:/root/asterinas/target/osdk/aster-nix-osdk-bin.iso' completed successfully.
+
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512f [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512dq [bit 17]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clflushopt [bit 23]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.clwb [bit 24]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512cd [bit 28]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512bw [bit 30]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:EBX.avx512vl [bit 31]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.pku [bit 3]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vbmi2 [bit 6]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.gfni [bit 8]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vaes [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.vpclmulqdq [bit 10]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512vnni [bit 11]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512bitalg [bit 12]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.avx512-vpopcntdq [bit 14]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.07H:ECX.la57 [bit 16]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.80000008H:EBX.wbnoinvd [bit 9]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xsavec [bit 1]
+qemu-system-x86_64: warning: host doesn't support requested feature: CPUID.0DH:EAX.xgetbv1 [bit 2]
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01HJ[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting BooDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+t0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+WARNING: no console will be available to OS
+WARNING: no console will be available to OS
+error: no suitable video mode found.
+[kernel] OSTD initialized. Preparing components.
+[kernel] unpacking the initramfs.cpio.gz to rootfs ...
+[kernel] rootfs is ready
+[kernel] Spawn init thread
+[kernel] Hello world from kernel!
+[36m
+
+   _   ___ _____ ___ ___ ___ _  _   _   ___
+  /_\ / __|_   _| __| _ \_ _| \| | /_\ / __|
+ / _ \\__ \ | | | _||   /| || .` |/ _ \\__ \
+/_/ \_\___/ |_| |___|_|_\___|_|\_/_/ \_\___/
+
+[0m
+Starting producers
+Waiting for benchmark to complete
+[producer-16-CpuId(17)] sent msg in 3.169364454s
+[producer-24-CpuId(25)] sent msg in 3.200128033s
+[producer-5-CpuId(6)] sent msg in 3.215011922s
+[producer-29-CpuId(30)] sent msg in 3.217710235s
+[producer-0-CpuId(1)] sent msg in 3.220023289s
+[producer-1-CpuId(2)] sent msg in 3.242017046s
+[producer-13-CpuId(14)] sent msg in 3.246105395s
+[producer-9-CpuId(10)] sent msg in 3.248880116s
+[producer-26-CpuId(27)] sent msg in 3.260401467s
+[producer-14-CpuId(15)] sent msg in 3.261931531s
+[producer-20-CpuId(21)] sent msg in 3.264636159s
+[producer-30-CpuId(31)] sent msg in 3.272294033s
+[producer-3-CpuId(4)] sent msg in 3.28824174s
+[producer-4-CpuId(5)] sent msg in 3.289928789s
+[producer-27-CpuId(28)] sent msg in 3.296279937s
+[producer-12-CpuId(13)] sent msg in 3.301077926s
+[producer-8-CpuId(9)] sent msg in 3.304929511s
+[producer-17-CpuId(18)] sent msg in 3.307933756s
+[producer-23-CpuId(24)] sent msg in 3.308220123s
+[producer-22-CpuId(23)] sent msg in 3.31004351s
+[producer-2-CpuId(3)] sent msg in 3.311153937s
+[producer-7-CpuId(8)] sent msg in 3.312355324s
+[producer-19-CpuId(20)] sent msg in 3.313649365s
+[producer-10-CpuId(11)] sent msg in 3.318354832s
+[producer-21-CpuId(22)] sent msg in 3.321311757s
+[producer-28-CpuId(29)] sent msg in 3.321344228s
+[producer-15-CpuId(16)] sent msg in 3.321723181s
+[producer-6-CpuId(7)] sent msg in 3.32342047s
+[producer-31-CpuId(32)] sent msg in 3.323451212s
+[producer-25-CpuId(26)] sent msg in 3.324541699s
+[producer-11-CpuId(12)] sent msg in 3.324877965s
+[producer-18-CpuId(19)] sent msg in 3.311200594s
+[total] 3.862494899s
+Starting producers
+Waiting for benchmark to complete
+[producer-30-CpuId(31)] sent msg in 2.508224399s
+[producer-4-CpuId(5)] sent msg in 2.511950551s
+[producer-29-CpuId(30)] sent msg in 2.514137012s
+[producer-26-CpuId(27)] sent msg in 2.514180739s
+[producer-16-CpuId(17)] sent msg in 2.515008179s
+[producer-12-CpuId(13)] sent msg in 2.515805335s
+[producer-20-CpuId(21)] sent msg in 2.514531981s
+[producer-14-CpuId(15)] sent msg in 2.51486968s
+[producer-9-CpuId(10)] sent msg in 2.516133559s
+[producer-0-CpuId(1)] sent msg in 2.51475709s
+[producer-13-CpuId(14)] sent msg in 2.51635201s
+[producer-8-CpuId(9)] sent msg in 2.517265035s
+[producer-23-CpuId(24)] sent msg in 2.517547212s
+[producer-1-CpuId(2)] sent msg in 2.520048798s
+[producer-24-CpuId(25)] sent msg in 2.521648285s
+[producer-7-CpuId(8)] sent msg in 2.522456171s
+[producer-2-CpuId(3)] sent msg in 2.522464243s
+[producer-5-CpuId(6)] sent msg in 2.523002929s
+[producer-22-CpuId(23)] sent msg in 2.530321924s
+[producer-17-CpuId(18)] sent msg in 2.53691316s
+[producer-10-CpuId(11)] sent msg in 2.539200954s
+[producer-21-CpuId(22)] sent msg in 2.541748661s
+[producer-25-CpuId(26)] sent msg in 2.547067993s
+[producer-6-CpuId(7)] sent msg in 2.547496957s
+[producer-31-CpuId(32)] sent msg in 2.54778078s
+[producer-18-CpuId(19)] sent msg in 2.550560485s
+[producer-28-CpuId(29)] sent msg in 2.551650317s
+[producer-11-CpuId(12)] sent msg in 2.552699382s
+[producer-27-CpuId(28)] sent msg in 2.544952188s
+[producer-19-CpuId(20)] sent msg in 2.553349522s
+[producer-15-CpuId(16)] sent msg in 2.553854069s
+[producer-3-CpuId(4)] sent msg in 2.55447918s
+[total] 3.100813739s
+Starting producers
+Waiting for benchmark to complete
+[producer-8-CpuId(9)] sent msg in 2.522196568s
+[producer-12-CpuId(13)] sent msg in 2.522376747s
+[producer-24-CpuId(25)] sent msg in 2.523019299s
+[producer-23-CpuId(24)] sent msg in 2.524365956s
+[producer-0-CpuId(1)] sent msg in 2.524530333s
+[producer-14-CpuId(15)] sent msg in 2.525433565s
+[producer-5-CpuId(6)] sent msg in 2.525845808s
+[producer-31-CpuId(32)] sent msg in 2.525988213s
+[producer-1-CpuId(2)] sent msg in 2.526276726s
+[producer-20-CpuId(21)] sent msg in 2.526302168s
+[producer-9-CpuId(10)] sent msg in 2.526565906s
+[producer-29-CpuId(30)] sent msg in 2.528631102s
+[producer-13-CpuId(14)] sent msg in 2.528677152s
+[producer-26-CpuId(27)] sent msg in 2.528821281s
+[producer-30-CpuId(31)] sent msg in 2.529221305s
+[producer-4-CpuId(5)] sent msg in 2.531657379s
+[producer-2-CpuId(3)] sent msg in 2.532077534s
+[producer-6-CpuId(7)] sent msg in 2.532550135s
+[producer-17-CpuId(18)] sent msg in 2.533387615s
+[producer-10-CpuId(11)] sent msg in 2.533405493s
+[producer-16-CpuId(17)] sent msg in 2.534054487s
+[producer-11-CpuId(12)] sent msg in 2.534800004s
+[producer-22-CpuId(23)] sent msg in 2.534083331s
+[producer-19-CpuId(20)] sent msg in 2.536980923s
+[producer-25-CpuId(26)] sent msg in 2.543413359s
+[producer-27-CpuId(28)] sent msg in 2.545931131s
+[producer-7-CpuId(8)] sent msg in 2.547085774s
+[producer-3-CpuId(4)] sent msg in 2.549030675s
+[producer-18-CpuId(19)] sent msg in 2.54909759s
+[producer-28-CpuId(29)] sent msg in 2.550789056s
+[producer-15-CpuId(16)] sent msg in 2.55204885s
+[producer-21-CpuId(22)] sent msg in 2.53730461s
+[total] 3.092322754s
+Starting producers
+Waiting for benchmark to complete
+[producer-1-CpuId(2)] sent msg in 2.571524254s
+[producer-8-CpuId(9)] sent msg in 2.572025944s
+[producer-0-CpuId(1)] sent msg in 2.578065895s
+[producer-4-CpuId(5)] sent msg in 2.578245558s
+[producer-23-CpuId(24)] sent msg in 2.578594192s
+[producer-9-CpuId(10)] sent msg in 2.580052417s
+[producer-26-CpuId(27)] sent msg in 2.579205127s
+[producer-29-CpuId(30)] sent msg in 2.580652141s
+[producer-30-CpuId(31)] sent msg in 2.581032807s
+[producer-24-CpuId(25)] sent msg in 2.581262187s
+[producer-5-CpuId(6)] sent msg in 2.581265567s
+[producer-31-CpuId(32)] sent msg in 2.584300307s
+[producer-20-CpuId(21)] sent msg in 2.585181217s
+[producer-22-CpuId(23)] sent msg in 2.585899852s
+[producer-14-CpuId(15)] sent msg in 2.587101441s
+[producer-13-CpuId(14)] sent msg in 2.587830119s
+[producer-6-CpuId(7)] sent msg in 2.598848433s
+[producer-10-CpuId(11)] sent msg in 2.603726761s
+[producer-2-CpuId(3)] sent msg in 2.607454902s
+[producer-17-CpuId(18)] sent msg in 2.607558908s
+[producer-15-CpuId(16)] sent msg in 2.607712388s
+[producer-11-CpuId(12)] sent msg in 2.608791339s
+[producer-18-CpuId(19)] sent msg in 2.61047643s
+[producer-19-CpuId(20)] sent msg in 2.610820858s
+[producer-12-CpuId(13)] sent msg in 2.612950766s
+[producer-28-CpuId(29)] sent msg in 2.599478461s
+[producer-3-CpuId(4)] sent msg in 2.615408094s
+[producer-25-CpuId(26)] sent msg in 2.618445909s
+[producer-21-CpuId(22)] sent msg in 2.603853796s
+[producer-16-CpuId(17)] sent msg in 2.620382301s
+[producer-27-CpuId(28)] sent msg in 2.620412335s
+[producer-7-CpuId(8)] sent msg in 2.621036729s
+[total] 3.141921446s
+Starting producers
+Waiting for benchmark to complete
+[producer-0-CpuId(1)] sent msg in 2.250655985s
+[producer-31-CpuId(32)] sent msg in 2.255382097s
+[producer-29-CpuId(30)] sent msg in 2.258618935s
+[producer-5-CpuId(6)] sent msg in 2.260307604s
+[producer-23-CpuId(24)] sent msg in 2.262714492s
+[producer-24-CpuId(25)] sent msg in 2.263338851s
+[producer-26-CpuId(27)] sent msg in 2.264288619s
+[producer-14-CpuId(15)] sent msg in 2.265226562s
+[producer-30-CpuId(31)] sent msg in 2.266658892s
+[producer-20-CpuId(21)] sent msg in 2.266537952s
+[producer-9-CpuId(10)] sent msg in 2.26534766s
+[producer-4-CpuId(5)] sent msg in 2.265380857s
+[producer-13-CpuId(14)] sent msg in 2.267052389s
+[producer-12-CpuId(13)] sent msg in 2.26758322s
+[producer-1-CpuId(2)] sent msg in 2.267523221s
+[producer-6-CpuId(7)] sent msg in 2.270788272s
+[producer-2-CpuId(3)] sent msg in 2.271913588s
+[producer-22-CpuId(23)] sent msg in 2.279312856s
+[producer-7-CpuId(8)] sent msg in 2.289626919s
+[producer-10-CpuId(11)] sent msg in 2.290171027s
+[producer-15-CpuId(16)] sent msg in 2.275115668s
+[producer-16-CpuId(17)] sent msg in 2.29261906s
+[producer-18-CpuId(19)] sent msg in 2.295109305s
+[producer-8-CpuId(9)] sent msg in 2.29811218s
+[producer-21-CpuId(22)] sent msg in 2.298327663s
+[producer-27-CpuId(28)] sent msg in 2.301076222s
+[producer-11-CpuId(12)] sent msg in 2.302036553s
+[producer-17-CpuId(18)] sent msg in 2.302284078s
+[producer-28-CpuId(29)] sent msg in 2.302736753s
+[producer-3-CpuId(4)] sent msg in 2.304605176s
+[producer-19-CpuId(20)] sent msg in 2.304811549s
+[producer-25-CpuId(26)] sent msg in 2.29044624s
+[total] 2.834573789s
+Starting producers
+Waiting for benchmark to complete
+[producer-23-CpuId(24)] sent msg in 2.615594986s
+[producer-5-CpuId(6)] sent msg in 2.618996473s
+[producer-26-CpuId(27)] sent msg in 2.622353923s
+[producer-30-CpuId(31)] sent msg in 2.622813477s
+[producer-31-CpuId(32)] sent msg in 2.625383044s
+[producer-12-CpuId(13)] sent msg in 2.625639057s
+[producer-29-CpuId(30)] sent msg in 2.626603944s
+[producer-0-CpuId(1)] sent msg in 2.627093317s
+[producer-20-CpuId(21)] sent msg in 2.627412727s
+[producer-24-CpuId(25)] sent msg in 2.627178089s
+[producer-8-CpuId(9)] sent msg in 2.62699583s
+[producer-9-CpuId(10)] sent msg in 2.626892506s
+[producer-14-CpuId(15)] sent msg in 2.627015609s
+[producer-13-CpuId(14)] sent msg in 2.629440333s
+[producer-4-CpuId(5)] sent msg in 2.631550354s
+[producer-19-CpuId(20)] sent msg in 2.632818412s
+[producer-15-CpuId(16)] sent msg in 2.637971925s
+[producer-10-CpuId(11)] sent msg in 2.652239287s
+[producer-1-CpuId(2)] sent msg in 2.65764912s
+[producer-7-CpuId(8)] sent msg in 2.659292366s
+[producer-6-CpuId(7)] sent msg in 2.662528183s
+[producer-17-CpuId(18)] sent msg in 2.66323617s
+[producer-27-CpuId(28)] sent msg in 2.663264895s
+[producer-21-CpuId(22)] sent msg in 2.647714838s
+[producer-16-CpuId(17)] sent msg in 2.664207706s
+[producer-2-CpuId(3)] sent msg in 2.665786515s
+[producer-22-CpuId(23)] sent msg in 2.666013649s
+[producer-18-CpuId(19)] sent msg in 2.666640332s
+[producer-3-CpuId(4)] sent msg in 2.667475396s
+[producer-28-CpuId(29)] sent msg in 2.66807369s
+[producer-11-CpuId(12)] sent msg in 2.668488367s
+[producer-25-CpuId(26)] sent msg in 2.662206157s
+[total] 3.257652263s
+Starting producers
+Waiting for benchmark to complete
+[producer-5-CpuId(6)] sent msg in 2.282016438s
+[producer-8-CpuId(9)] sent msg in 2.28367577s
+[producer-4-CpuId(5)] sent msg in 2.286202755s
+[producer-13-CpuId(14)] sent msg in 2.287600536s
+[producer-23-CpuId(24)] sent msg in 2.289811115s
+[producer-26-CpuId(27)] sent msg in 2.290074026s
+[producer-14-CpuId(15)] sent msg in 2.291992378s
+[producer-1-CpuId(2)] sent msg in 2.293434368s
+[producer-0-CpuId(1)] sent msg in 2.29258418s
+[producer-20-CpuId(21)] sent msg in 2.293048502s
+[producer-17-CpuId(18)] sent msg in 2.295267559s
+[producer-10-CpuId(11)] sent msg in 2.294750537s
+[producer-29-CpuId(30)] sent msg in 2.292515189s
+[producer-30-CpuId(31)] sent msg in 2.294685186s
+[producer-18-CpuId(19)] sent msg in 2.298620232s
+[producer-12-CpuId(13)] sent msg in 2.290980163s
+[producer-3-CpuId(4)] sent msg in 2.298698415s
+[producer-21-CpuId(22)] sent msg in 2.299002275s
+[producer-24-CpuId(25)] sent msg in 2.294489868s
+[producer-19-CpuId(20)] sent msg in 2.301781015s
+[producer-6-CpuId(7)] sent msg in 2.297596535s
+[producer-15-CpuId(16)] sent msg in 2.296576328s
+[producer-7-CpuId(8)] sent msg in 2.309346781s
+[producer-16-CpuId(17)] sent msg in 2.309921756s
+[producer-31-CpuId(32)] sent msg in 2.314443704s
+[producer-11-CpuId(12)] sent msg in 2.318377798s
+[producer-25-CpuId(26)] sent msg in 2.318832106s
+[producer-9-CpuId(10)] sent msg in 2.319367026s
+[producer-28-CpuId(29)] sent msg in 2.320862059s
+[producer-2-CpuId(3)] sent msg in 2.321104593s
+[producer-22-CpuId(23)] sent msg in 2.321885277s
+[producer-27-CpuId(28)] sent msg in 2.310992765s
+[total] 2.830624092s
+Starting producers
+Waiting for benchmark to complete
+[producer-7-CpuId(8)] sent msg in 2.314203895s
+[producer-0-CpuId(1)] sent msg in 2.316169426s
+[producer-1-CpuId(2)] sent msg in 2.3184507s
+[producer-27-CpuId(28)] sent msg in 2.325056236s
+[producer-9-CpuId(10)] sent msg in 2.326482049s
+[producer-6-CpuId(7)] sent msg in 2.325514451s
+[producer-25-CpuId(26)] sent msg in 2.328278782s
+[producer-11-CpuId(12)] sent msg in 2.328590064s
+[producer-3-CpuId(4)] sent msg in 2.33064166s
+[producer-17-CpuId(18)] sent msg in 2.330926862s
+[producer-10-CpuId(11)] sent msg in 2.330829513s
+[producer-2-CpuId(3)] sent msg in 2.331433244s
+[producer-22-CpuId(23)] sent msg in 2.331752897s
+[producer-28-CpuId(29)] sent msg in 2.330892911s
+[producer-18-CpuId(19)] sent msg in 2.332072774s
+[producer-15-CpuId(16)] sent msg in 2.333630393s
+[producer-21-CpuId(22)] sent msg in 2.335436469s
+[producer-19-CpuId(20)] sent msg in 2.339504551s
+[producer-13-CpuId(14)] sent msg in 2.344920221s
+[producer-26-CpuId(27)] sent msg in 2.346388878s
+[producer-14-CpuId(15)] sent msg in 2.352060816s
+[producer-5-CpuId(6)] sent msg in 2.35960526s
+[producer-16-CpuId(17)] sent msg in 2.35981823s
+[producer-23-CpuId(24)] sent msg in 2.36027062s
+[producer-8-CpuId(9)] sent msg in 2.360617316s
+[producer-29-CpuId(30)] sent msg in 2.361546869s
+[producer-4-CpuId(5)] sent msg in 2.361915635s
+[producer-12-CpuId(13)] sent msg in 2.362289233s
+[producer-24-CpuId(25)] sent msg in 2.362143552s
+[producer-30-CpuId(31)] sent msg in 2.347216021s
+[producer-20-CpuId(21)] sent msg in 2.363185571s
+[producer-31-CpuId(32)] sent msg in 2.3633836s
+[total] 2.873186004s
+Starting producers
+Waiting for benchmark to complete
+[producer-7-CpuId(8)] sent msg in 2.741447277s
+[producer-23-CpuId(24)] sent msg in 2.743098699s
+[producer-8-CpuId(9)] sent msg in 2.743258061s
+[producer-5-CpuId(6)] sent msg in 2.74448502s
+[producer-13-CpuId(14)] sent msg in 2.745221933s
+[producer-14-CpuId(15)] sent msg in 2.745234825s
+[producer-4-CpuId(5)] sent msg in 2.746733872s
+[producer-1-CpuId(2)] sent msg in 2.749283623s
+[producer-16-CpuId(17)] sent msg in 2.749494052s
+[producer-26-CpuId(27)] sent msg in 2.749565084s
+[producer-20-CpuId(21)] sent msg in 2.749721375s
+[producer-29-CpuId(30)] sent msg in 2.749673228s
+[producer-10-CpuId(11)] sent msg in 2.750557905s
+[producer-24-CpuId(25)] sent msg in 2.751578248s
+[producer-12-CpuId(13)] sent msg in 2.752053511s
+[producer-6-CpuId(7)] sent msg in 2.753146432s
+[producer-30-CpuId(31)] sent msg in 2.750573195s
+[producer-11-CpuId(12)] sent msg in 2.753683821s
+[producer-31-CpuId(32)] sent msg in 2.7539259s
+[producer-17-CpuId(18)] sent msg in 2.754506898s
+[producer-22-CpuId(23)] sent msg in 2.754950086s
+[producer-21-CpuId(22)] sent msg in 2.756061614s
+[producer-15-CpuId(16)] sent msg in 2.759632082s
+[producer-3-CpuId(4)] sent msg in 2.76284882s
+[producer-28-CpuId(29)] sent msg in 2.74871882s
+[producer-18-CpuId(19)] sent msg in 2.764163686s
+[producer-27-CpuId(28)] sent msg in 2.76479858s
+[producer-0-CpuId(1)] sent msg in 2.767741788s
+[producer-9-CpuId(10)] sent msg in 2.768686622s
+[producer-2-CpuId(3)] sent msg in 2.76965371s
+[producer-19-CpuId(20)] sent msg in 2.772886763s
+[producer-25-CpuId(26)] sent msg in 2.774112226s
+[total] 3.308244156s
+Starting producers
+Waiting for benchmark to complete
+[producer-29-CpuId(30)] sent msg in 2.381767668s
+[producer-31-CpuId(32)] sent msg in 2.404377817s
+[producer-26-CpuId(27)] sent msg in 2.404878693s
+[producer-4-CpuId(5)] sent msg in 2.407389473s
+[producer-20-CpuId(21)] sent msg in 2.409015129s
+[producer-5-CpuId(6)] sent msg in 2.409069813s
+[producer-16-CpuId(17)] sent msg in 2.410024047s
+[producer-1-CpuId(2)] sent msg in 2.410734953s
+[producer-24-CpuId(25)] sent msg in 2.411844966s
+[producer-8-CpuId(9)] sent msg in 2.413023564s
+[producer-12-CpuId(13)] sent msg in 2.413026142s
+[producer-7-CpuId(8)] sent msg in 2.41477611s
+[producer-6-CpuId(7)] sent msg in 2.415635824s
+[producer-14-CpuId(15)] sent msg in 2.414549508s
+[producer-15-CpuId(16)] sent msg in 2.418480094s
+[producer-23-CpuId(24)] sent msg in 2.419156382s
+[producer-25-CpuId(26)] sent msg in 2.419930399s
+[producer-19-CpuId(20)] sent msg in 2.421186282s
+[producer-30-CpuId(31)] sent msg in 2.423798137s
+[producer-18-CpuId(19)] sent msg in 2.427773506s
+[producer-0-CpuId(1)] sent msg in 2.443540315s
+[producer-17-CpuId(18)] sent msg in 2.444965659s
+[producer-21-CpuId(22)] sent msg in 2.449406159s
+[producer-28-CpuId(29)] sent msg in 2.451375618s
+[producer-9-CpuId(10)] sent msg in 2.439544062s
+[producer-11-CpuId(12)] sent msg in 2.455689458s
+[producer-3-CpuId(4)] sent msg in 2.455855029s
+[producer-2-CpuId(3)] sent msg in 2.457927466s
+[producer-27-CpuId(28)] sent msg in 2.461342667s
+[producer-22-CpuId(23)] sent msg in 2.446096309s
+[producer-13-CpuId(14)] sent msg in 2.461837s
+[producer-10-CpuId(11)] sent msg in 2.46232662s
+[total] 3.145500619s
+[

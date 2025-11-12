@@ -356,9 +356,11 @@ pub fn strong_obs_bench(
             move || {
                 barrier.fetch_sub(1, Ordering::Acquire);
                 while barrier.load(Ordering::Relaxed) > 0 {}
+                crate::prelude::println!("producer start");
                 for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                     producer.produce(0);
                 }
+                crate::prelude::println!("producer stop");
                 completed.fetch_add(1, Ordering::Relaxed);
                 completed_wq.wake_one();
             }
@@ -379,9 +381,11 @@ pub fn strong_obs_bench(
             barrier.fetch_sub(1, Ordering::Acquire);
             // ostd::task::Task::yield_now();
             while barrier.load(Ordering::Relaxed) > 0 {}
+                crate::prelude::println!("consumer start");
             for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                 let _ = consumer.consume();
             }
+                crate::prelude::println!("consumer stop");
             completed.fetch_add(1, Ordering::Relaxed);
             completed_wq.wake_one();
         }
@@ -402,6 +406,7 @@ pub fn strong_obs_bench(
                 move || {
                     barrier.fetch_sub(1, Ordering::Acquire);
                     while barrier.load(Ordering::Relaxed) > 0 {}
+                crate::prelude::println!("observer start");
                     let mut cnt = 0;
                     for _ in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                         strong_observer.strong_observe();
