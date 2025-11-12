@@ -243,6 +243,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 .iter()
                 .all(|t| t.load(Ordering::Acquire) > head)
         {
+            // crate::prelude::println!("No conumsers for pos: {}", head);
             // Mark the slot as writable so that the produce isn't blocked
             slot.turn
                 .store(self.next_turn(head, false), Ordering::Release);
@@ -380,7 +381,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         let v = loop {
             let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
             let mut counter = 0;
-            while self.turn(tail, true) != slot.turn.load(Ordering::Acquire) {
+            while self.turn(tail, true) > slot.turn.load(Ordering::Acquire) {
                 counter += 1;
                 if counter % 1024 == 0 {
                     counter = 0;
@@ -389,12 +390,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                     // Task::yield_now();
                 }
                 core::hint::spin_loop();
-                crate::prelude::println!("Consumering waiting for turn {} != {} idx={}",
-                         self.turn(tail, true),
-                         slot.turn.load(Ordering::Relaxed),
-                         self.idx(tail));
             }
-            let v = unsafe { slot.get() };
+            let v = unsafe { slot.get_maybe_uninit() };
             if let Err(new_tail) =
                 self.tail
                     .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -403,7 +400,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 // value, so we can retry instead.
                 tail = new_tail;
             } else {
-                break v;
+                break unsafe { v.assume_init() };
             }
         };
 
@@ -743,9 +740,11 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         *n_consumers += 1;
         // Prevent any strong observers from being added while the tail is initializing. Otherwise
         // the atomic swap with the head will need some kind of retry.
-        let _ = self.n_strong_observers.lock();
+        let guard = self.n_strong_observers.lock();
         // SAFETY: this is safe because we have the lock above.
         unsafe { self.attach_tail(&self.tail) };
+
+        drop(guard);
 
         Ok(Box::new(MPMCConsumer {
             oqueue: self.get_this()?,
