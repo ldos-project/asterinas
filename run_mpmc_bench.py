@@ -5,17 +5,17 @@ RigtorpQueue = "ostd::orpc::oqueue::ringbuffer::mpmc::Rigtorp::<u64>::new(2 << 2
 
 
 # thread_counts = [1, 2, 4, 8, 16, 32]
-thread_counts = [4]
+thread_counts = [1]
 q_impls = {
     "mpmc_oq": MPMCOQueue,
     # "rigtorp": RigtorpQueue,
 }
 benchmarks = [
-    # "mixed_bench",
-    # "consume_bench",
+        # "mixed_bench",
+    "consume_bench",
     # "produce_bench",
     # "weak_obs_bench",
-    "strong_obs_bench",
+    # "strong_obs_bench",
 ]
 
 for i in range(1):

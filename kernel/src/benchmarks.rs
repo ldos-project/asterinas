@@ -131,6 +131,7 @@ pub fn consume_bench(
     }
     completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == bc.n_threads).then_some(()));
     completed.store(0, Ordering::Relaxed);
+    println!("Populating queue done");
 
     let barrier = Arc::new(AtomicUsize::new(bc.n_threads));
     // Start all consumers
@@ -147,7 +148,9 @@ pub fn consume_bench(
                 while barrier.load(Ordering::Relaxed) > 0 {}
                 let now = time::clocks::RealTimeClock::get().read_time();
                 for _ in 0..benchmark_consts::N_MESSAGES_PER_THREAD {
+                    println!("consuming...");
                     let _ = consumer.consume();
+                    println!("consumed...");
                 }
                 let end = time::clocks::RealTimeClock::get().read_time();
                 println!(
@@ -377,7 +380,6 @@ pub fn strong_obs_bench(
             crate::prelude::println!("started consumer {}", (2 * benchmark_consts::N_MESSAGES_PER_THREAD));
             for i in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                 let _ = consumer.consume();
-                crate::prelude::println!("[consumer] i={}", i);
             }
             crate::prelude::println!("consumer done");
             completed.fetch_add(1, Ordering::Relaxed);
@@ -410,7 +412,6 @@ pub fn strong_obs_bench(
                     for i in 0..(2 * benchmark_consts::N_MESSAGES_PER_THREAD) {
                         strong_observer.strong_observe();
                         cnt += 1;
-                        crate::prelude::println!("[observer-{}] i={}", tid, i);
                     }
                     crate::prelude::println!("strong observed {} values", cnt);
                     completed.fetch_add(1, Ordering::Relaxed);
