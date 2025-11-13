@@ -100,13 +100,15 @@ let server = Self::new_with(|orpc_internal, weak_this| Self {
 })?;
 ```
 "]
+            #[track_caller]
             #vis fn new_with(
                 f: impl FnOnce(#orpc_internal_struct_ident, &::alloc::sync::Weak<Self>) -> Self,
             ) -> ::alloc::sync::Arc::<Self> {
-                let server = ::alloc::sync::Arc::<Self>::new_cyclic(|weak_this| {
-                    let orpc_internal = #internal_init;
-                    f(orpc_internal, weak_this)
-                });
+                let server = ::alloc::sync::Arc::<Self>::new_cyclic(
+                    |weak_this| {
+                        let orpc_internal = #internal_init;
+                        f(orpc_internal, weak_this)
+                    });
                 server
             }
         }
