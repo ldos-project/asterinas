@@ -193,13 +193,13 @@ $(EXFAT_IMAGE):
 	@dd if=/dev/zero of=$(EXFAT_IMAGE) bs=64M count=1
 	@mkfs.exfat $(EXFAT_IMAGE)
 
-RAID_IMAGES:
+$(RAID1_IMAGE0) $(RAID1_IMAGE1):
 	@dd if=/dev/zero of=$(RAID1_IMAGE0) bs=128M count=1
 	@mke2fs $(RAID1_IMAGE0)
 	@dd if=$(RAID1_IMAGE0) of=$(RAID1_IMAGE1)
 
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) RAID_IMAGES
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(RAID1_IMAGE0) $(RAID1_IMAGE1)
 
 .PHONY: format
 format:
