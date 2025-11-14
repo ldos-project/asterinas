@@ -126,8 +126,8 @@ MICROVM_QEMU_ARGS="\
     -no-user-config \
     -device virtio-blk-device,drive=x0,serial=vext2 \
     -device virtio-blk-device,drive=x1,serial=vexfat \
-    -device virtio-blk-device,drive=r0,serial=raid0 \
-    -device virtio-blk-device,drive=r1,serial=raid1 \
+    -device virtio-blk-device,drive=r1_0,serial=raid1_0 \
+    -device virtio-blk-device,drive=r1_1,serial=raid1_1 \
     -device virtio-keyboard-device \
     -device virtio-net-device,netdev=net01 \
     -device virtio-serial-device \
