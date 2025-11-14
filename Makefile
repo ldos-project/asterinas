@@ -219,6 +219,7 @@ OSDK_CRATES := \
 	kernel/comps/input \
 	kernel/comps/keyboard \
 	kernel/comps/network \
+	kernel/comps/raid \
 	kernel/comps/softirq \
 	kernel/comps/systree \
 	kernel/comps/logger \
