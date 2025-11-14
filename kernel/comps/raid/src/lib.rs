@@ -13,7 +13,7 @@
 //!
 //! Capacity and limits are the minimum across members (e.g., `nr_sectors`,
 //! `max_nr_segments_per_bio`). Error handling is conservative: any failed child
-//! write makes the parent fail. 
+//! write makes the parent fail.
 
 #![no_std] // BlockDevice crate also not using rust std and not using unsafe code.
 #![deny(unsafe_code)]
@@ -33,7 +33,6 @@ use aster_block::{
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
-
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
@@ -66,7 +65,7 @@ impl Raid1Device {
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
         // Initialize the admission queue using the strictest segment limit.
-        let queue = 
+        let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
         Ok(Arc::new(Self {
@@ -80,8 +79,8 @@ impl Raid1Device {
     /// Registers a RAID-1 device into the global block device table so it can
     /// be opened by upper layers (e.g., filesystems).
     pub fn register(
-        name: &str, 
-        members: Vec<Arc<dyn BlockDevice>>
+        name: &str,
+        members: Vec<Arc<dyn BlockDevice>>,
     ) -> Result<Arc<Self>, Raid1DeviceError> {
         let device = Self::new(members)?;
         // Register under a stable name and return a shared handle.
@@ -102,7 +101,7 @@ impl Raid1Device {
             BioType::Read => self.process_read(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
-            BioType::Discard => self.process_discard(request)
+            BioType::Discard => self.process_discard(request),
         }
     }
 
@@ -110,7 +109,7 @@ impl Raid1Device {
     fn process_discard(&self, request: BioRequest) {
         for parent in request.bios() {
             // Submit the same discard to all members.
-            let status = 
+            let status =
                 self.fanout_to_members(parent, BioType::Discard, || Self::clone_segments(parent));
             parent.complete(status);
         }
@@ -159,7 +158,7 @@ impl Raid1Device {
     fn complete_all(&self, request: BioRequest, status: BioStatus) {
         for parent in request.bios() {
             parent.complete(status);
-        }   
+        }
     }
 
     /// Processes write requests by fanning out to all mirrors and aggregating
@@ -167,9 +166,8 @@ impl Raid1Device {
     fn process_write(&self, request: BioRequest) {
         for parent in request.bios() {
             // Submit the same write to all members.
-            let status = self.fanout_to_members(parent, BioType::Write, || {
-                Self::clone_segments(parent)
-            });
+            let status =
+                self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
             parent.complete(status);
         }
     }
@@ -261,9 +259,7 @@ impl Raid1Device {
 
     /// Updates an aggregated status with a candidate error using priority.
     #[expect(dead_code)]
-    fn update_status(
-        current: &mut Option<BioStatus>, 
-        candidate: BioStatus) {
+    fn update_status(current: &mut Option<BioStatus>, candidate: BioStatus) {
         if candidate == BioStatus::Complete {
             return;
         }
@@ -279,10 +275,7 @@ impl Raid1Device {
     }
 
     /// Checks whether a sector range fits within the logical device capacity.
-    fn range_within_capacity(
-        &self, 
-        range: &Range<Sid>
-    ) -> bool {
+    fn range_within_capacity(&self, range: &Range<Sid>) -> bool {
         range.end.to_raw() <= self.metadata.nr_sectors as u64
     }
 }

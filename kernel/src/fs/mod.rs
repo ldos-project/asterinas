@@ -21,8 +21,8 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use aster_raid::{Raid1Device, Raid1DeviceError};
+use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
     fs::{
@@ -115,7 +115,7 @@ fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
                 RAID_DEVICE_NAME
             );
             return_errno_with_message!(
-                Errno::EINVAL, 
+                Errno::EINVAL,
                 "RAID-1 device requires at least two members"
             );
         }
