@@ -100,8 +100,7 @@ impl Raid1Device {
             BioType::Read => self.process_read(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
-            BioType::Discard => self.process_discard(request),
-            _ => self.complete_all(request, BioStatus::NotSupported),
+            BioType::Discard => self.process_discard(request)
         }
     }
 
@@ -155,6 +154,7 @@ impl Raid1Device {
     }
 
     /// Completes all the parents with the same status.
+    #[expect(dead_code)]
     fn complete_all(&self, request: BioRequest, status: BioStatus) {
         for parent in request.bios() {
             parent.complete(status);
@@ -256,10 +256,11 @@ impl Raid1Device {
 
     /// Clones segments from a parent BIO for use by a child BIO.
     fn clone_segments(parent: &SubmittedBio) -> Vec<BioSegment> {
-        parent.segments().iter().cloned().collect()
+        parent.segments().to_vec()
     }
 
     /// Updates an aggregated status with a candidate error using priority.
+    #[expect(dead_code)]
     fn update_status(current: &mut Option<BioStatus>, candidate: BioStatus) {
         if candidate == BioStatus::Complete {
             return;
