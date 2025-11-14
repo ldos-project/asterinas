@@ -114,7 +114,10 @@ fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
                 "[raid] failed to register RAID-1 device '{}': not enough members",
                 RAID_DEVICE_NAME
             );
-            return_errno_with_message!(Errno::EINVAL, "RAID-1 device requires at least two members");
+            return_errno_with_message!(
+                Errno::EINVAL, 
+                "RAID-1 device requires at least two members"
+            );
         }
     };
     let worker = raid.clone();

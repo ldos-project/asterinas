@@ -66,9 +66,8 @@ impl Raid1Device {
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
         // Initialize the admission queue using the strictest segment limit.
-        let queue = BioRequestSingleQueue::with_max_nr_segments_per_bio(
-            metadata.max_nr_segments_per_bio,
-        );
+        let queue = 
+            BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
         Ok(Arc::new(Self {
             members,
@@ -80,7 +79,10 @@ impl Raid1Device {
 
     /// Registers a RAID-1 device into the global block device table so it can
     /// be opened by upper layers (e.g., filesystems).
-    pub fn register(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
+    pub fn register(
+        name: &str, 
+        members: Vec<Arc<dyn BlockDevice>>
+    ) -> Result<Arc<Self>, Raid1DeviceError> {
         let device = Self::new(members)?;
         // Register under a stable name and return a shared handle.
         aster_block::register_device(name.to_owned(), device.clone());
@@ -108,9 +110,8 @@ impl Raid1Device {
     fn process_discard(&self, request: BioRequest) {
         for parent in request.bios() {
             // Submit the same discard to all members.
-            let status = self.fanout_to_members(parent, BioType::Discard, || {
-                Self::clone_segments(parent)
-            });
+            let status = 
+                self.fanout_to_members(parent, BioType::Discard, || Self::clone_segments(parent));
             parent.complete(status);
         }
     }
@@ -225,7 +226,6 @@ impl Raid1Device {
         aggregated_status.unwrap_or(BioStatus::Complete)
     }
 
-
     /// Selects a read member using a round-robin cursor (lock-free).
     fn select_read_member(&self, _sid_range: &Range<Sid>) -> Arc<dyn BlockDevice> {
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
@@ -261,7 +261,9 @@ impl Raid1Device {
 
     /// Updates an aggregated status with a candidate error using priority.
     #[expect(dead_code)]
-    fn update_status(current: &mut Option<BioStatus>, candidate: BioStatus) {
+    fn update_status(
+        current: &mut Option<BioStatus>, 
+        candidate: BioStatus) {
         if candidate == BioStatus::Complete {
             return;
         }
@@ -277,7 +279,10 @@ impl Raid1Device {
     }
 
     /// Checks whether a sector range fits within the logical device capacity.
-    fn range_within_capacity(&self, range: &Range<Sid>) -> bool {
+    fn range_within_capacity(
+        &self, 
+        range: &Range<Sid>
+    ) -> bool {
         range.end.to_raw() <= self.metadata.nr_sectors as u64
     }
 }
