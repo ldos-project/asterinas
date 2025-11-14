@@ -18,21 +18,24 @@ pub fn _print(args: fmt::Arguments) {
     // in the heap. (The heap allocator will log a message when memory is low.)
     //
     // Also, holding the lock will prevent the logs from interleaving.
-    let devices = aster_console::all_devices_lock();
-
-    struct Printer<'a>(
-        SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled>,
-    );
-    impl Write for Printer<'_> {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.0
-                .values()
-                .for_each(|console| console.send(s.as_bytes()));
-            Ok(())
+    if let Some(devices) = aster_console::all_devices_lock() {
+        struct Printer<'a>(
+            SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled>,
+        );
+        impl Write for Printer<'_> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.0
+                    .values()
+                    .for_each(|console| console.send(s.as_bytes()));
+                Ok(())
+            }
         }
-    }
 
-    Printer(devices).write_fmt(args).unwrap();
+        Printer(devices).write_fmt(args).unwrap();
+    } else {
+        // Fall-back to early_print if we have no console setup.
+        ostd::console::early_print(args);
+    }
 }
 
 /// Copied from Rust std: <https://github.com/rust-lang/rust/blob/master/library/std/src/macros.rs>
@@ -52,4 +55,14 @@ macro_rules! println {
     ($($arg:tt)*) => {{
         $crate::_print(format_args_nl!($($arg)*));
     }};
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::*;
+
+    #[ktest]
+    fn test_println() {
+        crate::println!("test");
+    }
 }
