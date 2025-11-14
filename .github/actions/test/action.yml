@@ -73,6 +73,7 @@ runs:
         [[ "${{ matrix.id }}" == "compile" ]] && CMD+="make build FEATURES=all"
         [[ "${{ matrix.id }}" == "usermode_test" ]] && CMD+="make test"
         [[ "${{ matrix.id }}" == "ktest" ]] && CMD+="make ktest NETDEV=tap"
+        [[ "${{ matrix.id }}" == "early_boot_test" ]] && CMD+="make early_boot_test"
         [[ -n "${{ inputs.arch }}" ]] && CMD+=" ARCH=${{ inputs.arch }}"
 
         echo "Executing: $CMD"
