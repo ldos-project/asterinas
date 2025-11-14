@@ -9,6 +9,7 @@ edition = "2024"
 align_ext = { path = "../ostd/libs/align_ext" }
 aster-input = { path = "comps/input" }
 aster-block = { path = "comps/block" }
+aster-raid = { path = "comps/raid" }
 aster-network = { path = "comps/network" }
 aster-console = { path = "comps/console" }
 aster-framebuffer = { path = "comps/framebuffer" }

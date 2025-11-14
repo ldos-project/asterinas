@@ -21,6 +21,7 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
+use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -67,4 +68,68 @@ pub fn lazy_init() {
         println!("[kernel] Mount ExFat fs at {:?} ", target_path);
         self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
     }
+
+    if let Ok(raid) = setup_raid1_device() {
+        let raid_fs = Ext2::open(raid).unwrap();
+        let target_path = FsPath::try_from("/raid1").unwrap();
+        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
+            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+        }
+        println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+    }
+}
+
+fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
+    const RAID_DEVICE_NAME: &str = "raid1";
+    const RAID_MEMBER_NAMES: &[&str] = &["raid1_0", "raid1_1"];
+    info!(
+        "[raid] initializing RAID-1 '{}' with members {:?}",
+        RAID_DEVICE_NAME, RAID_MEMBER_NAMES
+    );
+
+    let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
+
+    // Start the RAID-1's underlying member devices.
+    for &name in RAID_MEMBER_NAMES {
+        match start_block_device(name) {
+            Ok(device) => {
+                info!("[raid] member '{}' online", name);
+                members.push(device);
+            }
+            Err(err) => {
+                error!(
+                    "[raid] failed to start member '{}': {:?}. RAID-1 init aborted",
+                    name, err
+                );
+                return Err(err);
+            }
+        }
+    }
+
+    // Register the RAID-1 device and start a worker thread to handle requests.
+    let raid = match Raid1Device::register(RAID_DEVICE_NAME, members) {
+        Ok(dev) => dev,
+        Err(Raid1DeviceError::NotEnoughMembers) => {
+            error!(
+                "[raid] failed to register RAID-1 device '{}': not enough members",
+                RAID_DEVICE_NAME
+            );
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "RAID-1 device requires at least two members"
+            );
+        }
+    };
+    let worker = raid.clone();
+    let task_fn = move || loop {
+        worker.handle_requests();
+    };
+    crate::ThreadOptions::new(task_fn).spawn();
+
+    info!(
+        "[raid] RAID-1 device '{}' registered and worker thread spawned",
+        RAID_DEVICE_NAME
+    );
+
+    Ok(raid)
 }
