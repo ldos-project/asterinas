@@ -9,6 +9,7 @@
 //! are stored; an untrusted disk storing user data, a `BlockAlloc` for managing data blocks'
 //! allocation metadata. `TxLsmTree` and `BlockAlloc` are manipulated
 //! based on internal transactions.
+use alloc::borrow::ToOwned;
 use core::{
     num::NonZeroUsize,
     ops::{Add, Sub},
