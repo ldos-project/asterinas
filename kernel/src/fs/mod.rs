@@ -81,7 +81,7 @@ pub fn lazy_init() {
 
 fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
     const RAID_DEVICE_NAME: &str = "raid1";
-    const RAID_MEMBER_NAMES: &[&str] = &["raid1_0", "raid1_1"];
+    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         RAID_DEVICE_NAME, RAID_MEMBER_NAMES

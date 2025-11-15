@@ -62,6 +62,8 @@ qemu.args = """\
     -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
     -drive if=none,format=raw,id=x0,file=./test/build/ext2.img \
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
+    -drive if=none,format=raw,id=r0,file=./test/build/raid1_0.img \
+    -drive if=none,format=raw,id=r1,file=./test/build/raid1_1.img \
     -device virtio-blk-device,drive=x0 \
     -device virtio-keyboard-device \
     -device virtio-serial-device \
