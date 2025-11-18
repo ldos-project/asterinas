@@ -55,8 +55,11 @@ use meta::{AnyFrameMeta, GetFrameError, MetaSlot, REF_COUNT_UNUSED, mapping};
 pub use segment::Segment;
 use untyped::{AnyUFrameMeta, UFrame};
 
-use super::{PAGE_SIZE, PagingLevel};
-use crate::mm::{Paddr, Vaddr};
+use super::{PAGE_SIZE, PagingLevel, page_size};
+use crate::{
+    arch::mm::PagingConsts,
+    mm::{Paddr, Vaddr},
+};
 
 static MAX_PADDR: AtomicUsize = AtomicUsize::new(0);
 
@@ -106,9 +109,13 @@ impl<M: AnyFrameMeta> Frame<M> {
     /// If the provided frame is not truly unused at the moment, it will return
     /// an error. If wanting to acquire a frame that is already in use, use
     /// [`Frame::from_in_use`] instead.
-    pub fn from_unused(paddr: Paddr, metadata: M) -> Result<Self, GetFrameError> {
+    pub fn from_unused(
+        paddr: Paddr,
+        metadata: M,
+        level: PagingLevel,
+    ) -> Result<Self, GetFrameError> {
         Ok(Self {
-            ptr: MetaSlot::get_from_unused(paddr, metadata, false)?,
+            ptr: MetaSlot::get_from_unused(paddr, metadata, false, level)?,
             _marker: PhantomData,
         })
     }
@@ -144,16 +151,13 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     ///
     /// This is the level of the page table entry that maps the frame,
     /// which determines the size of the frame.
-    ///
-    /// Currently, the level is always 1, which means the frame is a regular
-    /// page frame.
-    pub const fn map_level(&self) -> PagingLevel {
-        1
+    pub fn map_level(&self) -> PagingLevel {
+        self.slot().level()
     }
 
     /// Gets the size of this page in bytes.
-    pub const fn size(&self) -> usize {
-        PAGE_SIZE
+    pub fn size(&self) -> usize {
+        page_size::<PagingConsts>(self.map_level())
     }
 
     /// Gets the dyncamically-typed metadata of this frame.
