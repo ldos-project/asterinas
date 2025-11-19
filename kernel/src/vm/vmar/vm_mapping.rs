@@ -15,7 +15,7 @@ use ostd::{
     task::disable_preempt,
 };
 
-use super::{RssDelta, RssType, interval_set::Interval};
+use super::{RssDelta, RssType, huge_mapping_enabled, interval_set::Interval};
 use crate::{
     fs::utils::Inode,
     prelude::*,
@@ -203,7 +203,9 @@ impl VmMapping {
         'retry: loop {
             let preempt_guard = disable_preempt();
             // Attempt to get a level 2 cursor if the address is aligned to the level 2 size.
-            let (mut cursor, level) = if (page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
+            let (mut cursor, level) = if huge_mapping_enabled()
+                && (page_aligned_addr % page_size::<PagingConsts>(2)) == 0
+            {
                 // Attempt to get a level 2 cursor, falling back to level 1 on failure.
                 match vm_space.cursor_mut(
                     &preempt_guard,

@@ -38,7 +38,10 @@ use ostd::{
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
 
-use crate::{kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions};
+use crate::{
+    kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions,
+    vm::vmar::set_huge_mapping_enabled,
+};
 
 extern crate alloc;
 extern crate lru;
@@ -135,6 +138,11 @@ fn init_thread() {
 
     let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
     set_kernel_cmd_line(karg.clone());
+
+    let huge_mapping_enabled = karg
+        .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
+        .unwrap_or(false);
+    set_huge_mapping_enabled(huge_mapping_enabled);
 
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
