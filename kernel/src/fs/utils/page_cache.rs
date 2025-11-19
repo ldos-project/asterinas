@@ -725,6 +725,10 @@ impl server_traits::PageCache for PageCacheManager {
             .request_async(&mut inner.pages, &self.backend()?, idx)?;
         Ok(())
     }
+
+    fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
+        self.backend()
+    }
 }
 
 /// A page in the page cache.

@@ -14,7 +14,7 @@ use super::{
     prelude::*,
     super_block::SuperBlock,
 };
-use crate::fs::server_traits::{self, PageIOObservable, PageStore};
+use crate::fs::server_traits::{self, OutstandingOperations, PageIOObservable, PageStore};
 
 /// Blocks are clustered into block groups in order to reduce fragmentation and minimise
 /// the amount of head seeking when reading a large amount of consecutive data.
@@ -381,6 +381,8 @@ impl PageStore for BlockGroupImpl {
     fn npages(&self) -> Result<usize> {
         Ok(self.raw_inodes_size.div_ceil(BLOCK_SIZE))
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 #[derive(Debug)]

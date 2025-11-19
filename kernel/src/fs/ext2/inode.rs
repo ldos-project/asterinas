@@ -26,7 +26,7 @@ use super::{
 use crate::{
     fs::{
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable as _},
+        server_traits::{self, OutstandingOperations, PageIOObservable as _},
         utils::{
             Extension, FallocMode, Inode as _, InodeMode, Metadata, Permission, XattrName,
             XattrNamespace, XattrSetFlags,
@@ -2041,6 +2041,8 @@ impl server_traits::PageStore for InodeBlockManager {
     fn npages(&self) -> Result<usize> {
         Ok(self.nblocks())
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 /// A reader to get the corresponding device block IDs for a specified range.

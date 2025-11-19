@@ -28,7 +28,7 @@ use super::{
 use crate::{
     fs::{
         exfat::{constants::*, inode::Ino},
-        server_traits::{self, PageIOObservable as _, PageStore},
+        server_traits::{self, OutstandingOperations, PageIOObservable as _, PageStore},
         utils::{FileSystem, FsFlags, Inode, PageCache, SuperBlock},
     },
     prelude::*,
@@ -434,6 +434,8 @@ impl PageStore for ExfatFS {
     fn npages(&self) -> Result<usize> {
         Ok(self.fs_size() / PAGE_SIZE)
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 impl FileSystem for ExfatFS {

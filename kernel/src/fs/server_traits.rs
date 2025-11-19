@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
 use ostd::orpc::{
     oqueue::{
@@ -60,6 +60,13 @@ pub trait PageIOObservable {
     }
 }
 
+/// The number of outstanding operations.
+#[derive(Debug, Clone, Copy)]
+pub struct OutstandingOperations {
+    pub outstanding_reads: usize,
+    pub outstanding_writes: usize,
+}
+
 /// A data store full of pages. This can be used to represent either a file or a block device.
 ///
 /// NOTE: Read and write have both sync and async variants. Because of this, the implicit OQueues
@@ -84,6 +91,11 @@ pub trait PageStore {
     /// Writes a page asynchronously. The reply will be sent to [`AsyncWriteRequest::reply_handle`]
     /// if it is available.
     fn write_page_async(&self, handle: AsyncWriteRequest) -> Result<()>;
+
+    /// The number of outstanding operations.
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations> {
+        ObservableLockingQueue::new(2, 8)
+    }
 
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
@@ -122,6 +134,8 @@ pub trait PageCache {
     // TODO(arthurp): Make this an OQueue. Provide a prefetch handling server which watches all the
     // OQueues and then makes calls to the actual prefetch method. Effectively, this is a thread
     // that donates it's time in place of the sender without requiring an thread per PageCache.
+
+    fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 }
 
 #[orpc_trait]

@@ -9,6 +9,7 @@
 // real heuristics.
 
 use alloc::sync::Arc;
+use core::usize;
 
 use ostd::orpc::{
     framework::{
@@ -25,11 +26,11 @@ use crate::{
     orpc_utils::spawn_thread,
 };
 
-/// A test prefetcher that always prefetches page `idx + n` when page `idx` is read. `n` is the
-/// number of pages the prefetcher should stay ahead of the reader. `n` is fixed at construction
-/// time.
+/// A prefetcher which implements the policy originally provided by Asterinas.
 ///
-/// NOTE: This is not a good or realistic prefetcher. It is designed as an example.
+/// The policy is: If there are no outstanding reads and the most recent read was sequential
+/// (exactly stride 1), read pages ahead. The number of pages read starts at some `min` and doubles
+/// every time there is another prefetch (sequential read with no outstanding reads).
 #[orpc_server(shutdown::Shutdown)]
 pub struct ReadaheadPrefetcher {
     shutdown_state: ShutdownState,
@@ -55,6 +56,10 @@ impl ReadaheadPrefetcher {
 
         spawn_thread(server.clone(), {
             let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
+            let outstanding_requests_observer = cache
+                .underlying_page_store()?
+                .outstanding_operations()
+                .attach_weak_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -67,7 +72,13 @@ impl ReadaheadPrefetcher {
                     server.shutdown_state.check()?;
                     select!(
                         if let idx = read_observer.try_strong_observe() {
-                            cache.prefetch(idx + n_steps_ahead)?;
+                            let outstanding_requests = outstanding_requests_observer
+                                .weak_observe(outstanding_requests_observer.recent_cursor())
+                                .map(|v| v.outstanding_reads)
+                                .unwrap_or(usize::MAX);
+                            if outstanding_requests == 0 {
+                                cache.prefetch(idx + n_steps_ahead)?;
+                            }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
                     );

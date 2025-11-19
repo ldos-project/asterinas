@@ -33,7 +33,7 @@ use crate::{
     fs::{
         exfat::{dentry::ExfatDentryIterator, fat::ExfatChain, fs::ExfatFS},
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable as _},
+        server_traits::{self, OutstandingOperations, PageIOObservable as _},
         utils::{
             DirentVisitor, Extension, Inode, InodeMode, InodeType, IoctlCmd, Metadata, MknodType,
             PageCache,
@@ -200,6 +200,8 @@ impl server_traits::PageStore for ExfatInode {
     fn npages(&self) -> Result<usize> {
         Ok(self.inner.read().size.align_up(PAGE_SIZE) / PAGE_SIZE)
     }
+    
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 impl ExfatInodeInner {

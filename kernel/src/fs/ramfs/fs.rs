@@ -24,8 +24,7 @@ use crate::{
         named_pipe::NamedPipe,
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
         server_traits::{
-            AsyncReadRequest, AsyncWriteRequest, PageIOObservable, PageIOObservableOQueues,
-            PageStore, PageStoreOQueues,
+            AsyncReadRequest, AsyncWriteRequest, OutstandingOperations, PageIOObservable, PageIOObservableOQueues, PageStore, PageStoreOQueues
         },
         utils::{
             CStr256, DirentVisitor, Extension, FallocMode, FileSystem, FsFlags, Inode, InodeMode,
@@ -535,6 +534,8 @@ impl PageStore for RamInode {
     fn npages(&self) -> Result<usize> {
         Ok(self.metadata.lock().blocks)
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 impl Inode for RamInode {
