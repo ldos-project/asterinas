@@ -223,15 +223,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         unsafe { self.slots.get_unchecked(self.idx(position)) }
     }
 
-    /// Produce an element onto the queue
-    pub fn produce(&self, data: T)
-    where
-        T: Send,
-    {
-        // Update the head position so that other producers can also write
-        let head = self.fetch_head_for_produce();
-
-        // Get the slot we will be writing to
+    fn produce_to_noone(&self, data: T, head: usize) -> Option<T> {
         let slot = &self.get_slot(head);
 
         // Check if there are any consumers/observers that can see this message. It's safe to check
@@ -243,36 +235,52 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 .iter()
                 .all(|t| t.load(Ordering::Acquire) > head)
         {
+            // TODO(aneesh) - can this be avoided entirely if there's no weak observer?
+            // We have exclusive write access to the slot, safe to write.
+            unsafe { slot.store(data) };
             // Mark the slot as writable so that the produce isn't blocked
             slot.turn
                 .store(self.next_turn(head, false), Ordering::Release);
-            return;
+            return None;
         }
-
-        // Wait until the generation count matches the turn. Note that we need an even turn because
-        // we are writing.
-        let mut counter = 0;
-        while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive schedueling.
-                Task::yield_now();
-            }
-            core::hint::spin_loop();
-        }
-        unsafe { slot.store(data) };
-        // Mark the slot as readable
-        slot.turn.store(self.turn(head, true), Ordering::Release);
+        Some(data)
     }
 
-    fn try_produce(&self, data: T) -> Option<T>
+    /// Produce an element onto the queue
+    pub fn produce(&self, data: T)
     where
         T: Send,
     {
-        // We don't need to check for sentinels from this point onwards. If the sentinal value is
-        // set, we will just fail below during one of the compare_exchange calls below.
+        // Update the head position so that other producers can also write
+        let head = self.fetch_head_for_produce();
+
+        // Get the slot we will be writing to
+        let slot = &self.get_slot(head);
+
+        if let Some(data) = self.produce_to_noone(data, head) {
+            // Wait until the generation count matches the turn. Note that we need an even turn
+            // because we are writing.
+            let mut counter = 0;
+            while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
+                counter += 1;
+                if counter % 1024 == 0 {
+                    counter = 0;
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our
+                    // tests that don't have preemptive schedueling.
+                    Task::yield_now();
+                }
+                core::hint::spin_loop();
+            }
+            unsafe { slot.store(data) };
+            // Mark the slot as readable
+            slot.turn.store(self.turn(head, true), Ordering::Release);
+        }
+    }
+
+    fn try_produce(&self, mut data: T) -> Option<T>
+    where
+        T: Send,
+    {
         loop {
             // Get the current head position
             let head = loop {
@@ -289,21 +297,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             };
             // Get the slot that we'd like to write to
             let slot = &self.get_slot(head);
-
-            // Check if there are any consumers/observers that can see this message. It's safe to
-            // check this here because if we've successfully gotten a head value to produce to, it's
-            // guaranteed that all active tails are initialized.
-            if self.tail.load(Ordering::Acquire) > head
-                && self
-                    .strong_observer_tails
-                    .iter()
-                    .all(|t| t.load(Ordering::Acquire) > head)
-            {
-                // Mark the slot as writable so that the produce isn't blocked
-                slot.turn
-                    .store(self.next_turn(head, false), Ordering::Release);
-                return None;
-            }
+            data = self.produce_to_noone(data, head)?;
 
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
