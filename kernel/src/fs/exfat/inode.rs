@@ -33,7 +33,7 @@ use crate::{
     fs::{
         exfat::{dentry::ExfatDentryIterator, fat::ExfatChain, fs::ExfatFS},
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable as _},
+        server_traits::{self, PageIOObservable},
         utils::{
             DirentVisitor, Extension, Inode, InodeMode, InodeType, IoctlCmd, Metadata, MknodType,
             PageCache,
@@ -143,7 +143,9 @@ struct ExfatInodeInner {
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatInode {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -161,10 +163,13 @@ impl server_traits::PageStore for ExfatInode {
         );
         // Produce the handle to the ORPC queue
         self.page_reads_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
         inner.fs().block_device().read_blocks_async_with_closure(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
             move |b| {
+                // TODO(arthurp, #120): This can crash if produce blocks.
+                reply_producer.produce(req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
         )?;
@@ -185,11 +190,14 @@ impl server_traits::PageStore for ExfatInode {
         );
         // Produce the handle to the ORPC queue
         self.page_writes_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
         inner.fs().block_device().write_blocks_async_with_closure(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
+                    // TODO(arthurp, #120): This can crash if produce blocks.
+                    reply_producer.produce(req.handle.idx);
                     reply_handle.produce(req.handle);
                 }
             },
@@ -706,6 +714,9 @@ impl ExfatInode {
         });
 
         let inner = inode.inner.upread();
+
+        inner.page_cache.start_prefetcher()?;
+
         let fs = inner.fs();
         let fs_guard = fs.lock();
 
@@ -815,6 +826,11 @@ impl ExfatInode {
             }),
             extension: Extension::new(),
         });
+
+        {
+            let inner = inode.inner.upread();
+            inner.page_cache.start_prefetcher()?;
+        }
 
         if matches!(inode_type, InodeType::Dir) {
             let inner = inode.inner.upread();

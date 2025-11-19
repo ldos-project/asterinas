@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 use core::marker::{Copy, Send};
 
 use ostd::orpc::{
@@ -58,11 +58,43 @@ pub trait PageIOObservable {
         new_oqueue()
     }
 
+    /// The OQueue containing every reply for read requests.
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+
+        // TODO: This must be longer than the largest number of IO that can be outstanding in the
+        // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
+        // the kernel.
+        ObservableLockingQueue::new(32, 8)
+    }
+
+    /// The OQueue containing every reply for read requests.
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+
+        // TODO: This must be longer than the largest number of IO that can be outstanding in the
+        // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
+        // the kernel.
+        ObservableLockingQueue::new(32, 8)
+    }
+
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
         // TODO: Use lock-free implementation
         new_oqueue()
+    }
+
+    /// The OQueue containing every reply for write requests.
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: as page_reads_reply_oqueue
+        ObservableLockingQueue::new(32, 8)
+    }
+
+    /// The OQueue containing every reply for write requests.
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: as page_reads_reply_oqueue
+        ObservableLockingQueue::new(32, 8)
     }
 }
 
@@ -76,7 +108,7 @@ pub trait PageIOObservable {
 /// oriented approach to match the existing file system implementation. It would be better to use a
 /// single server per filesystem and pass around richer page IDs than an index.
 #[orpc_trait]
-pub trait PageStore {
+pub trait PageStore: PageIOObservable {
     // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/121): read_page_async and
     // write_page_async should be OQueues, but doing so would make implementing them in the existing
     // monolithic kernel code is tricky and not worth it at the moment.
@@ -123,11 +155,12 @@ pub trait PageStore {
 pub trait PageCache {
     /// Request that the cache prefetch a page. This is asynchronous and advisory, so the page may
     /// appear in the cache at a later time or never.
-    fn prefetch(&self, idx: usize) -> Result<()>;
+    fn prefetch_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
 
-    // TODO(arthurp): Make this an OQueue. Provide a prefetch handling server which watches all the
-    // OQueues and then makes calls to the actual prefetch method. Effectively, this is a thread
-    // that donates it's time in place of the sender without requiring an thread per PageCache.
+    fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 }
 
 #[orpc_trait]

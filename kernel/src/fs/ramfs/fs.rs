@@ -504,13 +504,14 @@ impl RamInode {
 #[orpc_impl]
 impl PageIOObservable for RamInode {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        // TODO:OPTIMIZATION: Avoid the clone.
         self.page_reads_oqueue().produce(req.handle.idx)?;
         // Initially, any block/page in a RamFs inode contains all zeros
         req.handle
@@ -519,6 +520,7 @@ impl PageStore for RamInode {
             .to_fallible()
             .fill_zeros(req.handle.frame.size())
             .unwrap();
+        self.page_reads_reply_oqueue().produce(req.handle.idx)?;
         req.reply_handle.produce(req.handle);
         Ok(())
     }
@@ -526,6 +528,7 @@ impl PageStore for RamInode {
     fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()> {
         // TODO:OPTIMIZATION: Avoid the clone.
         self.page_writes_oqueue().produce(req.handle.idx)?;
+        self.page_writes_reply_oqueue().produce(req.handle.idx)?;
         if let Some(reply_handle) = req.reply_handle {
             reply_handle.produce(req.handle);
         }
