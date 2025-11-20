@@ -1,0 +1,15 @@
+[package]
+name = "early-boot-test-kernel"
+version = "0.1.0"
+edition = "2024"
+description = "Tests for early-boot code that cannot be tested in an initialized ktest environment."
+license = "MPL-2.0"
+
+[dependencies]
+ostd = { path = "../.." }
+
+[profile.dev]
+panic = "unwind"
+
+[lints]
+workspace = true

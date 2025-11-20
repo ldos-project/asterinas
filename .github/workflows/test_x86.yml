@@ -22,7 +22,7 @@ jobs:
       options: --device=/dev/kvm --privileged
     strategy:
       matrix:
-        id: ['lint', 'compile', 'usermode_test', 'ktest']
+        id: ['lint', 'compile', 'usermode_test', 'ktest', 'early_boot_test']
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
