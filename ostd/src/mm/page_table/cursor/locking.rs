@@ -97,7 +97,7 @@ fn try_traverse_and_lock_subtree_root<'rcu, C: PageTableConfig>(
     for cur_level in (1..=C::NR_LEVELS).rev() {
         let start_idx = pte_index::<C>(va.start, cur_level);
         let level_too_high = {
-            let end_idx = pte_index::<C>(va.end - 1, cur_level);
+            let end_idx = pte_index::<C>(va.end, cur_level);
             cur_level > 1 && start_idx == end_idx
         };
         if !level_too_high {

@@ -440,9 +440,9 @@ unsafe impl PageTableConfig for UserPtConfig {
     }
 
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
-        debug_assert_eq!(level, 1);
         // SAFETY: The caller ensures safety.
         let frame = unsafe { Frame::<dyn AnyUFrameMeta>::from_raw(paddr) };
+        debug_assert_eq!(frame.map_level(), level);
         (frame, prop)
     }
 }

@@ -41,7 +41,7 @@ pub(crate) mod mapping {
 use core::{
     alloc::Layout,
     any::Any,
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     fmt::Debug,
     mem::{ManuallyDrop, MaybeUninit, size_of},
     result::Result,
@@ -56,8 +56,8 @@ use crate::{
     boot::memory_region::MemoryRegionType,
     const_assert,
     mm::{
-        CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PrivilegedPageFlags,
-        Segment, Vaddr, VmReader,
+        CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PagingLevel,
+        PrivilegedPageFlags, Segment, Vaddr, VmReader,
         frame::allocator::{self, EarlyAllocatedFrameMeta},
         kspace::LINEAR_MAPPING_BASE_VADDR,
         paddr_to_vaddr, page_size,
@@ -69,6 +69,7 @@ use crate::{
 
 /// The maximum number of bytes of the metadata of a frame.
 pub const FRAME_METADATA_MAX_SIZE: usize = META_SLOT_SIZE
+    - size_of::<Cell<PagingLevel>>()
     - size_of::<AtomicU64>()
     - size_of::<FrameMetaVtablePtr>()
     - size_of::<AtomicU64>();
@@ -92,6 +93,8 @@ pub(in crate::mm) struct MetaSlot {
     /// Don't interpret this field as an array of bytes. It is a
     /// placeholder for the metadata of a frame.
     storage: UnsafeCell<[u8; FRAME_METADATA_MAX_SIZE]>,
+    /// The level of the frame. Level 1 is a base page, level 2 is a 2MB page, etc.
+    level: Cell<PagingLevel>,
     /// The reference count of the page.
     ///
     /// Specifically, the reference count has the following meaning:
@@ -230,6 +233,7 @@ impl MetaSlot {
         paddr: Paddr,
         metadata: M,
         as_unique_ptr: bool,
+        level: PagingLevel,
     ) -> Result<*const Self, GetFrameError> {
         let slot = get_slot(paddr)?;
 
@@ -242,6 +246,7 @@ impl MetaSlot {
                 0 => GetFrameError::Busy,
                 _ => GetFrameError::InUse,
             })?;
+        slot.level.set(level);
 
         // SAFETY: The slot now has a reference count of `0`, other threads will
         // not access the metadata slot so it is safe to have a mutable reference.
@@ -318,6 +323,10 @@ impl MetaSlot {
     /// Gets the corresponding frame's physical address.
     pub(super) fn frame_paddr(&self) -> Paddr {
         mapping::meta_to_frame(self as *const MetaSlot as Vaddr)
+    }
+
+    pub(super) fn level(&self) -> PagingLevel {
+        self.level.get()
     }
 
     /// Gets a dynamically typed pointer to the stored metadata.
@@ -540,6 +549,7 @@ fn alloc_meta_frames(tot_nr_frames: usize) -> (usize, Paddr) {
         unsafe {
             slot.write(MetaSlot {
                 storage: UnsafeCell::new([0; FRAME_METADATA_MAX_SIZE]),
+                level: Cell::new(1), // all base page frames
                 ref_count: AtomicU64::new(REF_COUNT_UNUSED),
                 vtable_ptr: UnsafeCell::new(MaybeUninit::uninit()),
                 in_list: AtomicU64::new(0),

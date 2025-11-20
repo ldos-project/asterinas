@@ -36,7 +36,7 @@ impl<M: AnyFrameMeta> UniqueFrame<M> {
     /// The caller should provide the initial metadata of the page.
     pub fn from_unused(paddr: Paddr, metadata: M) -> Result<Self, GetFrameError> {
         Ok(Self {
-            ptr: MetaSlot::get_from_unused(paddr, metadata, true)?,
+            ptr: MetaSlot::get_from_unused(paddr, metadata, true, 1)?,
             _marker: PhantomData,
         })
     }
