@@ -13,6 +13,7 @@ use super::{
     WeakObserver,
 };
 use crate::{
+    orpc::oqueue::OQueueRef,
     prelude::{Arc, Box, Vec},
     sync::{SpinLock, WaitQueue, Waker},
     task::Task,
@@ -46,6 +47,7 @@ impl<T> LockingQueue<T> {
                 tail_index: 0,
                 free_strong_observer_heads: (0..max_strong_observers).collect(),
                 strong_observer_heads: (0..max_strong_observers).map(|_| usize::MAX).collect(),
+                strong_observer_handlers: Default::default(),
             }),
             put_wait_queue: Default::default(),
             read_wait_queue: Default::default(),
@@ -105,6 +107,7 @@ struct LockingOQueueInner<T> {
 
     /// The heads used by strong observers.
     strong_observer_heads: Vec<usize>,
+    strong_observer_handlers: Vec<Box<dyn Fn(T) + Sync + Send + 'static>>,
 
     /// A list of strong observer heads that are available to be allocated to an attacher.
     free_strong_observer_heads: Vec<usize>,
@@ -282,6 +285,17 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
     }
+
+    fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>
+    where
+        T: 'static,
+    {
+        let parent = self.inner.get_this()?;
+        let x = move |v| {
+            parent.produce(v);
+        };
+        subqueue.attach_strong_observer()?.handle_fast(Box::new(x))
+    }
 }
 
 impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
@@ -313,6 +327,17 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
         Err(OQueueAttachError::Unsupported {
             table_type: type_name::<Self>().to_owned(),
         })
+    }
+    
+    fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>
+    where
+        T: 'static,
+    {
+        let parent = self.get_this()?;
+        let x = move |v| {
+            parent.produce(v);
+        };
+        subqueue.attach_strong_observer()?.handle_fast(Box::new(x))
     }
 }
 
@@ -496,6 +521,15 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
             self.oqueue().put_wait_queue.wake_all();
         }
         res
+    }
+
+    fn handle_fast(
+        &mut self,
+        handler: Box<dyn Fn(T) + Sync + Send>,
+    ) -> Result<(), OQueueAttachError> {
+        let mut inner = self.oqueue().inner.lock();
+        inner.strong_observer_handlers.push(handler);
+        Ok(())
     }
 }
 

@@ -385,7 +385,7 @@ impl OutstandingRequests {
     ) -> Result<()> {
         let async_page = CachePage::alloc_uninit()?;
         pages.put(idx, async_page.clone());
-        let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair()?;
+        let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair(None)?;
         backend.read_page_async(AsyncReadRequest {
             handle: PageHandle {
                 idx,
@@ -535,7 +535,7 @@ impl PageCacheManager {
         for idx in page_idx_range.start..page_idx_range.end {
             if let Some(page) = pages.peek(&idx) {
                 if page.load_state() == PageState::Dirty && idx < backend_npages {
-                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair(None)?;
                     backend.write_page_async(AsyncWriteRequest {
                         handle: PageHandle {
                             idx,
@@ -656,6 +656,8 @@ impl Debug for PageCacheManager {
 impl PageIOObservable for PageCacheManager {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 // XXX: How is Pager handled in ORPC? Do I also need to refactor that?

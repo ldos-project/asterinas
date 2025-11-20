@@ -52,9 +52,21 @@ pub trait PageIOObservable {
         ObservableLockingQueue::new(8, 8)
     }
 
+    /// The OQueue containing every reply for read requests.
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
+
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
+
+    /// The OQueue containing every reply for write requests.
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: Use lock-free implementation
         ObservableLockingQueue::new(8, 8)
     }
@@ -77,7 +89,7 @@ pub struct OutstandingOperations {
 /// oriented approach to match the existing file system implementation. It would be better to use a
 /// single server per filesystem and pass around richer page IDs than an index.
 #[orpc_trait]
-pub trait PageStore {
+pub trait PageStore: PageIOObservable {
     // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/121): read_page_async and
     // write_page_async should be OQueues, but doing so would make implementing them in the existing
     // monolithic kernel code is tricky and not worth it at the moment.
@@ -96,28 +108,27 @@ pub trait PageStore {
     fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations> {
         ObservableLockingQueue::new(2, 8)
     }
-
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_producer, reply_consumer) =
+            ReplyQueue::new_pair(None)?;
         self.read_page_async(AsyncReadRequest {
             handle,
-            reply_handle: reply_oqueue.attach_producer()?,
+            reply_handle: reply_producer,
         })?;
-        consumer.consume();
+        reply_consumer.consume();
         Ok(())
     }
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_producer, reply_consumer) =
+            ReplyQueue::new_pair(None)?;
         self.write_page_async(AsyncWriteRequest {
             handle,
-            reply_handle: Some(reply_oqueue.attach_producer()?),
+            reply_handle: Some(reply_producer),
         })?;
-        consumer.consume();
+        reply_consumer.consume();
         Ok(())
     }
 

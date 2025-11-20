@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 
-use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, Producer};
+use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, OQueueRef, Producer};
 
 /// The OQueue implementation to use for ephemeral reply queues.
 ///
@@ -17,8 +17,13 @@ type ReplyHandlePair<T> = (Box<dyn Producer<T>>, Box<dyn Consumer<T>>);
 
 impl<T: Send + 'static> ReplyQueue<T> {
     /// Construct a producer/consumer pair for handling an async message reply.
-    pub fn new_pair() -> Result<ReplyHandlePair<T>, OQueueAttachError> {
+    pub fn new_pair(
+        parent: Option<&OQueueRef<T>>,
+    ) -> Result<ReplyHandlePair<T>, OQueueAttachError> {
         let oqueue = ReplyQueue::new(2);
+        if let Some(parent) = parent {
+            parent.attach_child_queue(oqueue.clone());
+        }
         Ok((oqueue.attach_producer()?, oqueue.attach_consumer()?))
     }
 }
@@ -30,7 +35,7 @@ mod test {
 
     #[ktest]
     fn test_send_message() {
-        let (producer, consumer) = ReplyQueue::new_pair().unwrap();
+        let (producer, consumer) = ReplyQueue::new_pair(None).unwrap();
         producer.produce(42);
         assert_eq!(consumer.consume(), 42);
     }

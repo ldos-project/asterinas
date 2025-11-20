@@ -11,6 +11,7 @@
 use alloc::sync::Arc;
 use core::usize;
 
+use aster_logger::println;
 use ostd::orpc::{
     framework::{
         errors::RPCError,
@@ -56,10 +57,7 @@ impl ReadaheadPrefetcher {
 
         spawn_thread(server.clone(), {
             let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
-            let outstanding_requests_observer = cache
-                .underlying_page_store()?
-                .outstanding_operations()
-                .attach_weak_observer()?;
+            let read_reply_observer = cache.page_reads_reply_oqueue().attach_strong_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -68,17 +66,21 @@ impl ReadaheadPrefetcher {
             let server = server.clone();
 
             move || {
+                let mut outstanding_reads = 0;
                 loop {
+                    println!("outstanding reads = {}", outstanding_reads);
                     server.shutdown_state.check()?;
                     select!(
+                        if let _ = read_reply_observer.try_strong_observe() {
+                            println!("read reply");
+                            outstanding_reads -= 1;
+                        },
                         if let idx = read_observer.try_strong_observe() {
-                            let outstanding_requests = outstanding_requests_observer
-                                .weak_observe(outstanding_requests_observer.recent_cursor())
-                                .map(|v| v.outstanding_reads)
-                                .unwrap_or(usize::MAX);
-                            if outstanding_requests == 0 {
+                            println!("read");
+                            if outstanding_reads == 0 {
                                 cache.prefetch(idx + n_steps_ahead)?;
                             }
+                            outstanding_reads += 1;
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
                     );

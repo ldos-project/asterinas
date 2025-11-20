@@ -118,7 +118,7 @@ impl ServerBase {
     }
 
     /// Get a strong reference to `self`.
-    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send>> {
+    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send + 'static>> {
         self.weak_this.upgrade()
     }
 }

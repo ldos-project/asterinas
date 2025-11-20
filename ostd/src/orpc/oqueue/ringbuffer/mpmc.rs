@@ -668,6 +668,10 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
         }
         res
     }
+    
+    fn handle_fast(&mut self, handler: Box<dyn Fn(T) + Sync + Send>) -> Result<(), OQueueAttachError> {
+        todo!()
+    }
 }
 
 /// The weak-observer handle for [`MPMCOQueue`].
@@ -765,6 +769,10 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             oqueue: self.get_this()?,
             _phantom: PhantomData,
         }))
+    }
+    
+    fn attach_child_queue(&self, subqueue: crate::orpc::oqueue::OQueueRef<T>) -> Result<(), OQueueAttachError> {
+        todo!()
     }
 }
 
