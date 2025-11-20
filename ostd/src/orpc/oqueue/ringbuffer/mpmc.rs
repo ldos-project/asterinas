@@ -97,6 +97,7 @@ pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVE
     /// The index at which elements are consumed from. Note that unlike StrongObservers, each
     /// message is read once across all consumers.
     tail: CachePadded<AtomicUsize>,
+    n_consumers: Mutex<usize>,
     /// Each tail represents the position of a StrongObserver. Tails may be read by multiple
     /// handles, but will be written to by exactly one handle. Unlike a Consumer, each message is
     /// read once by every StrongObserver.
@@ -169,7 +170,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             max_strong_observers,
             slots: allocate_page_aligned_array(capacity),
             head: CachePadded::new(AtomicUsize::new(0)),
-            tail: CachePadded::new(AtomicUsize::new(0)),
+            tail: CachePadded::new(AtomicUsize::new(usize::MAX)),
+            n_consumers: Mutex::new(0),
             strong_observer_tails: (0..max_strong_observers)
                 .map(|_| CachePadded::new(AtomicUsize::new(usize::MAX)))
                 .collect(),
@@ -221,6 +223,29 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         unsafe { self.slots.get_unchecked(self.idx(position)) }
     }
 
+    fn produce_to_noone(&self, data: T, head: usize) -> Option<T> {
+        let slot = &self.get_slot(head);
+
+        // Check if there are any consumers/observers that can see this message. It's safe to check
+        // this here because if we've successfully gotten a head value to produce to, it's
+        // guaranteed that all active tails are initialized.
+        if self.tail.load(Ordering::Acquire) > head
+            && self
+                .strong_observer_tails
+                .iter()
+                .all(|t| t.load(Ordering::Acquire) > head)
+        {
+            // TODO(aneesh) - can this be avoided entirely if there's no weak observer?
+            // We have exclusive write access to the slot, safe to write.
+            unsafe { slot.store(data) };
+            // Mark the slot as writable so that the produce isn't blocked
+            slot.turn
+                .store(self.next_turn(head, false), Ordering::Release);
+            return None;
+        }
+        Some(data)
+    }
+
     /// Produce an element onto the queue
     pub fn produce(&self, data: T)
     where
@@ -228,49 +253,52 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     {
         // Update the head position so that other producers can also write
         let head = self.fetch_head_for_produce();
+
         // Get the slot we will be writing to
         let slot = &self.get_slot(head);
-        // Wait until the generation count matches the turn. Note that we need an even turn because
-        // we are writing.
-        let mut counter = 0;
-        while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive schedueling.
-                Task::yield_now();
+
+        if let Some(data) = self.produce_to_noone(data, head) {
+            // Wait until the generation count matches the turn. Note that we need an even turn
+            // because we are writing.
+            let mut counter = 0;
+            while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
+                counter += 1;
+                if counter % 1024 == 0 {
+                    counter = 0;
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our
+                    // tests that don't have preemptive scheduling.
+                    Task::yield_now();
+                }
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
+            unsafe { slot.store(data) };
+            // Mark the slot as readable
+            slot.turn.store(self.turn(head, true), Ordering::Release);
         }
-        unsafe { slot.store(data) };
-        // Mark the slot as writeable
-        slot.turn.store(self.turn(head, true), Ordering::Release);
     }
 
-    fn try_produce(&self, data: T) -> Option<T>
+    fn try_produce(&self, mut data: T) -> Option<T>
     where
         T: Send,
     {
-        // Get the current head position
-        let mut head = loop {
-            let head = self.head.load(Ordering::Acquire);
-            if head >= MPMCOQUEUE_HEAD_SENTINEL {
-                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
-                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                    // that don't have preemptive schedueling.
-                    Task::yield_now();
-                }
-            } else {
-                break head;
-            }
-        };
-
-        // We don't need to check for sentinels from this point onwards. If the sentinal value is
-        // set, we will just fail below during one of the compare_exchange calls below.
         loop {
+            // Get the current head position
+            let head = loop {
+                let head = self.head.load(Ordering::Acquire);
+                if head >= MPMCOQUEUE_HEAD_SENTINEL {
+                    while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
+                        // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                        // that don't have preemptive scheduling.
+                        Task::yield_now();
+                    }
+                } else {
+                    break head;
+                }
+            };
             // Get the slot that we'd like to write to
             let slot = &self.get_slot(head);
+            data = self.produce_to_noone(data, head)?;
+
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
             if self.turn(head, false) == slot.turn.load(Ordering::Acquire) {
@@ -290,10 +318,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             } else {
                 // It was not our turn, but we can opportunistically try again.
                 let prev_head = head;
-                head = self.head.load(Ordering::Acquire);
+                let next_head = self.head.load(Ordering::Acquire);
                 // If it is not our turn and the `head` has not moved, the queue must be full.
                 // Return the value back to the user.
-                if head == prev_head {
+                if next_head == prev_head {
                     return Some(data);
                 }
             }
@@ -355,7 +383,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             if counter % 1024 == 0 {
                 counter = 0;
                 // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive schedueling.
+                // that don't have preemptive scheduling.
                 Task::yield_now();
             }
             core::hint::spin_loop();
@@ -485,6 +513,23 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 table_type: "".to_owned(),
             })
     }
+
+    /// Attach either a consumer or producer to the queue.
+    /// SAFETY: This method MUST only be called from a single thread at a time.
+    unsafe fn attach_tail(&self, tail: &AtomicUsize) {
+        // If the tail is already initialized, no need to initialize it again
+        if tail.load(Ordering::Acquire) == usize::MAX {
+            // By swapping with the sentinel here we lock all producers, preventing the value at
+            // `obs_pos` from being written to.
+            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
+            // After this store, consumers/observers cannot consume past the index `obs_pos`. We do
+            // a compare exchange in case some other concurrent call to attach_consumer happened
+            // first. In that case, we can just continue and use the initialized value.
+            let _ = tail.compare_exchange(usize::MAX, obs_pos, Ordering::SeqCst, Ordering::SeqCst);
+            // Allow producers to write to this position again
+            self.head.swap(obs_pos, Ordering::Release);
+        }
+    }
 }
 
 /// The producer handle for [`MPMCOQueue`].
@@ -528,6 +573,19 @@ pub struct MPMCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
+}
+
+impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
+    for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+{
+    fn drop(&mut self) {
+        let mut n_consumers = self.oqueue.n_consumers.lock();
+        *n_consumers -= 1;
+        if *n_consumers == 0 {
+            // Safe to write here because we hold the lock on n_consumers
+            self.oqueue.tail.store(usize::MAX, Ordering::Relaxed);
+        }
+    }
 }
 
 impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
@@ -662,6 +720,14 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        let mut n_consumers = self.n_consumers.lock();
+        *n_consumers += 1;
+        // Prevent any strong observers from being added while the tail is initializing. Otherwise
+        // the atomic swap with the head will need some kind of retry.
+        let _ = self.n_strong_observers.lock();
+        // SAFETY: this is safe because we have the lock above.
+        unsafe { self.attach_tail(&self.tail) };
+
         Ok(Box::new(MPMCConsumer {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
@@ -678,13 +744,8 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
         } else {
             let observer_id = *n_observers;
             (*n_observers) += 1;
-            // By swapping with the sentinel here we lock all producers, preventing the value at
-            // `obs_pos` from being written to.
-            let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
-            // After this store, consumers cannot consume past the index `obs_pos`.
-            self.strong_observer_tails[observer_id].store(obs_pos, Ordering::SeqCst);
-            // Allow producers to write to this position again
-            self.head.swap(obs_pos, Ordering::Release);
+            // SAFETY: this is safe because we have the lock above.
+            unsafe { self.attach_tail(&self.strong_observer_tails[observer_id]) };
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {
@@ -740,5 +801,30 @@ mod test {
         let oqueue1 = MPMCOQueue::<_>::new(16, 5);
         let oqueue2 = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
+    }
+
+    #[ktest]
+    fn test_produce_strong_observe_only() {
+        generic_test::test_produce_strong_observe_only(MPMCOQueue::<_>::new(1, 1));
+    }
+
+    #[ktest]
+    fn test_consumer_late_attach() {
+        generic_test::test_consumer_late_attach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_consumer_detach() {
+        generic_test::test_consumer_detach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_strong_observer_detach() {
+        generic_test::test_strong_observer_detach(MPMCOQueue::<_>::new(2, 1));
+    }
+
+    #[ktest]
+    fn test_strong_observer_late_attach() {
+        generic_test::test_strong_observer_late_attach(MPMCOQueue::<_>::new(2, 1));
     }
 }
