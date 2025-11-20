@@ -266,7 +266,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 if counter % 1024 == 0 {
                     counter = 0;
                     // TODO(aneesh): Revisit the need for yield - this might only be needed in our
-                    // tests that don't have preemptive schedueling.
+                    // tests that don't have preemptive scheduling.
                     Task::yield_now();
                 }
                 core::hint::spin_loop();
@@ -288,7 +288,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 if head >= MPMCOQUEUE_HEAD_SENTINEL {
                     while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
                         // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                        // that don't have preemptive schedueling.
+                        // that don't have preemptive scheduling.
                         Task::yield_now();
                     }
                 } else {
@@ -383,7 +383,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             if counter % 1024 == 0 {
                 counter = 0;
                 // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive schedueling.
+                // that don't have preemptive scheduling.
                 Task::yield_now();
             }
             core::hint::spin_loop();
@@ -523,7 +523,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             // `obs_pos` from being written to.
             let obs_pos = self.head.swap(MPMCOQUEUE_HEAD_SENTINEL, Ordering::Acquire);
             // After this store, consumers/observers cannot consume past the index `obs_pos`. We do
-            // a compare exchange in case some other conccurent call to attach_consumer happened
+            // a compare exchange in case some other concurrent call to attach_consumer happened
             // first. In that case, we can just continue and use the initialized value.
             let _ = tail.compare_exchange(usize::MAX, obs_pos, Ordering::SeqCst, Ordering::SeqCst);
             // Allow producers to write to this position again
