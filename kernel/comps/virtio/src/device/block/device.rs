@@ -34,7 +34,15 @@ use crate::{
     transport::{ConfigManager, VirtioTransport},
 };
 
+use ostd::{
+    mm::Segment,
+    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+};
+
+use crate::device::block::server_traits::{self, PageIOObservable as _};
+
 #[derive(Debug)]
+#[orpc_server(server_traits::PageIOObservable)]
 pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
@@ -53,7 +61,8 @@ impl BlockDevice {
             device.request_device_id()
         };
 
-        let block_device = Arc::new(Self {
+        let block_device = Self::new_with( |orpc_internal, _weak_self| BlockDevice {
+            orpc_internal,
             device,
             // Each bio request includes an additional 1 request and 1 response descriptor,
             // therefore this upper bound is set to (QUEUE_SIZE - 2).
