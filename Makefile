@@ -87,6 +87,8 @@ else ifeq ($(AUTO_TEST), test)
 		CARGO_OSDK_BUILD_ARGS += --kcmd-args="BLOCK_UNSUPPORTED_SMP_TESTS=1"
 	endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_general_test.sh"
+else ifeq ($(AUTO_TEST), raid)
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -289,6 +291,9 @@ else ifeq ($(AUTO_TEST), test)
 else ifeq ($(AUTO_TEST), boot)
 	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
+else ifeq ($(AUTO_TEST), raid)
+	@tail --lines 100 qemu.log | grep -q "^All raid1 test passed" \
+		|| (echo "RAID test failed" && exit 1)
 else ifeq ($(AUTO_TEST), vsock)
 	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
 		|| (echo "Vsock test failed" && exit 1)
