@@ -12,7 +12,7 @@ use core::{fmt::Debug, hint::spin_loop, mem::size_of};
 
 use aster_block::{
     BlockDeviceMeta,
-    bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
+    bio::{Bio, BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use id_alloc::IdAlloc;
@@ -95,6 +95,10 @@ impl BlockDevice {
         let mut support_features = BlockFeatures::from_bits_truncate(features);
         support_features.remove(BlockFeatures::MQ);
         support_features.bits
+    }
+
+    pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
+        bio.submit(self)
     }
 }
 
