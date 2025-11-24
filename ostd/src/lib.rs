@@ -56,6 +56,7 @@ pub mod timer;
 pub mod trap;
 pub mod user;
 pub mod util;
+pub mod stacktrace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
