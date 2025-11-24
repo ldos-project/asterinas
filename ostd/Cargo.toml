@@ -40,6 +40,7 @@ unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu
 volatile = "0.6.1"
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
 crossbeam-utils = { version = "0.8.21", default-features = false }
+tinyvec = { version = "1.10"}
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.14.13"
@@ -60,6 +61,7 @@ fdt = { version = "0.1.5", features = ["pretty-printing"] }
 
 [features]
 default = ["cvm_guest"]
+capture_stacks = []
 # The guest OS support for Confidential VMs (CVMs), e.g., Intel TDX
 cvm_guest = ["dep:tdx-guest", "dep:iced-x86"]
 
