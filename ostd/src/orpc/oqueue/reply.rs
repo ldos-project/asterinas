@@ -3,9 +3,9 @@
 //! A specialized OQueue implementation used only for replies to requests. These OQueues are
 //! expected to be transient and can be optimized for that case.
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
-use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, OQueueRef, Producer};
+use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, OQueueRef, Producer, wrapper::TransformingQueue};
 
 /// The OQueue implementation to use for ephemeral reply queues.
 ///
@@ -13,13 +13,25 @@ use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, OQueueRef, Produc
 /// implementation.
 pub type ReplyQueue<T> = super::locking::LockingQueue<T>;
 
-type ReplyHandlePair<T> = (Box<dyn Producer<T>>, Box<dyn Consumer<T>>);
+type ReplyHandlePair<T, U> = (Box<dyn Producer<T>>, Box<dyn Consumer<U>>);
 
 impl<T: Send + 'static> ReplyQueue<T> {
     /// Construct a producer/consumer pair for handling an async message reply.
+    pub fn new_pair_transformed<U: Send + 'static, F>(
+        parent: Option<(&OQueueRef<U>, F)>,
+    ) -> Result<ReplyHandlePair<T, T>, OQueueAttachError>
+     where F: Fn(&U) -> T + Clone + Send + 'static {
+        let oqueue = ReplyQueue::new(2);
+        if let Some((parent, f)) = parent {
+            parent.attach_child_queue(TransformingQueue::new(oqueue.clone(), f));
+        }
+        Ok((oqueue.attach_producer()?, oqueue.attach_consumer()?))
+    }    
+    
     pub fn new_pair(
-        parent: Option<&OQueueRef<T>>,
-    ) -> Result<ReplyHandlePair<T>, OQueueAttachError> {
+        parent: Option<&OQueueRef<T>>
+    ) -> Result<ReplyHandlePair<T, T>, OQueueAttachError>
+     where {
         let oqueue = ReplyQueue::new(2);
         if let Some(parent) = parent {
             parent.attach_child_queue(oqueue.clone());
@@ -31,12 +43,33 @@ impl<T: Send + 'static> ReplyQueue<T> {
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::prelude::*;
+    use crate::{orpc::oqueue::locking::{LockingQueue, ObservableLockingQueue}, prelude::*};
 
     #[ktest]
     fn test_send_message() {
         let (producer, consumer) = ReplyQueue::new_pair(None).unwrap();
         producer.produce(42);
         assert_eq!(consumer.consume(), 42);
+    }
+
+    #[ktest]
+    fn test_send_message_some() {
+        let parent: OQueueRef<i32> = ObservableLockingQueue::<i32>::new(2, 2);
+        let parent_consumer = parent.attach_consumer().unwrap();
+        let (producer, consumer) = ReplyQueue::new_pair(Some(&parent)).unwrap();
+        producer.produce(42);
+        assert_eq!(consumer.consume(), 42);
+        assert_eq!(parent_consumer.consume(), 42);
+    }
+
+
+    #[ktest]
+    fn test_send_message_transformed() {
+        let parent: OQueueRef<i32> = ObservableLockingQueue::<i32>::new(2, 2);
+        let parent_consumer = parent.attach_consumer().unwrap();
+        let (producer, consumer) = ReplyQueue::new_pair_transformed::<i32, _>(Some((&parent, |x: &i32| x * 2))).unwrap();
+        producer.produce(21i32);
+        assert_eq!(consumer.consume(), 21i32);
+        assert_eq!(parent_consumer.consume(), 42);
     }
 }

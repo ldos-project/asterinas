@@ -11,6 +11,7 @@ pub mod registry;
 pub mod reply;
 /// OQueue implementations that use lock-free ringbuffers for efficient space management
 pub mod ringbuffer;
+pub mod wrapper;
 
 use alloc::string::String;
 use core::{

@@ -560,11 +560,11 @@ impl PageCacheManager {
     /// this call. If the built-in prefetch policy is enabled, this will trigger readaheads as
     /// needed.
     fn read_page(&self, idx: usize) -> Result<UFrame> {
+        self.page_reads_oqueue().produce(idx)?;
+
         let mut inner = self.inner.lock();
         let inner = inner.deref_mut();
         let backend = self.backend()?;
-
-        self.page_reads_oqueue().try_produce(idx)?;
 
         // Handle any requests that have already completed.
         inner.outstanding_requests.check_requests(&mut inner.pages);
@@ -668,10 +668,12 @@ impl Pager for PageCacheManager {
     }
 
     fn update_page(&self, idx: usize) -> Result<()> {
-        let pages = &mut self.inner.lock().pages;
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
         if let Some(page) = pages.get_mut(&idx) {
-            self.page_writes_oqueue().produce(idx)?;
             page.store_state(PageState::Dirty);
+            drop(inner);
+            self.page_writes_oqueue().produce(idx)?;
         } else {
             warn!("The page {} is not in page cache", idx);
         }

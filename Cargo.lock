@@ -1291,6 +1291,7 @@ dependencies = [
  "snafu",
  "spin",
  "tdx-guest",
+ "tinyvec",
  "unwinding",
  "volatile 0.6.1",
  "x86",
@@ -1761,6 +1762,12 @@ name = "time-core"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
+
+[[package]]
+name = "tinyvec"
+version = "1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfa5fdc3bce6191a1dbc8c02d5c8bffcf557bafa17c124c5264a458f1b0613fa"
 
 [[package]]
 name = "toml"
