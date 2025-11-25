@@ -12,7 +12,7 @@ use core::{fmt::Debug, hint::spin_loop, mem::size_of};
 
 use aster_block::{
     BlockDeviceMeta,
-    bio::{Bio, BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
+    bio::{Bio, BioEnqueueError, BioStatus, BioType, SubmittedBio, BioWaiter, bio_segment_pool_init},
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use id_alloc::IdAlloc;

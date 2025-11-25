@@ -46,7 +46,7 @@ use ostd::sync::SpinLock;
 use spin::Once;
 
 use self::{
-    bio::{BioEnqueueError, SubmittedBio},
+    bio::{Bio, BioWaiter,BioEnqueueError, SubmittedBio},
     prelude::*,
 };
 
@@ -72,6 +72,14 @@ pub struct BlockDeviceMeta {
 }
 
 impl dyn BlockDevice {
+    /// Convenience helper that forwards to [`Bio::submit`].
+    ///
+    /// This allows callers holding a `&dyn BlockDevice` (including trait objects) to
+    /// submit a freshly constructed [`Bio`] without importing helper traits.
+    pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
+        bio.submit(self)
+    }
+
     pub fn downcast_ref<T: BlockDevice>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref::<T>()
     }

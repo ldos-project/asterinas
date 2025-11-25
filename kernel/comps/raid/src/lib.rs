@@ -134,7 +134,7 @@ impl Raid1Device {
                 Self::clone_segments(parent),
                 None,
             );
-            match child.submit(member.as_ref()) {
+            match member.submit(child) {
                 Ok(waiter) => pending.push((parent, waiter)),
                 // Err(_) => parent.complete(BioStatus::IoError),
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
@@ -199,7 +199,7 @@ impl Raid1Device {
         for member in &self.members {
             // Build a child BIO for this member.
             let child = Bio::new(bio_type, parent.sid_range().start, segments_builder(), None);
-            match child.submit(member.as_ref()) {
+            match member.submit(child) {
                 Ok(child_waiter) => waiter.concat(child_waiter),
                 Err(_) => submission_failed = true,
             }
