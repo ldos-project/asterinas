@@ -34,6 +34,9 @@ use crate::{
     prelude::*,
 };
 
+/// Start a thread of the block device to pop requests from the block device's
+/// request queue and process them if there are any. If the request queue is empty, 
+/// the thread will wait until there is a request in the queue.
 fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
     if let Some(device) = aster_block::get_device(device_name) {
         let cloned_device = device.clone();
