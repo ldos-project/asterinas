@@ -561,9 +561,9 @@ mod unmap {
             panic!("Expected to take a stray page table");
         };
 
-        // Should take a level-2 page table with 512 entries.
-        assert_eq!(va, PAGE_SIZE * 512);
-        assert_eq!(len, PAGE_SIZE * 512);
+        // Should take a level-3 page table.
+        assert_eq!(va, 0);
+        assert_eq!(len, large_range.len());
         assert_eq!(num_frames, 1);
     }
 }
