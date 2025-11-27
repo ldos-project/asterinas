@@ -100,7 +100,7 @@ impl<M: AnyFrameMeta> Segment<M> {
             _marker: core::marker::PhantomData,
         };
         for paddr in range.step_by(PAGE_SIZE) {
-            let frame = Frame::<M>::from_unused(paddr, metadata_fn(paddr))?;
+            let frame = Frame::<M>::from_unused(paddr, metadata_fn(paddr), 1)?;
             let _ = ManuallyDrop::new(frame);
             segment.range.end = paddr + PAGE_SIZE;
         }

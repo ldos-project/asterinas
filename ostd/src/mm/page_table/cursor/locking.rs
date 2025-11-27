@@ -94,11 +94,16 @@ fn try_traverse_and_lock_subtree_root<'rcu, C: PageTableConfig>(
 ) -> Option<PageTableGuard<'rcu, C>> {
     let mut cur_node_guard: Option<PageTableGuard<C>> = None;
     let mut cur_pt_addr = pt.root.start_paddr();
+    let range = va.end - va.start;
     for cur_level in (1..=C::NR_LEVELS).rev() {
         let start_idx = pte_index::<C>(va.start, cur_level);
         let level_too_high = {
-            let end_idx = pte_index::<C>(va.end - 1, cur_level);
-            cur_level > 1 && start_idx == end_idx
+            if range == page_size::<C>(cur_level) {
+                false
+            } else {
+                let end_idx = pte_index::<C>(va.end - 1, cur_level);
+                cur_level > 1 && start_idx == end_idx
+            }
         };
         if !level_too_high {
             break;

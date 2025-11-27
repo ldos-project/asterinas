@@ -52,6 +52,16 @@ impl FrameAllocOptions {
         self
     }
 
+    /// Sets the level of pages allocated
+    pub fn with_level(&mut self, level: PagingLevel) -> &mut Self {
+        // There is no level 0.
+        // TODO(aneesh): use NonZeroU8 for PagingLevel
+        assert!(level >= 1);
+
+        self.level = level;
+        self
+    }
+
     /// Allocates a single untyped frame without metadata.
     pub fn alloc_frame(&self) -> Result<Frame<()>> {
         self.alloc_frame_with(())
@@ -63,7 +73,7 @@ impl FrameAllocOptions {
         let single_layout = Layout::from_size_align(page_size, page_size).unwrap();
         let frame = get_global_frame_allocator()
             .alloc(single_layout)
-            .map(|paddr| Frame::from_unused(paddr, metadata).unwrap())
+            .map(|paddr| Frame::from_unused(paddr, metadata, self.level).unwrap())
             .ok_or(Error::NoMemory)?;
 
         if self.zeroed {

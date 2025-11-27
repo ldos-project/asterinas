@@ -9,12 +9,13 @@ use core::{
 use align_ext::AlignExt;
 use ostd::{
     mm::{
-        CachePolicy, FrameAllocOptions, PageFlags, PageProperty, UFrame, VmSpace, tlb::TlbFlushOp,
+        CachePolicy, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, PagingLevel, UFrame,
+        VmSpace, page_size, tlb::TlbFlushOp,
     },
     task::disable_preempt,
 };
 
-use super::{RssDelta, RssType, interval_set::Interval};
+use super::{RssDelta, RssType, huge_mapping_enabled, interval_set::Interval};
 use crate::{
     fs::utils::Inode,
     prelude::*,
@@ -201,10 +202,29 @@ impl VmMapping {
 
         'retry: loop {
             let preempt_guard = disable_preempt();
-            let mut cursor = vm_space.cursor_mut(
-                &preempt_guard,
-                &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
-            )?;
+
+            let make_cursor_level_1 = || {
+                vm_space.cursor_mut(
+                    &preempt_guard,
+                    &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
+                )
+            };
+            // Attempt to get a level 2 cursor if the address is aligned to the level 2 size.
+            let (mut cursor, level) = if huge_mapping_enabled()
+                && (page_aligned_addr % page_size::<PagingConsts>(2)) == 0
+            {
+                // Attempt to get a level 2 cursor, falling back to level 1 on failure.
+                match vm_space.cursor_mut(
+                    &preempt_guard,
+                    &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(2)),
+                ) {
+                    Ok(cursor) => (cursor, 2),
+                    Err(_) => (make_cursor_level_1()?, 1),
+                }
+            } else {
+                // get a level 1 cursor
+                (make_cursor_level_1()?, 1)
+            };
 
             let (va, item) = cursor.query().unwrap();
             match item {
@@ -246,7 +266,7 @@ impl VmMapping {
                 }
                 None => {
                     // Map a new frame to the page fault address.
-                    let (frame, is_readonly) = match self.prepare_page(address, is_write) {
+                    let (frame, is_readonly) = match self.prepare_page(address, is_write, level) {
                         Ok((frame, is_readonly)) => (frame, is_readonly),
                         Err(VmoCommitError::Err(e)) => return Err(e),
                         Err(VmoCommitError::NeedIo(index)) => {
@@ -290,16 +310,26 @@ impl VmMapping {
         &self,
         page_fault_addr: Vaddr,
         write: bool,
+        level: PagingLevel,
     ) -> core::result::Result<(UFrame, bool), VmoCommitError> {
         let mut is_readonly = false;
+        let build_frame_result = || {
+            Ok((
+                FrameAllocOptions::new()
+                    .with_level(level)
+                    .alloc_frame()?
+                    .into(),
+                is_readonly,
+            ))
+        };
         let Some(vmo) = &self.vmo else {
-            return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
+            return build_frame_result();
         };
 
         let page_offset = page_fault_addr.align_down(PAGE_SIZE) - self.map_to_addr;
         if !self.is_shared && page_offset >= vmo.size() {
             // The page index is outside the VMO. This is only allowed in private mapping.
-            return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
+            return build_frame_result();
         }
 
         let page = vmo.get_committed_frame(page_offset)?;

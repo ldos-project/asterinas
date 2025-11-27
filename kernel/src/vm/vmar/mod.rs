@@ -7,7 +7,12 @@ mod interval_set;
 mod static_cap;
 pub mod vm_mapping;
 
-use core::{array, num::NonZeroUsize, ops::Range};
+use core::{
+    array,
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use align_ext::AlignExt;
 use aster_rights::Rights;
@@ -35,6 +40,15 @@ use crate::{
         vmo::{Vmo, VmoRightsOp},
     },
 };
+static MAP_HUGE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn huge_mapping_enabled() -> bool {
+    MAP_HUGE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_huge_mapping_enabled(value: bool) {
+    MAP_HUGE_ENABLED.store(value, Ordering::Relaxed)
+}
 
 /// Virtual Memory Address Regions (VMARs) are a type of capability that manages
 /// user address spaces.
