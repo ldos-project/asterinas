@@ -202,6 +202,13 @@ impl VmMapping {
 
         'retry: loop {
             let preempt_guard = disable_preempt();
+
+            let make_cursor_level_1 = || {
+                vm_space.cursor_mut(
+                    &preempt_guard,
+                    &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
+                )
+            };
             // Attempt to get a level 2 cursor if the address is aligned to the level 2 size.
             let (mut cursor, level) = if huge_mapping_enabled()
                 && (page_aligned_addr % page_size::<PagingConsts>(2)) == 0
@@ -212,23 +219,11 @@ impl VmMapping {
                     &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(2)),
                 ) {
                     Ok(cursor) => (cursor, 2),
-                    Err(_) => (
-                        vm_space.cursor_mut(
-                            &preempt_guard,
-                            &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
-                        )?,
-                        1,
-                    ),
+                    Err(_) => (make_cursor_level_1()?, 1),
                 }
             } else {
                 // get a level 1 cursor
-                (
-                    vm_space.cursor_mut(
-                        &preempt_guard,
-                        &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
-                    )?,
-                    1,
-                )
+                (make_cursor_level_1()?, 1)
             };
 
             let (va, item) = cursor.query().unwrap();
@@ -318,26 +313,23 @@ impl VmMapping {
         level: PagingLevel,
     ) -> core::result::Result<(UFrame, bool), VmoCommitError> {
         let mut is_readonly = false;
-        let Some(vmo) = &self.vmo else {
-            return Ok((
+        let build_frame_result = || {
+            Ok((
                 FrameAllocOptions::new()
                     .with_level(level)
                     .alloc_frame()?
                     .into(),
                 is_readonly,
-            ));
+            ))
+        };
+        let Some(vmo) = &self.vmo else {
+            return build_frame_result();
         };
 
         let page_offset = page_fault_addr.align_down(PAGE_SIZE) - self.map_to_addr;
         if !self.is_shared && page_offset >= vmo.size() {
             // The page index is outside the VMO. This is only allowed in private mapping.
-            return Ok((
-                FrameAllocOptions::new()
-                    .with_level(level)
-                    .alloc_frame()?
-                    .into(),
-                is_readonly,
-            ));
+            return build_frame_result();
         }
 
         let page = vmo.get_committed_frame(page_offset)?;

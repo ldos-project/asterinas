@@ -54,6 +54,7 @@ impl FrameAllocOptions {
 
     pub fn with_level(&mut self, level: PagingLevel) -> &mut Self {
         // There is no level 0.
+        // TODO(aneesh): use NonZeroU8 for PagingLevel
         assert!(level >= 1);
 
         self.level = level;
