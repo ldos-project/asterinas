@@ -380,7 +380,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 }
                 core::hint::spin_loop();
             }
-            let v = unsafe { slot.get() };
+            let v = unsafe { slot.get_maybe_uninit() };
             if let Err(new_tail) =
                 self.tail
                     .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
@@ -389,31 +389,16 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 // value, so we can retry instead.
                 tail = new_tail;
             } else {
-                break v;
+                // SAFETY: if the compare exchange succeeded then this is a valid value that hasn't
+                // been marked as read yet.
+                break unsafe { v.assume_init() };
             }
         };
 
-        let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-        let mut prev_slot_turn;
-        let mut counter = 0;
-        loop {
-            prev_slot_turn = slot.turn.load(Ordering::Acquire);
-            if self.turn(tail, true) == prev_slot_turn {
-                break;
-            }
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive scheduling.
-                Task::yield_now();
-            }
-            core::hint::spin_loop();
-        }
-        let v = unsafe { slot.get() };
         let next_slot_turn = self.next_turn(tail, false);
         // Check if there's any StrongObservers that have not yet read this slot.
         if !STRONG_OBSERVERS {
+            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
             slot.turn.store(next_slot_turn, Ordering::Release);
         } else {
             self.mark_slot_as_read::<true>(self.turn(tail, true), next_slot_turn, tail);
