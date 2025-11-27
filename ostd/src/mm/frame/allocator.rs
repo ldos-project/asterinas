@@ -52,6 +52,7 @@ impl FrameAllocOptions {
         self
     }
 
+    /// Sets the level of pages allocated
     pub fn with_level(&mut self, level: PagingLevel) -> &mut Self {
         // There is no level 0.
         // TODO(aneesh): use NonZeroU8 for PagingLevel
