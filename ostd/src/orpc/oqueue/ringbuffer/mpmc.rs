@@ -223,6 +223,27 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         unsafe { self.slots.get_unchecked(self.idx(position)) }
     }
 
+    /// Advance a slot after it has been written to
+    fn mark_slot_as_written(&self, head: usize) {
+        let slot = &self.get_slot(head);
+        // Check if all tails are either uninitialized (in which case they are set to usize::MAX) or
+        // are starting to consume/observe from a position that is in the future from this head. The
+        // latter is possible if a consumer/observer attaches during a produce.
+        if self.tail.load(Ordering::Acquire) > head
+            && self
+                .strong_observer_tails
+                .iter()
+                .all(|t| t.load(Ordering::Acquire) > head)
+        {
+            // Mark the slot as writable so that the produce isn't blocked
+            slot.turn
+                .store(self.next_turn(head, false), Ordering::Release);
+        } else {
+            // Mark the slot as writeable
+            slot.turn.store(self.turn(head, true), Ordering::Release);
+        }
+    }
+
     /// Produce an element onto the queue
     pub fn produce(&self, data: T)
     where
@@ -248,19 +269,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             core::hint::spin_loop();
         }
         unsafe { slot.store(data) };
-        if self.tail.load(Ordering::Acquire) > head
-            && self
-                .strong_observer_tails
-                .iter()
-                .all(|t| t.load(Ordering::Acquire) > head)
-        {
-            // Mark the slot as writable so that the produce isn't blocked
-            slot.turn
-                .store(self.next_turn(head, false), Ordering::Release);
-        } else {
-            // Mark the slot as readable
-            slot.turn.store(self.turn(head, true), Ordering::Release);
-        }
+        self.mark_slot_as_written(head);
     }
 
     fn try_produce(&self, data: T) -> Option<T>
@@ -296,19 +305,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 {
                     // We have exclusive write access to the slot, safe to write.
                     unsafe { slot.store(data) };
-                    if self.tail.load(Ordering::Acquire) > head
-                        && self
-                            .strong_observer_tails
-                            .iter()
-                            .all(|t| t.load(Ordering::Acquire) > head)
-                    {
-                        // Mark the slot as writable so that the produce isn't blocked
-                        slot.turn
-                            .store(self.next_turn(head, false), Ordering::Release);
-                    } else {
-                        // Mark the slot as writeable
-                        slot.turn.store(self.turn(head, true), Ordering::Release);
-                    }
+                    self.mark_slot_as_written(head);
                     return None;
                 }
             } else {
