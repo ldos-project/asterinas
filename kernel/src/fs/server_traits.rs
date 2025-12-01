@@ -110,8 +110,10 @@ pub trait PageStore: PageIOObservable {
     }
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let (reply_producer, reply_consumer) =
-            ReplyQueue::new_pair(None)?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair_transformed(Some((
+            &self.page_reads_reply_oqueue(),
+            |p: &PageHandle| p.idx,
+        )))?;
         self.read_page_async(AsyncReadRequest {
             handle,
             reply_handle: reply_producer,
@@ -122,8 +124,10 @@ pub trait PageStore: PageIOObservable {
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let (reply_producer, reply_consumer) =
-            ReplyQueue::new_pair(None)?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair_transformed(Some((
+            &self.page_writes_reply_oqueue(),
+            |p: &PageHandle| p.idx,
+        )))?;
         self.write_page_async(AsyncWriteRequest {
             handle,
             reply_handle: Some(reply_producer),

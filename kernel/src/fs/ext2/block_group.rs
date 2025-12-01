@@ -95,6 +95,8 @@ impl BlockGroup {
         let raw_inodes_cache =
             PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _)?;
 
+        raw_inodes_cache.start_prefetcher()?;
+
         Ok(Self {
             idx,
             bg_impl,

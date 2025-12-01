@@ -966,11 +966,14 @@ impl InodeInner {
         let num_page_bytes = desc.num_page_bytes();
         let inode_impl = InodeImpl::new(desc, weak_self, fs);
         Self {
-            page_cache: PageCache::with_capacity(
-                num_page_bytes,
-                Arc::downgrade(&inode_impl.block_manager) as _,
-            )
-            .unwrap(),
+            page_cache: {
+                let cache = PageCache::with_capacity(
+                    num_page_bytes,
+                    Arc::downgrade(&inode_impl.block_manager) as _,
+                ).unwrap();
+                cache.start_prefetcher().unwrap();
+                cache
+            },
             inode_impl,
         }
     }
@@ -2027,7 +2030,6 @@ impl server_traits::PageStore for InodeBlockManager {
         self.page_reads_oqueue().produce(req.handle.idx)?;
         let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
         self.read_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
-            println!("read_page_async reply: {:?}", req.handle.idx);
             reply_producer.produce(req.handle.idx);
             req.reply_handle.produce(req.handle);
         })

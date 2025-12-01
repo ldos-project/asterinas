@@ -511,7 +511,6 @@ impl PageIOObservable for RamInode {
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        // TODO:OPTIMIZATION: Avoid the clone.
         self.page_reads_oqueue().produce(req.handle.idx)?;
         // Initially, any block/page in a RamFs inode contains all zeros
         req.handle
