@@ -58,6 +58,7 @@ pub fn lazy_init() {
     //The device name is specified in qemu args as --serial={device_name}
     let ext2_device_name = "vext2";
     let exfat_device_name = "vexfat";
+    let raid1_device_name = "raid1";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
         let ext2_fs = Ext2::open(block_device_ext2).unwrap();
@@ -73,7 +74,7 @@ pub fn lazy_init() {
         self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
     }
 
-    if let Ok(raid) = setup_raid1_device() {
+    if let Ok(raid) = start_block_device(raid1_device_name) {
         let raid_fs = Ext2::open(raid).unwrap();
         let target_path = FsPath::try_from("/raid1").unwrap();
         if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
@@ -83,7 +84,7 @@ pub fn lazy_init() {
     }
 }
 
-fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
+fn setup_raid1_device() -> Result<()> {
     const RAID_DEVICE_NAME: &str = "raid1";
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
     info!(
@@ -110,30 +111,37 @@ fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
         }
     }
 
-    // Register the RAID-1 device and start a worker thread to handle requests.
-    let raid = match Raid1Device::register(RAID_DEVICE_NAME, members) {
-        Ok(dev) => dev,
-        Err(Raid1DeviceError::NotEnoughMembers) => {
-            error!(
-                "[raid] failed to register RAID-1 device '{}': not enough members",
-                RAID_DEVICE_NAME
-            );
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "RAID-1 device requires at least two members"
-            );
+    Raid1Device::new(RAID_DEVICE_NAME, members).map_err(|err| match err {
+        Raid1DeviceError::NotEnoughMembers => {
+            Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
-    };
-    let worker = raid.clone();
-    let task_fn = move || loop {
-        worker.handle_requests();
-    };
-    crate::ThreadOptions::new(task_fn).spawn();
+    })?;
 
-    info!(
-        "[raid] RAID-1 device '{}' registered and worker thread spawned",
-        RAID_DEVICE_NAME
-    );
+    // Register the RAID-1 device and start a worker thread to handle requests.
+    // let raid = match Raid1Device::register(RAID_DEVICE_NAME, members) {
+    //     Ok(dev) => dev,
+    //     Err(Raid1DeviceError::NotEnoughMembers) => {
+    //         error!(
+    //             "[raid] failed to register RAID-1 device '{}': not enough members",
+    //             RAID_DEVICE_NAME
+    //         );
+    //         return_errno_with_message!(
+    //             Errno::EINVAL,
+    //             "RAID-1 device requires at least two members"
+    //         );
+    //     }
+    // };
 
-    Ok(raid)
+    // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs. 
+    // let worker = raid.clone();
+    // let task_fn = move || loop {
+    //     worker.handle_requests();
+    // };
+    // crate::ThreadOptions::new(task_fn).spawn();
+
+    // info!(
+    //     "[raid] RAID-1 device '{}' registered and worker thread spawned",
+    //     RAID_DEVICE_NAME
+    // );
+    Ok(())
 }
