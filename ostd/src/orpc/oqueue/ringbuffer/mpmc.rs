@@ -223,27 +223,25 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         unsafe { self.slots.get_unchecked(self.idx(position)) }
     }
 
-    fn produce_to_noone(&self, data: T, head: usize) -> Option<T> {
+    /// Advance a slot after it has been written to
+    fn mark_slot_as_written(&self, head: usize) {
         let slot = &self.get_slot(head);
-
-        // Check if there are any consumers/observers that can see this message. It's safe to check
-        // this here because if we've successfully gotten a head value to produce to, it's
-        // guaranteed that all active tails are initialized.
+        // Check if all tails are either uninitialized (in which case they are set to usize::MAX) or
+        // are starting to consume/observe from a position that is in the future from this head. The
+        // latter is possible if a consumer/observer attaches during a produce.
         if self.tail.load(Ordering::Acquire) > head
             && self
                 .strong_observer_tails
                 .iter()
                 .all(|t| t.load(Ordering::Acquire) > head)
         {
-            // TODO(aneesh) - can this be avoided entirely if there's no weak observer?
-            // We have exclusive write access to the slot, safe to write.
-            unsafe { slot.store(data) };
             // Mark the slot as writable so that the produce isn't blocked
             slot.turn
                 .store(self.next_turn(head, false), Ordering::Release);
-            return None;
+        } else {
+            // Mark the slot as writeable
+            slot.turn.store(self.turn(head, true), Ordering::Release);
         }
-        Some(data)
     }
 
     /// Produce an element onto the queue
@@ -257,27 +255,24 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         // Get the slot we will be writing to
         let slot = &self.get_slot(head);
 
-        if let Some(data) = self.produce_to_noone(data, head) {
-            // Wait until the generation count matches the turn. Note that we need an even turn
-            // because we are writing.
-            let mut counter = 0;
-            while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
-                counter += 1;
-                if counter % 1024 == 0 {
-                    counter = 0;
-                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our
-                    // tests that don't have preemptive scheduling.
-                    Task::yield_now();
-                }
-                core::hint::spin_loop();
+        // Wait until the generation count matches the turn. Note that we need an even turn
+        // because we are writing.
+        let mut counter = 0;
+        while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
+            counter += 1;
+            if counter % 1024 == 0 {
+                counter = 0;
+                // TODO(aneesh): Revisit the need for yield - this might only be needed in our
+                // tests that don't have preemptive scheduling.
+                Task::yield_now();
             }
-            unsafe { slot.store(data) };
-            // Mark the slot as readable
-            slot.turn.store(self.turn(head, true), Ordering::Release);
+            core::hint::spin_loop();
         }
+        unsafe { slot.store(data) };
+        self.mark_slot_as_written(head);
     }
 
-    fn try_produce(&self, mut data: T) -> Option<T>
+    fn try_produce(&self, data: T) -> Option<T>
     where
         T: Send,
     {
@@ -297,7 +292,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
             };
             // Get the slot that we'd like to write to
             let slot = &self.get_slot(head);
-            data = self.produce_to_noone(data, head)?;
 
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
@@ -311,8 +305,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
                 {
                     // We have exclusive write access to the slot, safe to write.
                     unsafe { slot.store(data) };
-                    // Mark the slot as writeable
-                    slot.turn.store(self.turn(head, true), Ordering::Release);
+                    self.mark_slot_as_written(head);
                     return None;
                 }
             } else {
@@ -370,31 +363,42 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 
     /// Consume an element from the queue
     pub fn consume(&self) -> T {
-        let tail = self.tail.fetch_add(1, Ordering::Acquire);
-        let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-        let mut prev_slot_turn;
-        let mut counter = 0;
-        loop {
-            prev_slot_turn = slot.turn.load(Ordering::Acquire);
-            if self.turn(tail, true) == prev_slot_turn {
-                break;
+        let mut tail = self.tail.load(Ordering::Acquire);
+        let v = loop {
+            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
+            let mut counter = 0;
+            while self.turn(tail, true) != slot.turn.load(Ordering::Acquire) {
+                counter += 1;
+                if counter % 1024 == 0 {
+                    counter = 0;
+                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
+                    // that don't have preemptive schedueling.
+                    Task::yield_now();
+                }
+                core::hint::spin_loop();
             }
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                // that don't have preemptive scheduling.
-                Task::yield_now();
+            let v = unsafe { slot.get_maybe_uninit() };
+            if let Err(new_tail) =
+                self.tail
+                    .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                // We failed the compare exchange - this means that some other consumer stole this
+                // value, so we can retry instead.
+                tail = new_tail;
+            } else {
+                // SAFETY: if the compare exchange succeeded then this is a valid value that hasn't
+                // been marked as read yet.
+                break unsafe { v.assume_init() };
             }
-            core::hint::spin_loop();
-        }
-        let v = unsafe { slot.get() };
+        };
+
         let next_slot_turn = self.next_turn(tail, false);
         // Check if there's any StrongObservers that have not yet read this slot.
         if !STRONG_OBSERVERS {
+            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
             slot.turn.store(next_slot_turn, Ordering::Release);
         } else {
-            self.mark_slot_as_read::<true>(prev_slot_turn, next_slot_turn, tail);
+            self.mark_slot_as_read::<true>(self.turn(tail, true), next_slot_turn, tail);
         }
         v
     }
