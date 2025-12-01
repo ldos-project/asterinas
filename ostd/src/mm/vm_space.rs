@@ -24,9 +24,33 @@ use crate::{
         page_table::{self, PageTable, PageTableConfig, PageTableFrag},
         tlb::{TlbFlushOp, TlbFlusher},
     },
+    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     prelude::*,
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
+
+pub struct VmMappingRequest {
+    pub page_aligned_addr: usize,
+}
+
+#[orpc_trait]
+pub trait VmMappingPolicy {
+    fn get_page_level(&self, req: &VmMappingRequest)
+    -> core::result::Result<PagingLevel, RPCError>;
+}
+
+#[orpc_server(VmMappingPolicy)]
+struct VmMappingPolicyBasePagesOnly {}
+
+#[orpc_impl]
+impl VmMappingPolicy for VmMappingPolicyBasePagesOnly {
+    fn get_page_level(
+        &self,
+        _req: &VmMappingRequest,
+    ) -> core::result::Result<PagingLevel, RPCError> {
+        Ok(1)
+    }
+}
 
 /// A virtual address space for user-mode tasks, enabling safe manipulation of user-space memory.
 ///
@@ -63,10 +87,20 @@ use crate::{
 ///
 /// [`inject_post_schedule_handler`]: crate::task::inject_post_schedule_handler
 /// [`UserMode::execute`]: crate::user::UserMode::execute
-#[derive(Debug)]
 pub struct VmSpace {
     pt: PageTable<UserPtConfig>,
     cpus: AtomicCpuSet,
+    vm_mapping_policy: Arc<dyn VmMappingPolicy>,
+}
+
+impl core::fmt::Debug for VmSpace {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // TODO(aneesh): add a Debug output for vm_mapping_policy that displays the policy name
+        f.debug_struct("VmSpace")
+            .field("pt", &self.pt)
+            .field("cpus", &self.cpus)
+            .finish()
+    }
 }
 
 impl VmSpace {
@@ -75,7 +109,15 @@ impl VmSpace {
         Self {
             pt: KERNEL_PAGE_TABLE.get().unwrap().create_user_page_table(),
             cpus: AtomicCpuSet::new(CpuSet::new_empty()),
+            vm_mapping_policy: VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
+                VmMappingPolicyBasePagesOnly { orpc_internal }
+            }),
         }
+    }
+
+    pub fn with_mapping_policy(mut self, vm_mapping_policy: Arc<dyn VmMappingPolicy>) -> Self {
+        self.vm_mapping_policy = vm_mapping_policy;
+        self
     }
 
     /// Gets an immutable cursor in the virtual address range.
@@ -185,6 +227,9 @@ impl VmSpace {
         //
         // SAFETY: The memory range is in user space, as checked above.
         Ok(unsafe { VmWriter::<Fallible>::from_user_space(vaddr as *mut u8, len) })
+    }
+    pub fn vm_mapping_policy(&self) -> &dyn VmMappingPolicy {
+        &*self.vm_mapping_policy
     }
 }
 

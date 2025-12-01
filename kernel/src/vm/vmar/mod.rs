@@ -19,8 +19,12 @@ use aster_rights::Rights;
 use ostd::{
     cpu::CpuId,
     mm::{
-        MAX_USERSPACE_VADDR, PageFlags, PageProperty, VmSpace, tlb::TlbFlushOp, vm_space::CursorMut,
+        MAX_USERSPACE_VADDR, PageFlags, PageProperty, PagingConsts, PagingLevel, VmSpace,
+        page_size,
+        tlb::TlbFlushOp,
+        vm_space::{CursorMut, VmMappingPolicy, VmMappingPolicyOQueues, VmMappingRequest},
     },
+    orpc::{framework::errors::RPCError, orpc_impl, orpc_server},
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
@@ -44,6 +48,25 @@ static MAP_HUGE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn huge_mapping_enabled() -> bool {
     MAP_HUGE_ENABLED.load(Ordering::Relaxed)
+}
+
+#[orpc_server(VmMappingPolicy)]
+struct VmMappingPolicyGreedyHugeMapping {}
+
+#[orpc_impl]
+impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
+    fn get_page_level(
+        &self,
+        req: &VmMappingRequest,
+    ) -> core::result::Result<PagingLevel, RPCError> {
+        Ok(
+            if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
+                2
+            } else {
+                1
+            },
+        )
+    }
 }
 
 pub fn set_huge_mapping_enabled(value: bool) {
@@ -462,7 +485,12 @@ impl Vmar_ {
 
     fn new_root() -> Arc<Self> {
         let vmar_inner = VmarInner::new();
-        let vm_space = VmSpace::new();
+        let mut vm_space = VmSpace::new();
+        if huge_mapping_enabled() {
+            vm_space = vm_space.with_mapping_policy(VmMappingPolicyGreedyHugeMapping::new_with(
+                |orpc_internal, _| VmMappingPolicyGreedyHugeMapping { orpc_internal },
+            ))
+        }
         Vmar_::new(
             vmar_inner,
             Arc::new(vm_space),
@@ -713,7 +741,13 @@ impl Vmar_ {
     pub(super) fn new_fork_root(self: &Arc<Self>) -> Result<Arc<Self>> {
         let new_vmar_ = {
             let vmar_inner = VmarInner::new();
-            let new_space = VmSpace::new();
+            let mut new_space = VmSpace::new();
+            if huge_mapping_enabled() {
+                new_space =
+                    new_space.with_mapping_policy(VmMappingPolicyGreedyHugeMapping::new_with(
+                        |orpc_internal, _| VmMappingPolicyGreedyHugeMapping { orpc_internal },
+                    ))
+            }
             Vmar_::new(
                 vmar_inner,
                 Arc::new(new_space),

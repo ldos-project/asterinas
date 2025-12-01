@@ -10,13 +10,12 @@ use align_ext::AlignExt;
 use ostd::{
     mm::{
         CachePolicy, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, PagingLevel, UFrame,
-        VmSpace, page_size, tlb::TlbFlushOp,
+        VmSpace, page_size, tlb::TlbFlushOp, vm_space::VmMappingRequest,
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     task::disable_preempt,
 };
 
-use super::{RssDelta, RssType, huge_mapping_enabled, interval_set::Interval};
+use super::{RssDelta, RssType, interval_set::Interval};
 use crate::{
     fs::utils::Inode,
     prelude::*,
@@ -157,48 +156,6 @@ impl VmMapping {
     }
 }
 
-pub struct VmMappingRequest {
-    page_aligned_addr: usize,
-}
-
-#[orpc_trait]
-pub trait VmMappingPolicy {
-    fn get_page_level(&self, req: &VmMappingRequest)
-    -> core::result::Result<PagingLevel, RPCError>;
-}
-
-#[orpc_server(VmMappingPolicy)]
-struct VmMappingPolicyBasePagesOnly {}
-
-#[orpc_impl]
-impl VmMappingPolicy for VmMappingPolicyBasePagesOnly {
-    fn get_page_level(
-        &self,
-        _req: &VmMappingRequest,
-    ) -> core::result::Result<PagingLevel, RPCError> {
-        Ok(1)
-    }
-}
-
-#[orpc_server(VmMappingPolicy)]
-struct VmMappingPolicyGreedyHugeMapping {}
-
-#[orpc_impl]
-impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
-    fn get_page_level(
-        &self,
-        req: &VmMappingRequest,
-    ) -> core::result::Result<PagingLevel, RPCError> {
-        Ok(
-            if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
-                2
-            } else {
-                1
-            },
-        )
-    }
-}
-
 /****************************** Page faults **********************************/
 
 impl VmMapping {
@@ -247,18 +204,8 @@ impl VmMapping {
             let preempt_guard = disable_preempt();
 
             let req = VmMappingRequest { page_aligned_addr };
-            // Attempt to get a level 2 cursor if the address is aligned to the level 2 size.
-            let level = if huge_mapping_enabled() {
-                VmMappingPolicyGreedyHugeMapping::new_with(|orpc_internal, _| {
-                    VmMappingPolicyGreedyHugeMapping { orpc_internal }
-                })
-                .get_page_level(&req)?
-            } else {
-                VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
-                    VmMappingPolicyBasePagesOnly { orpc_internal }
-                })
-                .get_page_level(&req)?
-            };
+            // Get the level of page to map based on the mapping policy
+            let level = vm_space.vm_mapping_policy().get_page_level(&req)?;
 
             let make_cursor_level_1 = || {
                 vm_space.cursor_mut(
@@ -266,13 +213,14 @@ impl VmMapping {
                     &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
                 )
             };
-            let (mut cursor, level) = if level == 2 {
-                // Attempt to get a level 2 cursor, falling back to level 1 on failure.
+            let (mut cursor, level) = if level > 1 {
+                // Attempt to get a cursor for the level requested, falling back to level 1 on
+                // failure.
                 match vm_space.cursor_mut(
                     &preempt_guard,
-                    &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(2)),
+                    &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(level)),
                 ) {
-                    Ok(cursor) => (cursor, 2),
+                    Ok(cursor) => (cursor, level),
                     Err(_) => (make_cursor_level_1()?, 1),
                 }
             } else {
