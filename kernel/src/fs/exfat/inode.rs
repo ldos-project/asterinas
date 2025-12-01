@@ -831,7 +831,7 @@ impl ExfatInode {
             let inner = inode.inner.upread();
             inner.page_cache.start_prefetcher()?;
         }
-        
+
         if matches!(inode_type, InodeType::Dir) {
             let inner = inode.inner.upread();
             let num_sub_inode_dir: (usize, usize) = inner.count_num_sub_inode_and_dir(fs_guard)?;

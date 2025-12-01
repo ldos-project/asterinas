@@ -970,7 +970,8 @@ impl InodeInner {
                 let cache = PageCache::with_capacity(
                     num_page_bytes,
                     Arc::downgrade(&inode_impl.block_manager) as _,
-                ).unwrap();
+                )
+                .unwrap();
                 cache.start_prefetcher().unwrap();
                 cache
             },

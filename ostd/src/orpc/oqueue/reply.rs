@@ -46,10 +46,7 @@ impl<T: Clone + Send + 'static> ReplyQueue<T> {
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{
-        orpc::oqueue::locking::ObservableLockingQueue,
-        prelude::*,
-    };
+    use crate::{orpc::oqueue::locking::ObservableLockingQueue, prelude::*};
 
     #[ktest]
     fn test_send_message() {

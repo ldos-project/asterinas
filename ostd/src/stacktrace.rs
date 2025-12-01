@@ -62,7 +62,7 @@ impl CapturedStackTrace {
         };
         _Unwind_Backtrace(callback, &mut data as *mut _ as _);
         data.res
-    }    
+    }
     #[cfg(not(feature = "capture_stacks"))]
     pub fn capture() -> Self {
         Default::default()

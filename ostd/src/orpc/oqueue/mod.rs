@@ -94,7 +94,10 @@ pub trait StrongObserver<T>: Send + Blocker {
     /// Observe an element from the oqueue if it is immediately available.
     fn try_strong_observe(&self) -> Option<T>;
 
-    fn handle_fast(&mut self, handler: Box<dyn Fn(T) + Sync + Send>) -> Result<(), OQueueAttachError>;
+    fn handle_fast(
+        &mut self,
+        handler: Box<dyn Fn(T) + Sync + Send>,
+    ) -> Result<(), OQueueAttachError>;
 }
 
 /// A weak-observer handle to a oqueue. This allows looking at the history of the oqueue without affecting any other

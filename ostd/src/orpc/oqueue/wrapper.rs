@@ -275,7 +275,10 @@ where
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{orpc::oqueue::locking::{LockingQueue, ObservableLockingQueue}, prelude::*};
+    use crate::{
+        orpc::oqueue::locking::{LockingQueue, ObservableLockingQueue},
+        prelude::*,
+    };
     #[ktest]
     fn test_transforming_queue_produce_consume() {
         let inner_queue: OQueueRef<i32> = LockingQueue::new(2);

@@ -50,13 +50,13 @@ pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
+pub mod stacktrace;
 pub mod sync;
 pub mod task;
 pub mod timer;
 pub mod trap;
 pub mod user;
 pub mod util;
-pub mod stacktrace;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
