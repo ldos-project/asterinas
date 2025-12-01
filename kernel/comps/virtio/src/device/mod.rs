@@ -47,6 +47,12 @@ pub enum VirtioDeviceError {
     QueueUnknownError,
     /// The input virtio capability list contains invalid element
     CapabilityListError,
+
+    /// The ORPC Errors
+    OQueueAttachmentUnsupported,
+    OQueueAttachmentAllocationFailed,
+    ORPCServerPanicked,
+    ORPCServerMissing,
 }
 
 impl From<QueueError> for VirtioDeviceError {

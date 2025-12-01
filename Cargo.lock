@@ -254,6 +254,7 @@ name = "aster-raid"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-virtio",
  "ostd",
 ]
 
