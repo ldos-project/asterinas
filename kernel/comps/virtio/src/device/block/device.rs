@@ -39,10 +39,10 @@ use ostd::{
     orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
 };
 
-use crate::device::block::server_traits::{self, PageIOObservable as _};
+use crate::device::block::server_traits::{self, PageIOObservable as _, ORPCBio};
 
 #[derive(Debug)]
-#[orpc_server(server_traits::PageIOObservable)]
+#[orpc_server(server_traits::PageIOObservable, server_traits::ORPCBio)]
 pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.

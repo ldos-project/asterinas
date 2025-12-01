@@ -20,6 +20,8 @@
 
 extern crate alloc;
 
+pub mod server_traits;
+
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
 use core::{
     cmp,
@@ -34,8 +36,11 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 
+use ostd::orpc::orpc_server;
+
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
+#[orpc_server(server_traits::ORPCBio, server_traits::PageIOObservable, server_traits::OQueueSubmit)]
 pub struct Raid1Device {
     /// Member block devices that store identical data (mirrors).
     members: Vec<Arc<dyn BlockDevice>>,
@@ -57,7 +62,10 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
+    pub fn new(
+        name: &str,
+        members: Vec<Arc<dyn BlockDevice>>,
+    ) -> Result<(), Raid1DeviceError> {
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -68,25 +76,30 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        Ok(Arc::new(Self {
+        let device = Self::new_with( |orpc_internal, _weak_self| Raid1Device {
+            orpc_internal,
             members,
             queue,
             metadata,
             read_cursor: AtomicUsize::new(0),
-        }))
+        });
+
+        aster_block::register_device(name.to_owned(), device.clone());
+
+        Ok(())
     }
 
     /// Registers a RAID-1 device into the global block device table so it can
     /// be opened by upper layers (e.g., filesystems).
-    pub fn register(
-        name: &str,
-        members: Vec<Arc<dyn BlockDevice>>,
-    ) -> Result<Arc<Self>, Raid1DeviceError> {
-        let device = Self::new(members)?;
-        // Register under a stable name and return a shared handle.
-        aster_block::register_device(name.to_owned(), device.clone());
-        Ok(device)
-    }
+    // pub fn register(
+    //     name: &str,
+    //     members: Vec<Arc<dyn BlockDevice>>,
+    // ) -> Result<Arc<Self>, Raid1DeviceError> {
+    //     let device = Self::new(members)?;
+    //     // Register under a stable name and return a shared handle.
+    //     aster_block::register_device(name.to_owned(), device.clone());
+    //     Ok(device)
+    // }
 
     /// Dequeues and processes the next request from the staging queue.
     pub fn handle_requests(&self) {
