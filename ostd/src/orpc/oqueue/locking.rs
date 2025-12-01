@@ -139,6 +139,30 @@ impl<T> LockingOQueueInner<T> {
             return Some(v);
         };
 
+        assert!(self.strong_observer_handlers.is_empty());
+
+        let slot_cell = &mut self.buffer[self.mod_len(tail_index)];
+        // This will generally fill something that was None. However, if the this is an observable OQueue then they will
+        // be cloned out and left in place. So the cell will still be full.
+
+        // TODO: It might be worth clearing the slot as soon as it is observed since that would avoid holding onto
+        // memory.
+        *slot_cell = Some(v);
+
+        self.tail_index += 1;
+
+        None
+    }
+
+    fn try_produce_cloning(&mut self, v: T) -> Option<T> where T:Clone {
+        let Some(tail_index) = self.can_produce() else {
+            return Some(v);
+        };
+
+        for handler in self.strong_observer_handlers.iter() {
+            handler(v.clone());
+        }
+
         let slot_cell = &mut self.buffer[self.mod_len(tail_index)];
         // This will generally fill something that was None. However, if the this is an observable OQueue then they will
         // be cloned out and left in place. So the cell will still be full.
@@ -234,7 +258,7 @@ impl<T> LockingOQueueInner<T> {
 impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
-        Ok(Box::new(LockingProducer {
+        Ok(Box::new(ObservableLockingProducer {
             oqueue: this.this.clone(),
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
@@ -389,6 +413,55 @@ impl<T: Send> Producer<T> for LockingProducer<T> {
     }
 }
 
+
+/// A producer for a locking OQueue. The same is used regardless of observation support.
+struct ObservableLockingProducer<T> {
+    oqueue: Weak<LockingQueue<T>>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
+}
+
+impl<T> ObservableLockingProducer<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // SAFETY: This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
+}
+
+impl<T: Send> Blocker for ObservableLockingProducer<T> {
+    fn should_try(&self) -> bool {
+        self.oqueue().inner.lock().can_produce().is_some()
+    }
+
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue().put_wait_queue.enqueue(waker.clone());
+    }
+}
+
+impl<T: Send + Clone> Producer<T> for ObservableLockingProducer<T> {
+    fn produce(&self, data: T) {
+        let mut d = Some(data);
+
+        loop {
+            d = self.try_produce(d.take().expect("Unreachable"));
+            if d.is_none() {
+                break;
+            }
+            Task::current().unwrap().block_on(&[self]);
+        }
+    }
+
+    fn try_produce(&self, data: T) -> Option<T> {
+        let res = self.oqueue().inner.lock().try_produce_cloning(data);
+        // If the value was put into the OQueue, wake up the readers.
+        if res.is_none() {
+            // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
+            // actually succeed.
+            self.oqueue().read_wait_queue.wake_all();
+        }
+        res
+    }
+}
+
 /// A consumer for a locking OQueue. This is only used for non-observable tables where the value should be *moved* out
 /// instead of cloned.
 struct LockingConsumer<T> {
@@ -523,11 +596,16 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
         res
     }
 
+    // TODO: This should be a new attach method because this cannot be `self` (consuming the
+    // handle). Another option would be to restructure the API so that the observer handles are a
+    // concrete type that wraps around some type erased implementation like a set of function
+    // pointers.
     fn handle_fast(
         &mut self,
         handler: Box<dyn Fn(T) + Sync + Send>,
     ) -> Result<(), OQueueAttachError> {
         let mut inner = self.oqueue().inner.lock();
+        // TODO: This will never be removed even when the handle detachs.
         inner.strong_observer_handlers.push(handler);
         Ok(())
     }

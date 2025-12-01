@@ -216,6 +216,7 @@ pub trait OQueue<T>: Any + Sync + Send {
         Ok(producer.try_produce(v))
     }
 
+    /// Whenever a value is produced into subqueue. Produce it into self as well.
     fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>;
 }
 
