@@ -29,16 +29,24 @@ use crate::{
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
 
+/// Request for [`VmMappingPolicy`].
 pub struct VmMappingRequest {
+    /// Address at which a page fault occurred.
     pub page_aligned_addr: usize,
 }
 
+/// VmMappingPolicy controls the level of pages that are mapped in response to a page fault. If the
+/// value returned by [`VmMappingPolicy::get_page_level`] is 1, a base page is mapped, and for
+/// larger level the corresponding level page is mapped.
 #[orpc_trait]
 pub trait VmMappingPolicy {
+    /// Get the level of page that should be mapped in request to a fault at
+    /// `req.page_aligned_addr`.
     fn get_page_level(&self, req: &VmMappingRequest)
     -> core::result::Result<PagingLevel, RPCError>;
 }
 
+/// Default [`VmMappingPolicy`] implmentation that always maps base pages.
 #[orpc_server(VmMappingPolicy)]
 struct VmMappingPolicyBasePagesOnly {}
 
@@ -109,12 +117,15 @@ impl VmSpace {
         Self {
             pt: KERNEL_PAGE_TABLE.get().unwrap().create_user_page_table(),
             cpus: AtomicCpuSet::new(CpuSet::new_empty()),
+            // Set the default policy to be base pages only. This can updated by calling
+            // with_mapping_policy.
             vm_mapping_policy: VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
                 VmMappingPolicyBasePagesOnly { orpc_internal }
             }),
         }
     }
 
+    /// Update the `vm_mapping_policy` associated with this address space.
     pub fn with_mapping_policy(mut self, vm_mapping_policy: Arc<dyn VmMappingPolicy>) -> Self {
         self.vm_mapping_policy = vm_mapping_policy;
         self
@@ -228,6 +239,8 @@ impl VmSpace {
         // SAFETY: The memory range is in user space, as checked above.
         Ok(unsafe { VmWriter::<Fallible>::from_user_space(vaddr as *mut u8, len) })
     }
+
+    /// Get the current [`VmMappingPolicy`] attached to this address space.
     pub fn vm_mapping_policy(&self) -> &dyn VmMappingPolicy {
         &*self.vm_mapping_policy
     }
