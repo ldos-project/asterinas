@@ -263,7 +263,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
-    fn try_produce(&self, mut data: T) -> Option<T>
+    fn try_produce(&self, data: T) -> Option<T>
     where
         T: Send,
     {
