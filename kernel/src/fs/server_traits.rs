@@ -3,9 +3,7 @@
 use alloc::{boxed::Box, sync::Arc};
 
 use ostd::orpc::{
-    oqueue::{
-        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue,
-    },
+    oqueue::{OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue},
     orpc_trait,
 };
 
@@ -110,10 +108,7 @@ pub trait PageStore: PageIOObservable {
     }
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let (reply_producer, reply_consumer) = ReplyQueue::new_pair_transformed(Some((
-            &self.page_reads_reply_oqueue(),
-            |p: &PageHandle| p.idx,
-        )))?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair(None)?;
         self.read_page_async(AsyncReadRequest {
             handle,
             reply_handle: reply_producer,
@@ -124,10 +119,7 @@ pub trait PageStore: PageIOObservable {
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let (reply_producer, reply_consumer) = ReplyQueue::new_pair_transformed(Some((
-            &self.page_writes_reply_oqueue(),
-            |p: &PageHandle| p.idx,
-        )))?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair(None)?;
         self.write_page_async(AsyncWriteRequest {
             handle,
             reply_handle: Some(reply_producer),
@@ -144,11 +136,10 @@ pub trait PageStore: PageIOObservable {
 pub trait PageCache {
     /// Request that the cache prefetch a page. This is asynchronous and advisory, so the page may
     /// appear in the cache at a later time or never.
-    fn prefetch(&self, idx: usize) -> Result<()>;
-
-    // TODO(arthurp): Make this an OQueue. Provide a prefetch handling server which watches all the
-    // OQueues and then makes calls to the actual prefetch method. Effectively, this is a thread
-    // that donates it's time in place of the sender without requiring an thread per PageCache.
+    fn prefetch_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 }

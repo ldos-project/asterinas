@@ -2041,7 +2041,6 @@ impl server_traits::PageStore for InodeBlockManager {
         self.page_writes_oqueue().produce(req.handle.idx)?;
         let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
         self.write_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
-            println!("write_page_async reply: {:?}", req.handle.idx);
             reply_producer.produce(req.handle.idx);
             if let Some(reply_handle) = req.reply_handle {
                 reply_handle.produce(req.handle);

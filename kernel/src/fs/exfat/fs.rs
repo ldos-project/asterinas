@@ -402,7 +402,6 @@ impl PageStore for ExfatFS {
             BlockId::new(req.handle.idx as u64),
             bio_segment,
             move |b| {
-                println!("read block reply");
                 reply_producer.produce(req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
@@ -429,7 +428,6 @@ impl PageStore for ExfatFS {
             bio_segment,
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
-                    println!("write block reply");
                     reply_producer.produce(req.handle.idx);
                     reply_handle.produce(req.handle);
                 }

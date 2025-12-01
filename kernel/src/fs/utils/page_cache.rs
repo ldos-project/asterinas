@@ -16,7 +16,6 @@ use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
-        framework::shutdown::Shutdown,
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
         orpc_impl, orpc_server,
     },
@@ -26,11 +25,13 @@ use ostd::{
 use crate::{
     fs::{
         server_traits::{
-            self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
+            self, AsyncReadRequest, AsyncWriteRequest, PageCache as _, PageHandle,
+            PageIOObservable, PageStore,
         },
         utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
     kcmdline,
+    orpc_utils::spawn_thread,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -397,7 +398,7 @@ impl OutstandingRequests {
         pages: &mut LruCache<usize, CachePage>,
         backend: &Arc<dyn PageStore>,
         idx: usize,
-        manager: &PageCacheManager,
+        _manager: &PageCacheManager,
     ) -> Result<()> {
         let async_page = CachePage::alloc_uninit()?;
         pages.put(idx, async_page.clone());
@@ -523,6 +524,35 @@ impl PageCacheManager {
             // prefetcher: Default::default(),
             weak_this: weak_this.clone(),
             orpc_internal,
+        });
+
+        spawn_thread(server.clone(), {
+            let server = server.clone();
+            let prefetch_consumer = server.prefetch_oqueue().attach_consumer()?;
+            move || {
+                loop {
+                    ostd::orpc::framework::CurrentServer::abort_point();
+                    let idx = prefetch_consumer.consume();
+                    let mut inner = server.inner.lock();
+                    // let Some(mut inner) = server.inner.try_lock() else {
+                    //     // Silently drop requests that cannot be performed immediately.
+                    //     // XXX: This is a bad idea since it may happen because the lock is held at the wrong moment, but no blocking is happening.
+                    //     return Ok(());
+                    // };
+                    let inner = inner.deref_mut();
+                    println!("Prefetching page {}", idx);
+
+                    // If the page is not in the cache, issue a request.
+                    if inner.pages.get(&idx).is_none() {
+                        inner.outstanding_requests.request_async(
+                            &mut inner.pages,
+                            &server.backend()?,
+                            idx,
+                            server.as_ref(),
+                        )?;
+                    }
+                }
+            }
         });
 
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
@@ -748,25 +778,7 @@ impl Pager for PageCacheManager {
 
 #[orpc_impl]
 impl server_traits::PageCache for PageCacheManager {
-    fn prefetch(&self, idx: usize) -> Result<()> {
-        let Some(mut inner) = self.inner.try_lock() else {
-            // Silently drop requests that cannot be performed immediately.
-            // XXX: This is a bad idea since it may happen because the lock is held at the wrong moment, but no blocking is happening.
-            return Ok(());
-        };
-        let inner = inner.deref_mut();
-        println!("Prefetching page {}", idx);
-
-        // If the page is in the cache (including if it is being loaded) do nothing.
-        if inner.pages.get(&idx).is_some() {
-            return Ok(());
-        }
-
-        inner
-            .outstanding_requests
-            .request_async(&mut inner.pages, &self.backend()?, idx, self)?;
-        Ok(())
-    }
+    fn prefetch_oqueue(&self) -> OQueueRef<usize>;
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
         self.backend()

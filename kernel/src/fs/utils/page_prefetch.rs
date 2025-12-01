@@ -12,14 +12,14 @@ use alloc::sync::Arc;
 use core::usize;
 
 use aster_logger::println;
-use ostd::{orpc::{
+use ostd::orpc::{
     framework::{
         errors::RPCError,
         shutdown::{self, ShutdownState},
     },
     orpc_impl, orpc_server,
     sync::select,
-}, task::Task};
+};
 
 use crate::{
     Result,
@@ -57,8 +57,18 @@ impl ReadaheadPrefetcher {
 
         spawn_thread(server.clone(), {
             let read_observer = cache.page_reads_oqueue().attach_strong_observer().unwrap();
-            let underlying_read_observer = cache.underlying_page_store().unwrap().page_reads_oqueue().attach_strong_observer().unwrap();
-            let underlying_read_reply_observer = cache.underlying_page_store().unwrap().page_reads_reply_oqueue().attach_strong_observer().unwrap();
+            let underlying_read_observer = cache
+                .underlying_page_store()
+                .unwrap()
+                .page_reads_oqueue()
+                .attach_strong_observer()
+                .unwrap();
+            let underlying_read_reply_observer = cache
+                .underlying_page_store()
+                .unwrap()
+                .page_reads_reply_oqueue()
+                .attach_strong_observer()
+                .unwrap();
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -69,19 +79,22 @@ impl ReadaheadPrefetcher {
             move || {
                 let mut outstanding_reads = 0i64;
                 loop {
-                    println!("outstanding reads = {}", outstanding_reads);
                     server.shutdown_state.check()?;
                     select!(
-                        if let _ = underlying_read_observer.try_strong_observe() {
+                        if let idx = underlying_read_observer.try_strong_observe() {
                             outstanding_reads += 1;
+                            // println!("+ {idx} outstanding reads = {}", outstanding_reads);
                         },
-                        if let _ = underlying_read_reply_observer.try_strong_observe() {
+                        if let idx = underlying_read_reply_observer.try_strong_observe() {
                             outstanding_reads -= 1;
+                            // println!("- {idx} outstanding reads = {}", outstanding_reads);
                         },
                         if let idx = read_observer.try_strong_observe() {
-                            println!("read");
-                            if outstanding_reads == 0 {
-                                cache.prefetch(idx + n_steps_ahead)?;
+                            // println!("read");
+                            if outstanding_reads < 2 {
+                                let res = cache.prefetch_oqueue().produce(idx + n_steps_ahead);
+                                // println!("issue prefetch {}: {}", idx + n_steps_ahead, res.is_ok_and(|v| v.is_none()));
+                                // println!("issue prefetch {}", idx + n_steps_ahead);
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
@@ -141,7 +154,9 @@ impl StridedPrefetcher {
                             let history = read_weak_observer.weak_observe_range(recent - 1, recent);
                             if history.len() >= 2 {
                                 let stride = history[1] - history[0];
-                                cache.prefetch(idx + stride * n_steps_ahead)?;
+                                cache
+                                    .prefetch_oqueue()
+                                    .produce(idx + stride * n_steps_ahead)?;
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
