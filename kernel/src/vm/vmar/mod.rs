@@ -51,6 +51,10 @@ pub fn huge_mapping_enabled() -> bool {
     MAP_HUGE_ENABLED.load(Ordering::Relaxed)
 }
 
+pub fn set_huge_mapping_enabled(value: bool) {
+    MAP_HUGE_ENABLED.store(value, Ordering::Relaxed)
+}
+
 /// VmMappingPolicy implementation that always maps a huge page when possible.
 #[orpc_server(VmMappingPolicy)]
 struct VmMappingPolicyGreedyHugeMapping {}
@@ -71,10 +75,6 @@ impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
             },
         )
     }
-}
-
-pub fn set_huge_mapping_enabled(value: bool) {
-    MAP_HUGE_ENABLED.store(value, Ordering::Relaxed)
 }
 
 /// Virtual Memory Address Regions (VMARs) are a type of capability that manages
