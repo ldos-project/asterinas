@@ -6,6 +6,7 @@ use alloc::{borrow::ToOwned, format, sync::Weak};
 use core::{
     any::{Any, type_name},
     cell::Cell,
+    iter::once,
 };
 
 use super::{
@@ -16,7 +17,7 @@ use crate::{
     orpc::oqueue::OQueueRef,
     prelude::{Arc, Box, Vec},
     sync::{SpinLock, WaitQueue, Waker},
-    task::Task,
+    task::{Task, atomic_mode::is_sleeping_allowed},
 };
 
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
@@ -134,9 +135,29 @@ impl<T> LockingOQueueInner<T> {
         Some(self.tail_index)
     }
 
-    fn try_produce(&mut self, v: T) -> Option<T> {
+    /// Get the current length of the queue.
+    pub fn len(&self) -> usize {
+        let first_head = self
+            .strong_observer_heads
+            .iter()
+            .copied()
+            .chain(once(self.head_index))
+            .min()
+            .unwrap_or(usize::MAX);
+        if first_head != usize::MAX {
+            self.tail_index - first_head
+        } else {
+            0
+        }
+    }
+
+    pub fn should_yield(&self) -> bool {
+        self.len() >= self.buffer.len() / 2
+    }
+
+    fn try_produce(&mut self, v: T) -> (Option<T>, bool) {
         let Some(tail_index) = self.can_produce() else {
-            return Some(v);
+            return (Some(v), true);
         };
 
         assert!(self.strong_observer_handlers.is_empty());
@@ -151,12 +172,15 @@ impl<T> LockingOQueueInner<T> {
 
         self.tail_index += 1;
 
-        None
+        (None, self.should_yield())
     }
 
-    fn try_produce_cloning(&mut self, v: T) -> Option<T> where T:Clone {
+    fn try_produce_cloning(&mut self, v: T) -> (Option<T>, bool)
+    where
+        T: Clone,
+    {
         let Some(tail_index) = self.can_produce() else {
-            return Some(v);
+            return (Some(v), true);
         };
 
         for handler in self.strong_observer_handlers.iter() {
@@ -173,7 +197,7 @@ impl<T> LockingOQueueInner<T> {
 
         self.tail_index += 1;
 
-        None
+        (None, self.should_yield())
     }
 
     fn drop_consumer(&mut self) {
@@ -352,7 +376,7 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
             table_type: type_name::<Self>().to_owned(),
         })
     }
-    
+
     fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>
     where
         T: 'static,
@@ -402,17 +426,19 @@ impl<T: Send> Producer<T> for LockingProducer<T> {
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
-        let res = self.oqueue().inner.lock().try_produce(data);
+        let (res, should_yield) = self.oqueue().inner.lock().try_produce(data);
         // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
             // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
             // actually succeed.
             self.oqueue().read_wait_queue.wake_all();
         }
+        if should_yield && is_sleeping_allowed() {
+            Task::yield_now();
+        }
         res
     }
 }
-
 
 /// A producer for a locking OQueue. The same is used regardless of observation support.
 struct ObservableLockingProducer<T> {
@@ -451,12 +477,15 @@ impl<T: Send + Clone> Producer<T> for ObservableLockingProducer<T> {
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
-        let res = self.oqueue().inner.lock().try_produce_cloning(data);
+        let (res, should_yield) = self.oqueue().inner.lock().try_produce_cloning(data);
         // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
             // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
             // actually succeed.
             self.oqueue().read_wait_queue.wake_all();
+        }
+        if should_yield && is_sleeping_allowed() {
+            Task::yield_now();
         }
         res
     }
