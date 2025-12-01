@@ -46,10 +46,12 @@ use crate::{
 };
 static MAP_HUGE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Returns true if huge pages were enabled on the kernel CLI
 pub fn huge_mapping_enabled() -> bool {
     MAP_HUGE_ENABLED.load(Ordering::Relaxed)
 }
 
+/// VmMappingPolicy implementation that always maps a huge page when possible.
 #[orpc_server(VmMappingPolicy)]
 struct VmMappingPolicyGreedyHugeMapping {}
 
@@ -60,6 +62,8 @@ impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
         req: &VmMappingRequest,
     ) -> core::result::Result<PagingLevel, RPCError> {
         Ok(
+            // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
+            // mapped at a level larger than 1.
             if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
                 2
             } else {
