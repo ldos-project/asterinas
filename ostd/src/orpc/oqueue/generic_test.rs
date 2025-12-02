@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub(crate) struct TestMessage {
-    x: usize,
+    pub(crate) x: usize,
 }
 
 pub(crate) fn test_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
