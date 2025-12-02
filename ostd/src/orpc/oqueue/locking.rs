@@ -675,7 +675,7 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
     }
 
     fn recent_cursor(&self) -> Cursor {
-        Cursor(self.oqueue().inner.lock().tail_index.saturating_sub(1))
+        Cursor(self.oqueue().inner.lock().tail_index)
     }
 
     fn oldest_cursor(&self) -> Cursor {
