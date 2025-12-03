@@ -288,6 +288,15 @@ impl Process {
         &self.children
     }
 
+    /// Get a snapshot of the current children attached to this process.
+    pub fn current_children(&self) -> Vec<Arc<Process>> {
+        self.children
+            .lock()
+            .iter()
+            .map(|(_pid, proc)| proc.clone())
+            .collect()
+    }
+
     pub fn children_wait_queue(&self) -> &WaitQueue {
         &self.children_wait_queue
     }

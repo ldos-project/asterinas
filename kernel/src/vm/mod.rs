@@ -16,8 +16,14 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
+use alloc::{sync::Arc, vec::Vec};
+use core::time::Duration;
+
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
+use ostd::sync::WaitQueue;
+
+use crate::{prelude::WaitTimeout, process::Process};
 
 pub mod page_fault_handler;
 pub mod perms;
@@ -48,4 +54,22 @@ pub fn mem_total() -> usize {
         .sum::<usize>();
 
     total
+}
+
+pub fn hugepaged(initproc: Arc<Process>) {
+    let sleep_queue = WaitQueue::new();
+    let sleep_duration = Duration::from_millis(1000);
+    loop {
+        let mut tasks: Vec<Arc<Process>> = Vec::new();
+        tasks.push(initproc.clone());
+        crate::prelude::println!("[mhugepaged] awake!");
+        while tasks.len() > 0 {
+            let task = tasks.pop().unwrap();
+            crate::prelude::println!("[mhugepaged] scanning pid={}", task.pid());
+            task.current_children()
+                .iter()
+                .for_each(|c| tasks.push(c.clone()));
+        }
+        let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+    }
 }

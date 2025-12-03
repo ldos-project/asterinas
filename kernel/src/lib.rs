@@ -173,6 +173,11 @@ fn init_thread() {
     )
     .expect("Run init process failed.");
 
+    ThreadOptions::new({
+        let initproc = initproc.clone();
+        move || vm::hugepaged(initproc)
+    })
+    .spawn();
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
