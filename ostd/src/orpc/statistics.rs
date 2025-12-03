@@ -17,7 +17,7 @@ use super::{
     oqueue::{OQueueRef, locking::ObservableLockingQueue},
     sync::select,
 };
-use crate::orpc::oqueue::OQueueAttachError;
+use crate::{early_println, orpc::oqueue::OQueueAttachError};
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
@@ -71,10 +71,12 @@ impl OutstandingCounter {
                     select!(
                         if let _ = request_observer.try_strong_observe() {
                             outstanding += 1;
+                            early_println!("Request observed: {}", outstanding);                    
                             let _ = outstanding_oqueue_producer.produce(outstanding);
                         },
                         if let _ = reply_observer.try_strong_observe() {
                             outstanding -= 1;
+                            early_println!("Reply observed: {}", outstanding);                    
                             let _ = outstanding_oqueue_producer.produce(outstanding);
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
@@ -146,3 +148,5 @@ mod test {
         );
     }
 }
+
+

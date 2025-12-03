@@ -20,7 +20,7 @@ mod test {
                 CurrentServer,
                 errors::RPCError,
                 shutdown::{Shutdown, ShutdownState},
-                spawn_thread,
+                spawn_thread
             },
             oqueue::{
                 Consumer, OQueueRef, generic_test,

@@ -3,16 +3,16 @@
 use alloc::{boxed::Box, sync::Arc};
 
 use log::error;
-use ostd::orpc::framework::{CurrentServer, Server, errors};
+use ostd::orpc::framework::{CurrentServer, Server, errors, inject_thread_spawn};
 
 use crate::thread::kernel_thread::ThreadOptions;
 
 // NOTE: This cannot be ktested, because this is only meaningful within the full kernel environment.
 
 /// Start a new server thread. This should only be called while spawning a server.
-pub fn spawn_thread<T: Server + Send + 'static>(
-    server: Arc<T>,
-    body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
+fn spawn_thread(
+    server: Arc<dyn Server + Send + Sync + 'static>,
+    body: Box<dyn (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static>,
 ) {
     let _ = ThreadOptions::new(move || {
         if let Result::Err(payload) = ostd::panic::catch_unwind({
@@ -39,4 +39,9 @@ pub fn spawn_thread<T: Server + Send + 'static>(
         rt_policy: Default::default(),
     })
     .spawn();
+}
+
+
+pub fn init() {
+    inject_thread_spawn(spawn_thread);
 }

@@ -17,7 +17,8 @@ use ostd::{
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
-        orpc_impl, orpc_server,
+        orpc_impl, orpc_server, 
+        framework::spawn_thread
     },
     task::Task,
 };
@@ -31,7 +32,6 @@ use crate::{
         utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
     kcmdline,
-    orpc_utils::spawn_thread,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -533,6 +533,7 @@ impl PageCacheManager {
                 loop {
                     ostd::orpc::framework::CurrentServer::abort_point();
                     let idx = prefetch_consumer.consume();
+                    println!("Prefetching page {}", idx);
                     let mut inner = server.inner.lock();
                     // let Some(mut inner) = server.inner.try_lock() else {
                     //     // Silently drop requests that cannot be performed immediately.
@@ -540,7 +541,6 @@ impl PageCacheManager {
                     //     return Ok(());
                     // };
                     let inner = inner.deref_mut();
-                    println!("Prefetching page {}", idx);
 
                     // If the page is not in the cache, issue a request.
                     if inner.pages.get(&idx).is_none() {

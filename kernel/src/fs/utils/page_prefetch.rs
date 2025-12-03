@@ -16,15 +16,16 @@ use ostd::orpc::{
     framework::{
         errors::RPCError,
         shutdown::{self, ShutdownState},
+        spawn_thread
     },
     orpc_impl, orpc_server,
+    statistics::{Outstanding, OutstandingCounter},
     sync::select,
 };
 
 use crate::{
     Result,
     fs::server_traits::{PageCache, PageIOObservable},
-    orpc_utils::spawn_thread,
 };
 
 /// A prefetcher which implements the policy originally provided by Asterinas.
@@ -55,20 +56,18 @@ impl ReadaheadPrefetcher {
             shutdown_state: Default::default(),
         });
 
+        let underlying_page_store = cache.underlying_page_store()?;
+        // TODO: Tie this to the lifetime of `server`.
+        let outstanding_counter = OutstandingCounter::spawn(
+            underlying_page_store.page_reads_oqueue(),
+            underlying_page_store.page_reads_reply_oqueue(),
+        )?;
+
         spawn_thread(server.clone(), {
-            let read_observer = cache.page_reads_oqueue().attach_strong_observer().unwrap();
-            let underlying_read_observer = cache
-                .underlying_page_store()
-                .unwrap()
-                .page_reads_oqueue()
-                .attach_strong_observer()
-                .unwrap();
-            let underlying_read_reply_observer = cache
-                .underlying_page_store()
-                .unwrap()
-                .page_reads_reply_oqueue()
-                .attach_strong_observer()
-                .unwrap();
+            let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
+            let outstanding_count_observer = outstanding_counter
+                .outstanding_oqueue()
+                .attach_weak_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -77,24 +76,21 @@ impl ReadaheadPrefetcher {
             let server = server.clone();
 
             move || {
-                let mut outstanding_reads = 0i64;
+                println!("Start prefetcher");
                 loop {
                     server.shutdown_state.check()?;
                     select!(
-                        if let idx = underlying_read_observer.try_strong_observe() {
-                            outstanding_reads += 1;
-                            // println!("+ {idx} outstanding reads = {}", outstanding_reads);
-                        },
-                        if let idx = underlying_read_reply_observer.try_strong_observe() {
-                            outstanding_reads -= 1;
-                            // println!("- {idx} outstanding reads = {}", outstanding_reads);
-                        },
                         if let idx = read_observer.try_strong_observe() {
-                            // println!("read");
-                            if outstanding_reads < 2 {
-                                let res = cache.prefetch_oqueue().produce(idx + n_steps_ahead);
-                                // println!("issue prefetch {}: {}", idx + n_steps_ahead, res.is_ok_and(|v| v.is_none()));
-                                // println!("issue prefetch {}", idx + n_steps_ahead);
+                            println!("evaluating prefetch: {}", idx);
+                            if let Some(outstanding) =
+                                outstanding_count_observer.weak_observe_recent(2).last()
+                            {
+                                println!("evaluating prefetch: {}, {}", idx, outstanding);
+                                if *outstanding < 2 {
+                                    let res = cache.prefetch_oqueue().produce(idx + n_steps_ahead);
+                                    // println!("issue prefetch {}: {}", idx + n_steps_ahead, res.is_ok_and(|v| v.is_none()));
+                                    // println!("issue prefetch {}", idx + n_steps_ahead);
+                                }
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}

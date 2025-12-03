@@ -65,6 +65,7 @@ allow_attributes = "warn"
 
 [profile.dev]
 panic = "unwind"
+opt-level=0
 
 [profile.release]
 lto = "thin"
