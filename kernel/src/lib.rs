@@ -98,6 +98,7 @@ pub fn main() {
 }
 
 pub fn init() {
+    orpc_utils::init();
     thread::init();
     util::random::init();
     driver::init();

@@ -14,6 +14,7 @@ use ostd::orpc::{
     framework::{
         errors::RPCError,
         shutdown::{self, ShutdownState},
+        spawn_thread,
     },
     orpc_impl, orpc_server,
     sync::select,
@@ -22,7 +23,6 @@ use ostd::orpc::{
 use crate::{
     Result,
     fs::server_traits::{PageCache, PageIOObservable},
-    orpc_utils::spawn_thread,
 };
 
 /// A test prefetcher that always prefetches page `idx + n` when page `idx` is read. `n` is the
