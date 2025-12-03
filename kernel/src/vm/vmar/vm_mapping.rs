@@ -216,11 +216,26 @@ impl VmMapping {
             let (mut cursor, level) = if level > 1 {
                 // Attempt to get a cursor for the level requested, falling back to level 1 on
                 // failure.
+                let page_size_lvl = page_size::<PagingConsts>(level);
                 match vm_space.cursor_mut(
                     &preempt_guard,
-                    &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(level)),
+                    &(page_aligned_addr..page_aligned_addr + page_size_lvl),
                 ) {
-                    Ok(cursor) => (cursor, level),
+                    Ok(mut cursor) => {
+                        // Check that nothing is mapped in this region already.
+                        if cursor.find_next(page_size_lvl).is_some() {
+                            // Drop the cursor to ensure that the new cursor we're creating below
+                            // can grab the locks it needs
+                            drop(cursor);
+
+                            (make_cursor_level_1()?, 1)
+                        } else {
+                            // Ensure that the cursor is set to the starting address before
+                            // continuing.
+                            cursor.jump(page_aligned_addr)?;
+                            (cursor, level)
+                        }
+                    }
                     Err(_) => (make_cursor_level_1()?, 1),
                 }
             } else {
