@@ -10,12 +10,12 @@ use align_ext::AlignExt;
 use ostd::{
     mm::{
         CachePolicy, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, PagingLevel, UFrame,
-        VmSpace, page_size, tlb::TlbFlushOp,
+        VmSpace, page_size, tlb::TlbFlushOp, vm_space::VmMappingRequest,
     },
     task::disable_preempt,
 };
 
-use super::{RssDelta, RssType, huge_mapping_enabled, interval_set::Interval};
+use super::{RssDelta, RssType, interval_set::Interval};
 use crate::{
     fs::utils::Inode,
     prelude::*,
@@ -203,22 +203,39 @@ impl VmMapping {
         'retry: loop {
             let preempt_guard = disable_preempt();
 
+            let req = VmMappingRequest { page_aligned_addr };
+            // Get the level of page to map based on the mapping policy
+            let level = vm_space.vm_mapping_policy().get_page_level(&req)?;
+
             let make_cursor_level_1 = || {
                 vm_space.cursor_mut(
                     &preempt_guard,
                     &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
                 )
             };
-            // Attempt to get a level 2 cursor if the address is aligned to the level 2 size.
-            let (mut cursor, level) = if huge_mapping_enabled()
-                && (page_aligned_addr % page_size::<PagingConsts>(2)) == 0
-            {
-                // Attempt to get a level 2 cursor, falling back to level 1 on failure.
+            let (mut cursor, level) = if level > 1 {
+                // Attempt to get a cursor for the level requested, falling back to level 1 on
+                // failure.
+                let page_size_lvl = page_size::<PagingConsts>(level);
                 match vm_space.cursor_mut(
                     &preempt_guard,
-                    &(page_aligned_addr..page_aligned_addr + page_size::<PagingConsts>(2)),
+                    &(page_aligned_addr..page_aligned_addr + page_size_lvl),
                 ) {
-                    Ok(cursor) => (cursor, 2),
+                    Ok(mut cursor) => {
+                        // Check that nothing is mapped in this region already.
+                        if cursor.find_next(page_size_lvl).is_some() {
+                            // Drop the cursor to ensure that the new cursor we're creating below
+                            // can grab the locks it needs
+                            drop(cursor);
+
+                            (make_cursor_level_1()?, 1)
+                        } else {
+                            // Ensure that the cursor is set to the starting address before
+                            // continuing.
+                            cursor.jump(page_aligned_addr)?;
+                            (cursor, level)
+                        }
+                    }
                     Err(_) => (make_cursor_level_1()?, 1),
                 }
             } else {
