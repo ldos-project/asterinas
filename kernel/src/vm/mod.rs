@@ -88,7 +88,7 @@ impl Drop for PauseProcGaurd {
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
-fn do_for_each_submapping<F>(cursor: &mut CursorMut, start: usize, mut cb: F) -> Result<(), ()>
+fn do_for_each_submapping<F>(cursor: &mut CursorMut, start: usize, mut f: F) -> Result<(), ()>
 where
     F: FnMut(&Range<Vaddr>, &Frame<dyn AnyUFrameMeta>, &PageProperty) -> Result<(), ()>,
 {
@@ -104,7 +104,7 @@ where
         // The mapping might not exist if the page hasn't been faulted in yet. We can
         // skip over such mappings.
         if let Some((ref sub_frame, sub_props)) = sub_mapping {
-            cb(&sub_range, sub_frame, &sub_props)?;
+            f(&sub_range, sub_frame, &sub_props)?;
         }
 
         // Advance the cursor to the end of this mapping
