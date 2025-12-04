@@ -171,9 +171,9 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
         let mut accessed = false;
         let mut dirty = false;
 
-        // Find all subpages in this region and copy them to the new frame.
+        // Tracks whether we can remap the following region as huge are not. This depends on every
+        // page in the region being mapped and having compatible flags.
         let mut should_remap = true;
-
         let res = do_for_each_submapping(&mut cursor, range.start, |_, _, sub_props| {
             if let Some(page_props) = props {
                 // We ignore the accessed and dirty bits from the page flags here
@@ -236,6 +236,8 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
                 break;
             }
 
+            // Set the accessed and dirty bits if any page in the region was accessed or marked
+            // dirty respectively.
             let mut props = props.unwrap();
             if accessed {
                 props.flags |= PageFlags::ACCESSED;
@@ -244,6 +246,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
                 props.flags |= PageFlags::DIRTY;
             }
 
+            // Actually do the remapping
             cursor.jump(range.start).unwrap();
             cursor.unmap(PROMOTED_PAGE_SIZE);
             cursor.jump(range.start).unwrap();
