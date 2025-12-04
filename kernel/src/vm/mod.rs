@@ -267,6 +267,10 @@ pub fn hugepaged(initproc: Arc<Process>) {
     let sleep_queue = WaitQueue::new();
     let sleep_duration = Duration::from_secs(1);
     loop {
+        // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
+        // page mapping.
+        let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+
         let mut procs: Vec<Arc<Process>> = Vec::new();
         procs.push(initproc.clone());
         while procs.len() > 0 {
@@ -277,6 +281,5 @@ pub fn hugepaged(initproc: Arc<Process>) {
 
             promote_hugepages(&proc, None);
         }
-        let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
     }
 }
