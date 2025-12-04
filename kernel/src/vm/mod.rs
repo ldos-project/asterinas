@@ -155,7 +155,6 @@ pub fn hugepaged(initproc: Arc<Process>) {
 
                 let mut writer = new_frame.writer();
 
-                // (TODO) We assume that pages aren't shared...
                 // Copy range.start -> range.start + page.
                 let search_end = search_start + PROMOTED_PAGE_SIZE;
                 // Offset into the writer to track advancing the writer
@@ -187,6 +186,11 @@ pub fn hugepaged(initproc: Arc<Process>) {
                                 break;
                             }
                         } else {
+                            // Only consider writeable pages to avoid CoW/sharing issues.
+                            if !sub_props.flags.contains(PageFlags::W) {
+                                should_remap = false;
+                                break;
+                            }
                             props = Some(sub_props);
                         }
                         accessed |= sub_props.flags.contains(PageFlags::ACCESSED);
