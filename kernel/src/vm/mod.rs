@@ -206,7 +206,11 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
         if should_remap {
             // If we can't allocate huge pages, no point in checking other
             // processes - break out of the outer loop and go back to sleep.
-            let new_frame: UFrame = match FrameAllocOptions::new().with_level(2).alloc_frame() {
+            let new_frame: UFrame = match FrameAllocOptions::new()
+                .with_level(2)
+                .zeroed(true)
+                .alloc_frame()
+            {
                 Ok(f) => f.into(),
                 Err(_) => Err(()),
             };
