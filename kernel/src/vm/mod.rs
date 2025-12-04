@@ -122,7 +122,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
     let proc_vm_guard = proc_vm.lock_root_vmar();
     let proc_vmar = proc_vm_guard.unwrap();
     let preempt_guard = disable_preempt();
-    let space_len = proc_vmar.size();
+    let mut space_len = proc_vmar.size();
     let mut cursor = match proc_vmar
         .vm_space()
         .cursor_mut(&preempt_guard, &(0..space_len))
@@ -212,7 +212,9 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
                 .alloc_frame()
             {
                 Ok(f) => f.into(),
-                Err(_) => Err(()),
+                Err(_) => {
+                    return Err(());
+                }
             };
 
             // Copy all pages into the huge page
@@ -283,7 +285,9 @@ pub fn hugepaged(initproc: Arc<Process>) {
                 .iter()
                 .for_each(|c| procs.push(c.clone()));
 
-            promote_hugepages(&proc, None);
+            if promote_hugepages(&proc, None).is_err() {
+                break;
+            }
         }
     }
 }
