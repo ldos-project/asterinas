@@ -17,6 +17,7 @@ use crate::{
 /// `From<CpuExceptionInfo>` should be implemented for this struct.
 /// If `CpuExceptionInfo` is a page fault, `try_from` should return `Ok(PageFaultInfo)`,
 /// or `Err(())` (no error information) otherwise.
+#[derive(Clone, Copy)]
 pub struct PageFaultInfo {
     /// The virtual address where a page fault occurred.
     pub address: Vaddr,
