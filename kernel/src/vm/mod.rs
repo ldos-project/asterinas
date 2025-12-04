@@ -114,6 +114,154 @@ where
     Ok(())
 }
 
+fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<(), ()> {
+    // Ensure that the current process doesn't run until we have scanned it's mappings
+    let _ = PauseProcGaurd::new(proc.clone());
+
+    let proc_vm = proc.vm();
+    let proc_vm_guard = proc_vm.lock_root_vmar();
+    let proc_vmar = proc_vm_guard.unwrap();
+    let preempt_guard = disable_preempt();
+    let space_len = proc_vmar.size();
+    let mut cursor = match proc_vmar
+        .vm_space()
+        .cursor_mut(&preempt_guard, &(0..space_len))
+    {
+        Ok(cursor) => cursor,
+        _ => {
+            return Ok(());
+        }
+    };
+
+    // If we have an address hint, jump the cursor to that address, and only consider a single
+    // region for promotion.
+    if let Some(addr_hint) = addr_hint {
+        cursor.jump(addr_hint).map_err(|_| ())?;
+        space_len = PROMOTED_PAGE_SIZE;
+    }
+
+    while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
+        let (range, _) = match cursor.query() {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        // If the address is not hugepage aligned go to the next mapping
+        if range.start % PROMOTED_PAGE_SIZE != 0 {
+            let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
+            if next < space_len {
+                if let Err(_) = cursor.jump(next) {
+                    break;
+                }
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        if (range.end - range.start) >= PROMOTED_PAGE_SIZE {
+            // Already huge, nothing to do here
+            continue;
+        }
+
+        let start = range.start;
+
+        let mut props: Option<PageProperty> = None;
+        // Track if any sub pages were accessed or dirty
+        let mut accessed = false;
+        let mut dirty = false;
+
+        // Find all subpages in this region and copy them to the new frame.
+        let mut should_remap = true;
+
+        let res = do_for_each_submapping(&mut cursor, range.start, |_, _, sub_props| {
+            if let Some(page_props) = props {
+                // We ignore the accessed and dirty bits from the page flags here
+                // because the accessed/dirty bit of the huge page will be sum of all
+                // the bits from the subflags.
+                if !sub_props.equal_ignoring_ad(&page_props) {
+                    should_remap = false;
+                    return Err(());
+                }
+            } else {
+                // Only consider writeable pages to avoid CoW/sharing issues.
+                if !sub_props.flags.contains(PageFlags::W) {
+                    should_remap = false;
+                    return Err(());
+                }
+                props = Some(*sub_props);
+            }
+            accessed |= sub_props.flags.contains(PageFlags::ACCESSED);
+            dirty |= sub_props.flags.contains(PageFlags::DIRTY);
+            Ok(())
+        });
+        should_remap &= res.is_ok();
+        // If we never obtained the page properties, that means that we never saw any mapped
+        // subregions. There's no need to remap this region.
+        should_remap &= props.is_some();
+
+        // TODO(aneesh): This is where we need an injectable policy - should we remap these
+        // pages or not?
+
+        if should_remap {
+            // If we can't allocate huge pages, no point in checking other
+            // processes - break out of the outer loop and go back to sleep.
+            let new_frame: UFrame = match FrameAllocOptions::new().with_level(2).alloc_frame() {
+                Ok(f) => f.into(),
+                Err(_) => Err(()),
+            };
+
+            // Copy all pages into the huge page
+            let mut writer = new_frame.writer();
+            // Offset into the writer to track advancing the writer
+            let mut last_copied = start;
+            if do_for_each_submapping(&mut cursor, range.start, |sub_range, sub_frame, _| {
+                // Advance the writer since not every part of the subspace might be
+                // mapped.
+                writer.skip(sub_range.start - last_copied);
+                // Copy from this frame to the huge frame
+                let mut reader = sub_frame.reader();
+                reader.read(&mut writer);
+                last_copied = sub_range.end;
+                Ok(())
+            })
+            .is_err()
+            {
+                break;
+            }
+
+            let mut props = props.unwrap();
+            if accessed {
+                props.flags |= PageFlags::ACCESSED;
+            }
+            if dirty {
+                props.flags |= PageFlags::DIRTY;
+            }
+
+            cursor.jump(range.start).unwrap();
+            cursor.unmap(PROMOTED_PAGE_SIZE);
+            cursor.jump(range.start).unwrap();
+            cursor.map(new_frame, props);
+
+            // The range has modified, get a new cursor
+            drop(cursor);
+            cursor = match proc_vmar
+                .vm_space()
+                .cursor_mut(&preempt_guard, &(0..space_len))
+            {
+                Ok(cursor) => cursor,
+                _ => {
+                    break;
+                }
+            };
+        }
+        if let Err(_) = cursor.jump(start + PROMOTED_PAGE_SIZE) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// HugePage daemon that periodically attempts to promote pages to huge pages
 pub fn hugepaged(initproc: Arc<Process>) {
     let sleep_queue = WaitQueue::new();
@@ -121,154 +269,13 @@ pub fn hugepaged(initproc: Arc<Process>) {
     loop {
         let mut procs: Vec<Arc<Process>> = Vec::new();
         procs.push(initproc.clone());
-        'outer: while procs.len() > 0 {
+        while procs.len() > 0 {
             let proc = procs.pop().unwrap();
             proc.current_children()
                 .iter()
                 .for_each(|c| procs.push(c.clone()));
 
-            // Ensure that the current process doesn't run until we have scanned it's mappings
-            let _ = PauseProcGaurd::new(proc.clone());
-
-            let proc_vm = proc.vm();
-            let proc_vm_guard = proc_vm.lock_root_vmar();
-            let proc_vmar = proc_vm_guard.unwrap();
-            let preempt_guard = disable_preempt();
-            let space_len = proc_vmar.size();
-            let mut cursor = match proc_vmar
-                .vm_space()
-                .cursor_mut(&preempt_guard, &(0..space_len))
-            {
-                Ok(cursor) => cursor,
-                _ => {
-                    continue;
-                }
-            };
-
-            while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
-                let (range, _) = match cursor.query() {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-
-                // If the address is not hugepage aligned go to the next mapping
-                if range.start % PROMOTED_PAGE_SIZE != 0 {
-                    let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
-                    if next < space_len {
-                        if let Err(_) = cursor.jump(next) {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                    continue;
-                }
-
-                if (range.end - range.start) >= PROMOTED_PAGE_SIZE {
-                    // Already huge, nothing to do here
-                    continue;
-                }
-
-                let start = range.start;
-
-                let mut props: Option<PageProperty> = None;
-                // Track if any sub pages were accessed or dirty
-                let mut accessed = false;
-                let mut dirty = false;
-
-                // Find all subpages in this region and copy them to the new frame.
-                let mut should_remap = true;
-
-                let res = do_for_each_submapping(&mut cursor, range.start, |_, _, sub_props| {
-                    if let Some(page_props) = props {
-                        // We ignore the accessed and dirty bits from the page flags here
-                        // because the accessed/dirty bit of the huge page will be sum of all
-                        // the bits from the subflags.
-                        if !sub_props.equal_ignoring_ad(&page_props) {
-                            should_remap = false;
-                            return Err(());
-                        }
-                    } else {
-                        // Only consider writeable pages to avoid CoW/sharing issues.
-                        if !sub_props.flags.contains(PageFlags::W) {
-                            should_remap = false;
-                            return Err(());
-                        }
-                        props = Some(*sub_props);
-                    }
-                    accessed |= sub_props.flags.contains(PageFlags::ACCESSED);
-                    dirty |= sub_props.flags.contains(PageFlags::DIRTY);
-                    Ok(())
-                });
-                should_remap &= res.is_ok();
-                // If we never obtained the page properties, that means that we never saw any mapped
-                // subregions. There's no need to remap this region.
-                should_remap &= props.is_some();
-
-                // TODO(aneesh): This is where we need an injectable policy - should we remap these
-                // pages or not?
-
-                if should_remap {
-                    // If we can't allocate huge pages, no point in checking other
-                    // processes - break out of the outer loop and go back to sleep.
-                    let new_frame: UFrame =
-                        match FrameAllocOptions::new().with_level(2).alloc_frame() {
-                            Ok(f) => f.into(),
-                            Err(_) => break 'outer,
-                        };
-
-                    // Copy all pages into the huge page
-                    let mut writer = new_frame.writer();
-                    // Offset into the writer to track advancing the writer
-                    let mut last_copied = start;
-                    if do_for_each_submapping(
-                        &mut cursor,
-                        range.start,
-                        |sub_range, sub_frame, _| {
-                            // Advance the writer since not every part of the subspace might be
-                            // mapped.
-                            writer.skip(sub_range.start - last_copied);
-                            // Copy from this frame to the huge frame
-                            let mut reader = sub_frame.reader();
-                            reader.read(&mut writer);
-                            last_copied = sub_range.end;
-                            Ok(())
-                        },
-                    )
-                    .is_err()
-                    {
-                        break;
-                    }
-
-                    let mut props = props.unwrap();
-                    if accessed {
-                        props.flags |= PageFlags::ACCESSED;
-                    }
-                    if dirty {
-                        props.flags |= PageFlags::DIRTY;
-                    }
-
-                    cursor.jump(range.start).unwrap();
-                    cursor.unmap(PROMOTED_PAGE_SIZE);
-                    cursor.jump(range.start).unwrap();
-                    cursor.map(new_frame, props);
-
-                    // The range has modified, get a new cursor
-                    drop(cursor);
-                    cursor = match proc_vmar
-                        .vm_space()
-                        .cursor_mut(&preempt_guard, &(0..space_len))
-                    {
-                        Ok(cursor) => cursor,
-                        _ => {
-                            break;
-                        }
-                    };
-                }
-                if let Err(_) = cursor.jump(start + PROMOTED_PAGE_SIZE) {
-                    break;
-                }
-            }
+            promote_hugepages(&proc, None);
         }
         let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
     }
