@@ -24,10 +24,15 @@ use ostd::{
         tlb::TlbFlushOp,
         vm_space::{CursorMut, VmMappingPolicy, VmMappingPolicyOQueues, VmMappingRequest},
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server},
+    orpc::{
+        framework::errors::RPCError,
+        oqueue::{OQueue, Producer, ringbuffer::MPMCOQueue},
+        orpc_impl, orpc_server,
+    },
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
+use spin::Once;
 
 use self::{
     interval_set::{Interval, IntervalSet},
@@ -172,6 +177,16 @@ impl<R> Vmar<R> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PageFaultOQueueMessage {}
+
+static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::new();
+
+pub fn init() {
+    // Only support a single strong observer for now - hugepaged.
+    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(1024, 1));
+}
+
 pub(super) struct Vmar_ {
     /// VMAR inner
     inner: RwMutex<VmarInner>,
@@ -183,6 +198,9 @@ pub(super) struct Vmar_ {
     vm_space: Arc<VmSpace>,
     /// The RSS counters.
     rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
+
+    ///
+    page_fault_oqueue_producer: Mutex<Option<Box<dyn Producer<PageFaultOQueueMessage>>>>,
 }
 
 struct VmarInner {
@@ -484,6 +502,11 @@ impl Vmar_ {
             size,
             vm_space,
             rss_counters,
+            page_fault_oqueue_producer: Mutex::new(
+                PAGE_FAULT_OQUEUE
+                    .get()
+                    .map(|oq| oq.attach_producer().unwrap()),
+            ),
         })
     }
 
@@ -569,7 +592,15 @@ impl Vmar_ {
             debug_assert!(vm_mapping.range().contains(&address));
 
             let mut rss_delta = RssDelta::new(self);
-            return vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+            if vm_mapping
+                .handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta)
+                .is_ok()
+            {
+                self.page_fault_oqueue_producer
+                    .lock()
+                    .as_ref()
+                    .map(|prod| prod.produce(PageFaultOQueueMessage {}));
+            }
         }
 
         return_errno_with_message!(Errno::EACCES, "page fault addr is not in current vmar");
