@@ -152,7 +152,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
         if range.start % PROMOTED_PAGE_SIZE != 0 {
             let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
             if next < space_len {
-                if let Err(_) = cursor.jump(next) {
+                if cursor.jump(next).is_err() {
                     break;
                 }
             } else {
@@ -266,7 +266,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
                 }
             };
         }
-        if let Err(_) = cursor.jump(start + PROMOTED_PAGE_SIZE) {
+        if cursor.jump(start + PROMOTED_PAGE_SIZE).is_err() {
             break;
         }
     }
@@ -296,7 +296,7 @@ impl HugepagedServer {
 
             let mut procs: Vec<Arc<Process>> = Vec::new();
             procs.push(initproc.clone());
-            while procs.len() > 0 {
+            while !procs.is_empty() {
                 let proc = procs.pop().unwrap();
                 proc.current_children()
                     .iter()
