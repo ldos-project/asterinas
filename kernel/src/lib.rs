@@ -173,11 +173,13 @@ fn init_thread() {
     )
     .expect("Run init process failed.");
 
-    ThreadOptions::new({
+    if karg
+        .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
+        .unwrap_or(false)
+    {
         let initproc = initproc.clone();
-        move || vm::hugepaged(initproc)
-    })
-    .spawn();
+        ThreadOptions::new(move || vm::hugepaged(initproc)).spawn();
+    }
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
