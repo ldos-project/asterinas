@@ -39,9 +39,9 @@ impl PageProperty {
     pub fn equal_ignoring_accessed_dirty(&self, other: &Self) -> bool {
         let effective_self_flags = self.flags & PageFlags::ACCESSED & PageFlags::DIRTY;
         let effective_other_flags = other.flags & PageFlags::ACCESSED & PageFlags::DIRTY;
-        return effective_self_flags == effective_other_flags
+        effective_self_flags == effective_other_flags
             && self.cache == other.cache
-            && self.priv_flags == other.priv_flags;
+            && self.priv_flags == other.priv_flags
     }
 }
 

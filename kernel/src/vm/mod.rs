@@ -26,9 +26,11 @@ use ostd::{
         AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
+    orpc::{orpc_server, orpc_trait},
     sync::WaitQueue,
     task::disable_preempt,
 };
+use snafu::Whatever;
 
 use crate::{
     prelude::WaitTimeout,
@@ -271,25 +273,38 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
     Ok(())
 }
 
+#[orpc_trait]
+trait HugePageD {}
+
+#[orpc_server(HugePageD)]
+pub struct HugepagedServer {}
+
 /// HugePage daemon that periodically attempts to promote pages to huge pages
-pub fn hugepaged(initproc: Arc<Process>) {
-    let sleep_queue = WaitQueue::new();
-    let sleep_duration = Duration::from_secs(1);
-    loop {
-        // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
-        // page mapping.
-        let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+impl HugepagedServer {
+    pub fn new() -> Result<Arc<Self>, Whatever> {
+        let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
+        Ok(server)
+    }
 
-        let mut procs: Vec<Arc<Process>> = Vec::new();
-        procs.push(initproc.clone());
-        while procs.len() > 0 {
-            let proc = procs.pop().unwrap();
-            proc.current_children()
-                .iter()
-                .for_each(|c| procs.push(c.clone()));
+    pub fn main(&self, initproc: Arc<Process>) {
+        let sleep_queue = WaitQueue::new();
+        let sleep_duration = Duration::from_secs(1);
+        loop {
+            // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
+            // page mapping.
+            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
 
-            if promote_hugepages(&proc, None).is_err() {
-                break;
+            let mut procs: Vec<Arc<Process>> = Vec::new();
+            procs.push(initproc.clone());
+            while procs.len() > 0 {
+                let proc = procs.pop().unwrap();
+                proc.current_children()
+                    .iter()
+                    .for_each(|c| procs.push(c.clone()));
+
+                if promote_hugepages(&proc, None).is_err() {
+                    break;
+                }
             }
         }
     }
