@@ -296,8 +296,7 @@ impl HugepagedServer {
 
             let mut procs: Vec<Arc<Process>> = Vec::new();
             procs.push(initproc.clone());
-            while !procs.is_empty() {
-                let proc = procs.pop().unwrap();
+            while let Some(proc) = procs.pop() {
                 proc.current_children()
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
