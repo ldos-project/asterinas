@@ -179,7 +179,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
                 // We ignore the accessed and dirty bits from the page flags here
                 // because the accessed/dirty bit of the huge page will be sum of all
                 // the bits from the subflags.
-                if !sub_props.equal_ignoring_ad(&page_props) {
+                if !sub_props.equal_ignoring_accessed_dirty(&page_props) {
                     should_remap = false;
                     return Err(());
                 }
