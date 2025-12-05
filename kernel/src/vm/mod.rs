@@ -104,7 +104,12 @@ fn promote_hugepages(
 
     let proc_vm = proc.vm();
     let proc_vm_guard = proc_vm.lock_root_vmar();
-    let proc_vmar = proc_vm_guard.unwrap();
+    let proc_vmar = if let Some(proc_vmar) = proc_vm_guard.as_ref() {
+        proc_vmar
+    } else {
+        // The process may have exited right as we attempted to pause it.
+        return Ok(());
+    };
     let preempt_guard = disable_preempt();
     let mut space_len = proc_vmar.size();
     let vm_space = proc_vmar.vm_space();
