@@ -187,7 +187,7 @@ static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::
 
 pub fn init() {
     // Only support a single strong observer for now - hugepaged.
-    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(1024, 1));
+    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
 }
 
 pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
