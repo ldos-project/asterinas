@@ -9,6 +9,7 @@ use super::{
     process_vm::{Heap, InitStackReader, ProcessVm, ProcessVmarGuard},
     rlimit::ResourceLimits,
     signal::{
+        constants::SIGSTOP,
         sig_disposition::SigDispositions,
         sig_num::{AtomicSigNum, SigNum},
         signals::Signal,
@@ -763,6 +764,26 @@ impl Process {
                 }
             }
         }
+    }
+}
+
+/// On construction, PauseProcGaurd will stop the process it holds a reference to, and when dropped
+/// will resume the process. It is safe to resume the process before the drop.
+pub struct PauseProcGuard {
+    proc: Arc<Process>,
+}
+
+impl PauseProcGuard {
+    pub fn new(proc: Arc<Process>) -> Self {
+        // TODO(aneesh): Can this be done at the scheduler level instead?
+        proc.stop(SIGSTOP);
+        PauseProcGuard { proc }
+    }
+}
+
+impl Drop for PauseProcGuard {
+    fn drop(&mut self) {
+        self.proc.resume()
     }
 }
 

@@ -34,7 +34,7 @@ use snafu::Whatever;
 
 use crate::{
     prelude::WaitTimeout,
-    process::{Process, signal::constants::SIGSTOP},
+    process::{PauseProcGuard, Process},
 };
 
 pub mod page_fault_handler;
@@ -68,26 +68,6 @@ pub fn mem_total() -> usize {
     total
 }
 
-/// On construction, PauseProcGaurd will stop the process it holds a reference to, and when dropped
-/// will resume the process. It is safe to resume the process before the drop.
-struct PauseProcGaurd {
-    proc: Arc<Process>,
-}
-
-impl PauseProcGaurd {
-    fn new(proc: Arc<Process>) -> Self {
-        // TODO(aneesh): Can this be done at the scheduler level instead?
-        proc.stop(SIGSTOP);
-        PauseProcGaurd { proc }
-    }
-}
-
-impl Drop for PauseProcGaurd {
-    fn drop(&mut self) {
-        self.proc.resume()
-    }
-}
-
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
 fn do_for_each_submapping<F>(cursor: &mut CursorMut, start: usize, mut f: F) -> Result<(), ()>
@@ -118,7 +98,7 @@ where
 
 fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<(), ()> {
     // Ensure that the current process doesn't run until we have scanned it's mappings
-    let _ = PauseProcGaurd::new(proc.clone());
+    let _ = PauseProcGuard::new(proc.clone());
 
     let proc_vm = proc.vm();
     let proc_vm_guard = proc_vm.lock_root_vmar();
@@ -276,10 +256,10 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
 #[orpc_trait]
 trait HugePageD {}
 
+/// HugePage daemon that periodically attempts to promote pages to huge pages
 #[orpc_server(HugePageD)]
 pub struct HugepagedServer {}
 
-/// HugePage daemon that periodically attempts to promote pages to huge pages
 impl HugepagedServer {
     pub fn new() -> Result<Arc<Self>, Whatever> {
         let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });

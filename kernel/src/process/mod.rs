@@ -23,7 +23,7 @@ pub use clone::{CloneArgs, CloneFlags, clone_child};
 pub use credentials::{Credentials, Gid, Uid};
 pub use kill::{kill, kill_all, kill_group, tgkill};
 pub use process::{
-    ExitCode, JobControl, Pgid, Pid, Process, ProcessGroup, Session, Sid, Terminal,
+    ExitCode, JobControl, PauseProcGuard, Pgid, Pid, Process, ProcessGroup, Session, Sid, Terminal,
     broadcast_signal_async, enqueue_signal_async, spawn_init_process,
 };
 pub use process_filter::ProcessFilter;
