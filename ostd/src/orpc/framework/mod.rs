@@ -33,6 +33,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use log::error;
 use spin::Once;
 
 use crate::{
@@ -144,26 +145,37 @@ pub fn spawn_thread<T: Server + Send + 'static>(
         return;
     }
 
-    TaskOptions::new({
-        move || {
-            if let Result::Err(payload) = crate::panic::catch_unwind({
-                let server = server.clone();
-                move || {
-                    Server::orpc_server_base(server.as_ref()).attach_task();
-                    let _server_context =
-                        CurrentServer::enter_server_context(server.orpc_server_base());
-                    if let Result::Err(e) = body() {
-                        Server::orpc_server_base(server.as_ref()).abort(&e);
-                    }
+    TaskOptions::new(wrap_server_thread_body(server, Box::new(body)))
+        .spawn()
+        .unwrap();
+}
+
+/// Return a closure wrapping the body of a server thread with the machinery to setup the execution
+/// context and catch and handle errors.
+///
+/// This should only be used by spawn_thread implementations which are injected using
+/// [`inject_spawn_thread`].
+pub fn wrap_server_thread_body(
+    server: Arc<dyn Server + Send + Sync>,
+    body: ThreadBody,
+) -> impl FnOnce() {
+    move || {
+        if let Result::Err(payload) = crate::panic::catch_unwind({
+            let server = server.clone();
+            move || {
+                Server::orpc_server_base(server.as_ref()).attach_task();
+                let _server_context =
+                    CurrentServer::enter_server_context(server.orpc_server_base());
+                if let Result::Err(e) = body() {
+                    Server::orpc_server_base(server.as_ref()).abort(&e);
                 }
-            }) {
-                Server::orpc_server_base(server.as_ref())
-                    .abort(&errors::RPCError::from_panic(payload));
             }
+        }) {
+            let err = errors::RPCError::from_panic(payload);
+            error!("Server thread panicked: {}", err);
+            Server::orpc_server_base(server.as_ref()).abort(&err);
         }
-    })
-    .spawn()
-    .unwrap();
+    }
 }
 
 /// Set a custom function for spawning threads. This allows overriding the default thread spawning
