@@ -37,6 +37,7 @@ pub mod arch;
 #[cfg(target_arch = "riscv64")]
 #[path = "arch/riscv/mod.rs"]
 pub mod arch;
+pub mod assertion;
 pub mod boot;
 pub mod bus;
 pub mod console;
@@ -49,6 +50,7 @@ pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
+pub mod stacktrace;
 pub mod sync;
 pub mod task;
 pub mod timer;

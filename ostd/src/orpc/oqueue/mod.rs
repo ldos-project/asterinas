@@ -11,6 +11,7 @@ pub mod registry;
 pub mod reply;
 /// OQueue implementations that use lock-free ringbuffers for efficient space management
 pub mod ringbuffer;
+pub mod wrapper;
 
 use alloc::string::String;
 use core::{
@@ -92,6 +93,11 @@ pub trait StrongObserver<T>: Send + Blocker {
 
     /// Observe an element from the oqueue if it is immediately available.
     fn try_strong_observe(&self) -> Option<T>;
+
+    fn handle_fast(
+        &mut self,
+        handler: Box<dyn Fn(T) + Sync + Send>,
+    ) -> Result<(), OQueueAttachError>;
 }
 
 /// A weak-observer handle to a oqueue. This allows looking at the history of the oqueue without affecting any other
@@ -212,6 +218,9 @@ pub trait OQueue<T>: Any + Sync + Send {
         let producer = self.attach_producer()?;
         Ok(producer.try_produce(v))
     }
+
+    /// Whenever a value is produced into subqueue. Produce it into self as well.
+    fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>;
 }
 
 /// A reference to an OQueue. This must be cloned when a new reference is needed. It is `Send`, but not `Sync`. (It

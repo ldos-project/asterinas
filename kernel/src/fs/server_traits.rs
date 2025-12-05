@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 
 use ostd::orpc::{
-    oqueue::{
-        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue,
-    },
+    oqueue::{OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue},
     orpc_trait,
 };
 
@@ -52,12 +50,31 @@ pub trait PageIOObservable {
         ObservableLockingQueue::new(8, 8)
     }
 
+    /// The OQueue containing every reply for read requests.
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
+
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
         // TODO: Use lock-free implementation
         ObservableLockingQueue::new(8, 8)
     }
+
+    /// The OQueue containing every reply for write requests.
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
+}
+
+/// The number of outstanding operations.
+#[derive(Debug, Clone, Copy)]
+pub struct OutstandingOperations {
+    pub outstanding_reads: usize,
+    pub outstanding_writes: usize,
 }
 
 /// A data store full of pages. This can be used to represent either a file or a block device.
@@ -70,7 +87,7 @@ pub trait PageIOObservable {
 /// oriented approach to match the existing file system implementation. It would be better to use a
 /// single server per filesystem and pass around richer page IDs than an index.
 #[orpc_trait]
-pub trait PageStore {
+pub trait PageStore: PageIOObservable {
     // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/121): read_page_async and
     // write_page_async should be OQueues, but doing so would make implementing them in the existing
     // monolithic kernel code is tricky and not worth it at the moment.
@@ -85,27 +102,29 @@ pub trait PageStore {
     /// if it is available.
     fn write_page_async(&self, handle: AsyncWriteRequest) -> Result<()>;
 
+    /// The number of outstanding operations.
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations> {
+        ObservableLockingQueue::new(2, 8)
+    }
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair(None)?;
         self.read_page_async(AsyncReadRequest {
             handle,
-            reply_handle: reply_oqueue.attach_producer()?,
+            reply_handle: reply_producer,
         })?;
-        consumer.consume();
+        reply_consumer.consume();
         Ok(())
     }
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_producer, reply_consumer) = ReplyQueue::new_pair(None)?;
         self.write_page_async(AsyncWriteRequest {
             handle,
-            reply_handle: Some(reply_oqueue.attach_producer()?),
+            reply_handle: Some(reply_producer),
         })?;
-        consumer.consume();
+        reply_consumer.consume();
         Ok(())
     }
 
@@ -117,11 +136,12 @@ pub trait PageStore {
 pub trait PageCache {
     /// Request that the cache prefetch a page. This is asynchronous and advisory, so the page may
     /// appear in the cache at a later time or never.
-    fn prefetch(&self, idx: usize) -> Result<()>;
+    fn prefetch_oqueue(&self) -> OQueueRef<usize> {
+        // TODO: Use lock-free implementation
+        ObservableLockingQueue::new(8, 8)
+    }
 
-    // TODO(arthurp): Make this an OQueue. Provide a prefetch handling server which watches all the
-    // OQueues and then makes calls to the actual prefetch method. Effectively, this is a thread
-    // that donates it's time in place of the sender without requiring an thread per PageCache.
+    fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 }
 
 #[orpc_trait]

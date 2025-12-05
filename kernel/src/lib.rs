@@ -110,6 +110,7 @@ pub fn init() {
     syscall::init();
     vdso::init();
     process::init();
+    orpc_utils::init();
 }
 
 fn ap_init() {

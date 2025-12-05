@@ -26,7 +26,7 @@ use super::{
 use crate::{
     fs::{
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable as _},
+        server_traits::{self, OutstandingOperations, PageIOObservable as _},
         utils::{
             Extension, FallocMode, Inode as _, InodeMode, Metadata, Permission, XattrName,
             XattrNamespace, XattrSetFlags,
@@ -966,11 +966,15 @@ impl InodeInner {
         let num_page_bytes = desc.num_page_bytes();
         let inode_impl = InodeImpl::new(desc, weak_self, fs);
         Self {
-            page_cache: PageCache::with_capacity(
-                num_page_bytes,
-                Arc::downgrade(&inode_impl.block_manager) as _,
-            )
-            .unwrap(),
+            page_cache: {
+                let cache = PageCache::with_capacity(
+                    num_page_bytes,
+                    Arc::downgrade(&inode_impl.block_manager) as _,
+                )
+                .unwrap();
+                cache.start_prefetcher().unwrap();
+                cache
+            },
             inode_impl,
         }
     }
@@ -2015,7 +2019,9 @@ impl InodeBlockManager {
 #[orpc_impl]
 impl server_traits::PageIOObservable for InodeBlockManager {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -2023,7 +2029,9 @@ impl server_traits::PageStore for InodeBlockManager {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
         self.page_reads_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
         self.read_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
+            reply_producer.produce(req.handle.idx);
             req.reply_handle.produce(req.handle);
         })
     }
@@ -2031,7 +2039,9 @@ impl server_traits::PageStore for InodeBlockManager {
     fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
         self.page_writes_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
         self.write_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
+            reply_producer.produce(req.handle.idx);
             if let Some(reply_handle) = req.reply_handle {
                 reply_handle.produce(req.handle);
             }
@@ -2041,6 +2051,8 @@ impl server_traits::PageStore for InodeBlockManager {
     fn npages(&self) -> Result<usize> {
         Ok(self.nblocks())
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 /// A reader to get the corresponding device block IDs for a specified range.

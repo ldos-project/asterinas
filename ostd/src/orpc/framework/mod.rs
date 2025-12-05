@@ -33,6 +33,8 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use spin::Once;
+
 use crate::{
     cpu_local_cell,
     prelude::{Arc, Box},
@@ -118,16 +120,29 @@ impl ServerBase {
     }
 
     /// Get a strong reference to `self`.
-    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send>> {
+    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send + 'static>> {
         self.weak_this.upgrade()
     }
 }
+
+/// Static function for spawning threads, initially uninitialized.
+static SPAWN_THREAD_FN: Once<
+    fn(
+        Arc<dyn Server + Send + Sync>,
+        Box<dyn FnOnce() -> Result<(), Box<dyn core::error::Error>> + Send + 'static>,
+    ),
+> = Once::new();
 
 /// Start a new server thread. This should only be called while spawning a server.
 pub fn spawn_thread<T: Server + Send + 'static>(
     server: Arc<T>,
     body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
 ) {
+    if let Some(spawn_fn) = SPAWN_THREAD_FN.get() {
+        spawn_fn(server, Box::new(body));
+        return;
+    }
+
     TaskOptions::new({
         move || {
             if let Result::Err(payload) = crate::panic::catch_unwind({
@@ -148,6 +163,17 @@ pub fn spawn_thread<T: Server + Send + 'static>(
     })
     .spawn()
     .unwrap();
+}
+
+/// Set a custom function for spawning threads.
+/// This allows overriding the default thread spawning behavior.
+pub fn inject_thread_spawn(
+    func: fn(
+        Arc<dyn Server + Send + Sync>,
+        Box<dyn FnOnce() -> Result<(), Box<dyn core::error::Error>> + Send + 'static>,
+    ),
+) {
+    SPAWN_THREAD_FN.call_once(|| func);
 }
 
 /// Methods to access the current server.

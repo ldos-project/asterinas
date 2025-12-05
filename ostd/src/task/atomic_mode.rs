@@ -37,12 +37,9 @@ use crate::task::preempt::cpu_local::PREEMPT_OUTER_INC_LOCATION;
 /// This function will panic if it is executed in atomic mode.
 #[track_caller]
 pub fn might_sleep() {
-    let preempt_count = super::preempt::cpu_local::get_guard_count();
-    let is_local_irq_enabled = crate::arch::irq::is_local_enabled();
-    if (preempt_count != 0 || !is_local_irq_enabled)
-        && !crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed)
-    {
-        // SAFETY: preempt count > 0 to migration is not possible.
+    if !is_sleeping_allowed() {
+        let preempt_count = super::preempt::cpu_local::get_guard_count();
+        let is_local_irq_enabled = crate::arch::irq::is_local_enabled();
         let location = unsafe { PREEMPT_OUTER_INC_LOCATION.as_mut_ptr().as_mut() }
             .unwrap()
             .take();
@@ -52,6 +49,15 @@ pub fn might_sleep() {
             preempt_count, location, is_local_irq_enabled
         );
     }
+}
+
+/// Return true if sleeping is allowed in the current context. If this returns false, then
+/// [`might_sleep`] will panic.
+pub fn is_sleeping_allowed() -> bool {
+    let preempt_count = super::preempt::cpu_local::get_guard_count();
+    let is_local_irq_enabled = crate::arch::irq::is_local_enabled();
+    (preempt_count == 0 && is_local_irq_enabled)
+        || crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed)
 }
 
 /// A marker trait for guard types that enforce the atomic mode.

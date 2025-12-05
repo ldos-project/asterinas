@@ -54,8 +54,7 @@ pub fn orpc_server_macro_impl(
         fields,
         semi_token,
     } = input;
-    let orpc_internal_struct_ident =
-        format_ident!("{}ORPCInternal", ident.to_string(), span = ident.span());
+    let orpc_internal_struct_ident = format_ident!("{}ORPCInternal", ident.to_string());
     // All the fields of the user declared server struct with the added orpc_internal field.
     let fields = match fields {
         syn::Fields::Named(FieldsNamed { named, .. }) => {

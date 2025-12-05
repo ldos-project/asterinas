@@ -6,6 +6,7 @@ use alloc::{borrow::ToOwned, format, sync::Weak};
 use core::{
     any::{Any, type_name},
     cell::Cell,
+    iter::once,
 };
 
 use super::{
@@ -13,9 +14,10 @@ use super::{
     WeakObserver,
 };
 use crate::{
+    orpc::oqueue::OQueueRef,
     prelude::{Arc, Box, Vec},
     sync::{SpinLock, WaitQueue, Waker},
-    task::Task,
+    task::{Task, atomic_mode::is_sleeping_allowed},
 };
 
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
@@ -46,6 +48,7 @@ impl<T> LockingQueue<T> {
                 tail_index: 0,
                 free_strong_observer_heads: (0..max_strong_observers).collect(),
                 strong_observer_heads: (0..max_strong_observers).map(|_| usize::MAX).collect(),
+                strong_observer_handlers: Default::default(),
             }),
             put_wait_queue: Default::default(),
             read_wait_queue: Default::default(),
@@ -105,6 +108,7 @@ struct LockingOQueueInner<T> {
 
     /// The heads used by strong observers.
     strong_observer_heads: Vec<usize>,
+    strong_observer_handlers: Vec<Box<dyn Fn(T) + Sync + Send + 'static>>,
 
     /// A list of strong observer heads that are available to be allocated to an attacher.
     free_strong_observer_heads: Vec<usize>,
@@ -131,10 +135,32 @@ impl<T> LockingOQueueInner<T> {
         Some(self.tail_index)
     }
 
-    fn try_produce(&mut self, v: T) -> Option<T> {
+    /// Get the current length of the queue.
+    pub fn len(&self) -> usize {
+        let first_head = self
+            .strong_observer_heads
+            .iter()
+            .copied()
+            .chain(once(self.head_index))
+            .min()
+            .unwrap_or(usize::MAX);
+        if first_head != usize::MAX {
+            self.tail_index - first_head
+        } else {
+            0
+        }
+    }
+
+    pub fn should_yield(&self) -> bool {
+        self.len() >= self.buffer.len() / 2
+    }
+
+    fn try_produce(&mut self, v: T) -> (Option<T>, bool) {
         let Some(tail_index) = self.can_produce() else {
-            return Some(v);
+            return (Some(v), true);
         };
+
+        assert!(self.strong_observer_handlers.is_empty());
 
         let slot_cell = &mut self.buffer[self.mod_len(tail_index)];
         // This will generally fill something that was None. However, if the this is an observable OQueue then they will
@@ -146,7 +172,32 @@ impl<T> LockingOQueueInner<T> {
 
         self.tail_index += 1;
 
-        None
+        (None, self.should_yield())
+    }
+
+    fn try_produce_cloning(&mut self, v: T) -> (Option<T>, bool)
+    where
+        T: Clone,
+    {
+        let Some(tail_index) = self.can_produce() else {
+            return (Some(v), true);
+        };
+
+        for handler in self.strong_observer_handlers.iter() {
+            handler(v.clone());
+        }
+
+        let slot_cell = &mut self.buffer[self.mod_len(tail_index)];
+        // This will generally fill something that was None. However, if the this is an observable OQueue then they will
+        // be cloned out and left in place. So the cell will still be full.
+
+        // TODO: It might be worth clearing the slot as soon as it is observed since that would avoid holding onto
+        // memory.
+        *slot_cell = Some(v);
+
+        self.tail_index += 1;
+
+        (None, self.should_yield())
     }
 
     fn drop_consumer(&mut self) {
@@ -231,7 +282,7 @@ impl<T> LockingOQueueInner<T> {
 impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
         let this = self.inner.get_this()?;
-        Ok(Box::new(LockingProducer {
+        Ok(Box::new(ObservableLockingProducer {
             oqueue: this.this.clone(),
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
@@ -282,6 +333,17 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
             _oqueue_ref: self.this.upgrade().unwrap(),
         }))
     }
+
+    fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>
+    where
+        T: 'static,
+    {
+        let parent = self.inner.get_this()?;
+        let x = move |v| {
+            parent.produce(v);
+        };
+        subqueue.attach_strong_observer()?.handle_fast(Box::new(x))
+    }
 }
 
 impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
@@ -313,6 +375,17 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
         Err(OQueueAttachError::Unsupported {
             table_type: type_name::<Self>().to_owned(),
         })
+    }
+
+    fn attach_child_queue(&self, subqueue: OQueueRef<T>) -> Result<(), OQueueAttachError>
+    where
+        T: 'static,
+    {
+        let parent = self.get_this()?;
+        let x = move |v| {
+            parent.produce(v);
+        };
+        subqueue.attach_strong_observer()?.handle_fast(Box::new(x))
     }
 }
 
@@ -353,12 +426,66 @@ impl<T: Send> Producer<T> for LockingProducer<T> {
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
-        let res = self.oqueue().inner.lock().try_produce(data);
+        let (res, should_yield) = self.oqueue().inner.lock().try_produce(data);
         // If the value was put into the OQueue, wake up the readers.
         if res.is_none() {
             // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
             // actually succeed.
             self.oqueue().read_wait_queue.wake_all();
+        }
+        if should_yield && is_sleeping_allowed() {
+            Task::yield_now();
+        }
+        res
+    }
+}
+
+/// A producer for a locking OQueue. The same is used regardless of observation support.
+struct ObservableLockingProducer<T> {
+    oqueue: Weak<LockingQueue<T>>,
+    _oqueue_ref: Arc<dyn Any + Send + Sync>,
+}
+
+impl<T> ObservableLockingProducer<T> {
+    fn oqueue(&self) -> &LockingQueue<T> {
+        // SAFETY: This is safe when `oqueue` is referenced by `_oqueue_ref`
+        unsafe { &*self.oqueue.as_ptr() }
+    }
+}
+
+impl<T: Send> Blocker for ObservableLockingProducer<T> {
+    fn should_try(&self) -> bool {
+        self.oqueue().inner.lock().can_produce().is_some()
+    }
+
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        self.oqueue().put_wait_queue.enqueue(waker.clone());
+    }
+}
+
+impl<T: Send + Clone> Producer<T> for ObservableLockingProducer<T> {
+    fn produce(&self, data: T) {
+        let mut d = Some(data);
+
+        loop {
+            d = self.try_produce(d.take().expect("Unreachable"));
+            if d.is_none() {
+                break;
+            }
+            Task::current().unwrap().block_on(&[self]);
+        }
+    }
+
+    fn try_produce(&self, data: T) -> Option<T> {
+        let (res, should_yield) = self.oqueue().inner.lock().try_produce_cloning(data);
+        // If the value was put into the OQueue, wake up the readers.
+        if res.is_none() {
+            // We wake up everyone to make sure we get all the observers. If there are multiple consumers, only one will
+            // actually succeed.
+            self.oqueue().read_wait_queue.wake_all();
+        }
+        if should_yield && is_sleeping_allowed() {
+            Task::yield_now();
         }
         res
     }
@@ -497,6 +624,20 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
         }
         res
     }
+
+    // TODO: This should be a new attach method because this cannot be `self` (consuming the
+    // handle). Another option would be to restructure the API so that the observer handles are a
+    // concrete type that wraps around some type erased implementation like a set of function
+    // pointers.
+    fn handle_fast(
+        &mut self,
+        handler: Box<dyn Fn(T) + Sync + Send>,
+    ) -> Result<(), OQueueAttachError> {
+        let mut inner = self.oqueue().inner.lock();
+        // TODO: This will never be removed even when the handle detachs.
+        inner.strong_observer_handlers.push(handler);
+        Ok(())
+    }
 }
 
 /// A weak observer for a locking OQueue. This only works with [`ObservableLockingOQueue`] since otherwise the values
@@ -534,7 +675,7 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
     }
 
     fn recent_cursor(&self) -> Cursor {
-        Cursor(self.oqueue().inner.lock().tail_index.saturating_sub(1))
+        Cursor(self.oqueue().inner.lock().tail_index)
     }
 
     fn oldest_cursor(&self) -> Cursor {

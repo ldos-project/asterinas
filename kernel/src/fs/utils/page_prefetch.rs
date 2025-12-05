@@ -9,27 +9,30 @@
 // real heuristics.
 
 use alloc::sync::Arc;
+use core::usize;
 
+use aster_logger::println;
 use ostd::orpc::{
     framework::{
         errors::RPCError,
         shutdown::{self, ShutdownState},
+        spawn_thread
     },
     orpc_impl, orpc_server,
+    statistics::{Outstanding, OutstandingCounter},
     sync::select,
 };
 
 use crate::{
     Result,
     fs::server_traits::{PageCache, PageIOObservable},
-    orpc_utils::spawn_thread,
 };
 
-/// A test prefetcher that always prefetches page `idx + n` when page `idx` is read. `n` is the
-/// number of pages the prefetcher should stay ahead of the reader. `n` is fixed at construction
-/// time.
+/// A prefetcher which implements the policy originally provided by Asterinas.
 ///
-/// NOTE: This is not a good or realistic prefetcher. It is designed as an example.
+/// The policy is: If there are no outstanding reads and the most recent read was sequential
+/// (exactly stride 1), read pages ahead. The number of pages read starts at some `min` and doubles
+/// every time there is another prefetch (sequential read with no outstanding reads).
 #[orpc_server(shutdown::Shutdown)]
 pub struct ReadaheadPrefetcher {
     shutdown_state: ShutdownState,
@@ -53,8 +56,18 @@ impl ReadaheadPrefetcher {
             shutdown_state: Default::default(),
         });
 
+        let underlying_page_store = cache.underlying_page_store()?;
+        // TODO: Tie this to the lifetime of `server`.
+        let outstanding_counter = OutstandingCounter::spawn(
+            underlying_page_store.page_reads_oqueue(),
+            underlying_page_store.page_reads_reply_oqueue(),
+        )?;
+
         spawn_thread(server.clone(), {
             let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
+            let outstanding_count_observer = outstanding_counter
+                .outstanding_oqueue()
+                .attach_weak_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
@@ -63,11 +76,22 @@ impl ReadaheadPrefetcher {
             let server = server.clone();
 
             move || {
+                println!("Start prefetcher");
                 loop {
                     server.shutdown_state.check()?;
                     select!(
                         if let idx = read_observer.try_strong_observe() {
-                            cache.prefetch(idx + n_steps_ahead)?;
+                            println!("evaluating prefetch: {}", idx);
+                            if let Some(outstanding) =
+                                outstanding_count_observer.weak_observe_recent(2).last()
+                            {
+                                println!("evaluating prefetch: {}, {}", idx, outstanding);
+                                if *outstanding < 2 {
+                                    let res = cache.prefetch_oqueue().produce(idx + n_steps_ahead);
+                                    // println!("issue prefetch {}: {}", idx + n_steps_ahead, res.is_ok_and(|v| v.is_none()));
+                                    // println!("issue prefetch {}", idx + n_steps_ahead);
+                                }
+                            }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
                     );
@@ -126,7 +150,9 @@ impl StridedPrefetcher {
                             let history = read_weak_observer.weak_observe_range(recent - 1, recent);
                             if history.len() >= 2 {
                                 let stride = history[1] - history[0];
-                                cache.prefetch(idx + stride * n_steps_ahead)?;
+                                cache
+                                    .prefetch_oqueue()
+                                    .produce(idx + stride * n_steps_ahead)?;
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}

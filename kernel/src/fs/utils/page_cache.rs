@@ -16,9 +16,9 @@ use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
-        framework::shutdown::Shutdown,
         oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
-        orpc_impl, orpc_server,
+        orpc_impl, orpc_server, 
+        framework::spawn_thread
     },
     task::Task,
 };
@@ -26,7 +26,8 @@ use ostd::{
 use crate::{
     fs::{
         server_traits::{
-            self, AsyncReadRequest, AsyncWriteRequest, PageHandle, PageIOObservable, PageStore,
+            self, AsyncReadRequest, AsyncWriteRequest, PageCache as _, PageHandle,
+            PageIOObservable, PageStore,
         },
         utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
@@ -103,6 +104,22 @@ impl PageCache {
             .pager(manager.clone())
             .alloc()?;
         Ok(Self { pages, manager })
+    }
+
+    pub fn start_prefetcher(&self) -> Result<()> {
+        let policy = get_prefetch_policy();
+        match policy {
+            // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace read
+            // ahead distance (4) with something less arbitrary.
+            PrefetchPolicy::Readahead => {
+                ReadaheadPrefetcher::spawn(self.manager.clone(), 4)?;
+            }
+            PrefetchPolicy::Strided => {
+                StridedPrefetcher::spawn(self.manager.clone(), 4)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Returns the Vmo object.
@@ -363,7 +380,6 @@ impl OutstandingRequests {
         frame: Frame<CachePageMeta>,
     ) {
         frame.store_state(PageState::UpToDate);
-        // These two pages should be the same. Assert that they are as a sanity check.
         #[cfg(debug_assertions)]
         if let Some(page) = _pages.get_mut(&_idx) {
             assert_eq!(frame.start_paddr(), page.start_paddr());
@@ -382,10 +398,17 @@ impl OutstandingRequests {
         pages: &mut LruCache<usize, CachePage>,
         backend: &Arc<dyn PageStore>,
         idx: usize,
+        _manager: &PageCacheManager,
     ) -> Result<()> {
         let async_page = CachePage::alloc_uninit()?;
         pages.put(idx, async_page.clone());
-        let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair()?;
+        // // XXX: This mixes prefetches with normal reads.
+        // manager.page_reads_oqueue().produce(idx)?;
+        // let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair_transformed(Some((
+        //     &manager.page_reads_reply_oqueue(),
+        //     |p: &PageHandle| p.idx,
+        // )))?;
+        let (reply_producer, mut reply_consumer) = ReplyQueue::new_pair(None)?;
         backend.read_page_async(AsyncReadRequest {
             handle: PageHandle {
                 idx,
@@ -412,16 +435,8 @@ impl OutstandingRequests {
 struct PageCacheManager {
     backend: Weak<dyn PageStore>,
     inner: Mutex<PageCacheManagerInner>,
-    prefetcher: Mutex<Option<(Arc<dyn Shutdown>, PrefetchPolicy)>>,
+    // prefetcher: Mutex<Option<(Arc<dyn Shutdown>, PrefetchPolicy)>>,
     weak_this: Weak<PageCacheManager>,
-}
-
-impl Drop for PageCacheManager {
-    fn drop(&mut self) {
-        if let Some(prefetcher) = self.prefetcher.lock().take() {
-            let _ = prefetcher.0.shutdown();
-        }
-    }
 }
 
 /// The synchronized state of [`PageCacheManager`]. This holds the state and behavior that is
@@ -436,7 +451,11 @@ struct PageCacheManagerInner {
 impl PageCacheManagerInner {
     /// Conducts the new readahead. Sends the relevant read request and sets the relevant page in
     /// the page cache to `Uninit`.
-    pub fn conduct_readahead(&mut self, backend: &Arc<dyn PageStore>) -> Result<()> {
+    pub fn conduct_readahead(
+        &mut self,
+        backend: &Arc<dyn PageStore>,
+        manager: &PageCacheManager,
+    ) -> Result<()> {
         let Some(policy) = &mut self.builtin_prefetch_policy else {
             return Err(Error::unreachable());
         };
@@ -444,8 +463,12 @@ impl PageCacheManagerInner {
             return_errno!(Errno::EINVAL)
         };
         for async_idx in window.readahead_range() {
-            self.outstanding_requests
-                .request_async(&mut self.pages, backend, async_idx)?;
+            self.outstanding_requests.request_async(
+                &mut self.pages,
+                backend,
+                async_idx,
+                manager,
+            )?;
         }
         Ok(())
     }
@@ -456,6 +479,7 @@ impl PageCacheManagerInner {
         &mut self,
         idx: usize,
         backend: &Arc<dyn PageStore>,
+        manager: &PageCacheManager,
     ) -> Result<()> {
         if let Some(policy) = &mut self.builtin_prefetch_policy {
             // Read ahead if there are no outstanding requests and the policy has determined it
@@ -464,7 +488,7 @@ impl PageCacheManagerInner {
                 && policy.should_readahead(idx, backend.npages()?)
             {
                 policy.setup_window(idx, backend.npages()?);
-                self.conduct_readahead(backend)?;
+                self.conduct_readahead(backend, manager)?;
             }
             // Need to reborrow because of call to conduct_readahead.
             self.builtin_prefetch_policy
@@ -487,7 +511,7 @@ impl PageCacheManager {
 
         let server = Self::new_with(|orpc_internal, weak_this| Self {
             backend,
-            inner: Mutex::new(PageCacheManagerInner {
+            inner: Mutex::new_with_stacks(PageCacheManagerInner {
                 // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
                 pages: LruCache::unbounded(),
                 builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
@@ -497,13 +521,42 @@ impl PageCacheManager {
                 },
                 outstanding_requests: Default::default(),
             }),
-            prefetcher: Default::default(),
+            // prefetcher: Default::default(),
             weak_this: weak_this.clone(),
             orpc_internal,
         });
 
+        spawn_thread(server.clone(), {
+            let server = server.clone();
+            let prefetch_consumer = server.prefetch_oqueue().attach_consumer()?;
+            move || {
+                loop {
+                    ostd::orpc::framework::CurrentServer::abort_point();
+                    let idx = prefetch_consumer.consume();
+                    println!("Prefetching page {}", idx);
+                    let mut inner = server.inner.lock();
+                    // let Some(mut inner) = server.inner.try_lock() else {
+                    //     // Silently drop requests that cannot be performed immediately.
+                    //     // XXX: This is a bad idea since it may happen because the lock is held at the wrong moment, but no blocking is happening.
+                    //     return Ok(());
+                    // };
+                    let inner = inner.deref_mut();
+
+                    // If the page is not in the cache, issue a request.
+                    if inner.pages.get(&idx).is_none() {
+                        inner.outstanding_requests.request_async(
+                            &mut inner.pages,
+                            &server.backend()?,
+                            idx,
+                            server.as_ref(),
+                        )?;
+                    }
+                }
+            }
+        });
+
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
-            server.change_policy(policy)?;
+            warn!("Prefetch mode is not set at construction time: {policy:?}");
         }
         Ok(server)
     }
@@ -535,7 +588,10 @@ impl PageCacheManager {
         for idx in page_idx_range.start..page_idx_range.end {
             if let Some(page) = pages.peek(&idx) {
                 if page.load_state() == PageState::Dirty && idx < backend_npages {
-                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair_transformed(Some((
+                        &self.page_writes_reply_oqueue(),
+                        |p: &PageHandle| p.idx,
+                    )))?;
                     backend.write_page_async(AsyncWriteRequest {
                         handle: PageHandle {
                             idx,
@@ -560,84 +616,90 @@ impl PageCacheManager {
     /// this call. If the built-in prefetch policy is enabled, this will trigger readaheads as
     /// needed.
     fn read_page(&self, idx: usize) -> Result<UFrame> {
-        let mut inner = self.inner.lock();
-        let inner = inner.deref_mut();
-        let backend = self.backend()?;
+        self.page_reads_oqueue().produce(idx)?;
 
-        self.page_reads_oqueue().try_produce(idx)?;
+        let frame = {
+            let backend = self.backend()?;
+            let mut inner = self.inner.lock();
+            let inner = inner.deref_mut();
 
-        // Handle any requests that have already completed.
-        inner.outstanding_requests.check_requests(&mut inner.pages);
+            // Handle any requests that have already completed.
+            inner.outstanding_requests.check_requests(&mut inner.pages);
 
-        // There are three possible conditions that could be encountered upon reaching here:
-        // 1. The requested page is ready for read in page cache.
-        // 2. The requested page is currently being read (generally due to a prefetch).
-        // 3. The requested page is on disk, need a sync read operation here.
-        let frame = if let Some(page) = inner.pages.get(&idx) {
-            // Cond 1 & 2.
-            if let PageState::Uninit = page.load_state() {
-                // Cond 2: We should wait for the previous readahead.
-                // If there is no previous readahead, an error must have occurred somewhere.
-                assert!(inner.outstanding_requests.has_requests());
-                inner
-                    .outstanding_requests
-                    .wait_for_requests(&mut inner.pages);
-                inner
-                    .pages
-                    .get(&idx)
-                    .ok_or_else(Error::unreachable)?
-                    .clone()
+            // There are three possible conditions that could be encountered upon reaching here:
+            // 1. The requested page is ready for read in page cache.
+            // 2. The requested page is currently being read (generally due to a prefetch).
+            // 3. The requested page is on disk, need a sync read operation here.
+            let frame = if let Some(page) = inner.pages.get(&idx) {
+                // Cond 1 & 2.
+                if let PageState::Uninit = page.load_state() {
+                    // Cond 2: We should wait for the previous readahead.
+                    // If there is no previous readahead, an error must have occurred somewhere.
+                    assert!(inner.outstanding_requests.has_requests());
+                    inner
+                        .outstanding_requests
+                        .wait_for_requests(&mut inner.pages);
+                    inner
+                        .pages
+                        .get(&idx)
+                        .ok_or_else(Error::unreachable)?
+                        .clone()
+                } else {
+                    // Cond 1.
+                    page.clone()
+                }
             } else {
-                // Cond 1.
-                page.clone()
-            }
-        } else {
-            // Cond 3.
-            // Conducts the sync read operation.
-            let page = if idx < backend.npages()? {
-                let page = CachePage::alloc_uninit()?;
-                backend.read_page(PageHandle {
-                    idx,
-                    frame: page.clone(),
-                })?;
-                page.store_state(PageState::UpToDate);
-                page
-            } else {
-                CachePage::alloc_zero(PageState::Uninit)?
+                // Cond 3.
+                // Conducts the sync read operation.
+                let page = if idx < backend.npages()? {
+                    let page = CachePage::alloc_uninit()?;
+                    backend.read_page(PageHandle {
+                        idx,
+                        frame: page.clone(),
+                    })?;
+                    page.store_state(PageState::UpToDate);
+                    page
+                } else {
+                    CachePage::alloc_zero(PageState::Uninit)?
+                };
+                let frame = page.clone();
+                inner.pages.put(idx, page);
+                frame
             };
-            let frame = page.clone();
-            inner.pages.put(idx, page);
+
+            // Invoke built-in policy.
+            inner.maybe_builtin_prefetch(idx, &backend, self)?;
+
             frame
         };
 
-        // Invoke built-in policy.
-        inner.maybe_builtin_prefetch(idx, &backend)?;
+        self.page_reads_reply_oqueue().produce(idx)?;
 
         Ok(frame.into())
     }
 
-    fn change_policy(&self, policy: PrefetchPolicy) -> Result<()> {
-        let mut prefetcher_state = self.prefetcher.lock();
-        if let Some((_, kind)) = prefetcher_state.as_ref() {
-            if *kind == policy || *kind == PrefetchPolicy::Builtin || *kind == PrefetchPolicy::None
-            {
-                return Ok(());
-            }
-        }
-        if let Some(s) = prefetcher_state.take() {
-            s.0.shutdown()?;
-        }
-        let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
-        let prefetcher = match policy {
-            // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace read
-            // ahead distance (4) with something less arbitrary.
-            PrefetchPolicy::Readahead => ReadaheadPrefetcher::spawn(this, 4)? as _,
-            PrefetchPolicy::Strided => StridedPrefetcher::spawn(this, 4)? as _,
-            _ => Err(Error::unreachable())?,
-        };
-        *prefetcher_state = Some((prefetcher, policy));
-        Ok(())
-    }
+    // fn change_policy(&self, policy: PrefetchPolicy) -> Result<()> {
+    //     let mut prefetcher_state = self.prefetcher.lock();
+    //     if let Some((_, kind)) = prefetcher_state.as_ref() {
+    //         if *kind == policy || *kind == PrefetchPolicy::Builtin || *kind == PrefetchPolicy::None
+    //         {
+    //             return Ok(());
+    //         }
+    //     }
+    //     if let Some(s) = prefetcher_state.take() {
+    //         s.0.shutdown()?;
+    //     }
+    //     let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
+    //     let prefetcher = match policy {
+    //         // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace read
+    //         // ahead distance (4) with something less arbitrary.
+    //         PrefetchPolicy::Readahead => ReadaheadPrefetcher::spawn(this, 4)? as _,
+    //         PrefetchPolicy::Strided => StridedPrefetcher::spawn(this, 4)? as _,
+    //         _ => Err(Error::unreachable())?,
+    //     };
+    //     *prefetcher_state = Some((prefetcher, policy));
+    //     Ok(())
+    // }
 }
 
 impl Debug for PageCacheManager {
@@ -656,6 +718,8 @@ impl Debug for PageCacheManager {
 impl PageIOObservable for PageCacheManager {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 // XXX: How is Pager handled in ORPC? Do I also need to refactor that?
@@ -666,10 +730,13 @@ impl Pager for PageCacheManager {
     }
 
     fn update_page(&self, idx: usize) -> Result<()> {
-        let pages = &mut self.inner.lock().pages;
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
         if let Some(page) = pages.get_mut(&idx) {
-            self.page_writes_oqueue().produce(idx)?;
             page.store_state(PageState::Dirty);
+            drop(inner);
+            self.page_writes_oqueue().produce(idx)?;
+            self.page_writes_reply_oqueue().produce(idx)?;
         } else {
             warn!("The page {} is not in page cache", idx);
         }
@@ -711,19 +778,10 @@ impl Pager for PageCacheManager {
 
 #[orpc_impl]
 impl server_traits::PageCache for PageCacheManager {
-    fn prefetch(&self, idx: usize) -> Result<()> {
-        let mut inner = self.inner.lock();
-        let inner = inner.deref_mut();
+    fn prefetch_oqueue(&self) -> OQueueRef<usize>;
 
-        // If the page is in the cache (including if it is being loaded) do nothing.
-        if inner.pages.get(&idx).is_some() {
-            return Ok(());
-        }
-
-        inner
-            .outstanding_requests
-            .request_async(&mut inner.pages, &self.backend()?, idx)?;
-        Ok(())
+    fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
+        self.backend()
     }
 }
 

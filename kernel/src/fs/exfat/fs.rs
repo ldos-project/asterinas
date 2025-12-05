@@ -28,7 +28,7 @@ use super::{
 use crate::{
     fs::{
         exfat::{constants::*, inode::Ino},
-        server_traits::{self, PageIOObservable as _, PageStore},
+        server_traits::{self, OutstandingOperations, PageIOObservable as _, PageStore},
         utils::{FileSystem, FsFlags, Inode, PageCache, SuperBlock},
     },
     prelude::*,
@@ -378,7 +378,9 @@ impl ExfatFS {
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatFS {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -394,11 +396,13 @@ impl PageStore for ExfatFS {
 
         // Produce the handle to the ORPC queue
         self.page_reads_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
 
         self.block_device.read_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
             bio_segment,
             move |b| {
+                reply_producer.produce(req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
         )?;
@@ -417,12 +421,14 @@ impl PageStore for ExfatFS {
 
         // Produce the handle to the ORPC queue
         self.page_writes_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
 
         self.block_device.write_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
             bio_segment,
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
+                    reply_producer.produce(req.handle.idx);
                     reply_handle.produce(req.handle);
                 }
             },
@@ -434,6 +440,8 @@ impl PageStore for ExfatFS {
     fn npages(&self) -> Result<usize> {
         Ok(self.fs_size() / PAGE_SIZE)
     }
+
+    fn outstanding_operations(&self) -> OQueueRef<OutstandingOperations>;
 }
 
 impl FileSystem for ExfatFS {
