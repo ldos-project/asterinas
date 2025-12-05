@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     cell::UnsafeCell,
     fmt,
@@ -9,11 +9,13 @@ use core::{
 };
 
 use super::WaitQueue;
+use crate::stacktrace::CapturedStackTrace;
 
 /// A mutex with waitqueue.
 pub struct Mutex<T: ?Sized> {
     lock: AtomicBool,
     queue: WaitQueue,
+    holder: Option<Box<UnsafeCell<Option<CapturedStackTrace>>>>,
     val: UnsafeCell<T>,
 }
 
@@ -27,6 +29,18 @@ impl<T> Mutex<T> {
         Self {
             lock: AtomicBool::new(false),
             queue: WaitQueue::new(),
+            holder: None,
+            val: UnsafeCell::new(val),
+        }
+    }
+
+    /// Create a new mutex which captures a stack trace when it is acquired. See
+    /// [`Mutex::print_holder`].
+    pub fn new_with_stacks(val: T) -> Self {
+        Self {
+            lock: AtomicBool::new(false),
+            queue: WaitQueue::new(),
+            holder: Some(Box::new(UnsafeCell::new(None))),
             val: UnsafeCell::new(val),
         }
     }
@@ -45,6 +59,29 @@ impl<T: ?Sized> Mutex<T> {
     #[track_caller]
     pub fn lock(&self) -> MutexGuard<T> {
         self.queue.wait_until(|| self.try_lock())
+    }
+
+    /// Attempts to acquire the mutex, printing the holder if it cannot be acquired immediately.
+    #[track_caller]
+    pub fn lock_with_print_holder(&self) -> MutexGuard<T> {
+        match self.try_lock() {
+            Some(guard) => guard,
+            None => {
+                self.print_holder();
+                self.lock()
+            }
+        }
+    }
+
+    /// Print the stack of the acquire call associated with the thread currently holding the lock.
+    pub fn print_holder(&self) {
+        unsafe {
+            if let Some(holder) = &self.holder {
+                if let Some(stack) = &*holder.get() {
+                    stack.print();
+                }
+            }
+        }
     }
 
     /// Acquires the mutex through an [`Arc`].
@@ -94,12 +131,26 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     fn acquire_lock(&self) -> bool {
-        self.lock
+        let ret = self
+            .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        if ret {
+            if let Some(holder) = &self.holder {
+                unsafe {
+                    *holder.get() = Some(CapturedStackTrace::capture(2));
+                }
+            }
+        }
+        ret
     }
 
     fn release_lock(&self) {
+        if let Some(holder) = &self.holder {
+            unsafe {
+                *holder.get() = None;
+            }
+        }
         self.lock.store(false, Ordering::Release);
     }
 }
