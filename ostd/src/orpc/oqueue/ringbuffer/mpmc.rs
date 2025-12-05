@@ -646,7 +646,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
-        self.oqueue.size() < self.oqueue.capacity.into()
+        !self.oqueue.empty()
     }
 
     fn prepare_to_wait(&self, waker: &Arc<Waker>) {
