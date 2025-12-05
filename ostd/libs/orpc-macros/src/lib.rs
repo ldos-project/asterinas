@@ -45,7 +45,7 @@ use syn::{
 ///
 /// ### Implementation
 ///
-/// This macro wil generate a struct `[trait name]OQueues` which contains all the OQueue references used by the trait.
+/// This macro will generate a struct `[trait name]OQueues` which contains all the OQueue references used by the trait.
 /// This will include both explicitly exported OQueues and implicit OQueues associated with functions. This structure
 /// should never be used directly.
 #[proc_macro_attribute]
