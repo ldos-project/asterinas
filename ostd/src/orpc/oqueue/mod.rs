@@ -124,10 +124,10 @@ pub trait WeakObserver<T>: Send + Blocker {
     /// may no longer be the oldest or even no longer be available.
     fn oldest_cursor(&self) -> Cursor;
 
-    /// Return all available values in the range provided.
+    /// Return all available values in the inclusive-range provided.
     fn weak_observe_range(&self, start: Cursor, end: Cursor) -> alloc::vec::Vec<T> {
         let mut res = alloc::vec::Vec::default();
-        for i in start.index()..end.index() {
+        for i in start.index()..=end.index() {
             if let Some(v) = self.weak_observe(Cursor(i)) {
                 res.push(v);
             }
@@ -138,7 +138,7 @@ pub trait WeakObserver<T>: Send + Blocker {
     /// Return the most recent `n` values from the OQueue. Some values may be missing.
     fn weak_observe_recent(&self, n: usize) -> alloc::vec::Vec<T> {
         let now = self.recent_cursor();
-        self.weak_observe_range(now - n, now)
+        self.weak_observe_range(now - (n - 1), now)
     }
 }
 
@@ -217,3 +217,71 @@ pub trait OQueue<T>: Any + Sync + Send {
 /// A reference to an OQueue. This must be cloned when a new reference is needed. It is `Send`, but not `Sync`. (It
 /// behaves similarly to `Arc` and as of writing is implemented as `Arc`.)
 pub type OQueueRef<T> = Arc<dyn OQueue<T>>;
+
+#[cfg(ktest)]
+mod test {
+    use alloc::{sync::Arc, vec};
+
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::orpc::oqueue::{generic_test::TestMessage, locking::ObservableLockingQueue};
+
+    #[ktest]
+    fn test_default_direct_produce_consume() {
+        let oqueue = Arc::new(ObservableLockingQueue::new(2, 8));
+        let consumer = oqueue.attach_consumer().unwrap();
+        let test_message = TestMessage { x: 42 };
+
+        oqueue.produce(test_message).unwrap();
+        assert!(oqueue.try_produce(test_message).unwrap().is_some());
+
+        assert_eq!(consumer.consume(), test_message);
+
+        assert!(oqueue.try_produce(test_message).unwrap().is_none());
+        assert_eq!(consumer.consume(), test_message);
+    }
+
+    #[ktest]
+    fn test_default_weak_observe() {
+        let oqueue = Arc::new(ObservableLockingQueue::<TestMessage>::new(8, 8));
+        let producer = oqueue.attach_producer().unwrap();
+        let weak_observer = oqueue.attach_weak_observer().unwrap();
+
+        let recent_cursor = weak_observer.recent_cursor();
+        assert_eq!(weak_observer.weak_observe(recent_cursor), None);
+
+        let test_message1 = TestMessage { x: 42 };
+        let test_message2 = TestMessage { x: 43 };
+        let test_message3 = TestMessage { x: 44 };
+        producer.produce(test_message1);
+        producer.produce(test_message2);
+        producer.produce(test_message3);
+
+        // Check full range from oldest to recent
+        let oldest_cursor = weak_observer.oldest_cursor();
+        let recent_cursor = weak_observer.recent_cursor();
+        assert_eq!(
+            weak_observer.weak_observe_range(oldest_cursor, recent_cursor),
+            vec![test_message1, test_message2, test_message3]
+        );
+
+        // Check a partial range (from index 1 to recent)
+        assert_eq!(
+            weak_observer.weak_observe_range(oldest_cursor + 1, recent_cursor),
+            vec![test_message2, test_message3]
+        );
+
+        // Check weak_observe_recent with n=2
+        assert_eq!(
+            weak_observer.weak_observe_recent(2),
+            vec![test_message2, test_message3]
+        );
+
+        // Check weak_observe_recent with n=5 (more than available)
+        assert_eq!(
+            weak_observer.weak_observe_recent(5),
+            vec![test_message1, test_message2, test_message3]
+        );
+    }
+}
