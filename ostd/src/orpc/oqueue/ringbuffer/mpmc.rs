@@ -466,6 +466,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn size(&self) -> usize {
+        // TODO(aneesh) - if we don't have any consumers, this is wrong. This should also check if
+        // there's any strong observers. We may need size_observer vs size_consumer.
         self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 

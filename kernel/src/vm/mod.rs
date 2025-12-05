@@ -27,9 +27,14 @@ use ostd::{
         AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
-    orpc::{framework::errors::RPCError, oqueue::OQueue, orpc_server, orpc_trait},
+    orpc::{
+        framework::errors::RPCError,
+        oqueue::{OQueue, OQueueRef, ringbuffer::MPMCOQueue},
+        orpc_impl, orpc_server, orpc_trait,
+        sync::select,
+    },
     sync::{WaitQueue, non_null::NonNullPtr},
-    task::disable_preempt,
+    task::{TaskOptions, disable_preempt},
 };
 use snafu::Whatever;
 use vmar::PageFaultOQueueMessage;
@@ -37,6 +42,7 @@ use vmar::PageFaultOQueueMessage;
 use crate::{
     prelude::WaitTimeout,
     process::{PauseProcGuard, Process},
+    thread::kernel_thread::ThreadOptions,
 };
 
 pub mod page_fault_handler;
@@ -282,7 +288,12 @@ pub struct HugepagedServer {}
 #[orpc_trait]
 trait Timer {
     fn notify(&self) -> Result<(), RPCError> {
+        self.notification_oqueue().produce(());
         Ok(())
+    }
+
+    fn notification_oqueue(&self) -> OQueueRef<()> {
+        MPMCOQueue::<()>::new(1, 1)
     }
 }
 
@@ -292,7 +303,10 @@ pub struct TimerServer {
     freq: Duration,
 }
 
-impl Timer for TimerServer {}
+#[orpc_impl]
+impl Timer for TimerServer {
+    fn notification_oqueue(&self) -> OQueueRef<()>;
+}
 
 impl TimerServer {
     pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
@@ -320,10 +334,35 @@ impl HugepagedServer {
     }
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
+        let notify_server = TimerServer::new(Duration::from_secs(1))?;
+        ThreadOptions::new({
+            let s = notify_server.clone();
+            move || s.main()
+        })
+        .spawn();
+
         let pf_oq = vmar::get_page_fault_oqueue();
         let obs = pf_oq.attach_strong_observer()?;
+        let notifications = notify_server
+            .notification_oqueue()
+            .attach_strong_observer()?;
         loop {
-            let msg = obs.strong_observe();
+            let mut value: Option<PageFaultOQueueMessage> = None;
+            let mut got_notification = false;
+            while !got_notification {
+                select!(
+                    if let msg = obs.try_strong_observe() {
+                        value = Some(msg);
+                        got_notification = true;
+                    },
+                    if let _ = notifications.try_strong_observe() {
+                        got_notification = true;
+                    }
+                );
+                if !got_notification {
+                    ostd::task::Task::yield_now();
+                }
+            }
             // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
             // page mapping.
 
@@ -334,7 +373,7 @@ impl HugepagedServer {
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
 
-                if promote_hugepages(&proc, Some(msg)).is_err() {
+                if promote_hugepages(&proc, value).is_err() {
                     break;
                 }
             }
