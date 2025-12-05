@@ -9,6 +9,7 @@ use super::{
     process_vm::{Heap, InitStackReader, ProcessVm, ProcessVmarGuard},
     rlimit::ResourceLimits,
     signal::{
+        constants::SIGSTOP,
         sig_disposition::SigDispositions,
         sig_num::{AtomicSigNum, SigNum},
         signals::Signal,
@@ -95,7 +96,7 @@ pub struct Process {
 
     /// Whether the process has a subreaper that will reap it when the
     /// process becomes orphaned.
-    ///  
+    ///
     /// If `has_child_subreaper` is true in a `Process`, this attribute should
     /// also be true for all of its descendants.
     pub(super) has_child_subreaper: AtomicBool,
@@ -286,6 +287,15 @@ impl Process {
 
     pub(super) fn children(&self) -> &Mutex<BTreeMap<Pid, Arc<Process>>> {
         &self.children
+    }
+
+    /// Get a snapshot of the current children attached to this process.
+    pub fn current_children(&self) -> Vec<Arc<Process>> {
+        self.children
+            .lock()
+            .iter()
+            .map(|(_pid, proc)| proc.clone())
+            .collect()
     }
 
     pub fn children_wait_queue(&self) -> &WaitQueue {
@@ -754,6 +764,26 @@ impl Process {
                 }
             }
         }
+    }
+}
+
+/// On construction, PauseProcGaurd will stop the process it holds a reference to, and when dropped
+/// will resume the process. It is safe to resume the process before the drop.
+pub struct PauseProcGuard {
+    proc: Arc<Process>,
+}
+
+impl PauseProcGuard {
+    pub fn new(proc: Arc<Process>) -> Self {
+        // TODO(aneesh): Can this be done at the scheduler level instead?
+        proc.stop(SIGSTOP);
+        PauseProcGuard { proc }
+    }
+}
+
+impl Drop for PauseProcGuard {
+    fn drop(&mut self) {
+        self.proc.resume()
     }
 }
 

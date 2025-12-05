@@ -34,6 +34,15 @@ impl PageProperty {
             priv_flags: PrivilegedPageFlags::empty(),
         }
     }
+
+    /// Return if two `PageProperty`s are equal ignoring the ACCESSED and DIRTY flag bits
+    pub fn equal_ignoring_accessed_dirty(&self, other: &Self) -> bool {
+        let effective_self_flags = self.flags & PageFlags::ACCESSED & PageFlags::DIRTY;
+        let effective_other_flags = other.flags & PageFlags::ACCESSED & PageFlags::DIRTY;
+        effective_self_flags == effective_other_flags
+            && self.cache == other.cache
+            && self.priv_flags == other.priv_flags
+    }
 }
 
 // TODO: Make it more abstract when supporting other architectures.
