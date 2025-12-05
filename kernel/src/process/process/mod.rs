@@ -720,8 +720,10 @@ impl Process {
 
     fn wake_up_parent(&self) {
         let parent_guard = self.parent.lock();
-        let parent = parent_guard.process().upgrade().unwrap();
-        parent.children_wait_queue.wake_all();
+        parent_guard
+            .process()
+            .upgrade()
+            .map(|parent| parent.children_wait_queue.wake_all());
     }
 
     // ******************* Subreaper ********************
