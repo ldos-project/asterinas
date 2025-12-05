@@ -17,7 +17,7 @@
 //! as zero-cost capabilities.
 
 use alloc::{sync::Arc, vec::Vec};
-use core::{ops::Range, time::Duration};
+use core::ops::Range;
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
@@ -28,16 +28,13 @@ use ostd::{
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
     orpc::{oqueue::OQueue, orpc_server, orpc_trait},
-    sync::{WaitQueue, non_null::NonNullPtr},
+    sync::non_null::NonNullPtr,
     task::disable_preempt,
 };
 use snafu::Whatever;
 use vmar::PageFaultOQueueMessage;
 
-use crate::{
-    prelude::WaitTimeout,
-    process::{PauseProcGuard, Process},
-};
+use crate::process::{PauseProcGuard, Process};
 
 pub mod page_fault_handler;
 pub mod perms;
