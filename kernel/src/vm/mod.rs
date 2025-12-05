@@ -17,7 +17,7 @@
 //! as zero-cost capabilities.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::ops::Range;
+use core::{ops::Range, time::Duration};
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
@@ -27,13 +27,17 @@ use ostd::{
         AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
-    orpc::{oqueue::OQueue, orpc_server, orpc_trait},
+    orpc::{framework::errors::RPCError, oqueue::OQueue, orpc_server, orpc_trait},
+    sync::{WaitQueue, non_null::NonNullPtr},
     task::disable_preempt,
 };
 use snafu::Whatever;
 use vmar::PageFaultOQueueMessage;
 
-use crate::process::{PauseProcGuard, Process};
+use crate::{
+    prelude::WaitTimeout,
+    process::{PauseProcGuard, Process},
+};
 
 pub mod page_fault_handler;
 pub mod perms;
@@ -276,6 +280,40 @@ trait HugePageD {}
 /// HugePage daemon that periodically attempts to promote pages to huge pages
 #[orpc_server(HugePageD)]
 pub struct HugepagedServer {}
+
+#[orpc_trait]
+trait Timer {
+    fn notify(&self) -> Result<(), RPCError> {
+        Ok(())
+    }
+}
+
+/// HugePage daemon that periodically attempts to promote pages to huge pages
+#[orpc_server(Timer)]
+pub struct TimerServer {
+    freq: Duration,
+}
+
+impl Timer for TimerServer {}
+
+impl TimerServer {
+    pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            freq,
+        });
+        Ok(server)
+    }
+
+    pub fn main(&self) {
+        let sleep_queue = WaitQueue::new();
+        let sleep_duration = Duration::from_secs(1);
+        loop {
+            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+            self.notify();
+        }
+    }
+}
 
 impl HugepagedServer {
     pub fn new() -> Result<Arc<Self>, Whatever> {
