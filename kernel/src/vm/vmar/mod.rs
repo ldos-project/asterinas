@@ -11,7 +11,7 @@ use core::{
     array,
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use align_ext::AlignExt;
@@ -189,13 +189,22 @@ pub struct PageFaultOQueueMessage {
 
 static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::new();
 
-pub fn init() {
-    // Only support a single strong observer for now - hugepaged.
-    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
+static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
+
+static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<usize>>> = Once::new();
+
+pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<usize>> {
+    RSS_DELTA_OQUEUE.wait().clone()
 }
 
 pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
     PAGE_FAULT_OQUEUE.wait().clone()
+}
+
+pub fn init() {
+    // Only support a single strong observer for now - hugepaged.
+    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
+    RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::<usize>::new(64, 1));
 }
 
 pub(super) struct Vmar_ {
@@ -765,6 +774,7 @@ impl Vmar_ {
             // This should always be 1 since we call split_if_mapped_huge above.
             assert_eq!(frame.map_level(), 1);
             debug_assert_eq!(mapped_va, va.start);
+            // TODO(aneesh): this might need to be updated to support remaping huge pages
             cursor.unmap(PAGE_SIZE);
 
             let offset = mapped_va - old_range.start;
@@ -1238,7 +1248,7 @@ pub fn get_intersected_range(range1: &Range<usize>, range2: &Range<usize>) -> Ra
 /// See <https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/linux/mm_types_task.h#L26..L32>
 #[repr(u32)]
 #[expect(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+#[derive(Debug, Clone, Copy, TryFromInt, PartialEq)]
 pub enum RssType {
     RSS_FILEPAGES = 0,
     RSS_ANONPAGES = 1,
@@ -1260,6 +1270,16 @@ impl<'a> RssDelta<'a> {
     }
 
     pub(self) fn add(&mut self, rss_type: RssType, increment: isize) {
+        if rss_type == RssType::RSS_ANONPAGES {
+            let value = if increment > 0 {
+                GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed) + (increment as usize)
+            } else {
+                GLOBAL_RSS.fetch_sub((-1 * increment) as usize, Ordering::Relaxed)
+                    - ((-1 * increment) as usize)
+            };
+            RSS_DELTA_OQUEUE.wait().produce(value);
+        }
+
         self.delta[rss_type as usize] += increment;
     }
 
