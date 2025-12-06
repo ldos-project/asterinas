@@ -187,6 +187,7 @@ fn init_thread() {
 
         spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
     }
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
