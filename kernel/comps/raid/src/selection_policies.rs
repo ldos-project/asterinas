@@ -62,20 +62,14 @@ pub impl LinnOSPolicy {
         while true {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
             let observer = self.trace_observers[idx % self.trace_observers.len()];
-            let tracer_data0 = observer.weak_observe(observer.recent_cursor())?;
-            let tracer_data1 = observer.weak_observe(observer.recent_cursor() - 1)?;
-            let tracer_data2 = observer.weak_observe(observer.recent_cursor() - 2)?;
-            let tracer_data3 = observer.weak_observe(observer.recent_cursor() - 3)?;
-            
+            let tracer_data = observer.weak_observe_range(Cursor(0), Cursor(3))?;
             // inference
-            let x = self.model[0] * tracer_data0.latency +
-                self.model[1] * tracer_data0.outstanding_requests +
-                self.model[2] * tracer_data1.latency +
-                self.model[3] * tracer_data1.outstanding_requests +
-                self.model[4] * tracer_data2.latency +
-                self.model[5] * tracer_data2.outstanding_requests +
-                self.model[6] * tracer_data3.latency +
-                self.model[7] * tracer_data3.outstanding_requests;
+            let x = self.model[0] * tracer_data[0].latency +
+                self.model[1] * tracer_data[0].outstanding_requests +
+                self.model[2] * tracer_data[1].latency +
+                self.model[3] * tracer_data[1].outstanding_requests +
+                self.model[4] * tracer_data[2].latency +
+                self.model[5] * tracer_data[2].outstanding_requests;
 
             let prob = 1.0/(1.0 + (-x).exp());
 
