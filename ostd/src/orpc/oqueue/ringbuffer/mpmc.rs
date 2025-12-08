@@ -714,14 +714,14 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool> WeakObserver<T>
 impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
-    fn _attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+    fn attach_producer_internal(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         Ok(Box::new(MPMCProducer {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
         }) as _)
     }
 
-    fn _attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+    fn attach_consumer_internal(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
         let mut n_consumers = self.n_consumers.lock();
         *n_consumers += 1;
         // Prevent any strong observers from being added while the tail is initializing. Otherwise
@@ -738,7 +738,9 @@ impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool
 }
 
 impl<T: Copy + Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, true, WEAK_OBSERVERS> {
-    fn _attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+    fn attach_strong_observer_internal(
+        &self,
+    ) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         let mut n_observers = self.n_strong_observers.lock();
         if *n_observers > (self.max_strong_observers + 1) {
             Err(OQueueAttachError::AllocationFailed {
@@ -762,7 +764,9 @@ impl<T: Copy + Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, true, W
 }
 
 impl<T, const WEAK_OBSERVERS: bool> MPMCOQueue<T, false, WEAK_OBSERVERS> {
-    fn _attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+    fn attach_strong_observer_internal(
+        &self,
+    ) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
             message: "Strong Observers unsupported".to_owned(),
@@ -771,7 +775,7 @@ impl<T, const WEAK_OBSERVERS: bool> MPMCOQueue<T, false, WEAK_OBSERVERS> {
 }
 
 impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, true> {
-    fn _attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+    fn attach_weak_observer_internal(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Ok(Box::new(MPMCWeakObserver {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
@@ -780,7 +784,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRON
 }
 
 impl<T, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, false> {
-    fn _attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+    fn attach_weak_observer_internal(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
             message: "Weak Observers unsupported".to_owned(),
@@ -796,73 +800,73 @@ impl<T, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, false> {
 // requirement of (T:Copy if STRONG_OBSERVERS | WEAK_OBSERVERS) implicit.
 impl<T: Send + 'static> OQueue<T> for MPMCOQueue<T, false, false> {
     fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
-        self._attach_producer()
+        self.attach_producer_internal()
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        self._attach_consumer()
+        self.attach_consumer_internal()
     }
 
     fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
-        self._attach_strong_observer()
+        self.attach_strong_observer_internal()
     }
 
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
-        self._attach_weak_observer()
+        self.attach_weak_observer_internal()
     }
 }
 
 impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, false> {
     fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
-        self._attach_producer()
+        self.attach_producer_internal()
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        self._attach_consumer()
+        self.attach_consumer_internal()
     }
 
     fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
-        self._attach_strong_observer()
+        self.attach_strong_observer_internal()
     }
 
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
-        self._attach_weak_observer()
+        self.attach_weak_observer_internal()
     }
 }
 
 impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, false, true> {
     fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
-        self._attach_producer()
+        self.attach_producer_internal()
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        self._attach_consumer()
+        self.attach_consumer_internal()
     }
 
     fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
-        self._attach_strong_observer()
+        self.attach_strong_observer_internal()
     }
 
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
-        self._attach_weak_observer()
+        self.attach_weak_observer_internal()
     }
 }
 
 impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, true> {
     fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
-        self._attach_producer()
+        self.attach_producer_internal()
     }
 
     fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
-        self._attach_consumer()
+        self.attach_consumer_internal()
     }
 
     fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
-        self._attach_strong_observer()
+        self.attach_strong_observer_internal()
     }
 
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
-        self._attach_weak_observer()
+        self.attach_weak_observer_internal()
     }
 }
 
