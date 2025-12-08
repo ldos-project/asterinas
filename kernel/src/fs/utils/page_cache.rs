@@ -17,7 +17,7 @@ use ostd::{
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
         framework::spawn_thread,
-        oqueue::{Consumer, OQueueRef, reply::ReplyQueue},
+        oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
         orpc_impl, orpc_server,
     },
     task::Task,
@@ -26,10 +26,13 @@ use ostd::{
 use crate::{
     fs::{
         server_traits::{
-            self, AsyncReadRequest, AsyncWriteRequest, PageCache as _, PageHandle,
-            PageIOObservable, PageStore,
+            self, AsyncReadRequest, AsyncWriteRequest, CacheState, PageCache as _,
+            PageCacheReadInfo, PageHandle, PageIOObservable, PageStore,
         },
-        utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
+        utils::{
+            page_cache_logger::PageCacheLogger,
+            page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
+        },
     },
     kcmdline,
     prelude::*,
@@ -78,6 +81,14 @@ fn get_prefetch_policy() -> PrefetchPolicy {
     kcmdline::get_kernel_cmd_line()
         .and_then(|cl| cl.get_module_arg_by_name("page_cache", "prefetch_policy"))
         .unwrap_or(PrefetchPolicy::Builtin)
+}
+
+/// Retrieves whether cache hits and misses should be logged based on the kernel command-line argument
+/// "page_cache.log_hits_misses". The options are: `true` or `false`.
+fn get_log_hits_misses() -> bool {
+    kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "log_hits_misses"))
+        .unwrap_or(false)
 }
 
 impl PageCache {
@@ -439,6 +450,7 @@ struct PageCacheManagerInner {
     pages: LruCache<usize, CachePage>,
     builtin_prefetch_policy: Option<BuiltinPrefetchPolicy>,
     outstanding_requests: OutstandingRequests,
+    page_cache_read_info_producer: Option<Box<dyn Producer<PageCacheReadInfo>>>,
 }
 
 impl PageCacheManagerInner {
@@ -513,6 +525,7 @@ impl PageCacheManager {
                     None
                 },
                 outstanding_requests: Default::default(),
+                page_cache_read_info_producer: None,
             }),
             weak_this: weak_this.clone(),
             orpc_internal,
@@ -545,6 +558,11 @@ impl PageCacheManager {
                 }
             }
         });
+
+        // TODO(arthurp, #120): This is never shutdown even if the cache is.
+        if get_log_hits_misses() {
+            PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
+        }
 
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
             warn!("Prefetch mode is not set at construction time: {policy:?}");
@@ -611,6 +629,15 @@ impl PageCacheManager {
             let mut inner = self.inner.lock();
             let inner = inner.deref_mut();
 
+            // Lazily initialize page_cache_read_info_producer
+            if inner.page_cache_read_info_producer.is_none() {
+                inner.page_cache_read_info_producer =
+                    Some(self.page_cache_read_info_oqueue().attach_producer()?);
+            }
+
+            let page_cache_read_info_producer =
+                inner.page_cache_read_info_producer.as_ref().unwrap();
+
             // Handle any requests that have already completed.
             inner.outstanding_requests.check_requests(&mut inner.pages);
 
@@ -623,7 +650,10 @@ impl PageCacheManager {
                 if let PageState::Uninit = page.load_state() {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
-                    println!("CACHE IN-FLIGHT: {}", idx);
+                    page_cache_read_info_producer.produce(PageCacheReadInfo {
+                        idx,
+                        cache_state: CacheState::Pending,
+                    });
                     assert!(inner.outstanding_requests.has_requests());
                     inner
                         .outstanding_requests
@@ -635,12 +665,18 @@ impl PageCacheManager {
                         .clone()
                 } else {
                     // Cond 1.
-                    println!("CACHE HIT: {}", idx);
+                    page_cache_read_info_producer.produce(PageCacheReadInfo {
+                        idx,
+                        cache_state: CacheState::Hit,
+                    });
                     page.clone()
                 }
             } else {
                 // Cond 3.
-                println!("CACHE MISS: {}", idx);
+                page_cache_read_info_producer.produce(PageCacheReadInfo {
+                    idx,
+                    cache_state: CacheState::Miss,
+                });
                 // Conducts the sync read operation.
                 let page = if idx < backend.npages()? {
                     let page = CachePage::alloc_uninit()?;
@@ -668,29 +704,6 @@ impl PageCacheManager {
 
         Ok(frame.into())
     }
-
-    // fn change_policy(&self, policy: PrefetchPolicy) -> Result<()> {
-    //     let mut prefetcher_state = self.prefetcher.lock();
-    //     if let Some((_, kind)) = prefetcher_state.as_ref() {
-    //         if *kind == policy || *kind == PrefetchPolicy::Builtin || *kind == PrefetchPolicy::None
-    //         {
-    //             return Ok(());
-    //         }
-    //     }
-    //     if let Some(s) = prefetcher_state.take() {
-    //         s.0.shutdown()?;
-    //     }
-    //     let this = self.weak_this.upgrade().ok_or(Error::unknown())?;
-    //     let prefetcher = match policy {
-    //         // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace read
-    //         // ahead distance (4) with something less arbitrary.
-    //         PrefetchPolicy::Readahead => ReadaheadPrefetcher::spawn(this, 4)? as _,
-    //         PrefetchPolicy::Strided => StridedPrefetcher::spawn(this, 4)? as _,
-    //         _ => Err(Error::unreachable())?,
-    //     };
-    //     *prefetcher_state = Some((prefetcher, policy));
-    //     Ok(())
-    // }
 }
 
 impl Debug for PageCacheManager {
@@ -774,6 +787,8 @@ impl server_traits::PageCache for PageCacheManager {
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
         self.backend()
     }
+
+    fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo>;
 }
 
 /// A page in the page cache.

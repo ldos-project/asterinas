@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
-use core::marker::{Copy, Send};
+use core::marker::Copy;
 
 use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue, ringbuffer::mpmc::MPMCOQueue},
+    oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
     orpc_trait,
 };
 
-use crate::{Result, fs::utils::CachePage};
+use crate::{
+    Result,
+    fs::utils::CachePage,
+};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
@@ -64,41 +67,22 @@ pub trait PageIOObservable {
 
     /// The OQueue containing every reply for read requests.
     fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: Use lock-free implementation
-
         // TODO: This must be longer than the largest number of IO that can be outstanding in the
         // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
         // the kernel.
-        ObservableLockingQueue::new(32, 8)
-    }
-
-    /// The OQueue containing every reply for read requests.
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: Use lock-free implementation
-
-        // TODO: This must be longer than the largest number of IO that can be outstanding in the
-        // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
-        // the kernel.
-        ObservableLockingQueue::new(32, 8)
+        new_oqueue_with_len(32)
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: Use lock-free implementation
         new_oqueue()
     }
 
     /// The OQueue containing every reply for write requests.
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: as page_reads_reply_oqueue
-        ObservableLockingQueue::new(32, 8)
-    }
-
-    /// The OQueue containing every reply for write requests.
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: as page_reads_reply_oqueue
-        ObservableLockingQueue::new(32, 8)
+        new_oqueue_with_len(32)
     }
 }
 
@@ -155,16 +139,40 @@ pub trait PageStore: PageIOObservable {
     fn npages(&self) -> Result<usize>;
 }
 
+/// The state of a page in the cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheState {
+    /// The page was in the cache.
+    Hit,
+    /// The page was not in the cache.
+    Miss,
+    /// The page was currently being read into the cache.
+    Pending,
+}
+
+/// Information about a read request on the page cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageCacheReadInfo {
+    /// The index of the page.
+    pub idx: usize,
+    /// The state of the cached page when the request was made.
+    pub cache_state: CacheState,
+}
+
 #[orpc_trait]
 pub trait PageCache {
     /// Request that the cache prefetch a page. This is asynchronous and advisory, so the page may
     /// appear in the cache at a later time or never.
     fn prefetch_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: Use lock-free implementation
-        ObservableLockingQueue::new(8, 8)
+        new_oqueue()
     }
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
+
+    /// The OQueue containing every reply for write requests.
+    fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo> {
+        new_oqueue_with_len(32)
+    }
 }
 
 #[orpc_trait]
