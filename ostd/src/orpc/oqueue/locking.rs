@@ -30,8 +30,9 @@ pub struct LockingQueue<T> {
 }
 
 impl<T> LockingQueue<T> {
-    /// Create a new OQueue with a given size.
-    pub fn new(buffer_size: usize) -> Arc<Self> {
+    /// Create a new OQueue with a given size. Note that `observer_count` must be 0.
+    pub fn new(buffer_size: usize, observer_count: usize) -> Arc<Self> {
+        assert_eq!(observer_count, 0);
         Self::new_with_observers(buffer_size, 0)
     }
 

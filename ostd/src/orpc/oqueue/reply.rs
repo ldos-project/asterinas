@@ -11,14 +11,15 @@ use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, Producer};
 ///
 /// **NOTE:** This exists as an alias so that it can later be replaced with an optimized
 /// implementation.
-pub type ReplyQueue<T> = super::locking::LockingQueue<T>;
+// pub type ReplyQueue<T> = super::locking::LockingQueue<T>;
+pub type ReplyQueue<T> = super::ringbuffer::mpmc::MPMCOQueue<T, false, false>;
 
 type ReplyHandlePair<T> = (Box<dyn Producer<T>>, Box<dyn Consumer<T>>);
 
 impl<T: Send + 'static> ReplyQueue<T> {
     /// Construct a producer/consumer pair for handling an async message reply.
     pub fn new_pair() -> Result<ReplyHandlePair<T>, OQueueAttachError> {
-        let oqueue = ReplyQueue::new(2);
+        let oqueue = ReplyQueue::new(2, 0);
         Ok((oqueue.attach_producer()?, oqueue.attach_consumer()?))
     }
 }

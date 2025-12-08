@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::boxed::Box;
+use core::marker::{Copy, Send};
 
 use ostd::orpc::{
     oqueue::{
         OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue,
+        ringbuffer::mpmc::MPMCOQueue,
     },
     orpc_trait,
 };
@@ -42,21 +44,28 @@ impl From<PageHandle> for AsyncWriteRequest {
     }
 }
 
+// Constructor for a new OQueue. This is to make testing easier to switch between oqueue
+// implementations.
+fn create_new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
+    // A locking version of OQueue can be enabled by uncommenting the following:
+    // ObservableLockingQueue::new(8, 8)
+    MPMCOQueue::<T, true, true>::new(8, 8)
+}
+
 #[orpc_trait]
 pub trait PageIOObservable {
     /// The OQueue containing every read request. This includes both sync and async reads on this
     /// trait and any other read operations on other traits (for instance,
     /// [`crate::vm::vmo::Pager::commit_page`]).
     fn page_reads_oqueue(&self) -> OQueueRef<usize> {
-        // TODO: Use lock-free implementation
-        ObservableLockingQueue::new(8, 8)
+        create_new_oqueue()
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
         // TODO: Use lock-free implementation
-        ObservableLockingQueue::new(8, 8)
+        create_new_oqueue()
     }
 }
 
