@@ -4,10 +4,7 @@ use alloc::boxed::Box;
 use core::marker::{Copy, Send};
 
 use ostd::orpc::{
-    oqueue::{
-        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue,
-        ringbuffer::mpmc::MPMCOQueue,
-    },
+    oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue, ringbuffer::mpmc::MPMCOQueue},
     orpc_trait,
 };
 
@@ -48,7 +45,7 @@ impl From<PageHandle> for AsyncWriteRequest {
 // implementations.
 fn create_new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
     // A locking version of OQueue can be enabled by uncommenting the following:
-    // ObservableLockingQueue::new(8, 8)
+    // ostd::orpc::oqueue::locking::ObservableLockingQueue::new(8, 8)
     MPMCOQueue::<T, true, true>::new(8, 8)
 }
 
@@ -96,7 +93,7 @@ pub trait PageStore {
 
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
+        let reply_oqueue = ReplyQueue::new(2, 0);
         let consumer = reply_oqueue.attach_consumer()?;
         self.read_page_async(AsyncReadRequest {
             handle,
@@ -108,7 +105,7 @@ pub trait PageStore {
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2);
+        let reply_oqueue = ReplyQueue::new(2, 0);
         let consumer = reply_oqueue.attach_consumer()?;
         self.write_page_async(AsyncWriteRequest {
             handle,
