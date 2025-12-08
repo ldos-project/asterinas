@@ -35,6 +35,7 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::oqueue::{Consumer, Cursor, Producer, StrongObserver, WeakObserver},
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -159,6 +160,8 @@ fn init_thread() {
 
     print_banner();
 
+    benchmark();
+
     // FIXME: CI fails due to suspected performance issues with the framebuffer console.
     // Additionally, userspace program may render GUIs using the framebuffer,
     // so we disable the framebuffer console here.
@@ -194,6 +197,57 @@ fn init_thread() {
         QemuExitCode::Failed
     };
     exit_qemu(exit_code);
+}
+
+fn benchmark() {
+    // large number of producers pushing a fixed # of msgs with:
+    //  1 consumer + 0 sobs + 0 wobs
+    //  0 consumer + 1 sobs + 0 wobs
+    //  0 consumer + 0 sobs + 1 wobs
+    // measure producer throughput (and latency?)A
+
+    const N_MESSAGES_PER_PRODUCER: usize = 1_000_000;
+    const N_PRODUCERS: usize = 15;
+    fn producer_thread(q: Arc<dyn Producer<()>>) {
+        for _ in 0..N_MESSAGES_PER_PRODUCER {
+            q.produce(());
+        }
+    }
+    fn consumer_thread(q: Vec<Arc<dyn Consumer<()>>>) {
+        let mut n_recv = 0;
+        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER) {
+            for c in q {
+                if c.try_consume().is_some() {
+                    n_recv += 1;
+                }
+            }
+        }
+    }
+    fn strong_obs_thread(q: Vec<Arc<dyn StrongObserver<()>>>) {
+        let mut n_recv = 0;
+        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER) {
+            for c in q {
+                if c.try_strong_observe().is_some() {
+                    n_recv += 1;
+                }
+            }
+        }
+    }
+    fn weak_obs_thread(q: Vec<Arc<dyn WeakObserver<()>>>) {
+        let mut cursors = Vec::<Cursor>::new();
+        for c in q {
+            cursors.push(c.oldest_cursor());
+        }
+
+        let mut n_recv = 0;
+        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER * 80 / 100) {
+            for (c, cursor) in q.iter().zip(cursors.iter()) {
+                if c.weak_observe(cursor).is_some() {
+                    n_recv += 1;
+                }
+            }
+        }
+    }
 }
 
 fn print_banner() {
