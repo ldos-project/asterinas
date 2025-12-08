@@ -29,10 +29,10 @@
 #![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-use kcmdline::KCmdlineArg;
+use kcmdline::{KCmdlineArg, get_kernel_cmd_line};
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
@@ -165,6 +165,7 @@ fn init_thread() {
     print_banner();
 
     benchmark();
+    exit_qemu(QemuExitCode::Success);
 
     // FIXME: CI fails due to suspected performance issues with the framebuffer console.
     // Additionally, userspace program may render GUIs using the framebuffer,
@@ -210,59 +211,81 @@ fn benchmark() {
     //  0 consumer + 0 sobs + 1 wobs
     // measure producer throughput (and latency?)A
 
-    const N_MESSAGES_PER_PRODUCER: usize = 1_000_000;
-    const N_PRODUCERS: usize = 15;
+    const N_MESSAGES_PER_PRODUCER: usize = 1024 * 1024;
+
+    let n_threads = get_kernel_cmd_line()
+        .unwrap()
+        .get_module_arg_by_name::<usize>("bench", "n_threads")
+        .unwrap_or(2);
+    let n_producers: usize = n_threads - 1;
+
+    let test = get_kernel_cmd_line()
+        .unwrap()
+        .get_module_arg_by_name::<String>("bench", "type")
+        .unwrap_or("consumer".to_string());
+
+    let completed = Arc::new(AtomicUsize::new(0));
+    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+
     fn producer_thread(q: Box<dyn Producer<()>>) {
         for _ in 0..N_MESSAGES_PER_PRODUCER {
             q.produce(());
         }
     }
-    fn consumer_thread(q: Vec<Arc<dyn Consumer<()>>>) {
+    let consumer_thread = move |q: Vec<Box<dyn Consumer<()>>>| {
         let mut n_recv = 0;
-        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER) {
-            for c in q {
+        while n_recv < (n_producers * N_MESSAGES_PER_PRODUCER) {
+            for c in &q {
                 if c.try_consume().is_some() {
                     n_recv += 1;
                 }
             }
         }
-    }
-    fn strong_obs_thread(q: Vec<Arc<dyn StrongObserver<()>>>) {
+    };
+    let strong_obs_thread = move |q: Vec<Box<dyn StrongObserver<()>>>| {
         let mut n_recv = 0;
-        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER) {
-            for c in q {
+        while n_recv < (n_producers * N_MESSAGES_PER_PRODUCER) {
+            for c in &q {
                 if c.try_strong_observe().is_some() {
                     n_recv += 1;
                 }
             }
         }
-    }
-    fn weak_obs_thread(q: Vec<Arc<dyn WeakObserver<()>>>) {
-        let mut cursors = Vec::<Cursor>::new();
-        for c in q {
-            cursors.push(c.oldest_cursor());
-        }
+    };
+    let weak_obs_thread = {
+        let completed = completed.clone();
+        move |q: Vec<Box<dyn WeakObserver<()>>>| {
+            let mut cursors = Vec::<Cursor>::new();
+            for c in &q {
+                cursors.push(c.oldest_cursor());
+            }
 
-        let mut n_recv = 0;
-        while n_recv < (N_PRODUCERS * N_MESSAGES_PER_PRODUCER * 80 / 100) {
-            for (c, cursor) in q.iter().zip(cursors.iter()) {
-                if c.weak_observe(cursor).is_some() {
-                    n_recv += 1;
+            let mut n_recv = 0;
+            while completed.load(Ordering::Relaxed) < n_producers
+                && n_recv < (n_producers * N_MESSAGES_PER_PRODUCER)
+            {
+                for (c, cursor) in q.iter().zip(cursors.iter_mut()) {
+                    while c.weak_observe(*cursor).is_some() {
+                        cursor.advance();
+                        n_recv += 1;
+                    }
+                    *cursor = c.recent_cursor();
                 }
             }
+            println!(
+                "Weak Observer, observed {}/{}  msgs",
+                n_recv,
+                (n_producers * N_MESSAGES_PER_PRODUCER)
+            );
         }
-    }
-
-    let completed = Arc::new(AtomicUsize::new(0));
-    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
-    let n_threads = 16;
+    };
 
     println!("Starting producers");
     let barrier = Arc::new(AtomicUsize::new(n_threads));
 
-    let queues: Vec<Arc<dyn OQueue<()>>> = Vec::new();
+    let mut queues: Vec<Arc<dyn OQueue<()>>> = Vec::new();
     for _ in 0..(n_threads - 1) {
-        queues.push(MPMCOQueue::new(N_MESSAGES_PER_PRODUCER, 1));
+        queues.push(MPMCOQueue::<(), true, true>::new(1024, 1));
     }
 
     // Start all producers
@@ -278,6 +301,11 @@ fn benchmark() {
                 barrier.fetch_sub(1, Ordering::Acquire);
                 while barrier.load(Ordering::Relaxed) > 0 {}
                 let now = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[producer-{}-{:?}] start",
+                    tid,
+                    ostd::cpu::CpuId::current_racy()
+                );
                 producer_thread(producer);
                 let end = time::clocks::RealTimeClock::get().read_time();
                 println!(
@@ -293,34 +321,95 @@ fn benchmark() {
         .cpu_affinity(cpu_set)
         .spawn();
     }
-    // Start conumser
-    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
-    ThreadOptions::new({
-        let barrier = barrier.clone();
-        let completed = completed.clone();
-        let completed_wq = completed_wq.clone();
-        let handles = queues
-            .iter()
-            .map(|q| q.attach_consumer().unwrap())
-            .collect();
-        move || {
-            barrier.fetch_sub(1, Ordering::Acquire);
-            while barrier.load(Ordering::Relaxed) > 0 {}
-            let now = time::clocks::RealTimeClock::get().read_time();
-            consumer_thread(handles);
-            let end = time::clocks::RealTimeClock::get().read_time();
-            println!(
-                "[consumer-{:?}] recv msg in {:?}",
-                ostd::cpu::CpuId::current_racy(),
-                end - now
-            );
-            completed.fetch_add(1, Ordering::Relaxed);
-            completed_wq.wake_all();
-        }
-    })
-    .cpu_affinity(cpu_set)
-    .spawn();
+
+    if test == "consumer" {
+        // Start conumser
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+        ThreadOptions::new({
+            let barrier = barrier.clone();
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let handles = queues
+                .iter()
+                .map(|q| q.attach_consumer().unwrap())
+                .collect();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let now = time::clocks::RealTimeClock::get().read_time();
+                consumer_thread(handles);
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[consumer-{:?}] recv msg in {:?}",
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    } else if test == "strong_obs" {
+        // Start strong observer
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+        ThreadOptions::new({
+            let barrier = barrier.clone();
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let handles = queues
+                .iter()
+                .map(|q| q.attach_strong_observer().unwrap())
+                .collect();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let now = time::clocks::RealTimeClock::get().read_time();
+                strong_obs_thread(handles);
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[consumer-{:?}] recv msg in {:?}",
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    } else {
+        // Start weak observer
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+        ThreadOptions::new({
+            let barrier = barrier.clone();
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let handles = queues
+                .iter()
+                .map(|q| q.attach_weak_observer().unwrap())
+                .collect();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let now = time::clocks::RealTimeClock::get().read_time();
+                weak_obs_thread(handles);
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[consumer-{:?}] recv msg in {:?}",
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    };
 
     println!("Waiting for benchmark to complete");
     // Exit after benchmark completes
