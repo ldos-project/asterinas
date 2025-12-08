@@ -168,6 +168,7 @@ ifeq ($(ENABLE_KVM), 1)
 	ifeq ($(KVM_EXISTS), 1)
 		ifeq ($(ARCH), x86_64)
 			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
+			CARGO_OSDK_COMMON_ARGS += --qemu-args="-smp 33"
 		endif
 	endif
 endif
