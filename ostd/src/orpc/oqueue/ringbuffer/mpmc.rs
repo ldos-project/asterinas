@@ -761,7 +761,7 @@ impl<T: Copy + Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, true, W
     }
 }
 
-impl<T: Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, false, WEAK_OBSERVERS> {
+impl<T, const WEAK_OBSERVERS: bool> MPMCOQueue<T, false, WEAK_OBSERVERS> {
     fn _attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
@@ -779,7 +779,7 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRON
     }
 }
 
-impl<T: Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, false> {
+impl<T, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, false> {
     fn _attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
