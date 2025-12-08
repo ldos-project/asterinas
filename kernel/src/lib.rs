@@ -29,13 +29,17 @@
 #![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
+use core::sync::atomic::AtomicUsize;
+
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
-    orpc::oqueue::{Consumer, Cursor, Producer, StrongObserver, WeakObserver},
+    orpc::oqueue::{
+        Consumer, Cursor, OQueue, Producer, StrongObserver, WeakObserver, ringbuffer::MPMCOQueue,
+    },
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -208,7 +212,7 @@ fn benchmark() {
 
     const N_MESSAGES_PER_PRODUCER: usize = 1_000_000;
     const N_PRODUCERS: usize = 15;
-    fn producer_thread(q: Arc<dyn Producer<()>>) {
+    fn producer_thread(q: Box<dyn Producer<()>>) {
         for _ in 0..N_MESSAGES_PER_PRODUCER {
             q.produce(());
         }
@@ -248,6 +252,80 @@ fn benchmark() {
             }
         }
     }
+
+    let completed = Arc::new(AtomicUsize::new(0));
+    let completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+    let n_threads = 16;
+
+    println!("Starting producers");
+    let barrier = Arc::new(AtomicUsize::new(n_threads));
+
+    let queues: Vec<Arc<dyn OQueue<()>>> = Vec::new();
+    for _ in 0..(n_threads - 1) {
+        queues.push(MPMCOQueue::new(N_MESSAGES_PER_PRODUCER, 1));
+    }
+
+    // Start all producers
+    for tid in 0..(n_threads - 1) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let barrier = barrier.clone();
+            let completed = completed.clone();
+            let completed_wq = completed_wq.clone();
+            let producer = queues[tid].attach_producer().unwrap();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let now = time::clocks::RealTimeClock::get().read_time();
+                producer_thread(producer);
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[producer-{}-{:?}] sent msg in {:?}",
+                    tid,
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+                completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+    // Start conumser
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+    ThreadOptions::new({
+        let barrier = barrier.clone();
+        let completed = completed.clone();
+        let completed_wq = completed_wq.clone();
+        let handles = queues
+            .iter()
+            .map(|q| q.attach_consumer().unwrap())
+            .collect();
+        move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
+            let now = time::clocks::RealTimeClock::get().read_time();
+            consumer_thread(handles);
+            let end = time::clocks::RealTimeClock::get().read_time();
+            println!(
+                "[consumer-{:?}] recv msg in {:?}",
+                ostd::cpu::CpuId::current_racy(),
+                end - now
+            );
+            completed.fetch_add(1, Ordering::Relaxed);
+            completed_wq.wake_all();
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    println!("Waiting for benchmark to complete");
+    // Exit after benchmark completes
+    completed_wq.wait_until(|| (completed.load(Ordering::Relaxed) == n_threads).then_some(()));
+    let end = time::clocks::RealTimeClock::get().read_time();
 }
 
 fn print_banner() {
