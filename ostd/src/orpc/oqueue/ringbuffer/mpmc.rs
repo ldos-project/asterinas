@@ -81,7 +81,8 @@ const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
 /// MPMCOQueue allows conccurrent producers and consumers. For any produced message it is guaranteed
 /// that it will be read by exactly one consumer, all strong observers, and zero or more weak
 /// observers. A consumed message cannot be viewed by a future strong observer, but could be viewed
-/// by a weak observer.
+/// by a weak observer. Note that if either of STRONG_OBSERVERS or WEAK_OBSERVERS is set to true,
+/// then T must be Copy, otherwise the OQueue trait will not be implemented.
 pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
     this: Weak<Self>,
     capacity: NonZero<usize>,
@@ -445,7 +446,10 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
-    fn try_observe(&self, observer_id: usize) -> Option<T> {
+    fn try_observe(&self, observer_id: usize) -> Option<T>
+    where
+        T: Copy + Send,
+    {
         // TODO(aneesh) instead of just reading the index @ this observer which is hard to guarantee
         // on first read (see attach_strong_observer), what if when the index is consumed (turn >
         // id), we reset the pointer to head and retry?
@@ -543,7 +547,7 @@ pub struct MPMCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: b
     _phantom: PhantomData<Cell<()>>,
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
+impl<T: Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
@@ -555,7 +559,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     }
 }
 
-impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Producer<T>
+impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Producer<T>
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn produce(&self, data: T) {
@@ -592,7 +596,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
+impl<T: Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn should_try(&self) -> bool {
@@ -604,7 +608,7 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     }
 }
 
-impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Consumer<T>
+impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Consumer<T>
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn consume(&self) -> T {
@@ -623,16 +627,14 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
 }
 
 /// The strong observer handle for [`MPMCOQueue`].
-pub struct MPMCStrongObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+pub struct MPMCStrongObserver<T, const WEAK_OBSERVERS: bool> {
+    oqueue: Arc<MPMCOQueue<T, true, WEAK_OBSERVERS>>,
     observer_id: usize,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
-impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
-{
+impl<T, const WEAK_OBSERVERS: bool> Drop for MPMCStrongObserver<T, WEAK_OBSERVERS> {
     fn drop(&mut self) {
         let mut n_strong_observers = self.oqueue.n_strong_observers.lock();
         self.oqueue.strong_observer_tails[self.observer_id].store(usize::MAX, Ordering::Relaxed);
@@ -640,9 +642,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Drop
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
-{
+impl<T: Copy + Send, const WEAK_OBSERVERS: bool> Blocker for MPMCStrongObserver<T, WEAK_OBSERVERS> {
     fn should_try(&self) -> bool {
         self.oqueue.size() < self.oqueue.capacity.into()
     }
@@ -652,8 +652,8 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> B
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> StrongObserver<T>
-    for MPMCStrongObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+impl<T: Copy + Send, const WEAK_OBSERVERS: bool> StrongObserver<T>
+    for MPMCStrongObserver<T, WEAK_OBSERVERS>
 {
     fn strong_observe(&self) -> T {
         self.oqueue
@@ -671,15 +671,13 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> S
 }
 
 /// The weak-observer handle for [`MPMCOQueue`].
-pub struct MPMCWeakObserver<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
-    oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
+pub struct MPMCWeakObserver<T, const STRONG_OBSERVERS: bool> {
+    oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, true>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
 }
 
-impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
-    for MPMCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
-{
+impl<T, const STRONG_OBSERVERS: bool> Blocker for MPMCWeakObserver<T, STRONG_OBSERVERS> {
     fn should_try(&self) -> bool {
         self.oqueue.size() > 0
     }
@@ -689,8 +687,8 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
     }
 }
 
-impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> WeakObserver<T>
-    for MPMCWeakObserver<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+impl<T: Copy + Send, const STRONG_OBSERVERS: bool> WeakObserver<T>
+    for MPMCWeakObserver<T, STRONG_OBSERVERS>
 {
     fn weak_observe(&self, cursor: Cursor) -> Option<T> {
         // SAFETY: MPMCConsumer is Send, but not Sync, so this can only ever be called from a single thread at a time.
@@ -713,17 +711,17 @@ impl<T: Copy + Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> W
     }
 }
 
-impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> OQueue<T>
-    for MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
+impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
+    MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
-    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+    fn _attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         Ok(Box::new(MPMCProducer {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
         }) as _)
     }
 
-    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+    fn _attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
         let mut n_consumers = self.n_consumers.lock();
         *n_consumers += 1;
         // Prevent any strong observers from being added while the tail is initializing. Otherwise
@@ -737,13 +735,15 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             _phantom: PhantomData,
         }) as _)
     }
+}
 
-    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+impl<T: Copy + Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, true, WEAK_OBSERVERS> {
+    fn _attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         let mut n_observers = self.n_strong_observers.lock();
         if *n_observers > (self.max_strong_observers + 1) {
             Err(OQueueAttachError::AllocationFailed {
                 table_type: type_name::<Self>().to_owned(),
-                message: "consumer already attached".to_owned(),
+                message: "Maximum observers already attached".to_owned(),
             })
         } else {
             let observer_id = *n_observers;
@@ -759,12 +759,110 @@ impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVER
             }) as _)
         }
     }
+}
 
-    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+impl<T: Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, false, WEAK_OBSERVERS> {
+    fn _attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+        Err(OQueueAttachError::AllocationFailed {
+            table_type: type_name::<Self>().to_owned(),
+            message: "Strong Observers unsupported".to_owned(),
+        })
+    }
+}
+
+impl<T: Copy + Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, true> {
+    fn _attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Ok(Box::new(MPMCWeakObserver {
             oqueue: self.get_this()?,
             _phantom: PhantomData,
         }))
+    }
+}
+
+impl<T: Send + 'static, const STRONG_OBSERVERS: bool> MPMCOQueue<T, STRONG_OBSERVERS, false> {
+    fn _attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+        Err(OQueueAttachError::AllocationFailed {
+            table_type: type_name::<Self>().to_owned(),
+            message: "Weak Observers unsupported".to_owned(),
+        })
+    }
+}
+
+// In order to allow the Rust compile to pick the correct implementation from the sets above, we
+// must specify the STRONG_OBSERVERS and WEAK_OBSERVERS parameter for each implementation. This is
+// because rust doesn't support some way of specifying a negative trait bound - saying that T:!Copy
+// - which would allow the compiler to more easily understand which implementation is necessary in
+// each configuration to fully implement the OQueue trait bound. Note that this also makes the
+// requirement of (T:Copy if STRONG_OBSERVERS | WEAK_OBSERVERS) implicit.
+impl<T: Send + 'static> OQueue<T> for MPMCOQueue<T, false, false> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+        self._attach_producer()
+    }
+
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        self._attach_consumer()
+    }
+
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+        self._attach_strong_observer()
+    }
+
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+        self._attach_weak_observer()
+    }
+}
+
+impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, false> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+        self._attach_producer()
+    }
+
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        self._attach_consumer()
+    }
+
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+        self._attach_strong_observer()
+    }
+
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+        self._attach_weak_observer()
+    }
+}
+
+impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, false, true> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+        self._attach_producer()
+    }
+
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        self._attach_consumer()
+    }
+
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+        self._attach_strong_observer()
+    }
+
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+        self._attach_weak_observer()
+    }
+}
+
+impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, true> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
+        self._attach_producer()
+    }
+
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+        self._attach_consumer()
+    }
+
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+        self._attach_strong_observer()
+    }
+
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+        self._attach_weak_observer()
     }
 }
 

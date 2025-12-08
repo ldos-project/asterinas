@@ -43,7 +43,7 @@ impl From<PageHandle> for AsyncWriteRequest {
 
 // Constructor for a new OQueue. This is to make testing easier to switch between oqueue
 // implementations.
-fn create_new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
+fn new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
     // A locking version of OQueue can be enabled by uncommenting the following:
     // ostd::orpc::oqueue::locking::ObservableLockingQueue::new(8, 8)
     MPMCOQueue::<T, true, true>::new(8, 8)
@@ -55,14 +55,14 @@ pub trait PageIOObservable {
     /// trait and any other read operations on other traits (for instance,
     /// [`crate::vm::vmo::Pager::commit_page`]).
     fn page_reads_oqueue(&self) -> OQueueRef<usize> {
-        create_new_oqueue()
+        new_oqueue()
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
         // TODO: Use lock-free implementation
-        create_new_oqueue()
+        new_oqueue()
     }
 }
 
