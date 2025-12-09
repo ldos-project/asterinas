@@ -2,9 +2,28 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ostd::orpc::framework::{Server, inject_spawn_thread};
+use ostd::orpc::{
+    framework::{Server, inject_spawn_thread},
+    oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
+};
 
 use crate::thread::kernel_thread::ThreadOptions;
+
+// Constructor for a new OQueue. This is to make testing easier to switch between oqueue
+// implementations.
+pub fn new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
+    // A locking version of OQueue can be enabled by uncommenting the following:
+    // ostd::orpc::oqueue::locking::ObservableLockingQueue::new(8, 8)
+    MPMCOQueue::<T, true, true>::new(8, 8)
+}
+
+// Constructor for a new OQueue which needs a specific length. This is needed for cases where a long
+// queue is required to avoid deadlocks.
+pub fn new_oqueue_with_len<T: Copy + Send + 'static>(len: usize) -> OQueueRef<T> {
+    // A locking version of OQueue can be enabled by uncommenting the following:
+    // ostd::orpc::oqueue::locking::ObservableLockingQueue::new(len, 8)
+    MPMCOQueue::<T, true, true>::new(len, 8)
+}
 
 // NOTE: This cannot be ktested, because this is only meaningful within the full kernel environment.
 

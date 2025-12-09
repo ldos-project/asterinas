@@ -95,6 +95,8 @@ impl BlockGroup {
         let raw_inodes_cache =
             PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _)?;
 
+        raw_inodes_cache.start_prefetcher()?;
+
         Ok(Self {
             idx,
             bg_impl,
@@ -328,7 +330,9 @@ impl Debug for BlockGroup {
 #[orpc_impl]
 impl PageIOObservable for BlockGroupImpl {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[orpc_impl]
@@ -342,12 +346,15 @@ impl PageStore for BlockGroupImpl {
             BioDirection::FromDevice,
         );
 
+        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
         self.page_reads_oqueue().produce(req.handle.idx)?;
 
         self.fs
             .upgrade()
             .unwrap()
             .read_blocks_async_with_closure(bid, bio_segment, move |_| {
+                // TODO(arthurp, #120): This can crash if produce blocks.
+                reply_producer.produce(req.handle.idx);
                 req.reply_handle.produce(req.handle);
             })?;
 
@@ -363,12 +370,15 @@ impl PageStore for BlockGroupImpl {
             .unwrap()
             .write_fallible(&mut req.handle.frame.reader().to_fallible())?;
 
+        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
         self.page_writes_oqueue().produce(req.handle.idx)?;
 
         self.fs.upgrade().unwrap().write_blocks_async_with_closure(
             bid,
             bio_segment,
             move |_| {
+                // TODO(arthurp, #120): This can crash if produce blocks.
+                reply_producer.produce(req.handle.idx);
                 if let Some(reply_handle) = req.reply_handle {
                     reply_handle.produce(req.handle);
                 }
