@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 use alloc::{boxed::Box, string::ToString, sync::Arc};
 use core::time::Duration;
 
