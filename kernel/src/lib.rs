@@ -185,7 +185,7 @@ fn init_thread() {
         let hugepaged = vm::HugepagedServer::new().unwrap();
         let initproc = initproc.clone();
 
-        spawn_thread(hugepaged.clone(), move || Ok(hugepaged.main(initproc)?));
+        spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
     }
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
