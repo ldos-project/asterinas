@@ -9,7 +9,7 @@ use aster_block::BlockDevice;
 use alloc::sync::Arc;
 
 #[orpc_trait]
-pub trait BlockDeviceSelectPolicy {
+pub trait SelectionPolicy {
     /// Get the block device to read from. The policy cannot decide, for whatever reason, this should
     /// return an error. The caller will use some fallback. If the returned block device does not
     /// exist, then the caller will also fallback.

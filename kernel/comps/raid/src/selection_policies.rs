@@ -5,8 +5,6 @@ use alloc::{sync::Arc, vec::Vec, boxed::Box};
 use ostd::Error;
 use ostd::orpc::oqueue::WeakObserver;
 
-use aster_virtio::device::block::tracer::{BlockDeviceTracer, BlockDeviceTracerData};
-
 pub struct RoundRobinPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -29,7 +27,7 @@ pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
     /// Weak observers for each tracer's io_performance_traces OQueue.
     /// These allow observing I/O performance data without blocking producers.
-    trace_observers: Vec<Box<dyn WeakObserver<BlockDeviceTracerData>>>,
+    trace_observers: Vec<Box<dyn WeakObserver<BlockDeviceCompletionTrace>>>,
 
     members: Vec<Arc<dyn BlockDevice>>,
 
@@ -39,14 +37,14 @@ pub struct LinnOSPolicy {
 }
 
 pub impl LinnOSPolicy {
-    pub fn new(tracers: Vec<Arc<BlockDeviceTracer>>, members: Vec<Arc<dyn BlockDevice>>) -> Self {
-        let trace_observers = tracers
+    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Self {
+        let trace_observers = members
             .iter()
-            .map(|tracer| {
-                tracer
-                    .io_performance_traces()
+            .map(|device| {
+                device
+                    .bio_completion_oqueue()
                     .attach_weak_observer()
-                    .expect("Failed to attach weak observer to io_performance_traces")
+                    .expect("Failed to attach weak observer to bio_completion_oqueue")
             })
             .collect();
 
@@ -62,14 +60,14 @@ pub impl LinnOSPolicy {
         while true {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
             let observer = self.trace_observers[idx % self.trace_observers.len()];
-            let tracer_data = observer.weak_observe_range(Cursor(0), Cursor(3))?;
+            let completion_trace = observer.weak_observe_recent(4)?;
             // inference
-            let x = self.model[0] * tracer_data[0].latency +
-                self.model[1] * tracer_data[0].outstanding_requests +
-                self.model[2] * tracer_data[1].latency +
-                self.model[3] * tracer_data[1].outstanding_requests +
-                self.model[4] * tracer_data[2].latency +
-                self.model[5] * tracer_data[2].outstanding_requests;
+            let x = self.model[0] * completion_trace[0].latency +
+                self.model[1] * completion_trace[0].outstanding_requests +
+                self.model[2] * completion_trace[1].latency +
+                self.model[3] * completion_trace[1].outstanding_requests +
+                self.model[4] * completion_trace[2].latency +
+                self.model[5] * completion_trace[2].outstanding_requests;
 
             let prob = 1.0/(1.0 + (-x).exp());
 
