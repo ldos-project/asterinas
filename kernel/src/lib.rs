@@ -31,6 +31,7 @@
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
+use orpc_utils::spawn_thread;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
@@ -184,7 +185,7 @@ fn init_thread() {
         let hugepaged = vm::HugepagedServer::new().unwrap();
         let initproc = initproc.clone();
 
-        ThreadOptions::new(move || hugepaged.main(initproc)).spawn();
+        spawn_thread(hugepaged.clone(), move || Ok(hugepaged.main(initproc)?));
     }
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {

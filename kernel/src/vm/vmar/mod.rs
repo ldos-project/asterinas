@@ -26,7 +26,7 @@ use ostd::{
     },
     orpc::{
         framework::errors::RPCError,
-        oqueue::{OQueue, Producer, ringbuffer::MPMCOQueue},
+        oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server,
     },
     sync::{RwMutexReadGuard, non_null::NonNullPtr},
@@ -177,9 +177,13 @@ impl<R> Vmar<R> {
     }
 }
 
+// TODO(aneesh) can this just be PageFaultInfo directly?
+/// Notification message to inform policies about a page fault
 #[derive(Clone, Copy)]
 pub struct PageFaultOQueueMessage {
+    /// Opaque identifier for which vm_space the fault corresponds to
     pub vm_space: u64,
+    /// The fault information provided to the page fault handler
     pub fault_info: PageFaultInfo,
 }
 
@@ -207,7 +211,7 @@ pub(super) struct Vmar_ {
     rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
 
     /// OQueue Producer to notify policies about page fault events
-    page_fault_oqueue_producer: Mutex<Box<dyn Producer<PageFaultOQueueMessage>>>,
+    page_fault_oqueue_producer: OQueueRef<PageFaultOQueueMessage>,
 }
 
 struct VmarInner {
@@ -509,9 +513,7 @@ impl Vmar_ {
             size,
             vm_space,
             rss_counters,
-            page_fault_oqueue_producer: Mutex::new(
-                PAGE_FAULT_OQUEUE.wait().attach_producer().unwrap(),
-            ),
+            page_fault_oqueue_producer: PAGE_FAULT_OQUEUE.wait().clone(),
         })
     }
 
@@ -600,11 +602,10 @@ impl Vmar_ {
             let res = vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
             if res.is_ok() {
                 self.page_fault_oqueue_producer
-                    .lock()
                     .produce(PageFaultOQueueMessage {
                         vm_space: self.vm_space.clone().into_raw().as_ptr() as u64,
                         fault_info: *page_fault_info,
-                    });
+                    })?;
             }
             return res;
         }
