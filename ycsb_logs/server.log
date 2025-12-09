@@ -1,0 +1,528 @@
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error"  --init-args="/benchmark/redis/ycsb/run.sh"  --kcmd-args="vm.hugepaged_enabled=false" --target-arch=x86_64 --profile release-lto --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm"
+Running QEMU: Command {
+    program: "qemu-system-x86_64",
+    args: [
+        "qemu-system-x86_64",
+        "-drive",
+        "file=/root/asterinas/target/osdk/aster-nix/aster-nix-osdk-bin.iso,format=raw,index=2,media=cdrom",
+        "-cpu",
+        "Icelake-Server,+x2apic",
+        "-smp",
+        "4",
+        "-m",
+        "32G",
+        "--no-reboot",
+        "-nographic",
+        "-display",
+        "vnc=0.0.0.0:42",
+        "-serial",
+        "chardev:mux",
+        "-monitor",
+        "chardev:mux",
+        "-machine",
+        "q35,kernel-irqchip=split",
+        "-accel",
+        "kvm",
+        "-chardev",
+        "stdio,id=mux,mux=on,signal=off,logfile=qemu.log",
+        "-netdev",
+        "tap,id=net01,script=/root/asterinas/tools/net/qemu-ifup.sh,downscript=/root/asterinas/tools/net/qemu-ifdown.sh,vhost=on",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        "-device",
+        "virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off",
+        "-device",
+        "virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off",
+        "-device",
+        "virtio-blk-pci,bus=pcie.0,addr=0x8,drive=r0,serial=raid0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off",
+        "-device",
+        "virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off",
+        "-device",
+        "virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off,csum=off,guest_csum=off,ctrl_guest_offloads=off,guest_tso4=off,guest_tso6=off,guest_ecn=off,guest_ufo=off,host_tso4=off,host_tso6=off,host_ecn=off,host_ufo=off,mrg_rxbuf=off,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,ctrl_rx_extra=off,guest_announce=off,ctrl_mac_addr=off,host_ufo=off,guest_uso4=off,guest_uso6=off,host_uso=off",
+        "-device",
+        "virtio-serial-pci,disable-legacy=on,disable-modern=off",
+        "-device",
+        "virtconsole,chardev=mux",
+        "-drive",
+        "if=none,format=raw,id=x0,file=./test/build/ext2.img",
+        "-drive",
+        "if=none,format=raw,id=x1,file=./test/build/exfat.img",
+        "-drive",
+        "if=none,format=raw,id=r0,file=./test/build/raid1_0.img,cache=directsync",
+        "-drive",
+        "if=none,format=raw,id=r1,file=./test/build/raid1_1.img,cache=directsync",
+        "-drive",
+        "if=pflash,format=raw,unit=0,readonly=on,file=/root/ovmf/release/OVMF_CODE.fd",
+        "-drive",
+        "if=pflash,format=raw,unit=1,file=/root/ovmf/release/OVMF_VARS.fd",
+    ],
+    cwd: Some(
+        "/root/asterinas",
+    ),
+    create_pidfd: false,
+}
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[2J[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting BooBdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+t0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+WARNING: no console will be available to OS
+WARNING: no console will be available to OS
+error: no suitable video mode found.
+[kernel] OSTD initialized. Preparing components.
+[kernel] unpacking the initramfs.cpio.gz to rootfs ...
+[kernel] rootfs is ready
+[kernel] Spawn init thread
+[kernel] Mount Ext2 fs at FsPath { inner: Absolute("/ext2") } 
+[kernel] Mount ExFat fs at FsPath { inner: Absolute("/exfat") } 
+[kernel] Mounted RAID-1 at FsPath { inner: Absolute("/raid1") } 
+[kernel] Hello world from kernel!
+[36m
+
+   _   ___ _____ ___ ___ ___ _  _   _   ___
+  /_\ / __|_   _| __| _ \_ _| \| | /_\ / __|
+ / _ \\__ \ | | | _||   /| || .` |/ _ \\__ \
+/_/ \_\___/ |_| |___|_|_\___|_|\_/_/ \_\___/
+
+[0m
+Running redis server
+2:C 09 Dec 2025 23:45:02.782 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+2:C 09 Dec 2025 23:45:02.782 # Redis version=7.0.15, bits=64, commit=00000000, modified=0, pid=2, just started
+2:C 09 Dec 2025 23:45:02.782 # Configuration loaded
+2:M 09 Dec 2025 23:45:02.782 * Increased maximum number of open files to 10032 (it was originally set to 1024).
+2:M 09 Dec 2025 23:45:02.782 * monotonic clock: POSIX clock_gettime
+                _._                                                  
+           _.-``__ ''-._                                             
+      _.-``    `.  `_.  ''-._           Redis 7.0.15 (00000000/0) 64 bit
+  .-`` .-```.  ```\/    _.,_ ''-._                                  
+ (    '      ,       .-`  | `,    )     Running in standalone mode
+ |`-._`-...-` __...-.``-._|'` _.-'|     Port: 6379
+ |    `-._   `._    /     _.-'    |     PID: 2
+  `-._    `-._  `-./  _.-'    _.-'                                   
+ |`-._`-._    `-.__.-'    _.-'_.-'|                                  
+ |    `-._`-._        _.-'_.-'    |           https://redis.io       
+  `-._    `-._`-.__.-'_.-'    _.-'                                   
+ |`-._`-._    `-.__.-'    _.-'_.-'|                                  
+ |    `-._`-._        _.-'_.-'    |                                  
+  `-._    `-._`-.__.-'_.-'    _.-'                                   
+      `-._    `-.__.-'    _.-'                                       
+          `-._        _.-'                                           
+              `-.__.-'                                               
+
+2:M 09 Dec 2025 23:45:02.782 # Server initialized
+2:M 09 Dec 2025 23:45:02.783 . The AOF directory appendonlydir doesn't exist
+2:M 09 Dec 2025 23:45:02.784 * Ready to accept connections
+2:M 09 Dec 2025 23:45:02.784 . 0 clients connected (0 replicas), 858744 bytes in use
+now=1765323902.88195248s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323902.98218241s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323903.083240105s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323903.183518999s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323903.283367815s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323903.384225885s proc=2 RSS=321 real_rss_n_pages=1520
+now=1765323903.483535941s proc=2 RSS=321 real_rss_n_pages=1520
+2:M 09 Dec 2025 23:45:03.547 - Accepted 10.0.2.2:39644
+now=1765323903.583663651s proc=2 RSS=389 real_rss_n_pages=1658
+now=1765323903.68403241s proc=2 RSS=531 real_rss_n_pages=1800
+now=1765323903.784126012s proc=2 RSS=643 real_rss_n_pages=1912
+now=1765323903.883852316s proc=2 RSS=773 real_rss_n_pages=2042
+now=1765323903.984403804s proc=2 RSS=891 real_rss_n_pages=2160
+now=1765323904.085061229s proc=2 RSS=1012 real_rss_n_pages=2281
+now=1765323904.185378378s proc=2 RSS=1126 real_rss_n_pages=2395
+now=1765323904.285457924s proc=2 RSS=1247 real_rss_n_pages=2516
+now=1765323904.385537418s proc=2 RSS=1366 real_rss_n_pages=2635
+now=1765323904.485373045s proc=2 RSS=1480 real_rss_n_pages=2749
+now=1765323904.585137495s proc=2 RSS=1613 real_rss_n_pages=2882
+now=1765323904.685706568s proc=2 RSS=1729 real_rss_n_pages=2998
+now=1765323904.785799334s proc=2 RSS=1842 real_rss_n_pages=3111
+now=1765323904.885701404s proc=2 RSS=1959 real_rss_n_pages=3228
+now=1765323904.985916547s proc=2 RSS=2068 real_rss_n_pages=3337
+2:M 09 Dec 2025 23:45:05.049 - Reading from client: Connection reset by peer
+now=1765323905.085911228s proc=2 RSS=2143 real_rss_n_pages=3412
+2:M 09 Dec 2025 23:45:05.126 - Accepted 10.0.2.2:39650
+now=1765323905.185623277s proc=2 RSS=2235 real_rss_n_pages=3504
+now=1765323905.285921439s proc=2 RSS=2306 real_rss_n_pages=3575
+now=1765323905.385699597s proc=2 RSS=2355 real_rss_n_pages=3624
+now=1765323905.485799695s proc=2 RSS=2365 real_rss_n_pages=3634
+now=1765323905.585926999s proc=2 RSS=2370 real_rss_n_pages=3639
+now=1765323905.686040788s proc=2 RSS=2401 real_rss_n_pages=3670
+now=1765323905.786234704s proc=2 RSS=2447 real_rss_n_pages=3716
+now=1765323905.886657326s proc=2 RSS=2458 real_rss_n_pages=3727
+now=1765323905.986612502s proc=2 RSS=2500 real_rss_n_pages=3769
+now=1765323906.086795446s proc=2 RSS=2514 real_rss_n_pages=3783
+now=1765323906.186290072s proc=2 RSS=2516 real_rss_n_pages=3785
+now=1765323906.286425171s proc=2 RSS=2525 real_rss_n_pages=3794
+now=1765323906.387290856s proc=2 RSS=2529 real_rss_n_pages=3798
+now=1765323906.487196161s proc=2 RSS=2532 real_rss_n_pages=3801
+now=1765323906.586905451s proc=2 RSS=2532 real_rss_n_pages=3801
+now=1765323906.686874231s proc=2 RSS=2532 real_rss_n_pages=3801
+now=1765323906.786965924s proc=2 RSS=2538 real_rss_n_pages=3807
+now=1765323906.887627192s proc=2 RSS=2552 real_rss_n_pages=3821
+now=1765323906.987346547s proc=2 RSS=2568 real_rss_n_pages=3837
+now=1765323907.087734052s proc=2 RSS=2580 real_rss_n_pages=3849
+now=1765323907.187703108s proc=2 RSS=2606 real_rss_n_pages=3875
+now=1765323907.287526331s proc=2 RSS=2609 real_rss_n_pages=3878
+now=1765323907.38761428s proc=2 RSS=2614 real_rss_n_pages=3883
+now=1765323907.487520341s proc=2 RSS=2616 real_rss_n_pages=3885
+now=1765323907.587617185s proc=2 RSS=2616 real_rss_n_pages=3885
+now=1765323907.687668686s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323907.787717625s proc=2 RSS=2624 real_rss_n_pages=3893
+2:M 09 Dec 2025 23:45:07.789 - DB 0: 1501 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:07.789 . 1 clients connected (0 replicas), 7992584 bytes in use
+2:M 09 Dec 2025 23:45:07.837 - Reading from client: Connection reset by peer
+now=1765323907.887999375s proc=2 RSS=2624 real_rss_n_pages=3893
+2:M 09 Dec 2025 23:45:07.964 - Accepted 10.0.2.2:39664
+now=1765323907.987968199s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.088811687s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.189432021s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.288967109s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.389377186s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.489897214s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.590146808s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.69016285s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.790234421s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.890313284s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323908.99045013s proc=2 RSS=2624 real_rss_n_pages=3893
+now=1765323909.090968618s proc=2 RSS=2625 real_rss_n_pages=3894
+now=1765323909.19051615s proc=2 RSS=2625 real_rss_n_pages=3894
+now=1765323909.29109602s proc=2 RSS=2625 real_rss_n_pages=3894
+now=1765323909.391172481s proc=2 RSS=2625 real_rss_n_pages=3894
+2:M 09 Dec 2025 23:45:09.467 - Reading from client: Connection reset by peer
+now=1765323909.491242588s proc=2 RSS=2628 real_rss_n_pages=3897
+2:M 09 Dec 2025 23:45:09.555 - Accepted 10.0.2.2:39668
+now=1765323909.590852524s proc=2 RSS=2628 real_rss_n_pages=3897
+now=1765323909.690929799s proc=2 RSS=2636 real_rss_n_pages=3905
+now=1765323909.791871789s proc=2 RSS=2641 real_rss_n_pages=3910
+now=1765323909.891327788s proc=2 RSS=2644 real_rss_n_pages=3913
+now=1765323909.991359982s proc=2 RSS=2651 real_rss_n_pages=3920
+now=1765323910.091416674s proc=2 RSS=2682 real_rss_n_pages=3951
+now=1765323910.191597752s proc=2 RSS=2689 real_rss_n_pages=3958
+now=1765323910.291730884s proc=2 RSS=2697 real_rss_n_pages=3966
+now=1765323910.391688755s proc=2 RSS=2711 real_rss_n_pages=3980
+now=1765323910.491669544s proc=2 RSS=2717 real_rss_n_pages=3986
+now=1765323910.592020581s proc=2 RSS=2719 real_rss_n_pages=3988
+now=1765323910.692148469s proc=2 RSS=2722 real_rss_n_pages=3991
+now=1765323910.791887124s proc=2 RSS=2727 real_rss_n_pages=3996
+now=1765323910.891979751s proc=2 RSS=2785 real_rss_n_pages=4054
+now=1765323910.992197283s proc=2 RSS=2788 real_rss_n_pages=4057
+now=1765323911.09216729s proc=2 RSS=2807 real_rss_n_pages=4076
+now=1765323911.192224136s proc=2 RSS=2809 real_rss_n_pages=4078
+now=1765323911.292515218s proc=2 RSS=2811 real_rss_n_pages=4080
+now=1765323911.392364732s proc=2 RSS=2811 real_rss_n_pages=4080
+now=1765323911.492439421s proc=2 RSS=2814 real_rss_n_pages=4083
+now=1765323911.592675619s proc=2 RSS=2814 real_rss_n_pages=4083
+now=1765323911.692760717s proc=2 RSS=2814 real_rss_n_pages=4083
+now=1765323911.79288265s proc=2 RSS=2820 real_rss_n_pages=4089
+now=1765323911.892910433s proc=2 RSS=2820 real_rss_n_pages=4089
+now=1765323911.992735145s proc=2 RSS=2820 real_rss_n_pages=4089
+now=1765323912.092834866s proc=2 RSS=2821 real_rss_n_pages=4090
+2:M 09 Dec 2025 23:45:12.112 - Reading from client: Connection reset by peer
+now=1765323912.192934218s proc=2 RSS=2821 real_rss_n_pages=4090
+2:M 09 Dec 2025 23:45:12.216 - Accepted 10.0.2.2:53592
+now=1765323912.293398802s proc=2 RSS=2821 real_rss_n_pages=4090
+now=1765323912.393866197s proc=2 RSS=2821 real_rss_n_pages=4090
+now=1765323912.493174152s proc=2 RSS=2821 real_rss_n_pages=4090
+now=1765323912.593250359s proc=2 RSS=2821 real_rss_n_pages=4090
+now=1765323912.694014557s proc=2 RSS=2821 real_rss_n_pages=4090
+now=1765323912.794071675s proc=2 RSS=2821 real_rss_n_pages=4090
+2:M 09 Dec 2025 23:45:12.796 - DB 0: 1565 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:12.796 . 1 clients connected (0 replicas), 8451864 bytes in use
+now=1765323912.894208313s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323912.994196159s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.094271466s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.194330186s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.294435818s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.393920703s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.494634901s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.594947044s proc=2 RSS=2827 real_rss_n_pages=4096
+now=1765323913.695024297s proc=2 RSS=2706 real_rss_n_pages=3975
+2:M 09 Dec 2025 23:45:13.718 - Reading from client: Connection reset by peer
+now=1765323913.796131831s proc=2 RSS=2706 real_rss_n_pages=3975
+2:M 09 Dec 2025 23:45:13.799 - Accepted 10.0.2.2:53594
+now=1765323913.895377519s proc=2 RSS=2713 real_rss_n_pages=3982
+now=1765323913.995703243s proc=2 RSS=2715 real_rss_n_pages=3984
+now=1765323914.095508911s proc=2 RSS=2716 real_rss_n_pages=3985
+now=1765323914.195582658s proc=2 RSS=2716 real_rss_n_pages=3985
+now=1765323914.295665766s proc=2 RSS=2717 real_rss_n_pages=3986
+now=1765323914.395742622s proc=2 RSS=2726 real_rss_n_pages=3995
+now=1765323914.496370935s proc=2 RSS=2728 real_rss_n_pages=3997
+now=1765323914.595885754s proc=2 RSS=2728 real_rss_n_pages=3997
+now=1765323914.696535504s proc=2 RSS=2734 real_rss_n_pages=4003
+now=1765323914.796562751s proc=2 RSS=2734 real_rss_n_pages=4003
+now=1765323914.896611726s proc=2 RSS=2734 real_rss_n_pages=4003
+now=1765323914.996765098s proc=2 RSS=2735 real_rss_n_pages=4004
+now=1765323915.096183001s proc=2 RSS=2738 real_rss_n_pages=4007
+now=1765323915.196258529s proc=2 RSS=2740 real_rss_n_pages=4009
+now=1765323915.296546854s proc=2 RSS=2740 real_rss_n_pages=4009
+now=1765323915.397018023s proc=2 RSS=2748 real_rss_n_pages=4017
+now=1765323915.496647764s proc=2 RSS=2748 real_rss_n_pages=4017
+now=1765323915.596605526s proc=2 RSS=2748 real_rss_n_pages=4017
+now=1765323915.696694461s proc=2 RSS=2749 real_rss_n_pages=4018
+now=1765323915.796757899s proc=2 RSS=2750 real_rss_n_pages=4019
+now=1765323915.896822381s proc=2 RSS=2752 real_rss_n_pages=4021
+now=1765323915.996904091s proc=2 RSS=2752 real_rss_n_pages=4021
+now=1765323916.097019249s proc=2 RSS=2752 real_rss_n_pages=4021
+now=1765323916.19706042s proc=2 RSS=2752 real_rss_n_pages=4021
+now=1765323916.297131902s proc=2 RSS=2753 real_rss_n_pages=4022
+2:M 09 Dec 2025 23:45:16.320 - Reading from client: Connection reset by peer
+now=1765323916.397519683s proc=2 RSS=2753 real_rss_n_pages=4022
+2:M 09 Dec 2025 23:45:16.426 - Accepted 10.0.2.2:53606
+now=1765323916.497410034s proc=2 RSS=2753 real_rss_n_pages=4022
+now=1765323916.598192896s proc=2 RSS=2754 real_rss_n_pages=4023
+now=1765323916.698729894s proc=2 RSS=2754 real_rss_n_pages=4023
+now=1765323916.798419414s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323916.898414394s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323916.99840307s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.0989794s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.198986844s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.299074001s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.399024827s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.498935995s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.59982925s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.699687719s proc=2 RSS=2760 real_rss_n_pages=4029
+now=1765323917.800394376s proc=2 RSS=2760 real_rss_n_pages=4029
+2:M 09 Dec 2025 23:45:17.803 - DB 0: 1629 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:17.803 . 1 clients connected (0 replicas), 8726536 bytes in use
+now=1765323917.900468152s proc=2 RSS=2762 real_rss_n_pages=4031
+2:M 09 Dec 2025 23:45:17.928 - Reading from client: Connection reset by peer
+now=1765323917.999937981s proc=2 RSS=2762 real_rss_n_pages=4031
+2:M 09 Dec 2025 23:45:18.019 - Accepted 10.0.2.2:53618
+now=1765323918.100182976s proc=2 RSS=2767 real_rss_n_pages=4036
+now=1765323918.200261672s proc=2 RSS=2776 real_rss_n_pages=4045
+now=1765323918.300340076s proc=2 RSS=2776 real_rss_n_pages=4047
+now=1765323918.400544747s proc=2 RSS=2776 real_rss_n_pages=4047
+now=1765323918.500877518s proc=2 RSS=2780 real_rss_n_pages=4051
+now=1765323918.601064956s proc=2 RSS=2780 real_rss_n_pages=4051
+now=1765323918.700828003s proc=2 RSS=2788 real_rss_n_pages=4059
+now=1765323918.800831816s proc=2 RSS=2798 real_rss_n_pages=4069
+now=1765323918.900996172s proc=2 RSS=2798 real_rss_n_pages=4069
+now=1765323919.000905135s proc=2 RSS=2836 real_rss_n_pages=4107
+now=1765323919.100947962s proc=2 RSS=2838 real_rss_n_pages=4109
+now=1765323919.201611134s proc=2 RSS=2844 real_rss_n_pages=4115
+now=1765323919.301485428s proc=2 RSS=2845 real_rss_n_pages=4116
+now=1765323919.401266619s proc=2 RSS=2845 real_rss_n_pages=4116
+now=1765323919.501780738s proc=2 RSS=2852 real_rss_n_pages=4123
+now=1765323919.601299687s proc=2 RSS=2853 real_rss_n_pages=4124
+now=1765323919.701723223s proc=2 RSS=2853 real_rss_n_pages=4124
+now=1765323919.801763573s proc=2 RSS=2853 real_rss_n_pages=4124
+now=1765323919.902193473s proc=2 RSS=2853 real_rss_n_pages=4124
+now=1765323920.001969952s proc=2 RSS=2853 real_rss_n_pages=4124
+now=1765323920.102286981s proc=2 RSS=2859 real_rss_n_pages=4130
+now=1765323920.201863374s proc=2 RSS=2865 real_rss_n_pages=4136
+now=1765323920.301955678s proc=2 RSS=2870 real_rss_n_pages=4141
+now=1765323920.402020858s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323920.502084091s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323920.602173835s proc=2 RSS=2872 real_rss_n_pages=4143
+2:M 09 Dec 2025 23:45:20.685 - Reading from client: Connection reset by peer
+now=1765323920.70237327s proc=2 RSS=2872 real_rss_n_pages=4143
+2:M 09 Dec 2025 23:45:20.796 - Accepted 10.0.2.2:53632
+now=1765323920.802443638s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323920.903151682s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.003532832s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.10377802s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.205189894s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.304295174s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.404364621s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.504756478s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.604878465s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.704933393s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.804761912s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323921.904997606s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323922.005681235s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323922.106173419s proc=2 RSS=2872 real_rss_n_pages=4143
+now=1765323922.20640809s proc=2 RSS=2872 real_rss_n_pages=4143
+2:M 09 Dec 2025 23:45:22.298 - Reading from client: Connection reset by peer
+now=1765323922.306547101s proc=2 RSS=2873 real_rss_n_pages=4144
+2:M 09 Dec 2025 23:45:22.384 - Accepted 10.0.2.2:43066
+now=1765323922.405928526s proc=2 RSS=2873 real_rss_n_pages=4144
+now=1765323922.506034896s proc=2 RSS=2879 real_rss_n_pages=4150
+now=1765323922.606067797s proc=2 RSS=2879 real_rss_n_pages=4150
+now=1765323922.706873644s proc=2 RSS=2885 real_rss_n_pages=4156
+now=1765323922.806786664s proc=2 RSS=2885 real_rss_n_pages=4156
+2:M 09 Dec 2025 23:45:22.810 - DB 0: 1757 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:22.810 . 1 clients connected (0 replicas), 9361576 bytes in use
+now=1765323922.906823037s proc=2 RSS=2885 real_rss_n_pages=4156
+now=1765323923.00713325s proc=2 RSS=2891 real_rss_n_pages=4162
+now=1765323923.107195438s proc=2 RSS=2891 real_rss_n_pages=4162
+now=1765323923.20739147s proc=2 RSS=2901 real_rss_n_pages=4172
+now=1765323923.307570469s proc=2 RSS=2915 real_rss_n_pages=4186
+now=1765323923.407621435s proc=2 RSS=2917 real_rss_n_pages=4188
+now=1765323923.507679497s proc=2 RSS=2917 real_rss_n_pages=4188
+now=1765323923.607752136s proc=2 RSS=2924 real_rss_n_pages=4195
+now=1765323923.707867795s proc=2 RSS=2926 real_rss_n_pages=4197
+now=1765323923.807923332s proc=2 RSS=2931 real_rss_n_pages=4202
+now=1765323923.907989548s proc=2 RSS=2931 real_rss_n_pages=4202
+now=1765323924.00806833s proc=2 RSS=2931 real_rss_n_pages=4202
+now=1765323924.108431713s proc=2 RSS=2936 real_rss_n_pages=4207
+now=1765323924.20842772s proc=2 RSS=2936 real_rss_n_pages=4207
+now=1765323924.308512012s proc=2 RSS=2936 real_rss_n_pages=4207
+now=1765323924.408579745s proc=2 RSS=2937 real_rss_n_pages=4208
+now=1765323924.508806539s proc=2 RSS=2937 real_rss_n_pages=4208
+now=1765323924.608682735s proc=2 RSS=2937 real_rss_n_pages=4208
+now=1765323924.708762578s proc=2 RSS=2938 real_rss_n_pages=4209
+now=1765323924.808826517s proc=2 RSS=2939 real_rss_n_pages=4210
+now=1765323924.908879221s proc=2 RSS=2939 real_rss_n_pages=4210
+now=1765323925.00900384s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.109069049s proc=2 RSS=2951 real_rss_n_pages=4222
+2:M 09 Dec 2025 23:45:25.109 - Reading from client: Connection reset by peer
+now=1765323925.210072402s proc=2 RSS=2951 real_rss_n_pages=4222
+2:M 09 Dec 2025 23:45:25.210 - Accepted 10.0.2.2:43072
+now=1765323925.310764312s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.410899599s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.510987474s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.611019961s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.710744072s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.810724716s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323925.910800588s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.010965941s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.111726433s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.212385656s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.312436628s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.412556702s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.51257813s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.611971905s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.712696541s proc=2 RSS=2951 real_rss_n_pages=4222
+2:M 09 Dec 2025 23:45:26.713 - Reading from client: Connection reset by peer
+2:M 09 Dec 2025 23:45:26.788 - Accepted 10.0.2.2:43080
+now=1765323926.812169351s proc=2 RSS=2951 real_rss_n_pages=4222
+now=1765323926.912280987s proc=2 RSS=2959 real_rss_n_pages=4230
+now=1765323927.012305605s proc=2 RSS=2964 real_rss_n_pages=4235
+now=1765323927.112417053s proc=2 RSS=2975 real_rss_n_pages=4246
+now=1765323927.212491558s proc=2 RSS=2989 real_rss_n_pages=4260
+now=1765323927.312605222s proc=2 RSS=2999 real_rss_n_pages=4270
+now=1765323927.412602911s proc=2 RSS=2999 real_rss_n_pages=4270
+now=1765323927.512668551s proc=2 RSS=3005 real_rss_n_pages=4276
+now=1765323927.612730354s proc=2 RSS=3026 real_rss_n_pages=4297
+now=1765323927.712886972s proc=2 RSS=3026 real_rss_n_pages=4297
+now=1765323927.813467702s proc=2 RSS=3033 real_rss_n_pages=4304
+2:M 09 Dec 2025 23:45:27.816 - DB 0: 1821 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:27.816 . 1 clients connected (0 replicas), 9691240 bytes in use
+now=1765323927.913011152s proc=2 RSS=3033 real_rss_n_pages=4304
+now=1765323928.013122531s proc=2 RSS=3033 real_rss_n_pages=4304
+now=1765323928.113238145s proc=2 RSS=3049 real_rss_n_pages=4320
+now=1765323928.213208932s proc=2 RSS=3049 real_rss_n_pages=4320
+now=1765323928.313280197s proc=2 RSS=3049 real_rss_n_pages=4320
+now=1765323928.413919562s proc=2 RSS=3049 real_rss_n_pages=4320
+now=1765323928.513548203s proc=2 RSS=3049 real_rss_n_pages=4320
+now=1765323928.613450136s proc=2 RSS=3050 real_rss_n_pages=4321
+now=1765323928.71415738s proc=2 RSS=3052 real_rss_n_pages=4323
+now=1765323928.814210373s proc=2 RSS=3058 real_rss_n_pages=4329
+now=1765323928.914272334s proc=2 RSS=3058 real_rss_n_pages=4329
+now=1765323929.013774434s proc=2 RSS=3058 real_rss_n_pages=4329
+now=1765323929.114544617s proc=2 RSS=3058 real_rss_n_pages=4329
+now=1765323929.214543611s proc=2 RSS=3061 real_rss_n_pages=4332
+2:M 09 Dec 2025 23:45:29.269 - Reading from client: Connection reset by peer
+now=1765323929.314372731s proc=2 RSS=3061 real_rss_n_pages=4332
+2:M 09 Dec 2025 23:45:29.386 - Accepted 10.0.2.2:43090
+now=1765323929.414074461s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323929.514810003s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323929.61426744s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323929.714907644s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323929.814631073s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323929.914644444s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.014954751s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.115115019s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.215089774s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.315003949s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.415854298s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.515749786s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.616238856s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.717932023s proc=2 RSS=3061 real_rss_n_pages=4332
+now=1765323930.817097238s proc=2 RSS=3061 real_rss_n_pages=4332
+2:M 09 Dec 2025 23:45:30.888 - Reading from client: Connection reset by peer
+now=1765323930.918145159s proc=2 RSS=3062 real_rss_n_pages=4333
+2:M 09 Dec 2025 23:45:30.967 - Accepted 10.0.2.2:43098
+now=1765323931.018601608s proc=2 RSS=3069 real_rss_n_pages=4340
+now=1765323931.118535045s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.218560815s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.318679355s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.419304971s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.518944908s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.619104408s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.719297444s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.819459993s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323931.919296021s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323932.019365868s proc=2 RSS=3070 real_rss_n_pages=4341
+now=1765323932.119617897s proc=2 RSS=3072 real_rss_n_pages=4343
+now=1765323932.219673404s proc=2 RSS=3075 real_rss_n_pages=4346
+now=1765323932.320140233s proc=2 RSS=3091 real_rss_n_pages=4362
+now=1765323932.420035783s proc=2 RSS=3102 real_rss_n_pages=4373
+now=1765323932.519896418s proc=2 RSS=3115 real_rss_n_pages=4386
+now=1765323932.619975983s proc=2 RSS=3117 real_rss_n_pages=4388
+now=1765323932.720092327s proc=2 RSS=3122 real_rss_n_pages=4393
+now=1765323932.820323749s proc=2 RSS=3122 real_rss_n_pages=4393
+2:M 09 Dec 2025 23:45:32.822 - DB 0: 1885 keys (0 volatile) in 2048 slots HT.
+2:M 09 Dec 2025 23:45:32.822 . 1 clients connected (0 replicas), 10056552 bytes in use
+now=1765323932.920250511s proc=2 RSS=3126 real_rss_n_pages=4397
+now=1765323933.020307573s proc=2 RSS=3126 real_rss_n_pages=4397
+now=1765323933.120561423s proc=2 RSS=3126 real_rss_n_pages=4397
+now=1765323933.220395285s proc=2 RSS=3136 real_rss_n_pages=4407
+now=1765323933.320725988s proc=2 RSS=3136 real_rss_n_pages=4407
+now=1765323933.420599168s proc=2 RSS=3141 real_rss_n_pages=4412
+now=1765323933.520956186s proc=2 RSS=3141 real_rss_n_pages=4412
+2:M 09 Dec 2025 23:45:33.543 - Reading from client: Connection reset by peer
+now=1765323933.620814608s proc=2 RSS=3141 real_rss_n_pages=4412
+2:M 09 Dec 2025 23:45:33.647 - Accepted 10.0.2.2:33228
+now=1765323933.721167879s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323933.821289333s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323933.922157188s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.022925147s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.12279716s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.22285361s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.322914291s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.422976806s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.523041693s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.623107376s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.723173525s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.823236488s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323934.923306228s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323935.023370807s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323935.123446091s proc=2 RSS=3098 real_rss_n_pages=4369
+2:M 09 Dec 2025 23:45:35.149 - Reading from client: Connection reset by peer
+now=1765323935.224563749s proc=2 RSS=3098 real_rss_n_pages=4369
+2:M 09 Dec 2025 23:45:35.230 - Accepted 10.0.2.2:33240
+now=1765323935.324714045s proc=2 RSS=3098 real_rss_n_pages=4369
+now=1765323935.424992277s proc=2 RSS=3100 real_rss_n_pages=4371
+now=1765323935.524811058s proc=2 RSS=3100 real_rss_n_pages=4371
+now=1765323935.624899932s proc=2 RSS=3104 real_rss_n_pages=4375
+now=1765323935.724949293s proc=2 RSS=3107 real_rss_n_pages=4378
+now=1765323935.82506513s proc=2 RSS=3118 real_rss_n_pages=4389
+now=1765323935.925156023s proc=2 RSS=3118 real_rss_n_pages=4389
+now=1765323936.02521511s proc=2 RSS=3123 real_rss_n_pages=4394
+now=1765323936.125337773s proc=2 RSS=3131 real_rss_n_pages=4402
+now=1765323936.225957942s proc=2 RSS=3133 real_rss_n_pages=4404
+now=1765323936.32556601s proc=2 RSS=3135 real_rss_n_pages=4406
+now=1765323936.425735821s proc=2 RSS=3151 real_rss_n_pages=4422
+now=1765323936.525757288s proc=2 RSS=3151 real_rss_n_pages=4422
+now=1765323936.625817499s proc=2 RSS=3155 real_rss_n_pages=4426
+now=1765323936.726414331s proc=2 RSS=3155 real_rss_n_pages=4426
