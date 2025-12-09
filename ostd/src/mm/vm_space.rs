@@ -333,6 +333,8 @@ impl<'a> CursorMut<'a> {
         self.pt_cursor.find_next(len)
     }
 
+
+    /// If the current virtual address is mapped as a huge page, split it into base pages.
     pub fn split_if_mapped_huge(&mut self) {
         self.pt_cursor.split_if_mapped_huge();
     }
