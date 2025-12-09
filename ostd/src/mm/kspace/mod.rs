@@ -150,6 +150,12 @@ unsafe impl PageTableConfig for KernelPtConfig {
             MappedItem::Untracked(paddr, level, prop)
         }
     }
+
+    fn split_item(item: Self::Item) -> Self::Item {
+        item
+    }
+
+    fn init_split_item_subpage(item: Self::Item, level: PagingLevel) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -9,7 +9,7 @@
 //! powerful concurrent accesses to the page table, and suffers from the same
 //! validity concerns as described in [`super::page_table::cursor`].
 
-use core::{ops::Range, sync::atomic::Ordering};
+use core::{mem::ManuallyDrop, ops::Range, sync::atomic::Ordering};
 
 use crate::{
     Error,
@@ -522,5 +522,21 @@ unsafe impl PageTableConfig for UserPtConfig {
         frame.set_map_level(level);
         debug_assert_eq!(frame.map_level(), level);
         (frame, prop)
+    }
+
+    fn split_item(item: Self::Item) -> Self::Item {
+        let (frame, prop) = item;
+        frame.set_map_level(frame.map_level() - 1);
+        (frame, prop)
+    }
+
+    fn init_split_item_subpage(item: Self::Item, level: PagingLevel) {
+        let (frame, _) = item;
+
+        // TODO(aneesh): what should the metadata be here? We assume it's untyped user memory, in
+        // which case () is correct, but more generally it might be better to pass in a ref to the
+        // frame this was split from copy the metadata.
+        ManuallyDrop::new(Frame::from_unused(frame.start_paddr(), (), level));
+        core::mem::forget(frame);
     }
 }
