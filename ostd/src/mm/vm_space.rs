@@ -385,7 +385,7 @@ impl<'a> CursorMut<'a> {
                 if map_level == 1 {
                     panic!("`UFrame` is base page sized but re-mapping out a child PT");
                 }
-                // SAFETY: we assume here that all the child pages are already dropped
+                // Issuing this flush here assumes that all the child pages are already dropped
                 debug_assert_eq!(va, start_va);
                 self.flusher
                     .issue_tlb_flush_with(TlbFlushOp::Address(start_va), pt.into());
