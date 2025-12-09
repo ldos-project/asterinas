@@ -189,11 +189,11 @@ pub struct PageFaultOQueueMessage {
 
 static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::new();
 
-static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
+pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<usize>>> = Once::new();
+static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<isize>>> = Once::new();
 
-pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<usize>> {
+pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<isize>> {
     RSS_DELTA_OQUEUE.wait().clone()
 }
 
@@ -204,7 +204,7 @@ pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
 pub fn init() {
     // Only support a single strong observer for now - hugepaged.
     PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
-    RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::<usize>::new(64, 1));
+    RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::<isize>::new(64, 1));
 }
 
 pub(super) struct Vmar_ {
@@ -1271,13 +1271,12 @@ impl<'a> RssDelta<'a> {
 
     pub(self) fn add(&mut self, rss_type: RssType, increment: isize) {
         if rss_type == RssType::RSS_ANONPAGES {
-            let value = if increment > 0 {
-                GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed) + (increment as usize)
+            if increment > 0 {
+                GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed);
             } else {
-                GLOBAL_RSS.fetch_sub((-1 * increment) as usize, Ordering::Relaxed)
-                    - ((-1 * increment) as usize)
-            };
-            RSS_DELTA_OQUEUE.wait().produce(value);
+                GLOBAL_RSS.fetch_sub((-1 * increment) as usize, Ordering::Relaxed);
+            }
+            RSS_DELTA_OQUEUE.wait().produce(increment);
         }
 
         self.delta[rss_type as usize] += increment;
