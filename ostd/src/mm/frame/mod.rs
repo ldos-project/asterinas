@@ -159,16 +159,17 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
         self.slot().frame_paddr()
     }
 
-    pub fn set_map_level(&self, level: PagingLevel) {
-        self.slot().set_level(level);
-    }
-
     /// Gets the map level of this page.
     ///
     /// This is the level of the page table entry that maps the frame,
     /// which determines the size of the frame.
     pub fn map_level(&self) -> PagingLevel {
         self.slot().level()
+    }
+
+    /// Set the map level for this page.
+    pub fn set_map_level(&self, level: PagingLevel) {
+        self.slot().set_level(level);
     }
 
     /// Gets the size of this page in bytes.

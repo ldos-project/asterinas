@@ -379,8 +379,8 @@ impl<'a> CursorMut<'a> {
             PageTableFrag::StrayPageTable {
                 pt,
                 va,
-                len,
-                num_frames,
+                len: _,
+                num_frames: _,
             } => {
                 if map_level == 1 {
                     panic!("`UFrame` is base page sized but re-mapping out a child PT");
@@ -388,7 +388,7 @@ impl<'a> CursorMut<'a> {
                 // Issuing this flush here assumes that all the child pages are already dropped
                 debug_assert_eq!(va, start_va);
                 self.flusher
-                    .issue_tlb_flush_with(TlbFlushOp::Address(start_va), pt.into());
+                    .issue_tlb_flush_with(TlbFlushOp::Address(start_va), pt);
                 self.flusher.dispatch_tlb_flush();
             }
         }

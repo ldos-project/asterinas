@@ -2,8 +2,6 @@
 
 //! This module provides accessors to the page table entries in a node.
 
-use core::mem::ManuallyDrop;
-
 use super::{Child, ChildRef, PageTableEntryTrait, PageTableGuard, PageTableNode};
 use crate::{
     mm::{

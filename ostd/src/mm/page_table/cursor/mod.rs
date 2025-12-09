@@ -184,13 +184,16 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         }
     }
 
+    /// Splits the huge page under the cursor into base pages.
+    ///
+    /// If the cursor is pointing to a valid virtual address that is locked and mapped as a huge
+    /// page, it will split the mapping into base pages.
     pub fn split_if_mapped_huge(&mut self) {
         let va = self.virt_addr();
         // TODO(aneesh): handle levels larger than two.
-        let huge_page_size = page_size::<C>(2);
         let rcu_guard = self.rcu_guard;
         let mut cur_entry = self.cur_entry();
-        if let ChildRef::Frame(_, lvl, _) = cur_entry.to_ref() {
+        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref() {
             if let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard) {
                 self.push_level(split_child);
             }
@@ -412,6 +415,9 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         self.0.find_next(len)
     }
 
+    /// If the current virtual address is mapped as a huge page, split it into base pages.
+    ///
+    /// This is the same as [`Cursor::split_if_mapped_huge`]
     pub fn split_if_mapped_huge(&mut self) {
         self.0.split_if_mapped_huge();
     }
