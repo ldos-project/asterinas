@@ -11,7 +11,7 @@ use core::{
     array,
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use align_ext::AlignExt;
@@ -24,10 +24,15 @@ use ostd::{
         tlb::TlbFlushOp,
         vm_space::{CursorMut, VmMappingPolicy, VmMappingPolicyOQueues, VmMappingRequest},
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server},
-    sync::RwMutexReadGuard,
+    orpc::{
+        framework::errors::RPCError,
+        oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
+        orpc_impl, orpc_server,
+    },
+    sync::{RwMutexReadGuard, non_null::NonNullPtr},
     task::disable_preempt,
 };
+use spin::Once;
 
 use self::{
     interval_set::{Interval, IntervalSet},
@@ -172,6 +177,36 @@ impl<R> Vmar<R> {
     }
 }
 
+// TODO(aneesh) can this just be PageFaultInfo directly?
+/// Notification message to inform policies about a page fault
+#[derive(Clone, Copy)]
+pub struct PageFaultOQueueMessage {
+    /// Opaque identifier for which vm_space the fault corresponds to
+    pub vm_space: u64,
+    /// The fault information provided to the page fault handler
+    pub fault_info: PageFaultInfo,
+}
+
+static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::new();
+
+pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
+
+static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<isize>>> = Once::new();
+
+pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<isize>> {
+    RSS_DELTA_OQUEUE.wait().clone()
+}
+
+pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
+    PAGE_FAULT_OQUEUE.wait().clone()
+}
+
+pub fn init() {
+    // Only support a single strong observer for now - hugepaged.
+    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
+    RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::<isize>::new(64, 1));
+}
+
 pub(super) struct Vmar_ {
     /// VMAR inner
     inner: RwMutex<VmarInner>,
@@ -183,6 +218,9 @@ pub(super) struct Vmar_ {
     vm_space: Arc<VmSpace>,
     /// The RSS counters.
     rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
+
+    /// OQueue Producer to notify policies about page fault events
+    page_fault_oqueue_producer: OQueueRef<PageFaultOQueueMessage>,
 }
 
 struct VmarInner {
@@ -484,6 +522,7 @@ impl Vmar_ {
             size,
             vm_space,
             rss_counters,
+            page_fault_oqueue_producer: PAGE_FAULT_OQUEUE.wait().clone(),
         })
     }
 
@@ -569,7 +608,15 @@ impl Vmar_ {
             debug_assert!(vm_mapping.range().contains(&address));
 
             let mut rss_delta = RssDelta::new(self);
-            return vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+            let res = vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+            if res.is_ok() {
+                self.page_fault_oqueue_producer
+                    .produce(PageFaultOQueueMessage {
+                        vm_space: self.vm_space.clone().into_raw().as_ptr() as u64,
+                        fault_info: *page_fault_info,
+                    })?;
+            }
+            return res;
         }
 
         return_errno_with_message!(Errno::EACCES, "page fault addr is not in current vmar");
@@ -722,6 +769,7 @@ impl Vmar_ {
                 panic!("Found mapped page but query failed");
             };
             debug_assert_eq!(mapped_va, va.start);
+            // TODO(aneesh): this might need to be updated to support remaping huge pages
             cursor.unmap(PAGE_SIZE);
 
             let offset = mapped_va - old_range.start;
@@ -1195,7 +1243,7 @@ pub fn get_intersected_range(range1: &Range<usize>, range2: &Range<usize>) -> Ra
 /// See <https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/linux/mm_types_task.h#L26..L32>
 #[repr(u32)]
 #[expect(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+#[derive(Debug, Clone, Copy, TryFromInt, PartialEq)]
 pub enum RssType {
     RSS_FILEPAGES = 0,
     RSS_ANONPAGES = 1,
@@ -1217,6 +1265,15 @@ impl<'a> RssDelta<'a> {
     }
 
     pub(self) fn add(&mut self, rss_type: RssType, increment: isize) {
+        if rss_type == RssType::RSS_ANONPAGES {
+            if increment > 0 {
+                GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed);
+            } else {
+                GLOBAL_RSS.fetch_sub((-1 * increment) as usize, Ordering::Relaxed);
+            }
+            RSS_DELTA_OQUEUE.wait().produce(increment);
+        }
+
         self.delta[rss_type as usize] += increment;
     }
 

@@ -16,9 +16,10 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{ops::Range, time::Duration};
 
+use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
 use ostd::{
@@ -26,15 +27,21 @@ use ostd::{
         AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
-    orpc::{orpc_server, orpc_trait},
-    sync::WaitQueue,
+    orpc::{
+        framework::{notifier::Notifier, spawn_thread},
+        oqueue::OQueue,
+        orpc_server, orpc_trait,
+        sync::select,
+    },
+    sync::non_null::NonNullPtr,
     task::disable_preempt,
 };
 use snafu::Whatever;
+use vmar::{PageFaultOQueueMessage, RssType};
 
 use crate::{
-    prelude::WaitTimeout,
     process::{PauseProcGuard, Process},
+    util::timer::TimerServer,
 };
 
 pub mod page_fault_handler;
@@ -70,15 +77,18 @@ pub fn mem_total() -> usize {
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
-fn do_for_each_submapping<F>(cursor: &mut CursorMut, start: usize, mut f: F) -> Result<(), ()>
+fn do_for_each_submapping<F>(
+    cursor: &mut CursorMut,
+    start: usize,
+    end: usize,
+    mut f: F,
+) -> Result<(), ()>
 where
     F: FnMut(&Range<Vaddr>, &Frame<dyn AnyUFrameMeta>, &PageProperty) -> Result<(), ()>,
 {
-    // Copy range.start -> range.start + page.
-    let search_end = start + PROMOTED_PAGE_SIZE;
     cursor.jump(start).map_err(|_| ())?;
 
-    while cursor.virt_addr() < search_end {
+    while cursor.virt_addr() < end {
         // Query under the current cursor. If the virtual address is unmapped then we
         // fail and cannot map a huge page.
         let (sub_range, sub_mapping) = cursor.query().map_err(|_| ())?;
@@ -89,6 +99,9 @@ where
             f(&sub_range, sub_frame, &sub_props)?;
         }
 
+        if sub_range.end >= end {
+            break;
+        }
         // Advance the cursor to the end of this mapping
         cursor.jump(sub_range.end).map_err(|_| ())?;
     }
@@ -96,30 +109,62 @@ where
     Ok(())
 }
 
-fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<(), ()> {
+fn promote_hugepages(
+    proc: &Arc<Process>,
+    fault_hint: Option<PageFaultOQueueMessage>,
+) -> Result<(), ()> {
     // Ensure that the current process doesn't run until we have scanned it's mappings
     let _ = PauseProcGuard::new(proc.clone());
 
     let proc_vm = proc.vm();
     let proc_vm_guard = proc_vm.lock_root_vmar();
-    let proc_vmar = proc_vm_guard.unwrap();
+    let proc_vmar = if let Some(proc_vmar) = proc_vm_guard.as_ref() {
+        proc_vmar
+    } else {
+        // The process may have exited right as we attempted to pause it.
+        return Ok(());
+    };
+
     let preempt_guard = disable_preempt();
     let mut space_len = proc_vmar.size();
-    let mut cursor = match proc_vmar
-        .vm_space()
-        .cursor_mut(&preempt_guard, &(0..space_len))
-    {
+    let vm_space = proc_vmar.vm_space();
+    let mut cursor = match vm_space.cursor_mut(&preempt_guard, &(0..space_len)) {
         Ok(cursor) => cursor,
         _ => {
             return Ok(());
         }
     };
 
+    let mut real_rss = 0;
+    do_for_each_submapping(&mut cursor, 0, space_len, |range, _, _| {
+        real_rss += range.end - range.start;
+        Ok(())
+    })
+    .unwrap();
+    crate::prelude::println!(
+        "proc={} RSS={} real_rss_n_pages={}",
+        proc.pid(),
+        proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
+        real_rss / 4096
+    );
+    cursor.jump(0).unwrap();
+
     // If we have an address hint, jump the cursor to that address, and only consider a single
     // region for promotion.
-    if let Some(addr_hint) = addr_hint {
+    if let Some(fault_hint) = fault_hint {
+        // If the fault was not for this process, then ignore it
+        let vm_space_addr = vm_space.clone().into_raw().as_ptr() as u64;
+        if vm_space_addr != fault_hint.vm_space {
+            return Ok(());
+        }
+        let addr_hint = fault_hint.fault_info.address.align_down(PROMOTED_PAGE_SIZE);
         cursor.jump(addr_hint).map_err(|_| ())?;
-        space_len = PROMOTED_PAGE_SIZE;
+        // We need to ensure that we are refining the space, not expanding it
+        let huge_region_end = addr_hint + PROMOTED_PAGE_SIZE;
+        if huge_region_end > space_len {
+            return Ok(());
+        }
+        space_len = addr_hint + PROMOTED_PAGE_SIZE;
     }
 
     while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
@@ -156,27 +201,32 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
         // Tracks whether we can remap the following region as huge are not. This depends on every
         // page in the region being mapped and having compatible flags.
         let mut should_remap = true;
-        let res = do_for_each_submapping(&mut cursor, range.start, |_, _, sub_props| {
-            if let Some(page_props) = props {
-                // We ignore the accessed and dirty bits from the page flags here
-                // because the accessed/dirty bit of the huge page will be sum of all
-                // the bits from the subflags.
-                if !sub_props.equal_ignoring_accessed_dirty(&page_props) {
-                    should_remap = false;
-                    return Err(());
+        let res = do_for_each_submapping(
+            &mut cursor,
+            range.start,
+            range.start + PROMOTED_PAGE_SIZE,
+            |_, _, sub_props| {
+                if let Some(page_props) = props {
+                    // We ignore the accessed and dirty bits from the page flags here
+                    // because the accessed/dirty bit of the huge page will be sum of all
+                    // the bits from the subflags.
+                    if !sub_props.equal_ignoring_accessed_dirty(&page_props) {
+                        should_remap = false;
+                        return Err(());
+                    }
+                } else {
+                    // Only consider writeable pages to avoid CoW/sharing issues.
+                    if !sub_props.flags.contains(PageFlags::W) {
+                        should_remap = false;
+                        return Err(());
+                    }
+                    props = Some(*sub_props);
                 }
-            } else {
-                // Only consider writeable pages to avoid CoW/sharing issues.
-                if !sub_props.flags.contains(PageFlags::W) {
-                    should_remap = false;
-                    return Err(());
-                }
-                props = Some(*sub_props);
-            }
-            accessed |= sub_props.flags.contains(PageFlags::ACCESSED);
-            dirty |= sub_props.flags.contains(PageFlags::DIRTY);
-            Ok(())
-        });
+                accessed |= sub_props.flags.contains(PageFlags::ACCESSED);
+                dirty |= sub_props.flags.contains(PageFlags::DIRTY);
+                Ok(())
+            },
+        );
         should_remap &= res.is_ok();
         // If we never obtained the page properties, that means that we never saw any mapped
         // subregions. There's no need to remap this region.
@@ -203,16 +253,21 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
             let mut writer = new_frame.writer();
             // Offset into the writer to track advancing the writer
             let mut last_copied = start;
-            if do_for_each_submapping(&mut cursor, range.start, |sub_range, sub_frame, _| {
-                // Advance the writer since not every part of the subspace might be
-                // mapped.
-                writer.skip(sub_range.start - last_copied);
-                // Copy from this frame to the huge frame
-                let mut reader = sub_frame.reader();
-                reader.read(&mut writer);
-                last_copied = sub_range.end;
-                Ok(())
-            })
+            if do_for_each_submapping(
+                &mut cursor,
+                range.start,
+                range.start + PROMOTED_PAGE_SIZE,
+                |sub_range, sub_frame, _| {
+                    // Advance the writer since not every part of the subspace might be
+                    // mapped.
+                    writer.skip(sub_range.start - last_copied);
+                    // Copy from this frame to the huge frame
+                    let mut reader = sub_frame.reader();
+                    reader.read(&mut writer);
+                    last_copied = sub_range.end;
+                    Ok(())
+                },
+            )
             .is_err()
             {
                 break;
@@ -266,13 +321,38 @@ impl HugepagedServer {
         Ok(server)
     }
 
-    pub fn main(&self, initproc: Arc<Process>) {
-        let sleep_queue = WaitQueue::new();
-        let sleep_duration = Duration::from_secs(1);
+    pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
+        let notify_server = TimerServer::new(Duration::from_secs(1))?;
+        spawn_thread(notify_server.clone(), {
+            let notify_server = notify_server.clone();
+            move || notify_server.main()
+        });
+
+        let pf_oq = vmar::get_page_fault_oqueue();
+        let obs = pf_oq.attach_strong_observer()?;
+        let notifications = notify_server
+            .notification_oqueue()
+            .attach_strong_observer()?;
         loop {
+            let mut value: Option<PageFaultOQueueMessage> = None;
+            let mut got_notification = false;
+            while !got_notification {
+                select!(
+                    if let msg = obs.try_strong_observe() {
+                        value = Some(msg);
+                        got_notification = true;
+                    },
+                    if let _ = notifications.try_strong_observe() {
+                        got_notification = true;
+                    }
+                );
+                if !got_notification {
+                    ostd::task::Task::yield_now();
+                }
+            }
+
             // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
             // page mapping.
-            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
 
             let mut procs: Vec<Arc<Process>> = Vec::new();
             procs.push(initproc.clone());
@@ -281,7 +361,7 @@ impl HugepagedServer {
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
 
-                if promote_hugepages(&proc, None).is_err() {
+                if promote_hugepages(&proc, value).is_err() {
                     break;
                 }
             }
