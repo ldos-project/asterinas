@@ -24,6 +24,7 @@
 pub mod errors;
 
 mod integration_test;
+pub mod notifier;
 pub mod shutdown;
 
 use alloc::{sync::Weak, vec::Vec};
