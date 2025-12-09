@@ -184,6 +184,20 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         }
     }
 
+    pub fn split_if_mapped_huge(&mut self) {
+        let va = self.virt_addr();
+        // TODO(aneesh): handle levels larger than two.
+        let huge_page_size = page_size::<C>(2);
+        let rcu_guard = self.rcu_guard;
+        let mut cur_entry = self.cur_entry();
+        if let ChildRef::Frame(_, lvl, _) = cur_entry.to_ref() {
+            if let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard) {
+                self.push_level(split_child);
+            }
+        }
+        self.jump(va).unwrap();
+    }
+
     /// Moves the cursor forward to the next mapped virtual address.
     ///
     /// If there is mapped virtual address following the current address within
@@ -398,6 +412,10 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         self.0.find_next(len)
     }
 
+    pub fn split_if_mapped_huge(&mut self) {
+        self.0.split_if_mapped_huge();
+    }
+
     /// Jumps to the given virtual address.
     ///
     /// This is the same as [`Cursor::jump`].
@@ -450,6 +468,9 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         let (pa, level, prop) = C::item_into_raw(item);
         assert!(level <= C::HIGHEST_TRANSLATION_LEVEL);
         let size = page_size::<C>(level);
+        if (self.0.va % size) != 0 {
+            crate::prelude::println!("?!?!? 0x{:x} size=0x{:x} lvl={}", self.0.va, size, level);
+        }
         assert_eq!(self.0.va % size, 0);
         let end = self.0.va + size;
         assert!(end <= self.0.barrier_va.end);
