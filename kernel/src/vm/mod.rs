@@ -16,8 +16,8 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{ops::Range, sync::atomic::Ordering, time::Duration};
+use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use core::{ops::Range, time::Duration};
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
@@ -28,7 +28,7 @@ use ostd::{
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
     orpc::{
-        framework::errors::RPCError,
+        framework::{errors::RPCError, spawn_thread},
         oqueue::{OQueue, OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server, orpc_trait,
         sync::select,
@@ -37,12 +37,11 @@ use ostd::{
     task::{TaskOptions, disable_preempt},
 };
 use snafu::Whatever;
-use vmar::{GLOBAL_RSS, PageFaultOQueueMessage, RssType};
+use vmar::{PageFaultOQueueMessage, RssType};
 
 use crate::{
     prelude::WaitTimeout,
     process::{PauseProcGuard, Process},
-    thread::kernel_thread::ThreadOptions,
 };
 
 pub mod page_fault_handler;
@@ -100,7 +99,7 @@ where
             f(&sub_range, sub_frame, &sub_props)?;
         }
 
-        if (sub_range.end >= end) {
+        if sub_range.end >= end {
             break;
         }
         // Advance the cursor to the end of this mapping
@@ -321,8 +320,13 @@ pub struct HugepagedServer {}
 #[orpc_trait]
 trait Timer {
     fn notify(&self) -> Result<(), RPCError> {
-        self.notification_oqueue().produce(());
-        Ok(())
+        if self.notification_oqueue().produce(()).is_err() {
+            Err(RPCError::Panic {
+                message: "Could not produce into notification_oqueue".to_string(),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     fn notification_oqueue(&self) -> OQueueRef<()> {
@@ -350,12 +354,11 @@ impl TimerServer {
         Ok(server)
     }
 
-    pub fn main(&self) {
+    pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
         let sleep_queue = WaitQueue::new();
-        let sleep_duration = Duration::from_secs(1);
         loop {
-            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
-            self.notify();
+            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &self.freq);
+            self.notify()?;
         }
     }
 }
@@ -368,14 +371,13 @@ impl HugepagedServer {
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
         let notify_server = TimerServer::new(Duration::from_secs(1))?;
-        ThreadOptions::new({
-            let s = notify_server.clone();
-            move || s.main()
-        })
-        .spawn();
+        spawn_thread(notify_server.clone(), {
+            let notify_server = notify_server.clone();
+            move || notify_server.main()
+        });
 
-        // let pagefault_oq = vmar::get_page_fault_oqueue();
-        // let observer = pagefault_oq.attach_strong_observer()?;
+        let pagefault_oq = vmar::get_page_fault_oqueue();
+        let observer = pagefault_oq.attach_strong_observer()?;
         let notifications = notify_server
             .notification_oqueue()
             .attach_strong_observer()?;
@@ -384,10 +386,10 @@ impl HugepagedServer {
             let mut got_notification = false;
             while !got_notification {
                 select!(
-                    // if let msg = observer.try_strong_observe() {
-                    //     value = Some(msg);
-                    //     got_notification = true;
-                    // },
+                    if let msg = observer.try_strong_observe() {
+                        value = Some(msg);
+                        got_notification = true;
+                    },
                     if let _ = notifications.try_strong_observe() {
                         got_notification = true;
                     }
