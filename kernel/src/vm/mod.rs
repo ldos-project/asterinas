@@ -135,6 +135,22 @@ fn promote_hugepages(
         }
     };
 
+    if false && fault_hint.is_some() {
+        let mut real_rss = 0;
+        do_for_each_submapping(&mut cursor, 0, space_len, |range, _, _| {
+            real_rss += range.end - range.start;
+            Ok(())
+        })
+        .unwrap();
+        crate::prelude::println!(
+            "proc={} RSS={} real_rss_n_pages={}",
+            proc.pid(),
+            proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
+            real_rss / 4096
+        );
+        cursor.jump(0).unwrap();
+    }
+
     // If we have an address hint, jump the cursor to that address, and only consider a single
     // region for promotion.
     if let Some(fault_hint) = fault_hint {
@@ -349,7 +365,9 @@ impl HugepagedServer {
                 proc.current_children()
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
-
+                if proc.pid() == 1 {
+                    continue;
+                }
                 if promote_hugepages(&proc, value).is_err() {
                     break;
                 }
@@ -424,6 +442,10 @@ impl ScannerServer {
                 proc.current_children()
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
+
+                if proc.pid() == 1 {
+                    continue;
+                }
 
                 if scan_proc(&proc).is_err() {
                     break;
