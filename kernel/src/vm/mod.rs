@@ -16,7 +16,7 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{ops::Range, time::Duration};
 
 use align_ext::AlignExt;
@@ -28,20 +28,20 @@ use ostd::{
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
     orpc::{
-        framework::{errors::RPCError, spawn_thread},
-        oqueue::{OQueue, OQueueRef, ringbuffer::MPMCOQueue},
-        orpc_impl, orpc_server, orpc_trait,
+        framework::{notifier::Notifier, spawn_thread},
+        oqueue::OQueue,
+        orpc_server, orpc_trait,
         sync::select,
     },
-    sync::{WaitQueue, non_null::NonNullPtr},
-    task::{TaskOptions, disable_preempt},
+    sync::non_null::NonNullPtr,
+    task::disable_preempt,
 };
 use snafu::Whatever;
 use vmar::{PageFaultOQueueMessage, RssType};
 
 use crate::{
-    prelude::WaitTimeout,
     process::{PauseProcGuard, Process},
+    util::timer::TimerServer,
 };
 
 pub mod page_fault_handler;
@@ -316,52 +316,6 @@ trait HugePageD {}
 /// HugePage daemon that periodically attempts to promote pages to huge pages
 #[orpc_server(HugePageD)]
 pub struct HugepagedServer {}
-
-#[orpc_trait]
-trait Timer {
-    fn notify(&self) -> Result<(), RPCError> {
-        if self.notification_oqueue().produce(()).is_err() {
-            Err(RPCError::Panic {
-                message: "Could not produce into notification_oqueue".to_string(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn notification_oqueue(&self) -> OQueueRef<()> {
-        MPMCOQueue::<()>::new(1, 1)
-    }
-}
-
-/// HugePage daemon that periodically attempts to promote pages to huge pages
-#[orpc_server(Timer)]
-pub struct TimerServer {
-    freq: Duration,
-}
-
-#[orpc_impl]
-impl Timer for TimerServer {
-    fn notification_oqueue(&self) -> OQueueRef<()>;
-}
-
-impl TimerServer {
-    pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            freq,
-        });
-        Ok(server)
-    }
-
-    pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
-        let sleep_queue = WaitQueue::new();
-        loop {
-            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &self.freq);
-            self.notify()?;
-        }
-    }
-}
 
 impl HugepagedServer {
     pub fn new() -> Result<Arc<Self>, Whatever> {
