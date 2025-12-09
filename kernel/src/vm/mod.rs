@@ -188,6 +188,9 @@ fn promote_hugepages(
 
         if (range.end - range.start) >= PROMOTED_PAGE_SIZE {
             // Already huge, nothing to do here
+            if cursor.jump(range.end).is_err() {
+                break;
+            }
             continue;
         }
 
