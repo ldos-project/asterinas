@@ -37,3 +37,5 @@ aster-nix-profile-*.svg
 .vscode
 
 .devcontainer/
+
+notes/
