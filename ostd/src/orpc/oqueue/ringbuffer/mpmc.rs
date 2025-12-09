@@ -466,7 +466,9 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     fn size(&self) -> usize {
-        self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
+        self.head
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.tail.load(Ordering::Relaxed))
     }
 
     fn empty(&self) -> bool {
