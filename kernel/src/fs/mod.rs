@@ -22,7 +22,7 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{Raid1Device, Raid1DeviceError};
+use aster_raid::{selection_policies::RoundRobinPolicy, Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -111,7 +111,9 @@ fn setup_raid1_device() -> Result<()> {
         }
     }
 
-    Raid1Device::new(RAID_DEVICE_NAME, members).map_err(|err| match err {
+    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+
+    Raid1Device::new(RAID_DEVICE_NAME, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
