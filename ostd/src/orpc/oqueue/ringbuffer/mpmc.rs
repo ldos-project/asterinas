@@ -202,23 +202,6 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         index % self.capacity
     }
 
-    /// Get the current head value, spinning if it is MPMCOQUEUE_HEAD_SENTINEL. i.e. this method
-    /// will never return MPMCOQUEUE_HEAD_SENTINEL.
-    fn fetch_head_for_produce(&self) -> usize {
-        loop {
-            let head = self.head.fetch_add(1, Ordering::Acquire);
-            if head >= MPMCOQUEUE_HEAD_SENTINEL {
-                while self.head.load(Ordering::Relaxed) >= MPMCOQUEUE_HEAD_SENTINEL {
-                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our
-                    // tests that don't have preemptive schedueling.
-                    Task::yield_now();
-                }
-            } else {
-                break head;
-            }
-        }
-    }
-
     fn get_slot(&self, position: usize) -> &Slot<T> {
         // SAFETY: self.idx(position) ensures that the index for `slots` is in bounds
         unsafe { self.slots.get_unchecked(self.idx(position)) }
@@ -245,34 +228,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
-    /// Produce an element onto the queue
-    pub fn produce(&self, data: T)
-    where
-        T: Send,
-    {
-        // Update the head position so that other producers can also write
-        let head = self.fetch_head_for_produce();
-
-        // Get the slot we will be writing to
-        let slot = &self.get_slot(head);
-
-        // Wait until the generation count matches the turn. Note that we need an even turn
-        // because we are writing.
-        let mut counter = 0;
-        while self.turn(head, false) != slot.turn.load(Ordering::Acquire) {
-            counter += 1;
-            if counter % 1024 == 0 {
-                counter = 0;
-                // TODO(aneesh): Revisit the need for yield - this might only be needed in our
-                // tests that don't have preemptive scheduling.
-                Task::yield_now();
-            }
-            core::hint::spin_loop();
-        }
-        unsafe { slot.store(data) };
-        self.mark_slot_as_written(head);
-    }
-
+    // TODO(arthurp): It may be possible to implement an optimized blocking produce.
     fn try_produce(&self, data: T) -> Option<T>
     where
         T: Send,
@@ -362,48 +318,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
         }
     }
 
-    /// Consume an element from the queue
-    pub fn consume(&self) -> T {
-        let mut tail = self.tail.load(Ordering::Acquire);
-        let v = loop {
-            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-            let mut counter = 0;
-            while self.turn(tail, true) != slot.turn.load(Ordering::Acquire) {
-                counter += 1;
-                if counter % 1024 == 0 {
-                    counter = 0;
-                    // TODO(aneesh): Revisit the need for yield - this might only be needed in our tests
-                    // that don't have preemptive schedueling.
-                    Task::yield_now();
-                }
-                core::hint::spin_loop();
-            }
-            let v = unsafe { slot.get_maybe_uninit() };
-            if let Err(new_tail) =
-                self.tail
-                    .compare_exchange(tail, tail + 1, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                // We failed the compare exchange - this means that some other consumer stole this
-                // value, so we can retry instead.
-                tail = new_tail;
-            } else {
-                // SAFETY: if the compare exchange succeeded then this is a valid value that hasn't
-                // been marked as read yet.
-                break unsafe { v.assume_init() };
-            }
-        };
-
-        let next_slot_turn = self.next_turn(tail, false);
-        // Check if there's any StrongObservers that have not yet read this slot.
-        if !STRONG_OBSERVERS {
-            let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
-            slot.turn.store(next_slot_turn, Ordering::Release);
-        } else {
-            self.mark_slot_as_read::<true>(self.turn(tail, true), next_slot_turn, tail);
-        }
-        v
-    }
-
+    // TODO(arthurp): It may be possible to implement an optimized blocking consume.
     fn try_consume(&self) -> Option<T> {
         // Unlike rigtorp/MPMCQueue, we only expose `try_consume` and not a `consume`. This is
         // because supporting `consume` with sufficient semantics for observation is hard.
@@ -565,8 +480,17 @@ impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool
     for MPMCProducer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn produce(&self, data: T) {
-        self.oqueue.produce(data);
-        self.oqueue.read_wait_queue.wake_all();
+        // self.oqueue.produce(data);
+        // self.oqueue.read_wait_queue.wake_all();
+        let mut data = Some(data);
+        self.oqueue.put_wait_queue.wait_until(|| {
+            if let Some(d) = self.try_produce(data.take().unwrap()) {
+                data = Some(d);
+                None
+            } else {
+                Some(())
+            }
+        })
     }
 
     fn try_produce(&self, data: T) -> Option<T> {
@@ -614,9 +538,9 @@ impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool
     for MPMCConsumer<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     fn consume(&self) -> T {
-        let v = self.oqueue.consume();
-        self.oqueue.put_wait_queue.wake_one();
-        v
+        self.oqueue
+            .read_wait_queue
+            .wait_until(|| self.try_consume())
     }
 
     fn try_consume(&self) -> Option<T> {
