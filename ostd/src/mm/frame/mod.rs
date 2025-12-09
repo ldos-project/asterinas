@@ -92,7 +92,7 @@ pub(in crate::mm) fn max_paddr() -> Paddr {
 /// frame is a untyped frame. Otherwise, it is a typed frame.
 #[repr(transparent)]
 pub struct Frame<M: AnyFrameMeta + ?Sized> {
-    ptr: *const MetaSlot,
+    pub ptr: *const MetaSlot,
     _marker: PhantomData<M>,
 }
 
