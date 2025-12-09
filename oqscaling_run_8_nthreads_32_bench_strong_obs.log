@@ -1,0 +1,124 @@
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+make[3]: Nothing to be done for 'all'.
+cd kernel && cargo osdk run --kcmd-args="ostd.log_level=error"  --kcmd-args="bench.n_threads=32"  --kcmd-args="bench.type=strong_obs" --target-arch=x86_64 --release --boot-method="grub-rescue-iso" --grub-boot-protocol=multiboot2 --qemu-args="-accel kvm" --qemu-args="-smp 33"
+[Info] [normal] Forwarded QEMU guest port: 4590->22; 43788->8080 39507->6379 11147->5201 8775->31234 33851->31236 56524->11211
+[Info] [test] Forwarded QEMU guest port: 3571->22; 60566->8080 5871->6379 20974->5201 38965->31234 9276->31236 28129->11211
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[2J[01;01H[=3h[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+BdsDxe: starting BooBdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+t0001 "UEFI QEMU DVD-ROM QM00005 " from PciRoot(0x0)/Pci(0x1F,0x2)/Sata(0x2,0xFFFF,0x0)
+WARNING: no console will be available to OS
+WARNING: no console will be available to OS
+error: no suitable video mode found.
+[kernel] OSTD initialized. Preparing components.
+[kernel] unpacking the initramfs.cpio.gz to rootfs ...
+[kernel] rootfs is ready
+[kernel] Spawn init thread
+[kernel] Mount Ext2 fs at FsPath { inner: Absolute("/ext2") } 
+[kernel] Mount ExFat fs at FsPath { inner: Absolute("/exfat") } 
+[kernel] Mounted RAID-1 at FsPath { inner: Absolute("/raid1") } 
+[kernel] Hello world from kernel!
+[36m
+
+   _   ___ _____ ___ ___ ___ _  _   _   ___
+  /_\ / __|_   _| __| _ \_ _| \| | /_\ / __|
+ / _ \\__ \ | | | _||   /| || .` |/ _ \\__ \
+/_/ \_\___/ |_| |___|_|_\___|_|\_/_/ \_\___/
+
+[0m
+Starting producers
+Waiting for benchmark to complete
+[producer-4-CpuId(5)] start
+[producer-14-CpuId(15)] start
+[producer-16-CpuId(17)] start
+[producer-5-CpuId(6)] start
+[producer-10-CpuId(11)] start
+[producer-19-CpuId(20)] start
+[producer-1-CpuId(2)] start
+[producer-6-CpuId(7)] start
+[producer-22-CpuId(23)] start
+[producer-3-CpuId(4)] start
+[producer-17-CpuId(18)] start
+[producer-2-CpuId(3)] start
+[producer-23-CpuId(24)] start
+[producer-21-CpuId(22)] start
+[producer-28-CpuId(29)] start
+[producer-0-CpuId(1)] start
+[producer-20-CpuId(21)] start
+[producer-8-CpuId(9)] start
+[producer-18-CpuId(19)] start
+[producer-12-CpuId(13)] start
+[producer-9-CpuId(10)] start
+[producer-26-CpuId(27)] start
+[producer-11-CpuId(12)] start
+[producer-27-CpuId(28)] start
+[producer-7-CpuId(8)] start
+[producer-30-CpuId(31)] start
+[producer-13-CpuId(14)] start
+[producer-25-CpuId(26)] start
+[producer-29-CpuId(30)] start
+[producer-15-CpuId(16)] start
+[producer-24-CpuId(25)] start
+[producer-0-CpuId(1)] sent msg in 3.353391499s
+[producer-21-CpuId(22)] sent msg in 3.353394352s
+[producer-7-CpuId(8)] sent msg in 3.353392889s
+[producer-30-CpuId(31)] sent msg in 3.353394966s
+[producer-8-CpuId(9)] sent msg in 3.355248427s
+[producer-4-CpuId(5)] sent msg in 3.353393138s
+[producer-25-CpuId(26)] sent msg in 3.355480104s
+[producer-1-CpuId(2)] sent msg in 3.353392322s
+[producer-23-CpuId(24)] sent msg in 3.353394078s
+[producer-14-CpuId(15)] sent msg in 3.362675218s
+[producer-16-CpuId(17)] sent msg in 3.353392658s
+[producer-2-CpuId(3)] sent msg in 3.353392095s
+[producer-19-CpuId(20)] sent msg in 3.353393829s
+[producer-15-CpuId(16)] sent msg in 3.356279471s
+[producer-9-CpuId(10)] sent msg in 3.353392714s
+[producer-29-CpuId(30)] sent msg in 3.356316718s
+[producer-12-CpuId(13)] sent msg in 3.353392901s
+[producer-24-CpuId(25)] sent msg in 3.352016282s
+[producer-3-CpuId(4)] sent msg in 3.353392171s
+[producer-28-CpuId(29)] sent msg in 3.353394296s
+[producer-5-CpuId(6)] sent msg in 3.353392629s
+[producer-11-CpuId(12)] sent msg in 3.353391789s
+[consumer-CpuId(32)] recv msg in 3.360601905s
+[producer-10-CpuId(11)] sent msg in 3.353392925s
+[producer-17-CpuId(18)] sent msg in 3.353394011s
+[producer-6-CpuId(7)] sent msg in 3.358052708s
+[producer-22-CpuId(23)] sent msg in 3.353393665s
+[producer-26-CpuId(27)] sent msg in 3.353394865s
+[producer-20-CpuId(21)] sent msg in 3.353394249s
+[producer-13-CpuId(14)] sent msg in 3.353392189s
+[producer-18-CpuId(19)] sent msg in 3.353393452s
+[producer-27-CpuId(28)] sent msg in 3.353394402s
+[

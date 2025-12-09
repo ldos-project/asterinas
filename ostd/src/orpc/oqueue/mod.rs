@@ -39,6 +39,10 @@ impl Cursor {
     pub fn index(&self) -> usize {
         self.0
     }
+
+    pub fn advance(&mut self) {
+        self.0 += 1;
+    }
 }
 
 impl Add<usize> for Cursor {
