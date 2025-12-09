@@ -135,20 +135,6 @@ fn promote_hugepages(
         }
     };
 
-    let mut real_rss = 0;
-    do_for_each_submapping(&mut cursor, 0, space_len, |range, _, _| {
-        real_rss += range.end - range.start;
-        Ok(())
-    })
-    .unwrap();
-    crate::prelude::println!(
-        "proc={} RSS={} real_rss_n_pages={}",
-        proc.pid(),
-        proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
-        real_rss / 4096
-    );
-    cursor.jump(0).unwrap();
-
     // If we have an address hint, jump the cursor to that address, and only consider a single
     // region for promotion.
     if let Some(fault_hint) = fault_hint {
