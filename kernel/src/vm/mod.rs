@@ -41,6 +41,7 @@ use vmar::{PageFaultOQueueMessage, RssType};
 
 use crate::{
     process::{PauseProcGuard, Process},
+    time::{clocks::RealTimeClock, Clock},
     util::timer::TimerServer,
 };
 
@@ -402,8 +403,11 @@ fn scan_proc(proc: &Arc<Process>) -> Result<(), ()> {
         Ok(())
     })
     .unwrap();
+
+    let now = RealTimeClock::get().read_time();
     crate::prelude::println!(
-        "proc={} RSS={} real_rss_n_pages={}",
+        "now={:?} proc={} RSS={} real_rss_n_pages={}",
+        now,
         proc.pid(),
         proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
         real_rss / 4096
@@ -425,7 +429,7 @@ impl ScannerServer {
     }
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
-        let notify_server = TimerServer::new(Duration::from_secs(1))?;
+        let notify_server = TimerServer::new(Duration::from_millis(100))?;
         spawn_thread(notify_server.clone(), {
             let notify_server = notify_server.clone();
             move || notify_server.main()
