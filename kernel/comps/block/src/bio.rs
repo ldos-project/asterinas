@@ -2,8 +2,10 @@
 
 use alloc::boxed::Box;
 use core::fmt::Display;
+use core::time::Duration;
 
 use align_ext::AlignExt;
+use aster_time::read_monotonic_time;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 use ostd::{
@@ -18,6 +20,23 @@ use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
 use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
+
+use crate::request_queue::BioRequestSingleQueue;
+
+/// Trace data for block device I/O completion.
+///
+/// This struct captures performance metrics when a block I/O request completes.
+#[derive(Clone)]
+pub struct BlockDeviceCompletionTrace {
+    /// The latency of the I/O request (time from submission to completion).
+    pub latency: Duration,
+    /// The number of outstanding requests at completion time.
+    pub outstanding_requests: usize,
+}
+
+use ostd::orpc::{
+    oqueue::{Producer, OQueueAttachError},
+};
 
 /// The unit for block I/O.
 ///
@@ -125,7 +144,14 @@ impl Bio {
         );
         assert!(result.is_ok());
 
-        if let Err(e) = block_device.enqueue(SubmittedBio(self.0.clone())) {
+        // enqueue to the block device
+        // A SubmittedBio is created here from a Bio, and then pass down to the lower layers. 
+        if let Err(e) = block_device.enqueue(SubmittedBio {
+            bio_inner: self.0.clone(),
+            reply_handle: None,
+            submission_time: None,
+            bio_request_single_queue: None,
+        }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
                 BioStatus::Submit as u32,
@@ -177,6 +203,18 @@ pub enum BioEnqueueError {
     Refused,
     /// Too big bio
     TooBig,
+    /// OQueue attachment failures
+    OQueueAttachmentAllocationFailed,
+    OQueueAttachmentUnsupported,
+}
+
+impl From<OQueueAttachError> for BioEnqueueError {
+    fn from(err: OQueueAttachError) -> Self {
+        match err {
+            OQueueAttachError::Unsupported { .. } => BioEnqueueError::OQueueAttachmentUnsupported,
+            OQueueAttachError::AllocationFailed { .. } => BioEnqueueError::OQueueAttachmentAllocationFailed,
+        }
+    }
 }
 
 impl Display for BioEnqueueError {
@@ -282,29 +320,52 @@ impl Default for BioWaiter {
 
 /// A submitted `Bio` object.
 ///
-/// The request queue of block device only accepts a `SubmittedBio` into the queue.
-#[derive(Debug)]
-pub struct SubmittedBio(Arc<BioInner>);
+/// The request queue
+/// FIXME(yingqi): This clone method is added to satisfies the trait bound for the OQueue, because OQueue needs to 
+/// be able to clone elements in the queue in the case there are mutiple observers. However, 
+/// A BIO REQUEST SHOULD NEVER BE CLONED!!!
+// #[derive(Clone)]
+pub struct SubmittedBio{
+    bio_inner: Arc<BioInner>,
+
+    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionTrace>>>,
+    submission_time: Option<Duration>,
+
+    /// Since SubmittedBio is created after the bio is submitted to some block device, which
+    /// means it definitely has an outstanding request in the request queue of the block device.
+    bio_request_single_queue: Option<Arc<BioRequestSingleQueue>>,
+}
+
+impl core::fmt::Debug for SubmittedBio {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SubmittedBio")
+            .field("bio_inner", &self.bio_inner)
+            .field("reply_handle", &self.reply_handle.as_ref().map(|_| "<Producer>"))
+            .field("submission_time", &self.submission_time)
+            .field("bio_request_single_queue", &self.bio_request_single_queue)
+            .finish()
+    }
+}
 
 impl SubmittedBio {
     /// Returns the type.
     pub fn type_(&self) -> BioType {
-        self.0.type_()
+        self.bio_inner.type_()
     }
 
     /// Returns the range of target sectors on the device.
     pub fn sid_range(&self) -> &Range<Sid> {
-        self.0.sid_range()
+        self.bio_inner.sid_range()
     }
 
     /// Returns the slice to the memory segments.
     pub fn segments(&self) -> &[BioSegment] {
-        self.0.segments()
+        self.bio_inner.segments()
     }
 
     /// Returns the status.
     pub fn status(&self) -> BioStatus {
-        self.0.status()
+        self.bio_inner.status()
     }
 
     /// Completes the `Bio` with the `status` and invokes the callback function.
@@ -314,7 +375,7 @@ impl SubmittedBio {
         assert!(status != BioStatus::Init && status != BioStatus::Submit);
 
         // Set the status.
-        let result = self.0.status.compare_exchange(
+        let result = self.bio_inner.status.compare_exchange(
             BioStatus::Submit as u32,
             status as u32,
             Ordering::Release,
@@ -322,10 +383,33 @@ impl SubmittedBio {
         );
         assert!(result.is_ok());
 
-        self.0.wait_queue.wake_all();
-        if let Some(complete_fn) = &self.0.complete_fn {
+        self.bio_inner.wait_queue.wake_all();
+        if let Some(complete_fn) = &self.bio_inner.complete_fn {
             complete_fn.call(self);
         }
+    }
+
+    pub fn submission_time(&self) -> Option<Duration> {
+        self.submission_time
+    }
+
+    pub fn num_outstanding_requests(&self) -> usize {
+        self.bio_request_single_queue.as_ref().unwrap().num_requests()
+    }
+
+    pub fn prepare_enqueue(&mut self, 
+        reply_handle: Box<dyn Producer<BlockDeviceCompletionTrace>>,
+        bio_request_single_queue: Arc<BioRequestSingleQueue>) {
+        self.reply_handle = Some(reply_handle);
+        self.bio_request_single_queue = Some(bio_request_single_queue);
+        self.submission_time = Some(read_monotonic_time());
+    }
+
+    pub fn reply(&self) {
+        self.reply_handle.as_ref().unwrap().produce(BlockDeviceCompletionTrace {
+            latency: read_monotonic_time() - self.submission_time.unwrap(),
+            outstanding_requests: self.num_outstanding_requests(),
+        });
     }
 }
 

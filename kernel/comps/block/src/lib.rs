@@ -46,7 +46,7 @@ use ostd::sync::SpinLock;
 use spin::Once;
 
 use self::{
-    bio::{Bio, BioWaiter,BioEnqueueError, SubmittedBio},
+    bio::{Bio, BioWaiter, BioEnqueueError, SubmittedBio},
     prelude::*,
 };
 
