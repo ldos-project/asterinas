@@ -16,7 +16,7 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::ops::Range;
 
 use align_ext::AlignExt;
@@ -282,9 +282,9 @@ impl HugepagedServer {
         Ok(server)
     }
 
-    pub fn main(&self, initproc: Arc<Process>) {
+    pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
         let pf_oq = vmar::get_page_fault_oqueue();
-        let obs = pf_oq.attach_strong_observer().unwrap();
+        let obs = pf_oq.attach_strong_observer()?;
         loop {
             let msg = obs.strong_observe();
             // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
