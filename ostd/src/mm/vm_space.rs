@@ -333,6 +333,11 @@ impl<'a> CursorMut<'a> {
         self.pt_cursor.find_next(len)
     }
 
+    /// If the current virtual address is mapped as a huge page, split it into base pages.
+    pub fn split_if_mapped_huge(&mut self) {
+        self.pt_cursor.split_if_mapped_huge();
+    }
+
     /// Jump to the virtual address.
     ///
     /// This is the same as [`Cursor::jump`].
@@ -356,6 +361,7 @@ impl<'a> CursorMut<'a> {
     /// This method will bring the cursor to the next slot after the modification.
     pub fn map(&mut self, frame: UFrame, prop: PageProperty) {
         let start_va = self.virt_addr();
+        let map_level = frame.map_level();
         let item = (frame, prop);
 
         // SAFETY: It is safe to map untyped memory into the userspace.
@@ -371,8 +377,20 @@ impl<'a> CursorMut<'a> {
                     .issue_tlb_flush_with(TlbFlushOp::Address(start_va), old_frame.into());
                 self.flusher.dispatch_tlb_flush();
             }
-            PageTableFrag::StrayPageTable { .. } => {
-                panic!("`UFrame` is base page sized but re-mapping out a child PT");
+            PageTableFrag::StrayPageTable {
+                pt,
+                va,
+                len: _,
+                num_frames: _,
+            } => {
+                if map_level == 1 {
+                    panic!("`UFrame` is base page sized but re-mapping out a child PT");
+                }
+                // Issuing this flush here assumes that all the child pages are already dropped
+                debug_assert_eq!(va, start_va);
+                self.flusher
+                    .issue_tlb_flush_with(TlbFlushOp::Address(start_va), pt);
+                self.flusher.dispatch_tlb_flush();
             }
         }
     }
@@ -500,6 +518,8 @@ unsafe impl PageTableConfig for UserPtConfig {
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
         // SAFETY: The caller ensures safety.
         let frame = unsafe { Frame::<dyn AnyUFrameMeta>::from_raw(paddr) };
+        // TODO(aneesh): this should really only be done during split_if_mapped_huge
+        frame.set_map_level(level);
         debug_assert_eq!(frame.map_level(), level);
         (frame, prop)
     }
