@@ -188,6 +188,13 @@ fn init_thread() {
         spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
     }
 
+    {
+        let scannerd = vm::ScannerServer::new().unwrap();
+        let initproc = initproc.clone();
+
+        spawn_thread(scannerd.clone(), move || scannerd.main(initproc));
+    }
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();

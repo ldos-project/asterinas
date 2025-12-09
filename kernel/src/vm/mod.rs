@@ -368,3 +368,78 @@ impl HugepagedServer {
         }
     }
 }
+
+fn scan_proc(proc: &Arc<Process>) -> Result<(), ()> {
+    let proc_vm = proc.vm();
+    let proc_vm_guard = proc_vm.lock_root_vmar();
+    let proc_vmar = if let Some(proc_vmar) = proc_vm_guard.as_ref() {
+        proc_vmar
+    } else {
+        // The process may have exited right as we attempted to pause it.
+        return Ok(());
+    };
+
+    let preempt_guard = disable_preempt();
+    let space_len = proc_vmar.size();
+    let vm_space = proc_vmar.vm_space();
+    let mut cursor = match vm_space.cursor_mut(&preempt_guard, &(0..space_len)) {
+        Ok(cursor) => cursor,
+        _ => {
+            return Ok(());
+        }
+    };
+
+    let mut real_rss = 0;
+    do_for_each_submapping(&mut cursor, 0, space_len, |range, _, _| {
+        real_rss += range.end - range.start;
+        Ok(())
+    })
+    .unwrap();
+    crate::prelude::println!(
+        "proc={} RSS={} real_rss_n_pages={}",
+        proc.pid(),
+        proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
+        real_rss / 4096
+    );
+    Ok(())
+}
+
+#[orpc_trait]
+trait ScannerD {}
+
+/// HugePage daemon that periodically attempts to promote pages to huge pages
+#[orpc_server(ScannerD)]
+pub struct ScannerServer {}
+
+impl ScannerServer {
+    pub fn new() -> Result<Arc<Self>, Whatever> {
+        let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
+        Ok(server)
+    }
+
+    pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
+        let notify_server = TimerServer::new(Duration::from_secs(1))?;
+        spawn_thread(notify_server.clone(), {
+            let notify_server = notify_server.clone();
+            move || notify_server.main()
+        });
+
+        let notifications = notify_server
+            .notification_oqueue()
+            .attach_strong_observer()?;
+        loop {
+            notifications.strong_observe();
+            let mut procs: Vec<Arc<Process>> = Vec::new();
+            procs.push(initproc.clone());
+            while let Some(proc) = procs.pop() {
+                proc.current_children()
+                    .iter()
+                    .for_each(|c| procs.push(c.clone()));
+
+                if scan_proc(&proc).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
