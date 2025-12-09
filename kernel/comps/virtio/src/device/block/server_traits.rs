@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 
 use ostd::orpc::{
     oqueue::{
-        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue,
+        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue, locking::LockingQueue
     },
     orpc_trait,
 };
@@ -79,10 +79,10 @@ impl From<OQueueAttachError> for VirtioDeviceError {
 
 #[orpc_trait]
 pub trait BlockIOObservable {
-    /// The OQueue containing every bio submission request. This includes both sync and async submissions on this
-    /// trait and any other submission operations on other traits (for instance,
+    /// The OQueue containing every bio submission request. 
+    /// The submission queue doesn't needed to be observable. 
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio> {
-        ObservableLockingQueue::new(8, 1)
+        LockingQueue::new(16)
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any

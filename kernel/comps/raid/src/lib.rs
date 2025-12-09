@@ -17,6 +17,7 @@
 
 #![no_std] // BlockDevice crate also not using rust std and not using unsafe code.
 #![deny(unsafe_code)]
+#![feature(trait_upcasting)]
 
 extern crate alloc;
 
@@ -24,11 +25,7 @@ pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
-use core::{
-    cmp,
-    ops::Range,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::{cmp, ops::Range};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
@@ -37,13 +34,13 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 
-use crate::selection_policies::SelectionPolicy;
+use crate::server_traits::SelectionPolicy;
 
 use ostd::orpc::orpc_server;
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
-#[orpc_server(server_traits::ORPCBio, server_traits::PageIOObservable, server_traits::OQueueSubmit)]
+#[orpc_server]
 pub struct Raid1Device {
     /// Member block devices that store identical data (mirrors).
     members: Vec<Arc<dyn BlockDevice>>,
@@ -143,7 +140,7 @@ impl Raid1Device {
                 Self::clone_segments(parent),
                 None,
             );
-            match child.submit(member) {
+            match child.submit(&*member) {
                 Ok(waiter) => pending.push((parent, waiter)),
                 // Err(_) => parent.complete(BioStatus::IoError),
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
