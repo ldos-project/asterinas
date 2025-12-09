@@ -468,9 +468,6 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         let (pa, level, prop) = C::item_into_raw(item);
         assert!(level <= C::HIGHEST_TRANSLATION_LEVEL);
         let size = page_size::<C>(level);
-        if (self.0.va % size) != 0 {
-            crate::prelude::println!("?!?!? 0x{:x} size=0x{:x} lvl={}", self.0.va, size, level);
-        }
         assert_eq!(self.0.va % size, 0);
         let end = self.0.va + size;
         assert!(end <= self.0.barrier_va.end);
