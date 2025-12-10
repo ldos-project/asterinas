@@ -58,35 +58,36 @@ pub fn lazy_init() {
     //The device name is specified in qemu args as --serial={device_name}
     let ext2_device_name = "vext2";
     let exfat_device_name = "vexfat";
-    let raid1_device_name = "raid1";
+    let raid1_device_name = "raid_device";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
         let ext2_fs = Ext2::open(block_device_ext2).unwrap();
         let target_path = FsPath::try_from("/ext2").unwrap();
-        println!("[kernel] Mount Ext2 fs at {:?} ", target_path);
         self::rootfs::mount_fs_at(ext2_fs, &target_path).unwrap();
+        println!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
-    if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
-        let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
-        let target_path = FsPath::try_from("/exfat").unwrap();
-        println!("[kernel] Mount ExFat fs at {:?} ", target_path);
-        self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
-    }
+    // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
+    //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
+    //     let target_path = FsPath::try_from("/exfat").unwrap();
+    //     println!("[kernel] Mounted ExFat fs at {:?} ", target_path);
+    //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
+    // }
 
-    if let Ok(raid) = start_block_device(raid1_device_name) {
-        let raid_fs = Ext2::open(raid).unwrap();
-        let target_path = FsPath::try_from("/raid1").unwrap();
-        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
-            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
-        }
-        println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
-    }
+    // if let Ok(raid) = start_block_device(raid1_device_name) {
+    //     let raid_fs = Ext2::open(raid).unwrap();
+    //     let target_path = FsPath::try_from("/raid1").unwrap();
+    //     if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
+    //         error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+    //     }
+    //     println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+    // }
 }
 
 fn setup_raid1_device() -> Result<()> {
-    const RAID_DEVICE_NAME: &str = "raid1";
+    const RAID_DEVICE_NAME: &str = "raid_device";
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
+    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         RAID_DEVICE_NAME, RAID_MEMBER_NAMES

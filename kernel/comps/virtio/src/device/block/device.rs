@@ -90,8 +90,12 @@ impl BlockDevice {
         let server_for_oqueue = block_device_server.clone();
         spawn_thread(server_for_oqueue.clone(), {
             move || {
+                // Attach consumer ONCE outside the loop to avoid race condition
+                // where items could be skipped between consumer drop and re-attach
+                let consumer = server_for_oqueue.bio_submission_oqueue().attach_consumer().unwrap();
                 loop {
-                    server_for_oqueue.handle_requests_observable();
+                    let request = consumer.consume();
+                    server_for_oqueue.queue.enqueue(request).unwrap();
                 }
             }
         });
@@ -113,14 +117,6 @@ impl BlockDevice {
             BioType::Flush => self.device.flush(request),
             BioType::Discard => todo!(),
         }
-    }
-
-    /// Handle Requests function for the block device. 
-    /// It pop the requests from the oqueue and enqueue them to the BioRequestSingleQueue.
-    pub fn handle_requests_observable(&self) {
-        let consumer = self.bio_submission_oqueue().attach_consumer().unwrap();
-        let request = consumer.consume();
-        self.queue.enqueue(request).unwrap();
     }
 
     /// Negotiate features for the device specified bits 0~23
