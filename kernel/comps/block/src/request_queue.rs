@@ -73,6 +73,7 @@ impl BioRequestSingleQueue {
 
         let new_request = BioRequest::from(bio);
         queue.push_front(new_request);
+        info!("[BioRequestSingleQueue] Enqueued a new request, number of requests: {}", self.num_requests());
         self.inc_num_requests();
         drop(queue);
 
@@ -90,6 +91,7 @@ impl BioRequestSingleQueue {
             if num_requests > 0 {
                 let mut queue = self.queue.lock();
                 if let Some(request) = queue.pop_back() {
+                    info!("[BioRequestSingleQueue] Dequeued a request, number of requests: {}", self.num_requests());
                     self.dec_num_requests();
                     return request;
                 }
