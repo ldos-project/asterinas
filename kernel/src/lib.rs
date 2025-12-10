@@ -87,6 +87,7 @@ pub fn main() {
     // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
     // - ORPC spawn function must be injected, otherwise ORPC threads are created without
     //   Thread association and are ignored by the ClassScheduler
+    thread::init();
     sched::init();
     orpc_utils::init();
 
@@ -107,7 +108,6 @@ pub fn main() {
 }
 
 pub fn init() {
-    thread::init();
     util::random::init();
     driver::init();
     time::init();
