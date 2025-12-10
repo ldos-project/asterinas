@@ -82,13 +82,13 @@ pub trait BlockIOObservable {
     /// The OQueue containing every bio submission request. 
     /// The submission queue doesn't needed to be observable. 
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio> {
-        LockingQueue::new(16)
+        LockingQueue::new(32)
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionTrace> {
-        ObservableLockingQueue::new(8, 1)
+        ObservableLockingQueue::new(32, 1)
     }
 }
 
