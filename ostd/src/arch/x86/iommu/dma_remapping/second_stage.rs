@@ -42,7 +42,7 @@ unsafe impl PageTableConfig for IommuPtConfig {
         item
     }
 
-    fn init_split_item_subpage(item: Self::Item, level: PagingLevel) {}
+    fn init_split_item_subpage(_item: Self::Item, _level: PagingLevel) {}
 }
 
 #[derive(Clone, Debug, Default)]
