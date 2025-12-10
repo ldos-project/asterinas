@@ -109,6 +109,12 @@ mod test_utils {
         ) -> Self::Item {
             (paddr, level, prop)
         }
+
+        fn split_item(item: Self::Item) -> Self::Item {
+            item
+        }
+
+        fn init_split_item_subpage(_item: Self::Item, _level: PagingLevel) {}
     }
 }
 

@@ -167,6 +167,11 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
         self.slot().level()
     }
 
+    /// Set the map level for this page.
+    pub fn set_map_level(&self, level: PagingLevel) {
+        self.slot().set_level(level);
+    }
+
     /// Gets the size of this page in bytes.
     pub fn size(&self) -> usize {
         page_size::<PagingConsts>(self.map_level())

@@ -325,6 +325,10 @@ impl MetaSlot {
         mapping::meta_to_frame(self as *const MetaSlot as Vaddr)
     }
 
+    pub(super) fn set_level(&self, level: PagingLevel) {
+        self.level.set(level);
+    }
+
     pub(super) fn level(&self) -> PagingLevel {
         self.level.get()
     }
