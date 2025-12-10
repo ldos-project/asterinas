@@ -219,6 +219,7 @@ dependencies = [
  "controlled",
  "core2",
  "cpio-decoder",
+ "crossbeam-utils",
  "fixed",
  "getset",
  "hashbrown 0.14.5",
