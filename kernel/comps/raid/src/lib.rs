@@ -38,6 +38,8 @@ use crate::server_traits::SelectionPolicy;
 
 use ostd::orpc::orpc_server;
 
+use log::{info, error};
+
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
 #[orpc_server]
@@ -94,7 +96,9 @@ impl Raid1Device {
 
     /// Dequeues and processes the next request from the staging queue.
     pub fn handle_requests(&self) {
+        info!("[raid] dequeuing request");
         let request = self.queue.dequeue();
+        info!("[raid] handling requests");
         self.process_request(request);
     }
 
@@ -131,8 +135,9 @@ impl Raid1Device {
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
         for parent in request.bios() {
-            // Select a member to serve this read (round-robin).
+            info!("[raid] selecting block device");
             let member = self.selection_policy.select_block_device().unwrap();
+            info!("[raid] selected block device");
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,

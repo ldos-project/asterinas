@@ -67,6 +67,7 @@ pub fn lazy_init() {
         println!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
+    // FIXME: ExFat filesystem will cause hanging when trying to start. 
     // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
     //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
     //     let target_path = FsPath::try_from("/exfat").unwrap();
@@ -74,23 +75,34 @@ pub fn lazy_init() {
     //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
     // }
 
-    // if let Ok(raid) = start_block_device(raid1_device_name) {
-    //     let raid_fs = Ext2::open(raid).unwrap();
-    //     let target_path = FsPath::try_from("/raid1").unwrap();
-    //     if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
-    //         error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
-    //     }
-    //     println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
-    // }
+    info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
+    if let Err(err) = setup_raid1_device(raid1_device_name) {
+        error!("[raid] failed to setup RAID-1 device: {:?}", err);
+    }
+
+
+    info!("[raid] RAID-1 device setup complete");
+    if let Some(raid) = aster_block::get_device(raid1_device_name) {
+        info!("[raid] got RAID-1 device");
+        let raid_fs = Ext2::open(raid).unwrap();
+        info!("[raid] opened RAID-1 filesystem");
+        let target_path = FsPath::try_from("/raid1").unwrap();
+        info!("[raid] got target path");
+        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
+            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+        }
+        println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+    } else {
+        error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
+    }
 }
 
-fn setup_raid1_device() -> Result<()> {
-    const RAID_DEVICE_NAME: &str = "raid_device";
+fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
     // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
-        RAID_DEVICE_NAME, RAID_MEMBER_NAMES
+        raid_device_name, RAID_MEMBER_NAMES
     );
 
     let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
@@ -112,39 +124,32 @@ fn setup_raid1_device() -> Result<()> {
         }
     }
 
+    info!("[raid] creating selection policy");
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
-    Raid1Device::new(RAID_DEVICE_NAME, members, selection_policy).map_err(|err| match err {
+    info!("[raid] creating RAID-1 device");
+    Raid1Device::new(raid_device_name, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
     })?;
-
-    // Register the RAID-1 device and start a worker thread to handle requests.
-    // let raid = match Raid1Device::register(RAID_DEVICE_NAME, members) {
-    //     Ok(dev) => dev,
-    //     Err(Raid1DeviceError::NotEnoughMembers) => {
-    //         error!(
-    //             "[raid] failed to register RAID-1 device '{}': not enough members",
-    //             RAID_DEVICE_NAME
-    //         );
-    //         return_errno_with_message!(
-    //             Errno::EINVAL,
-    //             "RAID-1 device requires at least two members"
-    //         );
-    //     }
-    // };
+    info!("[raid] RAID-1 device created");
 
     // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs. 
-    // let worker = raid.clone();
-    // let task_fn = move || loop {
-    //     worker.handle_requests();
-    // };
-    // crate::ThreadOptions::new(task_fn).spawn();
+    let worker = aster_block::get_device(raid_device_name).unwrap();
+    // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
+    // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
+    let task_fn = move || loop {
+        let raid = worker
+            .downcast_ref::<Raid1Device>()
+            .expect("RAID device type mismatch");
+        raid.handle_requests();
+    };
+    crate::ThreadOptions::new(task_fn).spawn();
 
-    // info!(
-    //     "[raid] RAID-1 device '{}' registered and worker thread spawned",
-    //     RAID_DEVICE_NAME
-    // );
+    info!(
+        "[raid] RAID-1 device '{}' registered and worker thread spawned",
+        raid_device_name
+    );
     Ok(())
 }
