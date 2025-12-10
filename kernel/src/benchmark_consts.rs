@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 #![allow(unsafe_code)]
 
 use alloc::{
