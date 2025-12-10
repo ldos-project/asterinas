@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 
+from argparse import ArgumentParser
 from pathlib import Path
 from threading import Thread
 from typing import Literal
@@ -17,8 +18,16 @@ class VMRedisServer:
     log: list[str]
     start: float
 
-    def __init__(self, hugepaged_enabled: bool = True):
+    def __init__(
+        self,
+        hugepaged_enabled: bool = True,
+        hugemapping_enabled: bool = True,
+    ):
+        kcmdargs = ""
         hpd_enable_flag = "true" if hugepaged_enabled else "false"
+        kcmdargs += f"vm.hugepaged_enabled={hpd_enable_flag}"
+        hm_enable_flag = "true" if hugemapping_enabled else "false"
+        kcmdargs += f" vm.huge_mapping_enabled={hm_enable_flag}"
 
         self.proc = subprocess.Popen(
             [
@@ -26,7 +35,7 @@ class VMRedisServer:
                 "run",
                 "ENABLE_KVM=1",
                 "INITARGS=/benchmark/redis/ycsb/run.sh",
-                f"KCMDARGS=vm.hugepaged_enabled={hpd_enable_flag}",
+                f"KCMDARGS='{kcmdargs}'",
                 "MEM=32G",
                 "NETDEV=tap",
                 "RELEASE=1",
@@ -120,12 +129,13 @@ def benchmark():
     yload = YCSBInvocation("load", ["-threads", "1", "-target", "1000"])
     yrun = YCSBInvocation("run")
 
-    # 0, 64, 128, ...=512
-    for offset in tqdm(range(0, 513, 64)):
-        time.sleep(15)
-        yload.run(["-p", f"insertstart={offset}"])
-        time.sleep(15)
-        yrun.run()
+    for _ in range(10):
+        # 0, 64, 128, ...=512
+        for offset in tqdm(range(0, 513, 64)):
+            time.sleep(15)
+            yload.run(["-p", f"insertstart={offset}"])
+            time.sleep(15)
+            yrun.run()
 
     load_logs = yload.logs
     run_logs = yrun.logs
@@ -147,16 +157,31 @@ def logger(f: Path, server: VMRedisServer):
 
 
 if __name__ == "__main__":
-    hugepaged_enabled = "--hpde" in sys.argv
+    parser = ArgumentParser()
+    parser.add_argument("--hugepaged", action="store_true")
+    parser.add_argument("--hugemapping", action="store_true")
+    parser.add_argument("--name", action="store", default=None)
+    args = parser.parse_args()
+
+    hugepaged_enabled = args.hugepaged
+    hugemapping_enabled = args.hugemapping
+
     while True:
-        server = VMRedisServer(hugepaged_enabled=hugepaged_enabled)
+        server = VMRedisServer(
+            hugepaged_enabled=hugepaged_enabled,
+            hugemapping_enabled=hugemapping_enabled,
+        )
         if server.initialize():
             print("SERVER INTIALIZED!!!!")
             break
 
     dir_ = "ycsb_logs"
     if hugepaged_enabled:
-        dir_ += "_hugepage"
+        dir_ += "_hugepaged"
+    if hugemapping_enabled:
+        dir_ += "_hugemapping"
+    if args.name:
+        dir_ += args.name
     os.system(f"mkdir -p {dir_}")
 
     t = Thread(target=logger, args=(Path(f"{dir_}/server.log"), server))
