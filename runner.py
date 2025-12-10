@@ -76,8 +76,9 @@ class VMRedisServer:
         return True
 
 
-JAVA_HOME = "./test/benchmark/jre/jre1.8.0_471/"
-YCSB_PATH = "./ycsb-0.17.0/bin/ycsb.sh"
+# JAVA_HOME = "./test/benchmark/jre/jre1.8.0_471/"
+# YCSB_PATH = "./ycsb-0.17.0/bin/ycsb.sh"
+YCSB_PATH = "./YCSB/bin/ycsb.sh"
 YCSB_WORKLOAD_PATH = "./ycsb-0.17.0/workloads/workload-custom"
 
 
@@ -93,7 +94,7 @@ class YCSBInvocation:
 
     def run(self, extra_params: list[str] = []):
         environment = os.environ.copy()
-        environment["JAVA_HOME"] = JAVA_HOME
+        # environment["JAVA_HOME"] = JAVA_HOME
         self.logs.append(
             subprocess.check_output(
                 [
@@ -111,6 +112,7 @@ class YCSBInvocation:
                 stderr=subprocess.DEVNULL,
             ).decode()
         )
+        print(self.logs[-1], end="")
 
 
 def benchmark():
@@ -120,7 +122,9 @@ def benchmark():
 
     # 0, 64, 128, ...=512
     for offset in tqdm(range(0, 513, 64)):
+        time.sleep(15)
         yload.run(["-p", f"insertstart={offset}"])
+        time.sleep(15)
         yrun.run()
 
     load_logs = yload.logs
@@ -138,29 +142,34 @@ def logger(f: Path, server: VMRedisServer):
         while True:
             line = server.proc.stdout.readline().decode()
             fh.write(line)
-            time.sleep(0.01)
+            if not line.startswith("now="):
+                print(line, end="")
 
 
 if __name__ == "__main__":
+    hugepaged_enabled = "--hpde" in sys.argv
     while True:
-        server = VMRedisServer(hugepaged_enabled="--hpde" in sys.argv)
+        server = VMRedisServer(hugepaged_enabled=hugepaged_enabled)
         if server.initialize():
             print("SERVER INTIALIZED!!!!")
             break
 
-    os.system("mkdir -p ycsb_logs")
+    dir_ = "ycsb_logs"
+    if hugepaged_enabled:
+        dir_ += "_hugepage"
+    os.system(f"mkdir -p {dir_}")
 
-    t = Thread(target=logger, args=(Path("ycsb_logs/server.log"), server))
+    t = Thread(target=logger, args=(Path(f"{dir_}/server.log"), server))
     t.start()
 
     load_logs, run_logs = benchmark()
 
     print("Saving client logs")
-    with open("ycsb_logs/load.log", "w") as f:
+    with open(f"{dir_}/load.log", "w") as f:
         for line in load_logs:
             f.write(line)
 
-    with open("ycsb_logs/run.log", "w") as f:
+    with open(f"{dir_}/run.log", "w") as f:
         for line in run_logs:
             f.write(line)
 
