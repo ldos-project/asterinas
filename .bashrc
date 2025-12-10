@@ -1,0 +1,5 @@
+alias r="KCMDARGS=vm.hugepaged_enabled=true RELEASE=1 make run"
+alias rredis="RELEASE=1 make run SMP=4 MEM=32G ENABLE_KVM=1 RELEASE_LTO=1 NETDEV=tap VHOST=on INITARGS=/benchmark/redis/ycsb/run.sh"
+alias rredisvm="KCMDARGS='vm.hugepaged_enabled=true' rredis"
+alias rycsbl="JAVA_HOME=./test/benchmark/jre/jre1.8.0_471/ ./ycsb-0.17.0/bin/ycsb.sh load redis -P ./ycsb-0.17.0/workloads/workload-custom -p redis.host=10.0.2.15"
+alias rycsb="JAVA_HOME=./test/benchmark/jre/jre1.8.0_471/ ./ycsb-0.17.0/bin/ycsb.sh run redis -P ./ycsb-0.17.0/workloads/workload-custom -p redis.host=10.0.2.15"
