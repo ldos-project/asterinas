@@ -17,15 +17,15 @@
 
 #![no_std] // BlockDevice crate also not using rust std and not using unsafe code.
 #![deny(unsafe_code)]
+#![feature(trait_upcasting)]
 
 extern crate alloc;
 
+pub mod selection_policies;
+pub mod server_traits;
+
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
-use core::{
-    cmp,
-    ops::Range,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::{cmp, ops::Range};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
@@ -34,16 +34,25 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 
+use crate::server_traits::SelectionPolicy;
+
+use ostd::orpc::orpc_server;
+
+use log::{info, error};
+
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
+#[orpc_server]
 pub struct Raid1Device {
     /// Member block devices that store identical data (mirrors).
     members: Vec<Arc<dyn BlockDevice>>,
     queue: BioRequestSingleQueue,
+
     /// Basic capacity limits for the logical device (min across members).
     metadata: BlockDeviceMeta,
-    /// Round-robin cursor for selecting a read member without locking.
-    read_cursor: AtomicUsize,
+
+    /// The policy to select the read member.
+    selection_policy: Arc<dyn SelectionPolicy>,
 }
 
 #[derive(Debug)]
@@ -57,7 +66,11 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
+    pub fn new(
+        name: &str,
+        members: Vec<Arc<dyn BlockDevice>>,
+        selection_policy: Arc<dyn SelectionPolicy>,
+    ) -> Result<(), Raid1DeviceError> {
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -68,29 +81,24 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        Ok(Arc::new(Self {
+        let device = Self::new_with( |orpc_internal, _weak_self| Raid1Device {
+            orpc_internal,
             members,
             queue,
             metadata,
-            read_cursor: AtomicUsize::new(0),
-        }))
-    }
+            selection_policy,
+        });
 
-    /// Registers a RAID-1 device into the global block device table so it can
-    /// be opened by upper layers (e.g., filesystems).
-    pub fn register(
-        name: &str,
-        members: Vec<Arc<dyn BlockDevice>>,
-    ) -> Result<Arc<Self>, Raid1DeviceError> {
-        let device = Self::new(members)?;
-        // Register under a stable name and return a shared handle.
         aster_block::register_device(name.to_owned(), device.clone());
-        Ok(device)
+
+        Ok(())
     }
 
     /// Dequeues and processes the next request from the staging queue.
     pub fn handle_requests(&self) {
+        info!("[raid] dequeuing request");
         let request = self.queue.dequeue();
+        info!("[raid] handling requests");
         self.process_request(request);
     }
 
@@ -121,12 +129,15 @@ impl Raid1Device {
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
     fn process_read(&self, request: BioRequest) {
+
+        // TODO(yingqi): Implement asynchronous read with policy selector. 
         // Submit all children first to overlap device I/O.
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
         for parent in request.bios() {
-            // Select a member to serve this read (round-robin).
-            let member = self.select_read_member(parent.sid_range());
+            info!("[raid] selecting block device");
+            let member = self.selection_policy.select_block_device().unwrap();
+            info!("[raid] selected block device");
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
@@ -134,7 +145,7 @@ impl Raid1Device {
                 Self::clone_segments(parent),
                 None,
             );
-            match child.submit(member.as_ref()) {
+            match child.submit(&*member) {
                 Ok(waiter) => pending.push((parent, waiter)),
                 // Err(_) => parent.complete(BioStatus::IoError),
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
@@ -199,7 +210,7 @@ impl Raid1Device {
         for member in &self.members {
             // Build a child BIO for this member.
             let child = Bio::new(bio_type, parent.sid_range().start, segments_builder(), None);
-            match child.submit(member.as_ref()) {
+            match member.submit(child) {
                 Ok(child_waiter) => waiter.concat(child_waiter),
                 Err(_) => submission_failed = true,
             }
@@ -222,12 +233,6 @@ impl Raid1Device {
 
         // Default to success if no errors were observed.
         aggregated_status.unwrap_or(BioStatus::Complete)
-    }
-
-    /// Selects a read member using a round-robin cursor (lock-free).
-    fn select_read_member(&self, _sid_range: &Range<Sid>) -> Arc<dyn BlockDevice> {
-        let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-        self.members[idx % self.members.len()].clone()
     }
 
     /// Computes minimal metadata across members (capacity and segment limit).

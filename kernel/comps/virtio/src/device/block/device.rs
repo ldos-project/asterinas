@@ -12,7 +12,7 @@ use core::{fmt::Debug, hint::spin_loop, mem::size_of};
 
 use aster_block::{
     BlockDeviceMeta,
-    bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
+    bio::{Bio, BioEnqueueError, BioStatus, BioType, SubmittedBio, BioWaiter, bio_segment_pool_init},
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use id_alloc::IdAlloc;
@@ -34,12 +34,32 @@ use crate::{
     transport::{ConfigManager, VirtioTransport},
 };
 
+use ostd::{
+    mm::Segment,
+    orpc::{oqueue::{OQueueRef, Producer}, orpc_impl, orpc_server, framework::spawn_thread},
+    
+};
+
+use crate::device::block::server_traits;
+use aster_block::bio::{BlockDeviceCompletionTrace};
+use crate::device::block::server_traits::BlockIOObservable;
+
 #[derive(Debug)]
+#[orpc_server(server_traits::BlockIOObservable)]
 pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
-    queue: BioRequestSingleQueue,
+    queue: Arc<BioRequestSingleQueue>,
+
+    // oqueue_consumer: Option<Box<dyn Consumer<SubmittedBio>>>,
 }
+
+#[orpc_impl]
+impl server_traits::BlockIOObservable for BlockDevice {
+    fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio>;
+    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionTrace>;
+}
+
 
 impl BlockDevice {
     /// Creates a new VirtIO-Block driver and registers it.
@@ -53,16 +73,34 @@ impl BlockDevice {
             device.request_device_id()
         };
 
-        let block_device = Arc::new(Self {
+        // let oqueue_consumer = self.bio_submission_oqueue().attach_consumer()?;
+
+        let block_device_server = Self::new_with( |orpc_internal, _weak_self| BlockDevice {
+            orpc_internal,
             device,
             // Each bio request includes an additional 1 request and 1 response descriptor,
             // therefore this upper bound is set to (QUEUE_SIZE - 2).
-            queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
+            queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                 (DeviceInner::QUEUE_SIZE - 2) as usize,
-            ),
+            )),
+            // oqueue_consumer,
         });
 
-        aster_block::register_device(device_id, block_device);
+        // Thread 2: Handle requests from the OQueue and enqueue them
+        let server_for_oqueue = block_device_server.clone();
+        spawn_thread(server_for_oqueue.clone(), {
+            move || {
+                // Attach consumer ONCE outside the loop to avoid race condition
+                // where items could be skipped between consumer drop and re-attach
+                let consumer = server_for_oqueue.bio_submission_oqueue().attach_consumer().unwrap();
+                loop {
+                    let request = consumer.consume();
+                    server_for_oqueue.queue.enqueue(request).unwrap();
+                }
+            }
+        });
+
+        aster_block::register_device(device_id, block_device_server);
 
         bio_segment_pool_init();
         Ok(())
@@ -87,16 +125,25 @@ impl BlockDevice {
         support_features.remove(BlockFeatures::MQ);
         support_features.bits
     }
+
+    pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
+        bio.submit(self)
+    }
 }
 
 impl aster_block::BlockDevice for BlockDevice {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
-        self.queue.enqueue(bio)
+        let reply_handle: Box<dyn Producer<BlockDeviceCompletionTrace>> = self.bio_completion_oqueue().attach_producer()?;
+
+        let mut bio = bio;
+        bio.prepare_enqueue(reply_handle, self.queue.clone());
+        self.bio_submission_oqueue().produce(bio)?;
+        Ok(())
     }
 
     fn metadata(&self) -> BlockDeviceMeta {
         BlockDeviceMeta {
-            max_nr_segments_per_bio: self.queue.max_nr_segments_per_bio(),
+            max_nr_segments_per_bio: self.queue.as_ref().max_nr_segments_per_bio(),
             nr_sectors: self.device.config_manager.capacity_sectors(),
         }
     }
@@ -230,6 +277,8 @@ impl DeviceInner {
             // Completes the bio request
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
+                /// FIXME(yingqi): How to make sure the reply can only be called once? 
+                bio.reply();
             });
         }
     }
