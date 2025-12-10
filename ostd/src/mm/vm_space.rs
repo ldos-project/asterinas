@@ -531,12 +531,18 @@ unsafe impl PageTableConfig for UserPtConfig {
     }
 
     fn init_split_item_subpage(item: Self::Item, level: PagingLevel) {
+        // The subpages of a hugepage start in an uninitialized state, so the reference to frame we
+        // get below has an invalid reference count and should be treated as an unused frame. It
+        // might have contents though, so while we can treat the metadata as unused, we should not
+        // touch the page content.
         let (frame, _) = item;
 
         // TODO(aneesh): what should the metadata be here? We assume it's untyped user memory, in
         // which case () is correct, but more generally it might be better to pass in a ref to the
         // frame this was split from copy the metadata.
-        ManuallyDrop::new(Frame::from_unused(frame.start_paddr(), (), level));
+        let _ = ManuallyDrop::new(Frame::from_unused(frame.start_paddr(), (), level));
+
+        // We call forget here because we don't want to affect the reference count we initialized.
         core::mem::forget(frame);
     }
 }
