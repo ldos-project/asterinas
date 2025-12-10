@@ -79,6 +79,9 @@ mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
+mod benchmark_consts;
+mod benchmarks;
+
 #[ostd::main]
 #[controlled]
 pub fn main() {
@@ -170,6 +173,10 @@ fn init_thread() {
     if let Some(console) = FRAMEBUFFER_CONSOLE.get() {
         console.disable();
     };
+
+    let bc = benchmark_consts::BenchConsts::new(&karg);
+    bc.run_benchmark();
+    exit_qemu(QemuExitCode::Success);
 
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),
