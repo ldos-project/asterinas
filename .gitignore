@@ -35,7 +35,3 @@ aster-nix-profile-*.svg
 
 # editor configuration
 .vscode
-
-.devcontainer/
-
-notes/
