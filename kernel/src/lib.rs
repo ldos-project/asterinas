@@ -78,6 +78,9 @@ mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
+mod benchmark_consts;
+mod benchmarks;
+
 #[ostd::main]
 #[controlled]
 pub fn main() {
@@ -167,34 +170,44 @@ fn init_thread() {
         console.disable();
     };
 
-    let initproc = spawn_init_process(
-        karg.get_initproc_path().unwrap(),
-        karg.get_initproc_argv().to_vec(),
-        karg.get_initproc_envp().to_vec(),
-    )
-    .expect("Run init process failed.");
-
+    // Run benchmarks when bench.name is set in the kernel args
     if karg
-        .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
-        .unwrap_or(false)
+        .get_module_arg_by_name::<bool>("bench", "name")
+        .is_some()
     {
-        let hugepaged = vm::HugepagedServer::new().unwrap();
-        let initproc = initproc.clone();
-
-        ThreadOptions::new(move || hugepaged.main(initproc)).spawn();
-    }
-    // Wait till initproc become zombie.
-    while !initproc.status().is_zombie() {
-        ostd::task::halt_cpu();
-    }
-
-    // TODO: exit via qemu isa debug device should not be the only way.
-    let exit_code = if initproc.status().exit_code() == 0 {
-        QemuExitCode::Success
+        let bench = benchmark_consts::BenchConsts::new(&karg);
+        bench.run_benchmark();
+        exit_qemu(QemuExitCode::Success);
     } else {
-        QemuExitCode::Failed
-    };
-    exit_qemu(exit_code);
+        let initproc = spawn_init_process(
+            karg.get_initproc_path().unwrap(),
+            karg.get_initproc_argv().to_vec(),
+            karg.get_initproc_envp().to_vec(),
+        )
+        .expect("Run init process failed.");
+
+        if karg
+            .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
+            .unwrap_or(false)
+        {
+            let hugepaged = vm::HugepagedServer::new().unwrap();
+            let initproc = initproc.clone();
+
+            ThreadOptions::new(move || hugepaged.main(initproc)).spawn();
+        }
+        // Wait till initproc become zombie.
+        while !initproc.status().is_zombie() {
+            ostd::task::halt_cpu();
+        }
+
+        // TODO: exit via qemu isa debug device should not be the only way.
+        let exit_code = if initproc.status().exit_code() == 0 {
+            QemuExitCode::Success
+        } else {
+            QemuExitCode::Failed
+        };
+        exit_qemu(exit_code);
+    }
 }
 
 fn print_banner() {
