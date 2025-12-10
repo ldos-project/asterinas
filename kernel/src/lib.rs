@@ -78,6 +78,9 @@ mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
+mod benchmark_consts;
+mod benchmarks;
+
 #[ostd::main]
 #[controlled]
 pub fn main() {
@@ -170,6 +173,16 @@ fn init_thread() {
         console.disable();
     };
 
+    // Run benchmarks when bench.name is set in the kernel args
+    if karg
+        .get_module_arg_by_name::<bool>("bench", "name")
+        .is_some()
+    {
+        let bench = benchmark_consts::BenchConsts::new(&karg);
+        bench.run_benchmark();
+        exit_qemu(QemuExitCode::Success);
+    }
+
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),
         karg.get_initproc_argv().to_vec(),
@@ -183,7 +196,6 @@ fn init_thread() {
     {
         vm::HugepagedServer::spawn(initproc.clone());
     }
-
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
