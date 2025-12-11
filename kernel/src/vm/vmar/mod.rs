@@ -24,10 +24,15 @@ use ostd::{
         tlb::TlbFlushOp,
         vm_space::{CursorMut, VmMappingPolicy, VmMappingPolicyOQueues, VmMappingRequest},
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server},
+    orpc::{
+        framework::errors::RPCError,
+        oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
+        orpc_impl, orpc_server,
+    },
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
+use spin::Once;
 
 use self::{
     interval_set::{Interval, IntervalSet},
@@ -172,6 +177,27 @@ impl<R> Vmar<R> {
     }
 }
 
+// TODO(aneesh) can this just be PageFaultInfo directly?
+/// Notification message to inform policies about a page fault
+#[derive(Clone, Copy)]
+pub struct PageFaultOQueueMessage {
+    /// Opaque identifier for which vm_space the fault corresponds to
+    pub vm_space_id: u64,
+    /// The fault information provided to the page fault handler
+    pub fault_info: PageFaultInfo,
+}
+
+static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> = Once::new();
+
+pub fn init() {
+    // Only support a single strong observer for now - hugepaged.
+    PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
+}
+
+pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
+    PAGE_FAULT_OQUEUE.wait().clone()
+}
+
 pub(super) struct Vmar_ {
     /// VMAR inner
     inner: RwMutex<VmarInner>,
@@ -183,6 +209,9 @@ pub(super) struct Vmar_ {
     vm_space: Arc<VmSpace>,
     /// The RSS counters.
     rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
+
+    /// OQueue Producer to notify policies about page fault events
+    page_fault_oqueue_producer: OQueueRef<PageFaultOQueueMessage>,
 }
 
 struct VmarInner {
@@ -484,6 +513,7 @@ impl Vmar_ {
             size,
             vm_space,
             rss_counters,
+            page_fault_oqueue_producer: PAGE_FAULT_OQUEUE.wait().clone(),
         })
     }
 
@@ -569,7 +599,15 @@ impl Vmar_ {
             debug_assert!(vm_mapping.range().contains(&address));
 
             let mut rss_delta = RssDelta::new(self);
-            return vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+            let res = vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+            if res.is_ok() {
+                self.page_fault_oqueue_producer
+                    .produce(PageFaultOQueueMessage {
+                        vm_space_id: self.vm_space.id(),
+                        fault_info: *page_fault_info,
+                    })?;
+            }
+            return res;
         }
 
         return_errno_with_message!(Errno::EACCES, "page fault addr is not in current vmar");

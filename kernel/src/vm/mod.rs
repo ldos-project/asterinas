@@ -16,9 +16,10 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{sync::Arc, vec::Vec};
-use core::{ops::Range, time::Duration};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::ops::Range;
 
+use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
 use ostd::{
@@ -26,16 +27,13 @@ use ostd::{
         AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
-    orpc::{orpc_server, orpc_trait},
-    sync::WaitQueue,
+    orpc::{oqueue::OQueue, orpc_server, orpc_trait},
     task::disable_preempt,
 };
 use snafu::Whatever;
+use vmar::PageFaultOQueueMessage;
 
-use crate::{
-    prelude::WaitTimeout,
-    process::{PauseProcGuard, Process},
-};
+use crate::process::{PauseProcGuard, Process};
 
 pub mod page_fault_handler;
 pub mod perms;
@@ -96,19 +94,25 @@ where
     Ok(())
 }
 
-fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<(), ()> {
+fn promote_hugepages(
+    proc: &Arc<Process>,
+    fault_hint: Option<PageFaultOQueueMessage>,
+) -> Result<(), ()> {
     // Ensure that the current process doesn't run until we have scanned it's mappings
     let _ = PauseProcGuard::new(proc.clone());
 
     let proc_vm = proc.vm();
     let proc_vm_guard = proc_vm.lock_root_vmar();
-    let proc_vmar = proc_vm_guard.unwrap();
+    let proc_vmar = if let Some(proc_vmar) = proc_vm_guard.as_ref() {
+        proc_vmar
+    } else {
+        // The process may have exited right as we attempted to pause it.
+        return Ok(());
+    };
     let preempt_guard = disable_preempt();
     let mut space_len = proc_vmar.size();
-    let mut cursor = match proc_vmar
-        .vm_space()
-        .cursor_mut(&preempt_guard, &(0..space_len))
-    {
+    let vm_space = proc_vmar.vm_space();
+    let mut cursor = match vm_space.cursor_mut(&preempt_guard, &(0..space_len)) {
         Ok(cursor) => cursor,
         _ => {
             return Ok(());
@@ -117,9 +121,19 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
 
     // If we have an address hint, jump the cursor to that address, and only consider a single
     // region for promotion.
-    if let Some(addr_hint) = addr_hint {
+    if let Some(fault_hint) = fault_hint {
+        // If the fault was not for this process, then ignore it
+        if vm_space.id() != fault_hint.vm_space_id {
+            return Ok(());
+        }
+        let addr_hint = fault_hint.fault_info.address.align_down(PROMOTED_PAGE_SIZE);
         cursor.jump(addr_hint).map_err(|_| ())?;
-        space_len = PROMOTED_PAGE_SIZE;
+        // We need to ensure that we are refining the space, not expanding it
+        let huge_region_end = addr_hint + PROMOTED_PAGE_SIZE;
+        if huge_region_end > space_len {
+            return Ok(());
+        }
+        space_len = addr_hint + PROMOTED_PAGE_SIZE;
     }
 
     while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
@@ -266,13 +280,13 @@ impl HugepagedServer {
         Ok(server)
     }
 
-    pub fn main(&self, initproc: Arc<Process>) {
-        let sleep_queue = WaitQueue::new();
-        let sleep_duration = Duration::from_secs(1);
+    pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
+        let pagefault_oq = vmar::get_page_fault_oqueue();
+        let observer = pagefault_oq.attach_strong_observer()?;
         loop {
+            let msg = observer.strong_observe();
             // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
             // page mapping.
-            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
 
             let mut procs: Vec<Arc<Process>> = Vec::new();
             procs.push(initproc.clone());
@@ -281,7 +295,7 @@ impl HugepagedServer {
                     .iter()
                     .for_each(|c| procs.push(c.clone()));
 
-                if promote_hugepages(&proc, None).is_err() {
+                if promote_hugepages(&proc, Some(msg)).is_err() {
                     break;
                 }
             }

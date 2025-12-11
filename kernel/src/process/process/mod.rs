@@ -720,8 +720,12 @@ impl Process {
 
     fn wake_up_parent(&self) {
         let parent_guard = self.parent.lock();
-        let parent = parent_guard.process().upgrade().unwrap();
-        parent.children_wait_queue.wake_all();
+        // Note that if this process is init, then self.parent will be a Weak reference to NULL, and
+        // upgrade() will always return None.
+        parent_guard
+            .process()
+            .upgrade()
+            .map(|parent| parent.children_wait_queue.wake_all());
     }
 
     // ******************* Subreaper ********************

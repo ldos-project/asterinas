@@ -35,6 +35,7 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::framework::spawn_thread,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -151,6 +152,9 @@ fn init_thread() {
     net::lazy_init();
     fs::lazy_init();
     ipc::init();
+
+    vm::vmar::init();
+
     // driver::pci::virtio::block::block_device_test();
     let thread = ThreadOptions::new(|| {
         println!("[kernel] Hello world from kernel!");
@@ -181,7 +185,7 @@ fn init_thread() {
         let hugepaged = vm::HugepagedServer::new().unwrap();
         let initproc = initproc.clone();
 
-        ThreadOptions::new(move || hugepaged.main(initproc)).spawn();
+        spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
     }
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
