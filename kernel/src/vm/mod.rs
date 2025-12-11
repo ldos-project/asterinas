@@ -28,7 +28,6 @@ use ostd::{
         UntypedMem, Vaddr, page_size, vm_space::CursorMut,
     },
     orpc::{oqueue::OQueue, orpc_server, orpc_trait},
-    sync::non_null::NonNullPtr,
     task::disable_preempt,
 };
 use snafu::Whatever;

@@ -29,7 +29,7 @@ use ostd::{
         oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server,
     },
-    sync::{RwMutexReadGuard, non_null::NonNullPtr},
+    sync::RwMutexReadGuard,
     task::disable_preempt,
 };
 use spin::Once;
