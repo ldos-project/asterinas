@@ -124,8 +124,7 @@ fn promote_hugepages(
     // region for promotion.
     if let Some(fault_hint) = fault_hint {
         // If the fault was not for this process, then ignore it
-        let vm_space_addr = vm_space.clone().into_raw().as_ptr() as u64;
-        if vm_space_addr != fault_hint.vm_space {
+        if vm_space.id() != fault_hint.vm_space_id {
             return Ok(());
         }
         let addr_hint = fault_hint.fault_info.address.align_down(PROMOTED_PAGE_SIZE);

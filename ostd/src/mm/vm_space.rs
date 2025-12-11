@@ -125,6 +125,11 @@ impl VmSpace {
         }
     }
 
+    /// Get an opaque identity that uniquely refers to a particular VmSpace instance.
+    pub fn id(&self) -> u64 {
+        core::ptr::addr_of!(self) as u64
+    }
+
     /// Update the `vm_mapping_policy` associated with this address space.
     pub fn with_mapping_policy(mut self, vm_mapping_policy: Arc<dyn VmMappingPolicy>) -> Self {
         self.vm_mapping_policy = vm_mapping_policy;

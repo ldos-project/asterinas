@@ -182,7 +182,7 @@ impl<R> Vmar<R> {
 #[derive(Clone, Copy)]
 pub struct PageFaultOQueueMessage {
     /// Opaque identifier for which vm_space the fault corresponds to
-    pub vm_space: u64,
+    pub vm_space_id: u64,
     /// The fault information provided to the page fault handler
     pub fault_info: PageFaultInfo,
 }
@@ -603,7 +603,7 @@ impl Vmar_ {
             if res.is_ok() {
                 self.page_fault_oqueue_producer
                     .produce(PageFaultOQueueMessage {
-                        vm_space: self.vm_space.clone().into_raw().as_ptr() as u64,
+                        vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
                     })?;
             }
