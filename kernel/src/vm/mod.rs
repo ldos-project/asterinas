@@ -283,10 +283,10 @@ impl HugepagedServer {
     }
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
-        let pf_oq = vmar::get_page_fault_oqueue();
-        let obs = pf_oq.attach_strong_observer()?;
+        let pagefault_oq = vmar::get_page_fault_oqueue();
+        let observer = pagefault_oq.attach_strong_observer()?;
         loop {
-            let msg = obs.strong_observe();
+            let msg = observer.strong_observe();
             // TODO(aneesh): this should be a select! over a timeout and a observation of an OQueue for
             // page mapping.
 

@@ -720,6 +720,8 @@ impl Process {
 
     fn wake_up_parent(&self) {
         let parent_guard = self.parent.lock();
+        // Note that if this process is init, then self.parent will be a Weak reference to NULL, and
+        // upgrade() will always return None.
         parent_guard
             .process()
             .upgrade()
