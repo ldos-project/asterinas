@@ -1,27 +1,38 @@
 // SPDX-License-Identifier: MPL-2.0
+
+//! A collection of integration tests for the ORPC/OQueue framework as a whole.
+
 #[cfg(ktest)]
 mod test {
     use core::{
         assert_matches::assert_matches,
         cell::Cell,
         panic::{RefUnwindSafe, UnwindSafe},
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
         time::Duration,
     };
 
-    use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
+    use orpc_macros::{orpc_impl, orpc_server, orpc_trait, select};
     use ostd_macros::ktest;
     use snafu::{ResultExt as _, Whatever};
 
     use crate::{
+        assert_eq_eventually, assert_eventually, assert_matches_eventually,
         orpc::{
-            framework::{CurrentServer, errors::RPCError, spawn_thread},
-            oqueue::{Consumer, OQueueRef, generic_test, locking::LockingQueue},
+            framework::{
+                CurrentServer,
+                errors::RPCError,
+                shutdown::{Shutdown, ShutdownState},
+                spawn_thread,
+            },
+            oqueue::{
+                Consumer, OQueueRef, generic_test,
+                locking::{LockingQueue, ObservableLockingQueue},
+            },
         },
         prelude::{Arc, Box},
     };
 
-    // #[observable]
     struct AdditionalAmount {
         n: usize,
         trigger_panic: bool,
@@ -260,5 +271,296 @@ mod test {
         let server_ref: Arc<dyn TestTrait> = server_ref;
 
         assert_eq!(server_ref.f().unwrap(), 42);
+    }
+
+    static SERVER_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[orpc_server(SimpleServerTrait)]
+    struct SimpleServer {
+        shutdown_state: ShutdownState,
+        thread_exited: Arc<AtomicBool>,
+    }
+
+    #[orpc_trait]
+    trait SimpleServerTrait: Shutdown {
+        fn ping(&self) -> Result<(), RPCError>;
+    }
+
+    #[orpc_impl]
+    impl Shutdown for SimpleServer {
+        fn shutdown(&self) -> Result<(), RPCError> {
+            self.shutdown_state.shutdown();
+            Ok(())
+        }
+    }
+
+    #[orpc_impl]
+    impl SimpleServerTrait for SimpleServer {
+        fn ping(&self) -> Result<(), RPCError> {
+            self.shutdown_state.check()?;
+            Ok(())
+        }
+    }
+
+    impl SimpleServer {
+        fn spawn() -> Result<Arc<Self>, Whatever> {
+            let thread_exited = Arc::new(AtomicBool::new(false));
+            let server = Self::new_with(|orpc_internal, _| Self {
+                shutdown_state: ShutdownState::default(),
+                thread_exited: thread_exited.clone(),
+                orpc_internal,
+            });
+
+            spawn_thread(server.clone(), {
+                let server = server.clone();
+                let thread_exited = thread_exited.clone();
+                move || {
+                    let _ = (|| -> Result<(), RPCError> {
+                        loop {
+                            server.shutdown_state.check()?;
+                            crate::task::Task::yield_now();
+                        }
+                    })();
+                    thread_exited.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+
+            Ok(server)
+        }
+    }
+
+    impl Drop for SimpleServer {
+        fn drop(&mut self) {
+            SERVER_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[ktest]
+    fn server_shutdown_and_cleanup() {
+        SERVER_DROPS.store(0, Ordering::SeqCst);
+        let server_ref = SimpleServer::spawn().unwrap();
+
+        assert!(server_ref.ping().is_ok());
+        assert!(server_ref.shutdown().is_ok());
+
+        assert_eventually!(
+            server_ref.thread_exited.load(Ordering::SeqCst),
+            timeout = Duration::from_secs(1)
+        );
+        assert_matches!(server_ref.ping(), Err(RPCError::ServerMissing));
+
+        drop(server_ref);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
+    }
+
+    #[ktest]
+    fn server_restart_after_complete_teardown() {
+        SERVER_DROPS.store(0, Ordering::SeqCst);
+        let server1 = SimpleServer::spawn().unwrap();
+        assert!(server1.ping().is_ok());
+
+        let _ = server1.shutdown();
+        assert_eventually!(
+            server1.thread_exited.load(Ordering::SeqCst),
+            timeout = Duration::from_secs(1)
+        );
+
+        drop(server1);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
+
+        let server2 = SimpleServer::spawn().unwrap();
+        assert!(server2.ping().is_ok());
+    }
+
+    #[ktest]
+    fn server_restart_with_reused_oqueue() {
+        #[orpc_trait]
+        trait MessageCounter: Shutdown {
+            fn get_processed_count(&self) -> Result<usize, RPCError>;
+        }
+
+        #[orpc_server(MessageCounter)]
+        struct MessageCounterServer {
+            processed_count: AtomicUsize,
+            shutdown_state: ShutdownState,
+        }
+
+        #[orpc_impl]
+        impl Shutdown for MessageCounterServer {
+            fn shutdown(&self) -> Result<(), RPCError> {
+                self.shutdown_state.shutdown();
+                Ok(())
+            }
+        }
+
+        #[orpc_impl]
+        impl MessageCounter for MessageCounterServer {
+            fn get_processed_count(&self) -> Result<usize, RPCError> {
+                self.shutdown_state.check()?;
+                Ok(self.processed_count.load(Ordering::Relaxed))
+            }
+        }
+
+        impl MessageCounterServer {
+            fn spawn_with_queue(queue: OQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
+                let server = Self::new_with(|orpc_internal, _| Self {
+                    processed_count: AtomicUsize::new(0),
+                    shutdown_state: ShutdownState::default(),
+                    orpc_internal,
+                });
+
+                spawn_thread(server.clone(), {
+                    let server = server.clone();
+                    let consumer = queue
+                        .attach_consumer()
+                        .whatever_context("attach consumer")?;
+                    let shutdown_consumer = server
+                        .shutdown_state
+                        .shutdown_oqueue
+                        .attach_consumer()
+                        .whatever_context("attach shutdown")?;
+                    move || {
+                        loop {
+                            server.shutdown_state.check()?;
+                            select!(
+                                if let _ = consumer.try_consume() {
+                                    server.processed_count.fetch_add(1, Ordering::Relaxed);
+                                },
+                                if let _ = shutdown_consumer.try_consume() {}
+                            );
+                            crate::task::Task::yield_now();
+                        }
+                    }
+                });
+
+                Ok(server)
+            }
+        }
+
+        impl Drop for MessageCounterServer {
+            fn drop(&mut self) {
+                SERVER_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        SERVER_DROPS.store(0, Ordering::SeqCst);
+
+        let queue: OQueueRef<usize> = LockingQueue::new(8);
+        let server1 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
+
+        queue.produce(42).unwrap();
+        assert_eq_eventually!(server1.get_processed_count().unwrap(), 1);
+
+        let _ = server1.shutdown();
+        assert_matches_eventually!(server1.get_processed_count(), Err(RPCError::ServerMissing));
+
+        drop(server1);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
+
+        let server2 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
+        assert_eq!(server2.get_processed_count().unwrap(), 0);
+
+        queue.produce(42).unwrap();
+        assert_eq_eventually!(server2.get_processed_count().unwrap(), 1);
+
+        let _ = server2.shutdown();
+        drop(server2);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 2);
+    }
+
+    #[ktest]
+    fn server_restart_with_reused_oqueue_strong_observers() {
+        #[orpc_trait]
+        trait MessageCounter: Shutdown {
+            fn get_processed_count(&self) -> Result<usize, RPCError>;
+        }
+
+        #[orpc_server(MessageCounter)]
+        struct MessageCounterServer {
+            processed_count: AtomicUsize,
+            shutdown_state: ShutdownState,
+        }
+
+        #[orpc_impl]
+        impl Shutdown for MessageCounterServer {
+            fn shutdown(&self) -> Result<(), RPCError> {
+                self.shutdown_state.shutdown();
+                Ok(())
+            }
+        }
+
+        #[orpc_impl]
+        impl MessageCounter for MessageCounterServer {
+            fn get_processed_count(&self) -> Result<usize, RPCError> {
+                self.shutdown_state.check()?;
+                Ok(self.processed_count.load(Ordering::Relaxed))
+            }
+        }
+
+        impl MessageCounterServer {
+            fn spawn_with_queue(queue: OQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
+                let server = Self::new_with(|orpc_internal, _| Self {
+                    processed_count: AtomicUsize::new(0),
+                    shutdown_state: ShutdownState::default(),
+                    orpc_internal,
+                });
+
+                spawn_thread(server.clone(), {
+                    let server = server.clone();
+                    let observer = queue
+                        .attach_strong_observer()
+                        .whatever_context("attach strong observer")?;
+                    let shutdown_consumer = server
+                        .shutdown_state
+                        .shutdown_oqueue
+                        .attach_consumer()
+                        .whatever_context("attach shutdown")?;
+                    move || {
+                        loop {
+                            server.shutdown_state.check()?;
+                            select!(
+                                if let _ = observer.try_strong_observe() {
+                                    server.processed_count.fetch_add(1, Ordering::SeqCst);
+                                },
+                                if let _ = shutdown_consumer.try_consume() {}
+                            );
+                        }
+                    }
+                });
+
+                Ok(server)
+            }
+        }
+
+        impl Drop for MessageCounterServer {
+            fn drop(&mut self) {
+                SERVER_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        SERVER_DROPS.store(0, Ordering::SeqCst);
+
+        let queue: OQueueRef<usize> = ObservableLockingQueue::new(8, 1);
+        let server1 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
+
+        queue.produce(42).unwrap();
+        assert_eq_eventually!(server1.get_processed_count().unwrap(), 1);
+
+        let _ = server1.shutdown();
+        assert_matches_eventually!(server1.get_processed_count(), Err(RPCError::ServerMissing));
+
+        drop(server1);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
+
+        let server2 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
+        assert_eq!(server2.get_processed_count().unwrap(), 0);
+
+        queue.produce(42).unwrap();
+        assert_eq_eventually!(server2.get_processed_count().unwrap(), 1);
+
+        let _ = server2.shutdown();
+        drop(server2);
+        assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 2);
     }
 }
