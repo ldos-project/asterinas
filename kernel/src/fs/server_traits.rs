@@ -8,10 +8,7 @@ use ostd::orpc::{
     orpc_trait,
 };
 
-use crate::{
-    Result,
-    fs::utils::CachePage,
-};
+use crate::{Result, fs::utils::CachePage};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
