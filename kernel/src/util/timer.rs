@@ -28,9 +28,7 @@ pub struct TimerServer {
 impl Notifier for TimerServer {
     fn notify(&self) -> Result<(), RPCError> {
         if self.notification_oqueue().produce(()).is_err() {
-            Err(RPCError::Panic {
-                message: "Could not produce into notification_oqueue".to_string(),
-            })
+            panic!("Could not produce into notification_oqueue")
         } else {
             Ok(())
         }
