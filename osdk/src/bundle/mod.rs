@@ -258,7 +258,7 @@ impl Bundle {
             }
         }
 
-        println!("Running QEMU: {:#?}", qemu_cmd);
+        info!("Running QEMU: {:#?}", qemu_cmd);
 
         let exit_status = qemu_cmd.status().unwrap();
 
