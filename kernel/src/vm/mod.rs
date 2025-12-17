@@ -125,7 +125,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
     while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
         let (range, _) = match cursor.query() {
             Ok(v) => v,
-            Err(_) => break,
+            Err(_) => return Ok(()),
         };
 
         // If the address is not hugepage aligned go to the next mapping
@@ -133,10 +133,10 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
             let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
             if next < space_len {
                 if cursor.jump(next).is_err() {
-                    break;
+                    return Ok(());
                 }
             } else {
-                break;
+                return Ok(());
             }
             continue;
         }
@@ -144,7 +144,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
         if (range.end - range.start) >= PROMOTED_PAGE_SIZE {
             // Already huge, nothing to do here
             if cursor.jump(range.end).is_err() {
-                break;
+                return Ok(());
             }
             continue;
         }
@@ -218,7 +218,7 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
             })
             .is_err()
             {
-                break;
+                return Ok(());
             }
 
             // Set the accessed and dirty bits if any page in the region was accessed or marked
@@ -245,12 +245,12 @@ fn promote_hugepages(proc: &Arc<Process>, addr_hint: Option<Vaddr>) -> Result<()
             {
                 Ok(cursor) => cursor,
                 _ => {
-                    break;
+                    return Ok(());
                 }
             };
         }
         if cursor.jump(start + PROMOTED_PAGE_SIZE).is_err() {
-            break;
+            return Ok(());
         }
     }
     Ok(())
