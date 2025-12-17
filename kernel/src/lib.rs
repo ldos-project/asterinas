@@ -182,10 +182,7 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
         .unwrap_or(false)
     {
-        let hugepaged = vm::HugepagedServer::new().unwrap();
-        let initproc = initproc.clone();
-
-        spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
+        vm::HugepagedServer::spawn(initproc.clone());
     }
 
     // Wait till initproc become zombie.

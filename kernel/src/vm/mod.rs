@@ -318,17 +318,22 @@ trait HugePageD {}
 pub struct HugepagedServer {}
 
 impl HugepagedServer {
+    /// Create and spawn a new HugepagedServer.
+    pub fn spawn(initproc: Arc<Process>) -> Arc<Self> {
+        let hugepaged = Self::new().unwrap();
+        spawn_thread(hugepaged.clone(), {
+            let hugepaged = hugepaged.clone();
+            move || hugepaged.main(initproc)
+        });
+        hugepaged
+    }
     pub fn new() -> Result<Arc<Self>, Whatever> {
         let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
         Ok(server)
     }
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
-        let notify_server = TimerServer::new(Duration::from_secs(1))?;
-        spawn_thread(notify_server.clone(), {
-            let notify_server = notify_server.clone();
-            move || notify_server.main()
-        });
+        let notify_server = TimerServer::spawn(Duration::from_secs(1));
 
         let pagefault_oq = vmar::get_page_fault_oqueue();
         let observer = pagefault_oq.attach_strong_observer()?;
