@@ -1274,7 +1274,7 @@ impl<'a> RssDelta<'a> {
             if increment > 0 {
                 GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed);
             } else {
-                GLOBAL_RSS.fetch_sub((-1 * increment) as usize, Ordering::Relaxed);
+                GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed);
             }
             RSS_DELTA_OQUEUE.wait().produce(increment);
         }
