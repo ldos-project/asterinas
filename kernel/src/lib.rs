@@ -35,7 +35,6 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
-    orpc::framework::spawn_thread,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -182,11 +181,9 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
         .unwrap_or(false)
     {
-        let hugepaged = vm::HugepagedServer::new().unwrap();
-        let initproc = initproc.clone();
-
-        spawn_thread(hugepaged.clone(), move || hugepaged.main(initproc));
+        vm::HugepagedServer::spawn(initproc.clone());
     }
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();

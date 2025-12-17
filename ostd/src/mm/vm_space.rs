@@ -127,6 +127,8 @@ impl VmSpace {
 
     /// Get an opaque identity that uniquely refers to a particular VmSpace instance.
     pub fn id(&self) -> u64 {
+        // TODO(aneesh): This isn't a stable id, and introduces risks as a new VmSpace could have
+        // the same address. We should come back and add a real id to this object.
         core::ptr::addr_of!(self) as u64
     }
 
