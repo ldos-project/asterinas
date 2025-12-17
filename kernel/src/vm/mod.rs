@@ -33,7 +33,6 @@ use ostd::{
         orpc_server, orpc_trait,
         sync::select,
     },
-    sync::non_null::NonNullPtr,
     task::disable_preempt,
 };
 use snafu::Whatever;

@@ -35,7 +35,6 @@ use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
-    orpc::framework::spawn_thread,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
