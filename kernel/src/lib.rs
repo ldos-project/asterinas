@@ -78,7 +78,6 @@ mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
-mod benchmark_consts;
 mod benchmarks;
 
 #[ostd::main]
@@ -174,12 +173,8 @@ fn init_thread() {
     };
 
     // Run benchmarks when bench.name is set in the kernel args
-    if karg
-        .get_module_arg_by_name::<bool>("bench", "name")
-        .is_some()
-    {
-        let bench = benchmark_consts::BenchConsts::new(&karg);
-        bench.run_benchmark();
+    if karg.get_module_args("bench").is_some() {
+        benchmarks::BenchmarkHarness::run(&karg);
         exit_qemu(QemuExitCode::Success);
     }
 
