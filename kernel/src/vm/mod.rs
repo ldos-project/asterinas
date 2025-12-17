@@ -342,20 +342,17 @@ impl HugepagedServer {
             .attach_strong_observer()?;
         loop {
             let mut value: Option<PageFaultOQueueMessage> = None;
-            let mut got_notification = false;
-            while !got_notification {
+            loop {
                 select!(
-                    if let msg = observer.try_strong_observe() {
+                    if let msg = pagefault_observer.try_strong_observe() {
                         value = Some(msg);
-                        got_notification = true;
+                        break;
                     },
-                    if let _ = notifications.try_strong_observe() {
-                        got_notification = true;
+                    if let _ = notify_observer.try_strong_observe() {
+                        break;
                     }
                 );
-                if !got_notification {
-                    ostd::task::Task::yield_now();
-                }
+                ostd::task::Task::yield_now();
             }
 
             let mut procs: Vec<Arc<Process>> = Vec::new();
