@@ -125,6 +125,15 @@ pub(crate) unsafe trait PageTableConfig:
     ///  - the [`super::PageFlags::AVAIL1`] flag is the same as that returned
     ///    from [`PageTableConfig::item_into_raw`].
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item;
+
+    /// Split an item into the next lowest level. This method is only responsible for adjusting any
+    /// metadata or tracking that needs to occur on the split and for the page being split.
+    fn split_item(item: Self::Item) -> Self::Item;
+
+    /// Initialize a subpage that was produced from splitting an item at a higher level. Note that
+    /// this is a item that is semantically allocated, but may not be tracked as such since it was
+    /// part of a larger item at a higher level.
+    fn init_split_item_subpage(item: Self::Item, level: PagingLevel);
 }
 
 // Implement it so that we can comfortably use low level functions

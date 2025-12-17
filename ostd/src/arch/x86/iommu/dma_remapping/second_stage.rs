@@ -37,6 +37,12 @@ unsafe impl PageTableConfig for IommuPtConfig {
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
         (paddr, level, prop)
     }
+
+    fn split_item(item: Self::Item) -> Self::Item {
+        item
+    }
+
+    fn init_split_item_subpage(_item: Self::Item, _level: PagingLevel) {}
 }
 
 #[derive(Clone, Debug, Default)]

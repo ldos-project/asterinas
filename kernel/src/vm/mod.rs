@@ -139,7 +139,7 @@ fn promote_hugepages(
     while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
         let (range, _) = match cursor.query() {
             Ok(v) => v,
-            Err(_) => break,
+            Err(_) => return Ok(()),
         };
 
         // If the address is not hugepage aligned go to the next mapping
@@ -147,16 +147,19 @@ fn promote_hugepages(
             let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
             if next < space_len {
                 if cursor.jump(next).is_err() {
-                    break;
+                    return Ok(());
                 }
             } else {
-                break;
+                return Ok(());
             }
             continue;
         }
 
         if (range.end - range.start) >= PROMOTED_PAGE_SIZE {
             // Already huge, nothing to do here
+            if cursor.jump(range.end).is_err() {
+                return Ok(());
+            }
             continue;
         }
 
@@ -229,7 +232,7 @@ fn promote_hugepages(
             })
             .is_err()
             {
-                break;
+                return Ok(());
             }
 
             // Set the accessed and dirty bits if any page in the region was accessed or marked
@@ -256,12 +259,12 @@ fn promote_hugepages(
             {
                 Ok(cursor) => cursor,
                 _ => {
-                    break;
+                    return Ok(());
                 }
             };
         }
         if cursor.jump(start + PROMOTED_PAGE_SIZE).is_err() {
-            break;
+            return Ok(());
         }
     }
     Ok(())

@@ -192,9 +192,22 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
         // Lock before writing the PTE, so no one else can operate on it.
         let mut pt_lock_guard = pt_ref.lock(guard);
 
+        let item = unsafe { C::item_from_raw(pa, level, prop) };
+        let parent_item = C::split_item(item);
+        // We must prevent the item from being dropped here because this item is implicitly owmed by
+        // the page table.
+        core::mem::forget(parent_item);
+
         for i in 0..nr_subpage_per_huge::<C>() {
             let small_pa = pa + i * page_size::<C>(level - 1);
             let mut entry = pt_lock_guard.entry(i);
+
+            // The 0th frame is initialized with split_item above
+            if i != 0 {
+                let item = unsafe { C::item_from_raw(small_pa, level - 1, prop) };
+                C::init_split_item_subpage(item, level - 1);
+            }
+
             let old = entry.replace(Child::Frame(small_pa, level - 1, prop));
             debug_assert!(old.is_none());
         }
