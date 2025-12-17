@@ -194,6 +194,8 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
         let item = unsafe { C::item_from_raw(pa, level, prop) };
         let parent_item = C::split_item(item);
+        // We must prevent the item from being dropped here because this item is implicitly owmed by
+        // the page table.
         core::mem::forget(parent_item);
 
         for i in 0..nr_subpage_per_huge::<C>() {
