@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Arbitrary notifications via ORPC
-use alloc::string::ToString;
-
 use orpc_macros::orpc_trait;
 
 use crate::orpc::{
