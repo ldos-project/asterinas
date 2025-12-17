@@ -117,9 +117,7 @@ fn promote_hugepages(
 
     let proc_vm = proc.vm();
     let proc_vm_guard = proc_vm.lock_root_vmar();
-    let proc_vmar = if let Some(proc_vmar) = proc_vm_guard.as_ref() {
-        proc_vmar
-    } else {
+    let Some(proc_vmar) = proc_vm_guard.as_ref() else {
         // The process may have exited right as we attempted to pause it.
         return Ok(());
     };
@@ -127,11 +125,8 @@ fn promote_hugepages(
     let preempt_guard = disable_preempt();
     let mut space_len = proc_vmar.size();
     let vm_space = proc_vmar.vm_space();
-    let mut cursor = match vm_space.cursor_mut(&preempt_guard, &(0..space_len)) {
-        Ok(cursor) => cursor,
-        _ => {
-            return Ok(());
-        }
+    let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..space_len)) else {
+        return Ok(());
     };
 
     let mut real_rss = 0;
@@ -140,7 +135,8 @@ fn promote_hugepages(
         Ok(())
     })
     .unwrap();
-    crate::prelude::println!(
+    // TODO(aneesh): produce this into an OQueue instead of logging it.
+    crate::prelude::info!(
         "proc={} RSS={} real_rss_n_pages={}",
         proc.pid(),
         proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
@@ -166,9 +162,8 @@ fn promote_hugepages(
     }
 
     while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
-        let (range, _) = match cursor.query() {
-            Ok(v) => v,
-            Err(_) => return Ok(()),
+        let Ok((range, _)) = cursor.query() else {
+            return Ok(());
         };
 
         // If the address is not hugepage aligned go to the next mapping
