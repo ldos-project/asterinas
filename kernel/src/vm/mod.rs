@@ -336,8 +336,8 @@ impl HugepagedServer {
         let notify_server = TimerServer::spawn(Duration::from_secs(1));
 
         let pagefault_oq = vmar::get_page_fault_oqueue();
-        let observer = pagefault_oq.attach_strong_observer()?;
-        let notifications = notify_server
+        let pagefault_observer = pagefault_oq.attach_strong_observer()?;
+        let notify_observer = notify_server
             .notification_oqueue()
             .attach_strong_observer()?;
         loop {
