@@ -8,7 +8,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use core::{
-    any::{Any, type_name},
+    any::type_name,
     cell::{Cell, UnsafeCell},
     marker::PhantomData,
     mem::MaybeUninit,
@@ -80,10 +80,7 @@ impl<T> Slot<T> {
     /// called.
     unsafe fn get(&self) -> T {
         // SAFETY: This assumes that the self.store has be previously called
-        unsafe {
-            let data = ptr::read(self.value.data.get()).assume_init();
-            data
-        }
+        unsafe { ptr::read(self.value.data.get()).assume_init() }
     }
 
     #[expect(unused)]
@@ -198,9 +195,10 @@ impl<T> Rigtorp<T> {
             // If it is our turn, attempt to atomically update the counter while checking to see if
             // another producer has beaten this thread to the slot.
             if (self.turn(head) * 2) == slot.turn.load(Ordering::Acquire) {
-                if let Ok(_) =
-                    self.head
-                        .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
+                if self
+                    .head
+                    .compare_exchange(head, head + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
                 {
                     // We have exclusive write access to the slot, safe to write.
                     unsafe { slot.store(data) };
@@ -221,7 +219,7 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    ///
+    /// consume
     pub fn consume(&self) -> T {
         let tail = self.tail.fetch_add(1, Ordering::Acquire);
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
@@ -281,27 +279,18 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    ///
+    /// size
     pub fn size(&self) -> usize {
         self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 
-    ///
+    /// empty
     #[expect(unused)]
     pub fn empty(&self) -> bool {
         self.size() <= 0
     }
 
-    ///
-    // pub fn attach_producer(&self) -> Option<Arc<Self>> {
-    //     self.this.upgrade()
-    // }
-
-    // ///
-    // pub fn attach_consumer(&self) -> Option<Arc<Self>> {
-    //     self.this.upgrade()
-    // }
-
+    /// Get a reference to this OQueue
     pub fn get_this(&self) -> Arc<Self> {
         self.this.upgrade().unwrap()
     }
