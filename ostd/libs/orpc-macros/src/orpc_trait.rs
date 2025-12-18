@@ -90,7 +90,7 @@ pub fn orpc_trait_macro_impl(
     };
 
     // The type of the OQueue struct that holds references to the OQueues associated with this trait.
-    let oqueues_struct_ident = format_ident!("{}OQueues", input.ident, span = input.ident.span());
+    let oqueues_struct_ident = format_ident!("{}OQueues", input.ident);
 
     let oqueue_struct_docs = LitStr::new(
         &format!(
@@ -161,7 +161,7 @@ fn process_orpc_method(
     if let Some(default) = default {
         let new_body = generate_orpc_method_body(sig, default);
 
-        method_decls.push(quote_spanned! { trait_item_method.span() =>
+        method_decls.push(quote! {
             #(#attrs)*
             #sig {
                 #new_body

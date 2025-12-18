@@ -60,14 +60,14 @@ pub fn orpc_impl_macro_impl(
         } = &input
         {
             // Rebuild the impl using the new method implementations
-            quote_spanned! { input.span() =>
+            quote! {
                 #(#attrs)*
                 #defaultness #unsafety #impl_token #generics #bang #trait_path #for_token #self_ty {
                     #(#method_implementations)*
                 }
             }
         } else {
-            quote_spanned! { input.span() =>
+            quote! {
                 compile_error!("orpc_impl must apply to an impl of an ORPC trait (it is applied to an inherent impl)")
             }
         }
@@ -95,7 +95,7 @@ fn process_orpc_method(method: &syn::ImplItemMethod) -> proc_macro2::TokenStream
 
     let new_body = generate_orpc_method_body(sig, body);
 
-    quote_spanned! { method.span() =>
+    quote! {
         #(#attrs)*
         #vis
         #defaultness
@@ -114,13 +114,13 @@ pub(crate) fn generate_orpc_method_body(
 ) -> proc_macro2::TokenStream {
     let ret_type = &sig.output;
     let base_ref: Expr = parse_quote! { ::ostd::orpc::framework::Server::orpc_server_base(self) };
-    let abort_check = quote_spanned! { sig.span() =>
+    let abort_check = quote! {
         if #base_ref.is_aborted() {
             #[allow(clippy::useless_conversion)]
             return ::core::result::Result::Err(::ostd::orpc::framework::errors::RPCError::ServerMissing.into());
         }
     };
-    let enter_server_context = quote_spanned! { sig.span() =>
+    let enter_server_context = quote! {
             let _server_context = ::ostd::orpc::framework::CurrentServer::enter_server_context(
                 #base_ref
             );
@@ -136,7 +136,7 @@ pub(crate) fn generate_orpc_method_body(
         }
     };
 
-    quote_spanned! { body.span() =>
+    quote! {
         #abort_check
 
         match ::ostd::panic::catch_unwind(|| {
@@ -184,13 +184,13 @@ fn process_oqueue_method(
 
     // Don't check for illegal signatures. Those will already have been checked at the trait definition.
 
-    let new_body = quote_spanned! { ident.span() =>
+    let new_body = quote! {
         self.orpc_internal.#oqueue_field_ident
         .#ident
         .clone()
     };
 
-    method_implementations.push(quote_spanned! { method.span() =>
+    method_implementations.push(quote! {
         #(#attrs)*
         #vis
         #defaultness
