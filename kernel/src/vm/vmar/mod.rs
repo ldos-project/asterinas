@@ -26,7 +26,7 @@ use ostd::{
     },
     orpc::{
         framework::errors::RPCError,
-        oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
+        oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server,
     },
     sync::RwMutexReadGuard,
@@ -1276,7 +1276,7 @@ impl<'a> RssDelta<'a> {
             } else {
                 GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed);
             }
-            RSS_DELTA_OQUEUE.wait().produce(increment);
+            let _ = RSS_DELTA_OQUEUE.wait().produce(increment);
         }
 
         self.delta[rss_type as usize] += increment;
