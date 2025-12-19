@@ -86,10 +86,7 @@ impl<T> Slot<T> {
     #[expect(unused)]
     unsafe fn get_maybe_uninit(&self) -> MaybeUninit<T> {
         // SAFETY: This assumes that the self.store has be previously called
-        unsafe {
-            let data = ptr::read(self.value.data.get());
-            data
-        }
+        unsafe { ptr::read(self.value.data.get()) }
     }
 }
 
@@ -131,7 +128,6 @@ unsafe impl<T> Sync for Rigtorp<T> {}
 unsafe impl<T> Send for Rigtorp<T> {}
 
 impl<T> Rigtorp<T> {
-    /// new
     pub fn new(size: usize) -> Arc<Self> {
         assert!(size.is_power_of_two());
         assert!(size > 0);
@@ -164,7 +160,6 @@ impl<T> Rigtorp<T> {
         index % self.capacity
     }
 
-    /// produce
     pub fn produce(&self, data: T)
     where
         T: Send,
@@ -181,7 +176,6 @@ impl<T> Rigtorp<T> {
         slot.turn.store(self.turn(head) * 2 + 1, Ordering::Release);
     }
 
-    /// try_produce
     #[expect(unused)]
     pub fn try_produce(&self, data: T) -> Option<T>
     where
@@ -219,7 +213,6 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    /// consume
     pub fn consume(&self) -> T {
         let tail = self.tail.fetch_add(1, Ordering::Acquire);
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
@@ -229,7 +222,6 @@ impl<T> Rigtorp<T> {
         v
     }
 
-    /// try_consume
     #[expect(unused)]
     pub fn try_consume(&self) -> Option<T> {
         // Get the current tail position
@@ -279,15 +271,13 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    /// size
     pub fn size(&self) -> usize {
         self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 
-    /// empty
     #[expect(unused)]
     pub fn empty(&self) -> bool {
-        self.size() <= 0
+        self.size() == 0
     }
 
     /// Get a reference to this OQueue
