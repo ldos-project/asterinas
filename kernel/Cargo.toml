@@ -67,6 +67,10 @@ cfg-if = "1.0"
 # TODO: fork this crate to rewrite all the (unnecessary) unsafe usage
 fixed = "1.28.0"
 
+# For benchmarking
+# TODO(aneesh): move this into it's own build target or otherwise make it optional
+crossbeam-utils = { version = "0.8.21", default-features = false }
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 tdx-guest = { version = "0.2.1", optional = true }
 
