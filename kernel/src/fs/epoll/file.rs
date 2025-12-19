@@ -4,7 +4,7 @@ use alloc::{collections::btree_set::BTreeSet, sync::Arc};
 use core::{borrow::Borrow, time::Duration};
 
 use keyable_arc::KeyableWeak;
-use ostd::sync::Mutex;
+use ostd::{info_result, sync::Mutex};
 
 use super::{
     EpollCtl, EpollEvent, EpollFlags,
@@ -222,8 +222,8 @@ impl EpollFile {
                 // remove the entry at the same time, and we run into some race conditions.
                 //
                 // However, this has very limited impact because we will never remove a wrong entry. So
-                // the error can be silently ignored.
-                let _ = self.del_interest(entry.fd(), entry.file_weak().clone());
+                // the error is only logged.
+                info_result!(self.del_interest(entry.fd(), entry.file_weak().clone()));
                 continue;
             };
 

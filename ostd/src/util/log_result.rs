@@ -5,7 +5,7 @@
 //! Sometimes [`Result::Err`] needs to be ignored. However, the error should not be dropped since it
 //! might be important to know it happened. These macros provide a way both silence the warning
 //! about unused [`Result`] and log the error if once occurs.
-//! 
+//!
 //! Generally, use [`error_result`].
 
 // TODO(arthurp): clippy::format_args is broken by another lint, see
