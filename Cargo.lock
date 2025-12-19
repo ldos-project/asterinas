@@ -95,6 +95,7 @@ name = "aster-block"
 version = "0.1.0"
 dependencies = [
  "align_ext",
+ "aster-time",
  "bitvec",
  "component",
  "int-to-c-enum",
@@ -254,6 +255,8 @@ name = "aster-raid"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-virtio",
+ "log",
  "ostd",
 ]
 

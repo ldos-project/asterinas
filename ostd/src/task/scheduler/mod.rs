@@ -24,6 +24,7 @@ use crate::{
 ///
 /// This function can only be called once and must be called during the initialization of kernel.
 pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
+
     SCHEDULER.call_once(|| scheduler);
 
     timer::register_callback(|| {
@@ -191,7 +192,13 @@ pub(super) fn run_new_task(runnable: Arc<Task>) {
         set_need_preempt(preempt_cpu_id);
     }
 
-    might_preempt();
+    // Only call might_preempt if there's an actual current task.
+    // During boot, there's no current task (we're in bootstrap context).
+    // If we preempt now, control transfers to the new task and boot never continues.
+    // TODO(yingqi): we might need a preempt guard here. 
+    if processor::current_task().is_some() {
+        might_preempt();
+    }
 }
 
 fn set_need_preempt(cpu_id: CpuId) {

@@ -22,7 +22,7 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{Raid1Device, Raid1DeviceError};
+use aster_raid::{selection_policies::RoundRobinPolicy, Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -34,6 +34,9 @@ use crate::{
     prelude::*,
 };
 
+/// Start a thread of the block device to pop requests from the block device's
+/// request queue and process them if there are any. If the request queue is empty, 
+/// the thread will wait until there is a request in the queue.
 fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
     if let Some(device) = aster_block::get_device(device_name) {
         let cloned_device = device.clone();
@@ -55,37 +58,51 @@ pub fn lazy_init() {
     //The device name is specified in qemu args as --serial={device_name}
     let ext2_device_name = "vext2";
     let exfat_device_name = "vexfat";
+    let raid1_device_name = "raid_device";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
         let ext2_fs = Ext2::open(block_device_ext2).unwrap();
         let target_path = FsPath::try_from("/ext2").unwrap();
-        println!("[kernel] Mount Ext2 fs at {:?} ", target_path);
         self::rootfs::mount_fs_at(ext2_fs, &target_path).unwrap();
+        println!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
-    if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
-        let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
-        let target_path = FsPath::try_from("/exfat").unwrap();
-        println!("[kernel] Mount ExFat fs at {:?} ", target_path);
-        self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
+    // FIXME: ExFat filesystem will cause hanging when trying to start. 
+    // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
+    //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
+    //     let target_path = FsPath::try_from("/exfat").unwrap();
+    //     println!("[kernel] Mounted ExFat fs at {:?} ", target_path);
+    //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
+    // }
+
+    info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
+    if let Err(err) = setup_raid1_device(raid1_device_name) {
+        error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
-    if let Ok(raid) = setup_raid1_device() {
+
+    info!("[raid] RAID-1 device setup complete");
+    if let Some(raid) = aster_block::get_device(raid1_device_name) {
+        info!("[raid] got RAID-1 device");
         let raid_fs = Ext2::open(raid).unwrap();
+        info!("[raid] opened RAID-1 filesystem");
         let target_path = FsPath::try_from("/raid1").unwrap();
+        info!("[raid] got target path");
         if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
             error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
         }
         println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+    } else {
+        error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
     }
 }
 
-fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
-    const RAID_DEVICE_NAME: &str = "raid1";
+fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
+    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
-        RAID_DEVICE_NAME, RAID_MEMBER_NAMES
+        raid_device_name, RAID_MEMBER_NAMES
     );
 
     let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
@@ -107,30 +124,32 @@ fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
         }
     }
 
-    // Register the RAID-1 device and start a worker thread to handle requests.
-    let raid = match Raid1Device::register(RAID_DEVICE_NAME, members) {
-        Ok(dev) => dev,
-        Err(Raid1DeviceError::NotEnoughMembers) => {
-            error!(
-                "[raid] failed to register RAID-1 device '{}': not enough members",
-                RAID_DEVICE_NAME
-            );
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "RAID-1 device requires at least two members"
-            );
+    info!("[raid] creating selection policy");
+    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+
+    info!("[raid] creating RAID-1 device");
+    Raid1Device::new(raid_device_name, members, selection_policy).map_err(|err| match err {
+        Raid1DeviceError::NotEnoughMembers => {
+            Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
-    };
-    let worker = raid.clone();
+    })?;
+    info!("[raid] RAID-1 device created");
+
+    // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs. 
+    let worker = aster_block::get_device(raid_device_name).unwrap();
+    // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
+    // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
     let task_fn = move || loop {
-        worker.handle_requests();
+        let raid = worker
+            .downcast_ref::<Raid1Device>()
+            .expect("RAID device type mismatch");
+        raid.handle_requests();
     };
     crate::ThreadOptions::new(task_fn).spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
-        RAID_DEVICE_NAME
+        raid_device_name
     );
-
-    Ok(raid)
+    Ok(())
 }
