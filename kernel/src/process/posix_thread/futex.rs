@@ -543,7 +543,7 @@ impl FutexKey {
         if addr % core::mem::align_of::<u32>() != 0 {
             return_errno_with_message!(
                 Errno::EINVAL,
-                "the futex word is not aligend on a four-byte boundary"
+                "the futex word is not aligned on a four-byte boundary"
             );
         }
 
