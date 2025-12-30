@@ -50,6 +50,7 @@ pub mod orpc;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
+pub mod stack_info;
 pub mod stacktrace;
 pub mod sync;
 pub mod task;
