@@ -7,6 +7,19 @@
 //! that stack of a deadlock is detected.
 //!
 //! This does nothing and consumes no space unless the `capture_stacks` feature is enabled.
+//!
+//! ## Displaying [`CapturedStackTrace`]
+//!
+//! The `Display` implementation on [`CapturedStackTrace`] formats the trace in the form:
+//!
+//! ```text
+//! stacktrace[0xdeadbeef, ..., 0xdeadbeef]
+//! ```
+//!
+//! where the `0xdeadbeef` are actually the PCs at each stack frame. This format is not really human
+//! readable, but there is a tool to parse it. `cargo osdk enhance-log` will process a log file and
+//! add a nicely formatted stack trace after any line containing the above. See
+//! `docs/src/osdk/reference/commands/enhance-log.md` for more details.
 
 /// The number of stack frames to capture [`CapturedStackTrace`]. This defines the size of that data
 /// structure.
