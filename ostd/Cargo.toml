@@ -35,7 +35,7 @@ ostd-pod = { git = "https://github.com/ldos-project/ostd-pod", rev = "c4644be", 
 ostd-test = { version = "0.15.2", path = "libs/ostd-test" }
 spin = "0.9.4"
 smallvec = "1.13.2"
-snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
+snafu = { workspace = true }
 unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
 volatile = "0.6.1"
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }

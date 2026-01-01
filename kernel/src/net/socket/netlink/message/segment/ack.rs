@@ -81,7 +81,7 @@ impl ErrorSegment {
     }
 }
 
-const fn error_to_error_code(error: Option<Error>) -> i32 {
+fn error_to_error_code(error: Option<Error>) -> i32 {
     if let Some(error) = error {
         -(error.error() as i32)
     } else {

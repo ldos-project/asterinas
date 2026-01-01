@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::fmt::Display;
+use alloc::format;
 
-use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
+use ostd::{
+    orpc::{framework::errors::RPCError, oqueue::OQueueAttachError},
+    ostd_error,
+};
+use snafu::Snafu;
 
 /// Error number.
 ///
@@ -295,40 +299,41 @@ pub enum Errno {
 /// userspace from the syscall if the error reaches syscall invocation.
 ///
 /// This type is convertible to and from various other error types.
-#[derive(Debug, Clone, Copy)]
+#[ostd_error]
+#[derive(Snafu, Debug)]
+#[snafu(visibility(pub))]
+#[snafu(display("{errno:?}{} ({context})", msg.map(|s| format!(": {s}")).unwrap_or_default()))]
 pub struct Error {
     errno: Errno,
     msg: Option<&'static str>,
 }
 
+/// An error select which should never be returned, because it's return is not reachable. This
+/// should be used in place of [`unreachable!`] when at all possible. For example, instead of
+/// `v.unwrap()` use `v.context(UNREACHABLE_SNAFU)?`.
+pub const UNREACHABLE_SNAFU: Snafu<Errno, Option<&'static str>> = Snafu {
+    errno: Errno::ENOTRECOVERABLE,
+    msg: Some("reached unreachable code"),
+};
+
 impl Error {
-    pub const fn new(errno: Errno) -> Self {
-        Error { errno, msg: None }
+    // TODO(arthurp): These error constructors are deeply nested (this or new wrapped by one of the
+    // `From::from` below). This will waste a bunch of stack frames that could have been used for
+    // error context since they will contain frames from the error construction path. We may want to
+    // provide a way to skip additional frames in some cases.
+
+    #[track_caller]
+    pub fn new(errno: Errno) -> Self {
+        Snafu { errno, msg: None }.build()
     }
 
-    pub const fn with_message(errno: Errno, msg: &'static str) -> Self {
-        Error {
+    #[track_caller]
+    pub fn with_message(errno: Errno, msg: &'static str) -> Self {
+        Snafu {
             errno,
             msg: Some(msg),
         }
-    }
-
-    // TODO(amp, https://github.com/ldos-project/asterinas/issues/4): This shouldn't use
-    // ENOTRECOVERABLE as that is a specific POSIX error that may not be appropriate here.
-
-    /// An error with no useful information. This is used in place of an empty panic. For example,
-    /// instead of `v.unwrap()` use `v.ok_or_else(Error::unknown)?`.
-    ///
-    /// Use [`Error::unreachable`] if the state is specifically unreachable.
-    pub const fn unknown() -> Error {
-        Error::with_message(Errno::ENOTRECOVERABLE, "unknown failure")
-    }
-
-    /// An error which should never be returned, because it's return is not reachable. This should
-    /// be used in place of [`unreachable!`] when at all possible. For example, instead of
-    /// `v.unwrap()` use `v.ok_or_else(Error::unreachable)?`.
-    pub const fn unreachable() -> Error {
-        Error::with_message(Errno::ENOTRECOVERABLE, "reached unreachable code")
+        .build()
     }
 
     pub const fn error(&self) -> Errno {
@@ -336,20 +341,8 @@ impl Error {
     }
 }
 
-impl core::error::Error for Error {}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:?}", self.errno)?;
-        if let Some(msg) = self.msg {
-            f.write_str(": ")?;
-            f.write_str(msg)?;
-        }
-        Ok(())
-    }
-}
-
 impl From<RPCError> for Error {
+    #[track_caller]
     fn from(value: RPCError) -> Self {
         match value {
             RPCError::Panic { message: _ } => {
@@ -363,6 +356,7 @@ impl From<RPCError> for Error {
 }
 
 impl From<OQueueAttachError> for Error {
+    #[track_caller]
     fn from(value: OQueueAttachError) -> Self {
         match value {
             OQueueAttachError::Unsupported { .. } => {
@@ -388,6 +382,7 @@ impl AsRef<Error> for Error {
 }
 
 impl From<ostd::Error> for Error {
+    #[track_caller]
     fn from(ostd_error: ostd::Error) -> Self {
         match ostd_error {
             ostd::Error::AccessDenied => Error::new(Errno::EFAULT),
@@ -405,12 +400,14 @@ impl From<ostd::Error> for Error {
 
 impl From<(ostd::Error, usize)> for Error {
     // Used in fallible memory read/write API
+    #[track_caller]
     fn from(ostd_error: (ostd::Error, usize)) -> Self {
         Error::from(ostd_error.0)
     }
 }
 
 impl From<aster_block::bio::BioEnqueueError> for Error {
+    #[track_caller]
     fn from(error: aster_block::bio::BioEnqueueError) -> Self {
         match error {
             aster_block::bio::BioEnqueueError::IsFull => {
@@ -427,6 +424,7 @@ impl From<aster_block::bio::BioEnqueueError> for Error {
 }
 
 impl From<aster_block::bio::BioStatus> for Error {
+    #[track_caller]
     fn from(err_status: aster_block::bio::BioStatus) -> Self {
         match err_status {
             aster_block::bio::BioStatus::NotSupported => {
@@ -444,36 +442,42 @@ impl From<aster_block::bio::BioStatus> for Error {
 }
 
 impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
     fn from(_: core::num::TryFromIntError) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid integer")
     }
 }
 
 impl From<core::str::Utf8Error> for Error {
+    #[track_caller]
     fn from(_: core::str::Utf8Error) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid utf-8 string")
     }
 }
 
 impl From<alloc::string::FromUtf8Error> for Error {
+    #[track_caller]
     fn from(_: alloc::string::FromUtf8Error) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid utf-8 string")
     }
 }
 
 impl From<core::ffi::FromBytesUntilNulError> for Error {
+    #[track_caller]
     fn from(_: core::ffi::FromBytesUntilNulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<core::ffi::FromBytesWithNulError> for Error {
+    #[track_caller]
     fn from(_: core::ffi::FromBytesWithNulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<cpio_decoder::error::Error> for Error {
+    #[track_caller]
     fn from(cpio_error: cpio_decoder::error::Error) -> Self {
         match cpio_error {
             cpio_decoder::error::Error::MagicError => {
@@ -502,6 +506,7 @@ impl From<cpio_decoder::error::Error> for Error {
 }
 
 impl From<Error> for ostd::Error {
+    #[track_caller]
     fn from(error: Error) -> Self {
         match error.errno {
             Errno::EACCES => ostd::Error::AccessDenied,
@@ -516,18 +521,21 @@ impl From<Error> for ostd::Error {
 }
 
 impl From<alloc::ffi::NulError> for Error {
+    #[track_caller]
     fn from(_: alloc::ffi::NulError) -> Self {
         Error::with_message(Errno::E2BIG, "Cannot find null in cstring")
     }
 }
 
 impl From<int_to_c_enum::TryFromIntError> for Error {
+    #[track_caller]
     fn from(_: int_to_c_enum::TryFromIntError) -> Self {
         Error::with_message(Errno::EINVAL, "Invalid enum value")
     }
 }
 
 impl From<aster_systree::Error> for Error {
+    #[track_caller]
     fn from(err: aster_systree::Error) -> Self {
         use aster_systree::Error::*;
         match err {

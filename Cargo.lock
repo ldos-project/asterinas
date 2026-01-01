@@ -317,6 +317,7 @@ dependencies = [
  "aster-rights-proc",
  "inherit-methods-macro",
  "ostd",
+ "snafu",
  "typeflags-util",
 ]
 
@@ -1248,6 +1249,7 @@ version = "0.15.2"
 dependencies = [
  "log",
  "ostd",
+ "snafu",
 ]
 
 [[package]]
