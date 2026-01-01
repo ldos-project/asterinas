@@ -63,6 +63,9 @@ allow_attributes = "warn"
 # Cargo only looks at the profile settings
 # in the Cargo.toml manifest at the root of the workspace
 
+[workspace.dependencies]
+snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
+
 [profile.dev]
 panic = "unwind"
 

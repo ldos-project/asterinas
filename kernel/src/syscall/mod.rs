@@ -361,7 +361,7 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
             }
         }
         Err(err) => {
-            debug!("syscall return error: {:?}", err);
+            debug!("syscall return error: {}", err);
             let errno = err.error() as i32;
             user_ctx.set_syscall_ret((-errno) as usize)
         }

@@ -482,7 +482,7 @@ mod test {
         let mut read = vec![0u8; BUF_SIZE];
         let read_after_rename = a_inode_new.read_bytes_at(0, &mut read);
         assert!(
-            read_after_rename.is_ok() && read_after_rename.unwrap() == BUF_SIZE,
+            read_after_rename.is_ok() && read_after_rename.as_ref().unwrap() == &BUF_SIZE,
             "Fail to read after rename: {:?}",
             read_after_rename.unwrap_err()
         );
@@ -493,7 +493,8 @@ mod test {
         let new_buf = vec![7u8; NEW_BUF_SIZE];
         let new_write_after_rename = a_inode_new.write_bytes_at(0, &new_buf);
         assert!(
-            new_write_after_rename.is_ok() && new_write_after_rename.unwrap() == NEW_BUF_SIZE,
+            new_write_after_rename.is_ok()
+                && new_write_after_rename.as_ref().unwrap() == &NEW_BUF_SIZE,
             "Fail to write file after rename: {:?}",
             new_write_after_rename.unwrap_err()
         );
@@ -875,7 +876,7 @@ mod test {
             let start_idx_k = bitmap.find_next_unused_cluster_range(range_start_idx, k);
             assert!(
                 start_idx_k.is_ok()
-                    && start_idx_k.clone().unwrap().start
+                    && start_idx_k.as_ref().unwrap().start
                         == (k - 1) * (k + 2) / 2 + range_start_idx
                     && start_idx_k.unwrap().end == (k * k + 3 * k - 2) / 2 + range_start_idx,
                 "Fail to find chunk size {:?}",

@@ -9,7 +9,7 @@ pub(super) const fn rt_to_static(prio: RealTimePriority) -> u32 {
     (100 - prio.get()) as u32
 }
 
-pub(super) const fn static_to_rt(prio: u32) -> Result<RealTimePriority> {
+pub(super) fn static_to_rt(prio: u32) -> Result<RealTimePriority> {
     if *RT_PRIORITY_RANGE.start() <= prio && prio <= *RT_PRIORITY_RANGE.end() {
         Ok(RealTimePriority::new((100 - prio) as u8))
     } else {

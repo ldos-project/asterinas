@@ -22,8 +22,10 @@ use ostd::{
     },
     task::Task,
 };
+use snafu::OptionExt;
 
 use crate::{
+    error::{Snafu, UNREACHABLE_SNAFU},
     fs::{
         server_traits::{
             self, AsyncReadRequest, AsyncWriteRequest, CacheState, PageCache as _,
@@ -462,7 +464,7 @@ impl PageCacheManagerInner {
         manager: &PageCacheManager,
     ) -> Result<()> {
         let Some(policy) = &mut self.builtin_prefetch_policy else {
-            return Err(Error::unreachable());
+            return UNREACHABLE_SNAFU.fail();
         };
         let Some(window) = &policy.ra_window else {
             return_errno!(Errno::EINVAL)
@@ -571,7 +573,10 @@ impl PageCacheManager {
     }
 
     pub fn backend(&self) -> Result<Arc<dyn PageStore>> {
-        self.backend.upgrade().ok_or_else(Error::unknown)
+        self.backend.upgrade().context(Snafu {
+            errno: Errno::ENOENT,
+            msg: Some("manager outlived backend"),
+        })
     }
 
     /// Discard pages without writing them back to disk.
@@ -658,11 +663,7 @@ impl PageCacheManager {
                     inner
                         .outstanding_requests
                         .wait_for_requests(&mut inner.pages);
-                    inner
-                        .pages
-                        .get(&idx)
-                        .ok_or_else(Error::unreachable)?
-                        .clone()
+                    inner.pages.get(&idx).context(UNREACHABLE_SNAFU)?.clone()
                 } else {
                     // Cond 1.
                     page_cache_read_info_producer.produce(PageCacheReadInfo {

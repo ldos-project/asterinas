@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use hashbrown::{Equivalent, HashMap, hash_map::Entry};
+use snafu::OptionExt as _;
 use spin::Once;
 
 use crate::{
+    error::Snafu,
     fs::utils::{InodeType, XattrName, XattrNamespace, XattrSetFlags},
     prelude::*,
 };
@@ -30,6 +32,11 @@ struct RamXattrInner {
     user_name_count: usize,
     user_name_len: usize,
 }
+
+const EXISTENCE_ERROR: Snafu<Errno, Option<&'static str>> = Snafu {
+    errno: Errno::ENODATA,
+    msg: Some("the target xattr does not exist"),
+};
 
 impl RamXattr {
     pub fn new() -> Self {
@@ -87,16 +94,14 @@ impl RamXattr {
     }
 
     pub fn get(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize> {
-        let existence_error =
-            Error::with_message(Errno::ENODATA, "the target xattr does not exist");
-        let inner = self.0.get().ok_or(existence_error)?;
+        let inner = self.0.get().context(EXISTENCE_ERROR)?;
 
         let xattr = inner.read();
         if xattr.total_name_count == 0 {
-            return Err(existence_error);
+            return EXISTENCE_ERROR.fail();
         }
 
-        let value = xattr.map.get(&name).ok_or(existence_error)?;
+        let value = xattr.map.get(&name).context(EXISTENCE_ERROR)?;
         let value_len = value.len();
 
         let value_avail_len = value_writer.avail();
@@ -143,16 +148,14 @@ impl RamXattr {
     }
 
     pub fn remove(&self, name: XattrName) -> Result<()> {
-        let existence_error =
-            Error::with_message(Errno::ENODATA, "the target xattr does not exist");
-        let inner = self.0.get().ok_or(existence_error)?;
+        let inner = self.0.get().context(EXISTENCE_ERROR)?;
 
         let mut xattr = inner.write();
         if xattr.total_name_count == 0 {
-            return Err(existence_error);
+            return EXISTENCE_ERROR.fail();
         }
 
-        xattr.map.remove(&name).ok_or(existence_error)?;
+        xattr.map.remove(&name).context(EXISTENCE_ERROR)?;
 
         let namespace = name.namespace();
         let name_len = name.full_name_len();

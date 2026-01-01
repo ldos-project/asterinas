@@ -253,7 +253,10 @@ impl RangeLockList {
             let (waiter, waker) = Waiter::new_pair();
             waiter.pause_until(|| {
                 let result = self.try_set_lock(req_lock, Some(&waker));
-                if result.is_err_and(|err| err.error() == Errno::EAGAIN) {
+                if result
+                    .as_ref()
+                    .is_err_and(|err| err.error() == Errno::EAGAIN)
+                {
                     None
                 } else {
                     Some(result)

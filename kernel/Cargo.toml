@@ -39,7 +39,7 @@ xarray = { path = "libs/xarray" }
 intrusive-collections = "0.9.5"
 paste = "1.0"
 time = { version = "0.3", default-features = false, features = ["alloc"] }
-snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
+snafu = { workspace = true }
 
 # parse elf file
 xmas-elf = "0.10.0"
@@ -79,6 +79,7 @@ riscv = { version = "0.11.1", features = ["s-mode"] }
 
 [features]
 all = ["cvm_guest"]
+capture_stacks = ["ostd/capture_stacks"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
 
 [lints]
