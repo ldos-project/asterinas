@@ -27,11 +27,12 @@ mod integration_test;
 pub mod notifier;
 pub mod shutdown;
 
-use alloc::{sync::Weak, vec::Vec};
+use alloc::{boxed::Box, sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
+    num::NonZeroUsize,
     ops::DerefMut,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use log::error;
@@ -39,7 +40,7 @@ use spin::Once;
 
 use crate::{
     cpu_local_cell,
-    prelude::{Arc, Box},
+    prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
 };
@@ -55,6 +56,8 @@ pub trait Server: Sync + Send + 'static {
     fn orpc_server_base(&self) -> &ServerBase;
 }
 
+static NEXT_SERVER_ID: AtomicUsize = AtomicUsize::new(1);
+
 /// The information and state included in every server. The name comes form it being the "base class" state for all
 /// servers.
 pub struct ServerBase {
@@ -66,7 +69,10 @@ pub struct ServerBase {
     server_threads: Mutex<Vec<Arc<Task>>>,
     /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
     /// is available.
-    weak_this: Weak<dyn Server + Sync + Send + 'static>,
+    weak_this: Weak<dyn Server + Send + Sync + 'static>,
+    /// An opaque ID for the server. This is non-zero to allow compact representations of
+    /// `Option<id>` in errors.
+    id: NonZeroUsize,
 }
 
 impl ServerBase {
@@ -75,11 +81,12 @@ impl ServerBase {
     ///
     /// Create a new `ServerBase` with a cyclical reference to the server containing it.
     #[doc(hidden)]
-    pub fn new(weak_this: Weak<dyn Server + Sync + Send + 'static>) -> Self {
+    pub fn new(weak_this: Weak<dyn Server + Send + Sync + 'static>) -> Self {
         Self {
             aborted: Default::default(),
             server_threads: Mutex::new(Default::default()),
             weak_this,
+            id: NonZeroUsize::new(NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
         }
     }
 
@@ -122,8 +129,15 @@ impl ServerBase {
     }
 
     /// Get a strong reference to `self`.
-    pub fn get_ref(&self) -> Option<Arc<dyn Server + Sync + Send>> {
+    pub fn get_ref(&self) -> Option<Arc<dyn Server + Send + Sync + 'static>> {
         self.weak_this.upgrade()
+    }
+
+    /// Get an opaque ID for the server. There are no guarantees about the ID other than that it is
+    /// unique and stable. This is non-zero to allow compact representations of `Option<id>` in
+    /// errors.
+    pub fn id(&self) -> NonZeroUsize {
+        self.id
     }
 }
 
@@ -185,7 +199,6 @@ pub fn wrap_server_thread_body(
 pub fn inject_spawn_thread(func: SpawnThreadFn) {
     SPAWN_THREAD_FN.call_once(|| func);
 }
-
 /// Methods to access the current server.
 pub struct CurrentServer {
     _private: (),
@@ -238,7 +251,7 @@ impl CurrentServer {
     fn new_guard(
         orpc_server_base: &ServerBase,
         server_cell: &mut Option<Arc<dyn Server + Send + Sync + 'static>>,
-        nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+        nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Send + Sync + 'static>>>,
     ) -> CurrentServerChangeGuard {
         let previous_server = server_cell.take();
         if let Some(s) = orpc_server_base.get_ref() {
@@ -254,19 +267,19 @@ impl CurrentServer {
 cpu_local_cell! {
     /// The current server when executing in a context without a task in the early boot. See
     /// [servers in early boot](`crate::orpc::framework`).
-    static NONTASK_CPU_SERVER: Option<Arc<dyn Server + Sync + Send + 'static>> = None;
+    static NONTASK_CPU_SERVER: Option<Arc<dyn Server + Send + Sync + 'static>> = None;
 }
 
 /// Guard for entering a server context. When dropped, the current tasks's server is set to
 /// `self.0`.
 pub struct CurrentServerChangeGuard {
     /// The previous server before the change this guards. This is the "pushed" server.
-    previous_server: Option<Arc<dyn Server + Sync + Send>>,
+    previous_server: Option<Arc<dyn Server + Send + Sync + 'static>>,
     /// A check value used to verify that the same CPU drops the guard as created it. See
     /// [`NONTASK_CPU_SERVER`].
     ///
     /// TODO(arthurp): Remove this once we can be sure non-task contexts can never migrate.
-    nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Sync + Send + 'static>>>,
+    nontask_cpu_server_cell: Option<*mut Option<Arc<dyn Server + Send + Sync + 'static>>>,
 }
 
 impl Drop for CurrentServerChangeGuard {
@@ -411,5 +424,23 @@ mod test {
         generic_test::sleep(Duration::from_millis(100));
 
         assert!(server.thread_exited.load(Ordering::SeqCst));
+    }
+
+    #[ktest]
+    fn server_ids() {
+        struct TestServer {
+            base: ServerBase,
+        }
+
+        impl Server for TestServer {
+            fn orpc_server_base(&self) -> &ServerBase {
+                &self.base
+            }
+        }
+
+        assert_ne!(
+            ServerBase::new(Weak::<TestServer>::new()).id(),
+            ServerBase::new(Weak::<TestServer>::new()).id()
+        );
     }
 }

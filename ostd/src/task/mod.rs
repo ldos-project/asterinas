@@ -13,9 +13,10 @@ use core::{
     any::Any,
     borrow::Borrow,
     cell::{Cell, RefCell, SyncUnsafeCell},
+    num::NonZeroUsize,
     ops::Deref,
     ptr::NonNull,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use kernel_stack::KernelStack;
@@ -38,6 +39,8 @@ static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
 }
+
+static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// A task that executes a function to the end.
 ///
@@ -62,9 +65,12 @@ pub struct Task {
     /// See [`processor::switch_to_task`] for more details.
     switched_to_cpu: AtomicBool,
 
+    /// An opaque ID for the task.
+    id: NonZeroUsize,
+
     schedule_info: TaskScheduleInfo,
 
-    server: ForceSync<RefCell<Option<Arc<dyn Server + Sync + Send>>>>,
+    server: ForceSync<RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>>>,
 }
 
 impl core::fmt::Debug for Task {
@@ -99,7 +105,7 @@ impl Task {
     /// # SAFETY
     ///
     /// This is only safe if it is NOT done concurrently
-    pub unsafe fn server(&self) -> &RefCell<Option<Arc<dyn Server + Sync + Send + 'static>>> {
+    pub unsafe fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
         unsafe { self.server.get() }
     }
 
@@ -173,6 +179,13 @@ impl Task {
             return;
         };
         user_ctx.fpu_state().restore();
+    }
+
+    /// Get an opaque ID for the thread. There are no guarantees about the ID other than that it is
+    /// unique and stable. This is non-zero to allow compact representations of `Option<id>` in
+    /// errors.
+    pub fn id(&self) -> NonZeroUsize {
+        self.id
     }
 }
 
@@ -291,6 +304,7 @@ impl TaskOptions {
                 cpu: AtomicCpuId::default(),
             },
             switched_to_cpu: AtomicBool::new(false),
+            id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             server: ForceSync::new(RefCell::new(None)),
         };
 
@@ -359,7 +373,7 @@ impl CurrentTask {
     }
 
     /// Get a reference to the current server managing this task.
-    pub fn server(&self) -> &RefCell<Option<Arc<dyn Server + Sync + Send + 'static>>> {
+    pub fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
         // SAFETY: This is the current task, so we have safe access to mutate the server attached to
         // the task. See [`CurrentTask::new`].
         unsafe { self.as_ref().server() }
@@ -428,5 +442,20 @@ mod test {
             assert_eq!(1, 1);
         };
         let _ = crate::task::TaskOptions::new(task).data(()).spawn();
+    }
+
+    #[ktest]
+    fn task_id() {
+        let id1 = crate::task::TaskOptions::new(|| {})
+            .data(())
+            .build()
+            .unwrap()
+            .id();
+        let id2 = crate::task::TaskOptions::new(|| {})
+            .data(())
+            .build()
+            .unwrap()
+            .id();
+        assert_ne!(id1, id2);
     }
 }
