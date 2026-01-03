@@ -5,7 +5,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use rand::{Rng, distributions::Alphanumeric};
-use syn::{Expr, Ident, ItemFn, parse_macro_input};
+use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
+
+mod ostd_error_impl;
 
 /// A macro attribute to mark the kernel entry point.
 ///
@@ -369,4 +371,28 @@ pub fn ktest(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(output)
+}
+
+/// Implement `OstdError` for an error type. This adds fields to the variant to carry the context
+/// (which is why it cannot be a derive macro).
+///
+/// This uses attributes on variants in the form: `#[ostd_error(context([kind]))`, where `kind` is
+/// one of a `boxed`, `inline`, `source`, or `none`.
+///
+/// * Boxed: the context is stored in a box in the error. This is the default, but require memory
+///   allocation.
+/// * Inline: the context is stored directly in the error. This increases the size of the error (by
+///   almost 100 bytes if stack capture is on), but does not require allocation.
+/// * Source: get the context from the source. The variant must have a `source` field which
+///   implements `OstdError`.
+/// * None: do not store or provide any context.
+///
+/// In general, boxed or source should be used. If the error needs to be produced when allocation is
+/// not allowed, use inline. If the memory overhead is too high, use `none`. The last case means the
+/// error will not have good debugging information and if possible, the error should be wrapped in
+/// another error which *does* have context as soon as possible.
+#[proc_macro_attribute]
+pub fn ostd_error(_args: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as Item);
+    ostd_error_impl::ostd_error_impl(input)
 }

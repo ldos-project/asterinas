@@ -42,7 +42,7 @@ pub mod boot;
 pub mod bus;
 pub mod console;
 pub mod cpu;
-mod error;
+pub mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
@@ -63,11 +63,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 pub use ostd_macros::{
     global_frame_allocator, global_heap_allocator, global_heap_allocator_slot_map, main,
-    panic_handler,
+    ostd_error, panic_handler,
 };
 pub use ostd_pod::Pod;
 
-pub use self::{error::Error, prelude::Result};
+pub use self::{
+    error::{Error, OstdError},
+    prelude::Result,
+};
 
 /// Initializes OSTD.
 ///
