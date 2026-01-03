@@ -2,7 +2,16 @@
 
 use core::fmt::Display;
 
-use crate::mm::page_table::PageTableError;
+use crate::{mm::page_table::PageTableError, stack_info::StackInfo};
+
+/// The trait of all errors carrying OSTD metadata.
+///
+/// This specifically provides access to an [`StackInfo`]. Implement this using the
+/// [`ostd_error`] attribute macro.
+pub trait OstdError: snafu::Error {
+    /// Get the context captured with the error.
+    fn stack_info(&self) -> Option<&StackInfo>;
+}
 
 /// The error type which is returned from the APIs of this crate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
