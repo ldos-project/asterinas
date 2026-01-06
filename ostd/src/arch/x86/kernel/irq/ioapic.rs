@@ -11,7 +11,11 @@ use volatile::{
 };
 
 use crate::{
-    Error, Result, arch::if_tdx_enabled, io::IoMemAllocatorBuilder, mm::paddr_to_vaddr,
+    Result,
+    arch::if_tdx_enabled,
+    error::{AccessDeniedSnafu, InvalidArgsSnafu},
+    io::IoMemAllocatorBuilder,
+    mm::paddr_to_vaddr,
     trap::irq::IrqLine,
 };
 
@@ -73,12 +77,12 @@ impl IoApic {
     /// the entry is in use.
     pub(super) fn enable(&mut self, index: u8, irq: &IrqLine) -> Result<()> {
         if index >= self.access.max_redirection_entry() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let value = self.access.read(Self::TABLE_REG_BASE + 2 * index);
         if value.get_bits(0..8) as u8 != 0 {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
 
         if let Some(remapping_index) = irq.remapping_index() {
@@ -118,7 +122,7 @@ impl IoApic {
     /// the entry is not in use.
     pub(super) fn disable(&mut self, index: u8) -> Result<()> {
         if index >= self.access.max_redirection_entry() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         // "Bit 16: Interrupt Mask - R/W. When this bit is 1, the interrupt signal is masked."

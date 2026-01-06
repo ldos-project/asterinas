@@ -11,6 +11,7 @@ typeflags-util = { path = "../typeflags-util" }
 aster-rights-proc = { path = "../aster-rights-proc" }
 aster-rights = { path = "../aster-rights" }
 inherit-methods-macro = { git = "https://github.com/ldos-project/inherit-methods-macro", rev = "98f7e3e" }
+snafu = { workspace = true }
 
 [lints]
 workspace = true

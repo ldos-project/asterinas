@@ -3,15 +3,16 @@
 //! PCI bus access
 
 use log::warn;
+use snafu::OptionExt as _;
 use spin::Once;
 
 use super::boot::DEVICE_TREE;
-use crate::{Error, bus::pci::PciDeviceLocation, io::IoMem, mm::VmIoOnce, prelude::*};
+use crate::{bus::pci::PciDeviceLocation, error::IoSnafu, io::IoMem, mm::VmIoOnce, prelude::*};
 
 static PCI_BASE_ADDR: Once<IoMem> = Once::new();
 
 pub(crate) fn write32(location: &PciDeviceLocation, offset: u32, value: u32) -> Result<()> {
-    PCI_BASE_ADDR.get().ok_or(Error::IoError)?.write_once(
+    PCI_BASE_ADDR.get().context(IoSnafu)?.write_once(
         (encode_as_address_offset(location) | (offset & 0xfc)) as usize,
         &value,
     )
@@ -20,7 +21,7 @@ pub(crate) fn write32(location: &PciDeviceLocation, offset: u32, value: u32) -> 
 pub(crate) fn read32(location: &PciDeviceLocation, offset: u32) -> Result<u32> {
     PCI_BASE_ADDR
         .get()
-        .ok_or(Error::IoError)?
+        .context(IoSnafu)?
         .read_once((encode_as_address_offset(location) | (offset & 0xfc)) as usize)
 }
 
@@ -33,20 +34,20 @@ pub(crate) fn init() -> Result<()> {
         .get()
         .unwrap()
         .find_node("/soc/pci")
-        .ok_or(Error::IoError)?;
+        .context(IoSnafu)?;
 
-    let mut reg = pci.reg().ok_or(Error::IoError)?;
+    let mut reg = pci.reg().context(IoSnafu)?;
 
     let Some(region) = reg.next() else {
         warn!("PCI node should have exactly one `reg` property, but found zero `reg`s");
-        return Err(Error::IoError);
+        return IoSnafu.fail();
     };
     if reg.next().is_some() {
         warn!(
             "PCI node should have exactly one `reg` property, but found {} `reg`s",
             reg.count() + 2
         );
-        return Err(Error::IoError);
+        return IoSnafu.fail();
     }
 
     PCI_BASE_ADDR.call_once(|| {

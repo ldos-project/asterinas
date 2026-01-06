@@ -189,7 +189,7 @@ impl core::error::Error for BioEnqueueError {}
 
 impl From<BioEnqueueError> for ostd::Error {
     fn from(_error: BioEnqueueError) -> Self {
-        ostd::Error::NotEnoughResources
+        ostd::error::NotEnoughResourcesSnafu.build()
     }
 }
 

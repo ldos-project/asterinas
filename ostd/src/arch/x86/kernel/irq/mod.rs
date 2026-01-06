@@ -11,7 +11,9 @@ use log::info;
 use spin::Once;
 
 use super::acpi::get_acpi_tables;
-use crate::{Error, Result, io::IoMemAllocatorBuilder, sync::SpinLock, trap::irq::IrqLine};
+use crate::{
+    Result, error::InvalidArgsSnafu, io::IoMemAllocatorBuilder, sync::SpinLock, trap::irq::IrqLine,
+};
 
 mod ioapic;
 mod pic;
@@ -59,7 +61,7 @@ impl IrqChip {
             .unwrap();
         let index_in_io_apic = (gsi_index - io_apic.interrupt_base())
             .try_into()
-            .map_err(|_| Error::InvalidArgs)?;
+            .map_err(|_| InvalidArgsSnafu.build())?;
         io_apic.enable(index_in_io_apic, &irq_line)?;
 
         Ok(MappedIrqLine {

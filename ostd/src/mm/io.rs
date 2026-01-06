@@ -49,6 +49,7 @@ use inherit_methods_macro::inherit_methods;
 use crate::{
     Error, Pod,
     arch::mm::{__memcpy_fallible, __memset_fallible},
+    error::{InvalidArgsSnafu, PageFaultSnafu},
     mm::{
         MAX_USERSPACE_VADDR,
         kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
@@ -432,7 +433,7 @@ macro_rules! impl_read_fallible {
                 writer.cursor = writer.cursor.wrapping_add(copied_len);
 
                 if copied_len < copy_len {
-                    Err((Error::PageFault, copied_len))
+                    Err((PageFaultSnafu.build(), copied_len))
                 } else {
                     Ok(copied_len)
                 }
@@ -510,7 +511,7 @@ impl<'a> VmReader<'a, Infallible> {
     /// this method will return `Err`.
     pub fn read_val<T: Pod>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let mut val = T::new_uninit();
@@ -533,7 +534,7 @@ impl<'a> VmReader<'a, Infallible> {
     /// requirements of type `T`.
     pub fn read_once<T: PodOnce>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let cursor = self.cursor.cast::<T>();
@@ -590,7 +591,7 @@ impl VmReader<'_, Fallible> {
     /// the original starting position.
     pub fn read_val<T: Pod>(&mut self) -> Result<T> {
         if self.remain() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let mut val = T::new_uninit();
@@ -739,7 +740,7 @@ impl<'a> VmWriter<'a, Infallible> {
     /// this method will return `Err`.
     pub fn write_val<T: Pod>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let mut reader = VmReader::from(new_val.as_bytes());
@@ -757,7 +758,7 @@ impl<'a> VmWriter<'a, Infallible> {
     /// requirements of type `T`.
     pub fn write_once<T: PodOnce>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let cursor = self.cursor.cast::<T>();
@@ -847,7 +848,7 @@ impl VmWriter<'_, Fallible> {
     /// the original starting position.
     pub fn write_val<T: Pod>(&mut self, new_val: &T) -> Result<()> {
         if self.avail() < core::mem::size_of::<T>() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         let mut reader = VmReader::from(new_val.as_bytes());
@@ -883,7 +884,7 @@ impl VmWriter<'_, Fallible> {
         self.cursor = self.cursor.wrapping_add(set_len);
 
         if set_len < len_to_set {
-            Err((Error::PageFault, set_len))
+            Err((PageFaultSnafu.build(), set_len))
         } else {
             Ok(len_to_set)
         }

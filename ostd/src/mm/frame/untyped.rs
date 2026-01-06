@@ -7,9 +7,11 @@
 //! the declaration of untyped frames and segments, and the implementation of
 //! extra functionalities (such as [`VmIo`]) for them.
 
+use snafu::OptionExt as _;
+
 use super::{Frame, Segment, meta::AnyFrameMeta};
 use crate::{
-    Error, Result,
+    Result,
     mm::{
         Infallible,
         io::{FallibleVmRead, FallibleVmWrite, VmIo, VmReader, VmWriter},
@@ -98,9 +100,11 @@ macro_rules! impl_untyped_for {
             fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<()> {
                 let read_len = writer.avail().min(self.size().saturating_sub(offset));
                 // Do bound check with potential integer overflow in mind
-                let max_offset = offset.checked_add(read_len).ok_or(Error::Overflow)?;
+                let max_offset = offset
+                    .checked_add(read_len)
+                    .context($crate::error::OverflowSnafu)?;
                 if max_offset > self.size() {
-                    return Err(Error::InvalidArgs);
+                    return $crate::error::InvalidArgsSnafu.fail();
                 }
                 let len = self
                     .reader()
@@ -114,9 +118,11 @@ macro_rules! impl_untyped_for {
             fn write(&self, offset: usize, reader: &mut VmReader) -> Result<()> {
                 let write_len = reader.remain().min(self.size().saturating_sub(offset));
                 // Do bound check with potential integer overflow in mind
-                let max_offset = offset.checked_add(write_len).ok_or(Error::Overflow)?;
+                let max_offset = offset
+                    .checked_add(write_len)
+                    .context($crate::error::OverflowSnafu)?;
                 if max_offset > self.size() {
-                    return Err(Error::InvalidArgs);
+                    return $crate::error::InvalidArgsSnafu.fail();
                 }
                 let len = self
                     .writer()

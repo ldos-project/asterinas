@@ -7,11 +7,12 @@ mod allocator;
 use core::ops::{Deref, Range};
 
 use align_ext::AlignExt;
+use snafu::OptionExt;
 
 pub(crate) use self::allocator::IoMemAllocatorBuilder;
 pub(super) use self::allocator::init;
 use crate::{
-    Error,
+    error::{AccessDeniedSnafu, InvalidArgsSnafu},
     mm::{
         FallibleVmRead, FallibleVmWrite, HasPaddr, Infallible, PAGE_SIZE, Paddr, PodOnce, VmIo,
         VmIoOnce, VmReader, VmWriter,
@@ -44,7 +45,7 @@ impl IoMem {
             .get()
             .unwrap()
             .acquire(range)
-            .ok_or(Error::AccessDenied)
+            .context(AccessDeniedSnafu)
     }
 
     /// Returns the physical address of the I/O memory.
@@ -175,7 +176,7 @@ impl VmIo for IoMem {
             .checked_sub(offset)
             .is_none_or(|remain| remain < writer.avail())
         {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         self.reader()
@@ -194,7 +195,7 @@ impl VmIo for IoMem {
             .checked_sub(offset)
             .is_none_or(|remain| remain < reader.remain())
         {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
 
         self.writer()

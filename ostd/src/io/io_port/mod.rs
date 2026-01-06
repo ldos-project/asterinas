@@ -2,13 +2,16 @@
 
 //! I/O port and its allocator that allocates port I/O (PIO) to device drivers.
 
-use crate::arch::device::io_port::{IoPortReadAccess, IoPortWriteAccess, PortRead, PortWrite};
+use crate::{
+    arch::device::io_port::{IoPortReadAccess, IoPortWriteAccess, PortRead, PortWrite},
+    error::AccessDeniedSnafu,
+};
 mod allocator;
 
 use core::{marker::PhantomData, mem::size_of};
 
 pub(super) use self::allocator::init;
-use crate::{Error, prelude::*};
+use crate::prelude::*;
 
 /// An I/O port, representing a specific address in the I/O address of x86.
 ///
@@ -35,7 +38,7 @@ impl<T, A> IoPort<T, A> {
             .get()
             .unwrap()
             .acquire(port)
-            .ok_or(Error::AccessDenied)
+            .context(AccessDeniedSnafu)
     }
 
     /// Returns the port number.
@@ -160,6 +163,7 @@ macro_rules! sensitive_io_port {
 
 pub(crate) use reserve_io_port_range;
 pub(crate) use sensitive_io_port;
+use snafu::OptionExt as _;
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]

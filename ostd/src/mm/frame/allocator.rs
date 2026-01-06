@@ -5,12 +5,13 @@
 use core::{alloc::Layout, ops::Range};
 
 use align_ext::AlignExt;
+use snafu::OptionExt as _;
 
 use super::{Frame, meta::AnyFrameMeta, segment::Segment};
 use crate::{
     arch::mm::PagingConsts,
     boot::memory_region::MemoryRegionType,
-    error::Error,
+    error::{InvalidArgsSnafu, NoMemorySnafu},
     impl_frame_meta_for,
     mm::{PAGE_SIZE, Paddr, PagingLevel, paddr_to_vaddr, page_size},
     prelude::*,
@@ -74,7 +75,7 @@ impl FrameAllocOptions {
         let frame = get_global_frame_allocator()
             .alloc(single_layout)
             .map(|paddr| Frame::from_unused(paddr, metadata, self.level).unwrap())
-            .ok_or(Error::NoMemory)?;
+            .context(NoMemorySnafu)?;
 
         if self.zeroed {
             let addr = paddr_to_vaddr(frame.start_paddr()) as *mut u8;
@@ -103,7 +104,7 @@ impl FrameAllocOptions {
         F: FnMut(Paddr) -> M,
     {
         if nframes == 0 {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         let layout = Layout::from_size_align(nframes * PAGE_SIZE, PAGE_SIZE).unwrap();
         let segment = get_global_frame_allocator()
@@ -111,7 +112,7 @@ impl FrameAllocOptions {
             .map(|start| {
                 Segment::from_unused(start..start + nframes * PAGE_SIZE, metadata_fn).unwrap()
             })
-            .ok_or(Error::NoMemory)?;
+            .context(NoMemorySnafu)?;
 
         if self.zeroed {
             let addr = paddr_to_vaddr(segment.start_paddr()) as *mut u8;

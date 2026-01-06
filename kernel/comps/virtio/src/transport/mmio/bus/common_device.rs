@@ -8,7 +8,7 @@ use log::info;
 use ostd::arch::kernel::MappedIrqLine;
 #[cfg(target_arch = "riscv64")] // TODO: Add `MappedIrqLine` support for RISC-V.
 use ostd::trap::irq::IrqLine as MappedIrqLine;
-use ostd::{Error, Result, io::IoMem, mm::VmIoOnce, trap::irq::IrqLine};
+use ostd::{Result, error::InvalidArgsSnafu, io::IoMem, mm::VmIoOnce, trap::irq::IrqLine};
 
 /// A MMIO common device.
 #[derive(Debug)]
@@ -45,7 +45,7 @@ impl MmioCommonDevice {
     /// Reads the version number from the I/O memory.
     pub fn read_version(&self) -> Result<VirtioMmioVersion> {
         VirtioMmioVersion::try_from(mmio_read_version(&self.io_mem)?)
-            .map_err(|_| Error::InvalidArgs)
+            .map_err(|_| InvalidArgsSnafu.build())
     }
 
     /// Returns an immutable reference to the IRQ line.

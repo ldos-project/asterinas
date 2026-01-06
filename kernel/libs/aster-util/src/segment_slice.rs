@@ -8,12 +8,14 @@ use alloc::sync::Arc;
 use core::ops::Range;
 
 use ostd::{
-    Error, Result,
+    Result,
+    error::{InvalidArgsSnafu, OverflowSnafu},
     mm::{
         FallibleVmRead, FallibleVmWrite, Infallible, PAGE_SIZE, Paddr, UFrame, USegment,
         UntypedMem, VmIo, VmReader, VmWriter,
     },
 };
+use snafu::OptionExt as _;
 
 /// A reference to a slice of a [`USegment`].
 ///
@@ -96,9 +98,9 @@ impl VmIo for SegmentSlice {
     fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<()> {
         let read_len = writer.avail();
         // Do bound check with potential integer overflow in mind
-        let max_offset = offset.checked_add(read_len).ok_or(Error::Overflow)?;
+        let max_offset = offset.checked_add(read_len).context(OverflowSnafu)?;
         if max_offset > self.nbytes() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         let len = self
             .reader()
@@ -112,9 +114,9 @@ impl VmIo for SegmentSlice {
     fn write(&self, offset: usize, reader: &mut VmReader) -> Result<()> {
         let write_len = reader.remain();
         // Do bound check with potential integer overflow in mind
-        let max_offset = offset.checked_add(reader.remain()).ok_or(Error::Overflow)?;
+        let max_offset = offset.checked_add(reader.remain()).context(OverflowSnafu)?;
         if max_offset > self.nbytes() {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         let len = self
             .writer()
