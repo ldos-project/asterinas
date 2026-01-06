@@ -19,6 +19,8 @@ use crate::{
 };
 
 mod io {
+    use core::assert_matches::assert_matches;
+
     use super::*;
 
     /// A dummy Pod struct for testing complex types.
@@ -414,14 +416,14 @@ mod io {
         // Attempts to write a u32 which requires 4 bytes, but buffer has only 3
         let val: u32 = 0xDEADBEEF;
         let result = writer_fallible.write_val(&val);
-        assert_eq!(result, Err(Error::InvalidArgs));
+        assert_matches!(result, Err(Error::InvalidArgs { .. }));
 
         let reader = VmReader::from(&buffer[..]);
         let mut reader_fallible = reader.to_fallible();
 
         // Attempts to read a u32 which requires 4 bytes, but buffer has only 3
         let result = reader_fallible.read_val::<u32>();
-        assert_eq!(result, Err(Error::InvalidArgs));
+        assert_matches!(result, Err(Error::InvalidArgs { .. }));
     }
 
     /// Tests handling invalid read/write in Infallible mode.
@@ -435,7 +437,7 @@ mod io {
         // Attempts to write a u32 which requires 4 bytes, but buffer has only 3
         let val: u32 = 0xDEADBEEF;
         let result = writer_infallible.write_val(&val);
-        assert_eq!(result, Err(Error::InvalidArgs));
+        assert_matches!(result, Err(Error::InvalidArgs { .. }));
 
         let reader = VmReader::from(&buffer[..]);
         let mut reader_infallible =
@@ -443,7 +445,7 @@ mod io {
 
         // Attempts to read a u32 which requires 4 bytes, but buffer has only 3
         let result = reader_infallible.read_val::<u32>();
-        assert_eq!(result, Err(Error::InvalidArgs));
+        assert_matches!(result, Err(Error::InvalidArgs { .. }));
     }
 
     /// Tests the `write_vals` method in VmIO.
@@ -458,7 +460,7 @@ mod io {
         assert_eq!(buffer, [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0]);
         // Writes with error offset
         let result = segment.write_vals(8192, values.iter(), 4);
-        assert_eq!(result, Err(Error::InvalidArgs));
+        assert_matches!(result, Err(Error::InvalidArgs { .. }));
     }
 
     /// Tests the `write_slice` method in VmIO.

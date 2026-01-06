@@ -11,6 +11,7 @@ use core::ops::Range;
 use aster_softirq::BottomHalfDisabled;
 use bitvec::{array::BitArray, prelude::Lsb0};
 use ostd::{
+    error::AccessDeniedSnafu,
     mm::{
         Daddr, DmaDirection, DmaStream, FrameAllocOptions, HasDaddr, Infallible, PAGE_SIZE,
         VmReader, VmWriter,
@@ -156,7 +157,7 @@ impl DmaPage {
             let segment = FrameAllocOptions::new().alloc_segment(1)?;
 
             DmaStream::map(segment.into(), direction, is_cache_coherent)
-                .map_err(|_| ostd::Error::AccessDenied)?
+                .map_err(|_| AccessDeniedSnafu.build())?
         };
 
         Ok(Self {

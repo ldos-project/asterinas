@@ -382,18 +382,55 @@ impl AsRef<Error> for Error {
 }
 
 impl From<ostd::Error> for Error {
+    // TODO(arthurp): This should be replaced with a proper wrapping of ostd::Error as a source.
     #[track_caller]
     fn from(ostd_error: ostd::Error) -> Self {
         match ostd_error {
-            ostd::Error::AccessDenied => Error::new(Errno::EFAULT),
-            ostd::Error::NoMemory => Error::new(Errno::ENOMEM),
-            ostd::Error::InvalidArgs => Error::new(Errno::EINVAL),
-            ostd::Error::IoError => Error::new(Errno::EIO),
-            ostd::Error::NotEnoughResources => Error::new(Errno::EBUSY),
-            ostd::Error::PageFault => Error::new(Errno::EFAULT),
-            ostd::Error::Overflow => Error::new(Errno::EOVERFLOW),
-            ostd::Error::MapAlreadyMappedVaddr => Error::new(Errno::EINVAL),
-            ostd::Error::KVirtAreaAllocError => Error::new(Errno::ENOMEM),
+            ostd::Error::AccessDenied { context } => Error {
+                errno: Errno::EFAULT,
+                msg: None,
+                context,
+            },
+            ostd::Error::NoMemory { context } => Error {
+                errno: Errno::ENOMEM,
+                msg: None,
+                context,
+            },
+            ostd::Error::InvalidArgs { context } => Error {
+                errno: Errno::EINVAL,
+                msg: None,
+                context,
+            },
+            ostd::Error::IoError { context } => Error {
+                errno: Errno::EIO,
+                msg: None,
+                context,
+            },
+            ostd::Error::NotEnoughResources { context } => Error {
+                errno: Errno::EBUSY,
+                msg: None,
+                context,
+            },
+            ostd::Error::PageFault { context } => Error {
+                errno: Errno::EFAULT,
+                msg: None,
+                context,
+            },
+            ostd::Error::Overflow { context } => Error {
+                errno: Errno::EOVERFLOW,
+                msg: None,
+                context,
+            },
+            ostd::Error::MapAlreadyMappedVaddr { context } => Error {
+                errno: Errno::EINVAL,
+                msg: None,
+                context,
+            },
+            ostd::Error::KVirtAreaAllocError { context } => Error {
+                errno: Errno::ENOMEM,
+                msg: None,
+                context,
+            },
         }
     }
 }
@@ -506,16 +543,32 @@ impl From<cpio_decoder::error::Error> for Error {
 }
 
 impl From<Error> for ostd::Error {
+    // TODO(arthurp): This kind of conversion is probably a bad idea. This is only used in the VMO
+    // code currently, and should be removed and the VMO code should use it's own error type.
     #[track_caller]
     fn from(error: Error) -> Self {
         match error.errno {
-            Errno::EACCES => ostd::Error::AccessDenied,
-            Errno::EIO => ostd::Error::IoError,
-            Errno::ENOMEM => ostd::Error::NoMemory,
-            Errno::EFAULT => ostd::Error::PageFault,
-            Errno::EINVAL => ostd::Error::InvalidArgs,
-            Errno::EBUSY => ostd::Error::NotEnoughResources,
-            _ => ostd::Error::InvalidArgs,
+            Errno::EACCES => ostd::Error::AccessDenied {
+                context: error.context,
+            },
+            Errno::EIO => ostd::Error::IoError {
+                context: error.context,
+            },
+            Errno::ENOMEM => ostd::Error::NoMemory {
+                context: error.context,
+            },
+            Errno::EFAULT => ostd::Error::PageFault {
+                context: error.context,
+            },
+            Errno::EINVAL => ostd::Error::InvalidArgs {
+                context: error.context,
+            },
+            Errno::EBUSY => ostd::Error::NotEnoughResources {
+                context: error.context,
+            },
+            _ => ostd::Error::InvalidArgs {
+                context: error.context,
+            },
         }
     }
 }

@@ -5,11 +5,12 @@
 use core::{fmt::Debug, ops::Deref};
 
 use id_alloc::IdAlloc;
+use snafu::OptionExt as _;
 use spin::Once;
 
 use crate::{
-    Error,
     arch::irq::{self, IRQ_NUM_MAX, IRQ_NUM_MIN, IrqRemapping},
+    error::NotEnoughResourcesSnafu,
     prelude::*,
     sync::{GuardTransfer, RwLock, SpinLock, WriteIrqDisabled},
     task::atomic_mode::InAtomicMode,
@@ -44,7 +45,7 @@ impl IrqLine {
             .lock()
             .alloc()
             .map(|id| Self::new(id as u8))
-            .ok_or(Error::NotEnoughResources)
+            .context(NotEnoughResourcesSnafu)
     }
 
     /// Allocates a specific IRQ line.
@@ -53,7 +54,7 @@ impl IrqLine {
             .lock()
             .alloc_specific((irq_num - IRQ_NUM_MIN) as usize)
             .map(|id| Self::new(id as u8))
-            .ok_or(Error::NotEnoughResources)
+            .context(NotEnoughResourcesSnafu)
     }
 
     fn new(index: u8) -> Self {

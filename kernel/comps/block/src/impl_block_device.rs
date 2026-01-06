@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::mm::{VmIo, VmReader, VmWriter};
+use ostd::{
+    error::{InvalidArgsSnafu, IoSnafu},
+    mm::{VmIo, VmReader, VmWriter},
+};
 
 use super::{
     BLOCK_SIZE, BlockDevice,
@@ -134,7 +137,7 @@ impl VmIo for dyn BlockDevice {
     fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()> {
         let read_len = writer.avail();
         if !is_sector_aligned(offset) || !is_sector_aligned(read_len) {
-            return Err(ostd::Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         if read_len == 0 {
             return Ok(());
@@ -167,7 +170,7 @@ impl VmIo for dyn BlockDevice {
         let status = bio.submit_and_wait(self)?;
         match status {
             BioStatus::Complete => bio_segment.read(0, writer),
-            _ => Err(ostd::Error::IoError),
+            _ => IoSnafu.fail(),
         }
     }
 
@@ -175,7 +178,7 @@ impl VmIo for dyn BlockDevice {
     fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()> {
         let write_len = reader.remain();
         if !is_sector_aligned(offset) || !is_sector_aligned(write_len) {
-            return Err(ostd::Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         if write_len == 0 {
             return Ok(());
@@ -206,7 +209,7 @@ impl VmIo for dyn BlockDevice {
         let status = bio.submit_and_wait(self)?;
         match status {
             BioStatus::Complete => Ok(()),
-            _ => Err(ostd::Error::IoError),
+            _ => IoSnafu.fail(),
         }
     }
 }
@@ -216,7 +219,7 @@ impl dyn BlockDevice {
     pub fn write_bytes_async(&self, offset: usize, buf: &[u8]) -> ostd::Result<BioWaiter> {
         let write_len = buf.len();
         if !is_sector_aligned(offset) || !is_sector_aligned(write_len) {
-            return Err(ostd::Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         if write_len == 0 {
             return Ok(BioWaiter::new());

@@ -6,7 +6,7 @@ use core::ops::Range;
 use super::{DmaError, HasDaddr, check_and_insert_dma_mapping, remove_dma_mapping};
 use crate::{
     arch::iommu,
-    error::Error,
+    error::{AccessDeniedSnafu, Error, InvalidArgsSnafu},
     mm::{
         HasPaddr, Infallible, PAGE_SIZE, Paddr, USegment, UntypedMem, VmIo, VmReader, VmWriter,
         dma::{Daddr, DmaType, dma_type},
@@ -145,7 +145,7 @@ impl DmaStream {
                 Ok(())
             } else {
                 if _byte_range.end > self.nbytes() {
-                    return Err(Error::InvalidArgs);
+                    return InvalidArgsSnafu.fail();
                 }
                 if self.inner.is_cache_coherent {
                     return Ok(());
@@ -207,7 +207,7 @@ impl VmIo for DmaStream {
     /// Reads data into the buffer.
     fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<(), Error> {
         if self.inner.direction == DmaDirection::ToDevice {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
         self.inner.segment.read(offset, writer)
     }
@@ -215,7 +215,7 @@ impl VmIo for DmaStream {
     /// Writes data from the buffer.
     fn write(&self, offset: usize, reader: &mut VmReader) -> Result<(), Error> {
         if self.inner.direction == DmaDirection::FromDevice {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
         self.inner.segment.write(offset, reader)
     }
@@ -225,7 +225,7 @@ impl<'a> DmaStream {
     /// Returns a reader to read data from it.
     pub fn reader(&'a self) -> Result<VmReader<'a, Infallible>, Error> {
         if self.inner.direction == DmaDirection::ToDevice {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
         Ok(self.inner.segment.reader())
     }
@@ -233,7 +233,7 @@ impl<'a> DmaStream {
     /// Returns a writer to write data into it.
     pub fn writer(&'a self) -> Result<VmWriter<'a, Infallible>, Error> {
         if self.inner.direction == DmaDirection::FromDevice {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
         Ok(self.inner.segment.writer())
     }
@@ -319,14 +319,14 @@ impl<Dma: AsRef<DmaStream>> DmaStreamSlice<Dma> {
 impl<Dma: AsRef<DmaStream> + Send + Sync> VmIo for DmaStreamSlice<Dma> {
     fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<(), Error> {
         if writer.avail() + offset > self.len {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         self.stream.as_ref().read(self.offset + offset, writer)
     }
 
     fn write(&self, offset: usize, reader: &mut VmReader) -> Result<(), Error> {
         if reader.remain() + offset > self.len {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         self.stream.as_ref().write(self.offset + offset, reader)
     }

@@ -3,8 +3,9 @@
 //! Vendor-specific capability support.
 
 use crate::{
-    Error, Result,
+    Result,
     bus::pci::{common_device::PciCommonDevice, device_info::PciDeviceLocation},
+    error::InvalidArgsSnafu,
 };
 
 /// Vendor specific capability. Users can access this capability area at will,
@@ -72,7 +73,7 @@ impl CapabilityVndrData {
 
     fn check_range(&self, offset: u16) -> Result<()> {
         if self.length < offset {
-            return Err(Error::InvalidArgs);
+            return InvalidArgsSnafu.fail();
         }
         Ok(())
     }

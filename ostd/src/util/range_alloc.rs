@@ -4,7 +4,7 @@ use alloc::collections::btree_map::BTreeMap;
 use core::ops::Range;
 
 use crate::{
-    Error,
+    error::KVirtAreaAllocSnafu,
     prelude::*,
     sync::{PreemptDisabled, SpinLock, SpinLockGuard},
 };
@@ -63,7 +63,7 @@ impl RangeAllocator {
         if target_node.is_some() {
             Ok(())
         } else {
-            Err(Error::KVirtAreaAllocError)
+            KVirtAreaAllocSnafu.fail()
         }
     }
 
@@ -97,7 +97,7 @@ impl RangeAllocator {
         if let Some(range) = allocate_range {
             Ok(range)
         } else {
-            Err(Error::KVirtAreaAllocError)
+            KVirtAreaAllocSnafu.fail()
         }
     }
 

@@ -12,10 +12,10 @@
 use core::{mem::ManuallyDrop, ops::Range, sync::atomic::Ordering};
 
 use crate::{
-    Error,
     arch::mm::{PageTableEntry, PagingConsts, current_page_table_paddr},
     cpu::{AtomicCpuSet, CpuSet, PinCurrentCpu},
     cpu_local_cell,
+    error::AccessDeniedSnafu,
     mm::{
         AnyUFrameMeta, Frame, MAX_USERSPACE_VADDR, PageProperty, PagingLevel, UFrame, VmReader,
         VmWriter,
@@ -212,11 +212,11 @@ impl VmSpace {
     /// lifetime of the created `VmReader`. This guarantees that the `VmReader` can operate correctly.
     pub fn reader(&self, vaddr: Vaddr, len: usize) -> Result<VmReader<'_, Fallible>> {
         if current_page_table_paddr() != self.pt.root_paddr() {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
 
         if vaddr.checked_add(len).unwrap_or(usize::MAX) > MAX_USERSPACE_VADDR {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
 
         // SAFETY: The memory range is in user space, as checked above.
@@ -232,11 +232,11 @@ impl VmSpace {
     /// lifetime of the created `VmWriter`. This guarantees that the `VmWriter` can operate correctly.
     pub fn writer(&self, vaddr: Vaddr, len: usize) -> Result<VmWriter<'_, Fallible>> {
         if current_page_table_paddr() != self.pt.root_paddr() {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
 
         if vaddr.checked_add(len).unwrap_or(usize::MAX) > MAX_USERSPACE_VADDR {
-            return Err(Error::AccessDenied);
+            return AccessDeniedSnafu.fail();
         }
 
         // `VmWriter` is neither `Sync` nor `Send`, so it will not live longer than the current
