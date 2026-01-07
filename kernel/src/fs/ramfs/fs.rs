@@ -11,7 +11,7 @@ use aster_util::slot_vec::SlotVec;
 use hashbrown::HashMap;
 use ostd::{
     mm::{UntypedMem, VmIo},
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 

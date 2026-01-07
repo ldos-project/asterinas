@@ -20,7 +20,9 @@ use core::{
 use crossbeam_utils::CachePadded;
 use ostd::{
     orpc::{
-        oqueue::{Consumer, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver},
+        legacy_oqueue::{
+            Consumer, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+        },
         sync::Blocker,
     },
     sync::Waker,
@@ -760,12 +762,14 @@ impl OQueueBenchmark {
         let n_messages = input.n_messages;
 
         if q_type == "mpmc_oq" {
-            let q = ostd::orpc::oqueue::ringbuffer::mpmc::MPMCOQueue::<u64>::new(2 << 20, 16);
+            let q =
+                ostd::orpc::legacy_oqueue::ringbuffer::mpmc::MPMCOQueue::<u64>::new(2 << 20, 16);
             assert!(q.capacity() >= n_messages);
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else if q_type == "locking" {
-            let q = ostd::orpc::oqueue::locking::ObservableLockingQueue::<u64>::new(2 << 20, 16);
+            let q =
+                ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::<u64>::new(2 << 20, 16);
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else {

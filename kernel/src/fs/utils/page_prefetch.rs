@@ -17,7 +17,7 @@ use ostd::orpc::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    oqueue::{StrongObserver, WeakObserver},
+    legacy_oqueue::{StrongObserver, WeakObserver},
     orpc_impl, orpc_server,
     statistics::{Outstanding, OutstandingCounter},
     sync::select,

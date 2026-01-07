@@ -256,7 +256,7 @@ mod test {
 
     use super::*;
     use crate::{
-        orpc::{oqueue::generic_test, sync::Blocker},
+        orpc::{legacy_oqueue::generic_test, sync::Blocker},
         sync::Waker,
     };
 

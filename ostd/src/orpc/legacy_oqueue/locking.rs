@@ -553,7 +553,7 @@ mod test {
     use ostd_macros::ktest;
 
     use super::*;
-    use crate::orpc::oqueue::generic_test::*;
+    use crate::orpc::legacy_oqueue::generic_test::*;
 
     #[ktest]
     fn test_produce_consume_locking() {

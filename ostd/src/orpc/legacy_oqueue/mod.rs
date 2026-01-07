@@ -225,7 +225,7 @@ mod test {
     use ostd::prelude::*;
 
     use super::*;
-    use crate::orpc::oqueue::{generic_test::TestMessage, locking::ObservableLockingQueue};
+    use crate::orpc::legacy_oqueue::{generic_test::TestMessage, locking::ObservableLockingQueue};
 
     #[ktest]
     fn test_default_direct_produce_consume() {

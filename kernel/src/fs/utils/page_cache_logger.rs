@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use aster_logger::println;
 use ostd::orpc::{
     framework::{errors::RPCError, shutdown, spawn_thread},
-    oqueue::{OQueueAttachError, OQueueRef},
+    legacy_oqueue::{OQueueAttachError, OQueueRef},
     orpc_impl, orpc_server,
     sync::select,
 };

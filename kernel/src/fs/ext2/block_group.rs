@@ -4,7 +4,7 @@ use id_alloc::IdAlloc;
 use ostd::{
     const_assert,
     mm::UntypedMem,
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
 };
 
 use super::{

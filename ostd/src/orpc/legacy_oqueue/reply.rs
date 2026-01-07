@@ -5,7 +5,7 @@
 
 use alloc::boxed::Box;
 
-use crate::orpc::oqueue::{Consumer, OQueue, OQueueAttachError, Producer};
+use crate::orpc::legacy_oqueue::{Consumer, OQueue, OQueueAttachError, Producer};
 
 /// The OQueue implementation to use for ephemeral reply queues.
 ///

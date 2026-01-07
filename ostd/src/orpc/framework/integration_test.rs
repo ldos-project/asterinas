@@ -25,7 +25,7 @@ mod test {
                 shutdown::{Shutdown, ShutdownState},
                 spawn_thread,
             },
-            oqueue::{
+            legacy_oqueue::{
                 Consumer, OQueueRef, generic_test,
                 locking::{LockingQueue, ObservableLockingQueue},
             },

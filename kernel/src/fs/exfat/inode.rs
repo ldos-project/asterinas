@@ -15,7 +15,7 @@ use aster_block::{
 use aster_rights::Full;
 use ostd::{
     mm::{Segment, VmIo},
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
 };
 
 use super::{

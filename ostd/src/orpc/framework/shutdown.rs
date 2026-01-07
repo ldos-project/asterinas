@@ -9,7 +9,7 @@ use orpc_macros::orpc_trait;
 
 use crate::orpc::{
     framework::{CurrentServer, errors::RPCError},
-    oqueue::{OQueueRef, locking::ObservableLockingQueue},
+    legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
 };
 
 /// Trait that allows a server to be shut down gracefully.

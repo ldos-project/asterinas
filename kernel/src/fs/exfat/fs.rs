@@ -15,7 +15,7 @@ use lru::LruCache;
 pub(super) use ostd::mm::VmIo;
 use ostd::{
     mm::Segment,
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
 };
 
 use super::{

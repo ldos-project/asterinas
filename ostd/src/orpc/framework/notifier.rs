@@ -5,7 +5,7 @@ use orpc_macros::orpc_trait;
 
 use crate::orpc::{
     framework::errors::RPCError,
-    oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
+    legacy_oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
 };
 
 /// ORPC trait for a simple notifier

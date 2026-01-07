@@ -26,7 +26,7 @@ use ostd::{
     },
     orpc::{
         framework::errors::RPCError,
-        oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue},
+        legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server,
     },
     sync::RwMutexReadGuard,

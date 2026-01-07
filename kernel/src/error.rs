@@ -3,7 +3,7 @@
 use alloc::format;
 
 use ostd::{
-    orpc::{framework::errors::RPCError, oqueue::OQueueAttachError},
+    orpc::{framework::errors::RPCError, legacy_oqueue::OQueueAttachError},
     ostd_error,
 };
 use snafu::Snafu;

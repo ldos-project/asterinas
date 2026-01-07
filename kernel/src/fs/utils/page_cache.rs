@@ -17,7 +17,7 @@ use ostd::{
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
         framework::spawn_thread,
-        oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
+        legacy_oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
         orpc_impl, orpc_server,
     },
     task::Task,

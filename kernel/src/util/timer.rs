@@ -9,7 +9,7 @@ use ostd::{
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },
-        oqueue::OQueueRef,
+        legacy_oqueue::OQueueRef,
         orpc_impl, orpc_server,
     },
     sync::WaitQueue,

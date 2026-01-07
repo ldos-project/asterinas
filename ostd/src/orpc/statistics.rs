@@ -14,10 +14,10 @@ use super::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    oqueue::{OQueueRef, locking::ObservableLockingQueue},
+    legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
     sync::select,
 };
-use crate::orpc::oqueue::OQueueAttachError;
+use crate::orpc::legacy_oqueue::OQueueAttachError;
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
