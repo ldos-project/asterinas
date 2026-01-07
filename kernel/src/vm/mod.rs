@@ -29,7 +29,7 @@ use ostd::{
     },
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
-        oqueue::OQueue,
+        legacy_oqueue::OQueue,
         orpc_server, orpc_trait,
         sync::select,
     },

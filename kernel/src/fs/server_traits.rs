@@ -4,7 +4,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::marker::Copy;
 
 use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
+    legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
     orpc_trait,
 };
 
@@ -44,13 +44,13 @@ impl From<PageHandle> for AsyncWriteRequest {
 // Constructor for a new OQueue for the prefetcher. This is to make testing easier to switch between
 // oqueue implementations.
 fn new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
-    ostd::orpc::oqueue::locking::ObservableLockingQueue::new(8, 8)
+    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(8, 8)
 }
 
 // Constructor for a new OQueue for the prefetcher which needs a specific length. This is needed for
 // cases where a long queue is required to avoid deadlocks.
 fn new_oqueue_with_len<T: Copy + Send + 'static>(len: usize) -> OQueueRef<T> {
-    ostd::orpc::oqueue::locking::ObservableLockingQueue::new(len, 8)
+    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(len, 8)
 }
 
 #[orpc_trait]
