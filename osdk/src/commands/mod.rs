@@ -4,6 +4,7 @@
 
 mod build;
 mod debug;
+mod enhance_log;
 mod new;
 mod profile;
 mod run;
@@ -11,8 +12,9 @@ mod test;
 mod util;
 
 pub use self::{
-    build::execute_build_command, debug::execute_debug_command, new::execute_new_command,
-    profile::execute_profile_command, run::execute_run_command, test::execute_test_command,
+    build::execute_build_command, debug::execute_debug_command, enhance_log::execute_enhance_log,
+    new::execute_new_command, profile::execute_profile_command, run::execute_run_command,
+    test::execute_test_command,
 };
 
 use crate::{

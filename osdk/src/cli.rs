@@ -7,9 +7,9 @@ use clap::{Args, Parser, ValueEnum, crate_version};
 use crate::{
     arch::Arch,
     commands::{
-        execute_build_command, execute_debug_command, execute_forwarded_command,
-        execute_forwarded_command_on_each_crate, execute_new_command, execute_profile_command,
-        execute_run_command, execute_test_command,
+        execute_build_command, execute_debug_command, execute_enhance_log,
+        execute_forwarded_command, execute_forwarded_command_on_each_crate, execute_new_command,
+        execute_profile_command, execute_run_command, execute_test_command,
     },
     config::{
         Config,
@@ -63,6 +63,7 @@ pub fn main() {
             execute_forwarded_command_on_each_crate("clippy", &args.args, true)
         }
         OsdkSubcommand::Doc(args) => execute_forwarded_command("doc", &args.args, false),
+        OsdkSubcommand::EnhanceLog(args) => execute_enhance_log(args),
     }
 }
 
@@ -94,6 +95,10 @@ pub enum OsdkSubcommand {
     Profile(ProfileArgs),
     #[command(about = "Execute kernel mode unit test by starting a VMM")]
     Test(TestArgs),
+    #[command(
+        about = "Parse a log file and add lines to it based related to stack traces (and similar) found in the log"
+    )]
+    EnhanceLog(EnhanceLogArgs),
     #[command(about = "Check a local package and all of its dependencies for errors")]
     Check(ForwardedArguments),
     #[command(about = "Checks a package to catch common mistakes and improve your Rust code")]
@@ -317,6 +322,29 @@ impl DebugProfileOutArgs {
             PathBuf::from(format!("{}.{}", file_stem, self.format().file_extension()))
         })
     }
+}
+
+#[derive(Debug, Parser)]
+pub struct EnhanceLogArgs {
+    #[arg(
+        name = "LOGFILE",
+        help = "The name of the log file to process. Default: stdin"
+    )]
+    pub input: Option<PathBuf>,
+    #[arg(
+        short = 'b',
+        long,
+        name = "BINFILE",
+        help = "The kernel binary to use for symbol resolution."
+    )]
+    pub bin_file: PathBuf,
+    #[arg(
+        short = 'o',
+        long,
+        name = "FILE",
+        help = "The file to output the enhanced log to. Default: stdout"
+    )]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
