@@ -114,37 +114,10 @@ pub(crate) fn generate_orpc_method_body(
 ) -> proc_macro2::TokenStream {
     let ret_type = &sig.output;
     let base_ref: Expr = parse_quote! { ::ostd::orpc::framework::Server::orpc_server_base(self) };
-    let abort_check = quote! {
-        if #base_ref.is_aborted() {
-            #[allow(clippy::useless_conversion)]
-            return ::core::result::Result::Err(::ostd::orpc::framework::errors::RPCError::ServerMissing.into());
-        }
-    };
-    let enter_server_context = quote! {
-            let _server_context = ::ostd::orpc::framework::CurrentServer::enter_server_context(
-                #base_ref
-            );
-    };
-    let error_cases = quote! {
-        {
-            Ok(ret) => ret,
-            Err(payload) => {
-                let e = ::ostd::orpc::framework::errors::RPCError::from_panic(payload);
-                #base_ref.abort(&e);
-                Err(e.into())
-            }
-        }
-    };
 
     quote! {
-        #abort_check
-
-        match ::ostd::panic::catch_unwind(|| {
-            #enter_server_context
-            let body = (|| #ret_type #body);
-            body()
-        }) #error_cases
-
+        let body = move || #ret_type #body;
+        #base_ref.call_in_context(body)
     }
 }
 
