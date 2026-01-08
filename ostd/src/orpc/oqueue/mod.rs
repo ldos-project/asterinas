@@ -65,6 +65,8 @@ use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
 
+use crate::orpc::{framework::{Server, errors::RPCError}, oqueue};
+
 #[cfg(ktest)]
 pub(crate) mod generic_test;
 
@@ -108,6 +110,16 @@ pub trait OQueueBase<T: ?Sized> {
     ) -> Result<StrongObserver<U>, AttachmentError>
     where
         U: Copy + Send + 'static;
+
+    /// Attach a strong observer to the OQueue by calling a strong observer function with each
+    /// value.
+    ///
+    /// Note: This is different from [`StrongObserver::strong_observe_inline`] because this
+    /// observes the entire message without requiring a filter.
+    fn attach_inline_strong_observer(
+        &self,
+        f: impl Fn(&T) + Send + 'static,
+    ) -> Result<(), AttachmentError>;
 
     /// Attach a weak observer which will observer values of type `U` which are extracted from
     /// the messages using the query. The history length specifies how many previous values the
@@ -169,6 +181,14 @@ macro_rules! impl_oqueue_forward {
                 U: Copy + Send + 'static,
             {
                 self.$member.attach_weak_observer(history_len, query)
+            }
+
+            fn attach_inline_strong_observer(
+                &self,
+                f: impl Fn(&T) + Send + 'static,
+            ) -> Result<(), AttachmentError>
+            {
+                self.$member.attach_inline_strong_observer(f)
             }
 
             fn as_any_oqueue(&self) -> AnyOQueueRef<T> {
@@ -330,6 +350,29 @@ impl<T: Send + 'static> Consumer<T> {
     pub fn try_consume(&self) -> Option<T> {
         self.oqueue.try_consume()
     }
+
+    /// Register a function to be called by the OQueue to observe each message.
+    ///
+    /// This consumes `self`, because the messages will now be consumed via a different mechanism.
+    /// This will return an error if switching to inline is impossible or meaningless, for example
+    /// if there are other consumers present.
+    pub fn consume_inline(self, f: impl Fn(T) + Send + 'static) -> Result<InlineConsumer<T>, AttachmentError>
+    {
+        self.oqueue.attach_inline_consumer(f)?;
+        Ok(InlineConsumer { oqueue: self.oqueue.clone(), _phantom: PhantomData })
+    }
+}
+
+pub struct InlineConsumer<T: 'static> {
+    oqueue: Arc<implementation::OQueueImplementation<T>>,
+    _phantom: PhantomData<core::cell::Cell<()>>,
+}
+
+
+impl<T> Drop for InlineConsumer<T> {
+    fn drop(&mut self) {
+        self.oqueue.detach_inline_consumer();
+    }
 }
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
@@ -384,6 +427,28 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn strong_observe_inline(self, f: impl Fn(&U) + Send + 'static)
+    {
+        // self.oqueue.??
+        // TODO: How do we make the attachment at this point when all the types are already erased.
+        self.attach_inline_strong_observer(self.observer_id, erased_closure(f));
+        // ErasedClosure holds a boxed closure but has a namable type so it can be downcast to.
+    }
+}
+
+
+pub struct InlineStrongObserver {
+    oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
+    inline_observer_id: usize,
+    _phantom: PhantomData<core::cell::Cell<()>>,
+}
+
+
+impl Drop for InlineStrongObserver {
+    fn drop(&mut self) {
+        self.oqueue.detach_inline_strong_observer(self.inline_observer_id);
     }
 }
 

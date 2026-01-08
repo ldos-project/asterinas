@@ -32,7 +32,7 @@ use alloc::{sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
     num::NonZeroUsize,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -43,7 +43,7 @@ use crate::{
     orpc::framework::errors::RPCError,
     prelude::Arc,
     sync::Mutex,
-    task::{Task, TaskOptions, disable_preempt, scheduler},
+    task::{CurrentTask, Task, TaskOptions, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -174,16 +174,21 @@ pub struct CurrentServer {
 }
 
 impl CurrentServer {
+    pub fn current_cloned() -> Option<Arc<dyn Server + Send + Sync + 'static>> {
+        Task::current().unwrap().server().borrow().clone()
+    }
+
     /// Check if the current server has aborted
     pub fn is_aborted() -> bool {
         Task::current()
             .unwrap()
             .server()
             .borrow()
-            .clone()
+            .as_ref()
             .map(|s| s.orpc_server_base().is_aborted())
             .unwrap_or(false)
     }
+
     /// Check the if the current server has aborted and panic if it has. This should be called periodically from all
     /// server threads to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a
     /// cancelation point in pthreads.)

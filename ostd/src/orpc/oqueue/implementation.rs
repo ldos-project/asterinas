@@ -10,13 +10,19 @@
 //!   take a pointer parameter `dest: *mut ()`.
 
 use alloc::{alloc::AllocError, boxed::Box, sync::Arc, vec::Vec};
+use snafu::ensure;
 use core::{any::TypeId, marker::PhantomData};
 
+use smallvec::SmallVec;
 use static_assertions::assert_obj_safe;
 
 use crate::{
-    orpc::oqueue::{
-        Cursor, ObservationError, ObservationQuery, single_thread_ring_buffer::RingBuffer,
+    orpc::{
+        closure::new_closure_1,
+        framework::{CurrentServer, errors::RPCError},
+        oqueue::{
+            AttachmentError, Cursor, ObservationError, ObservationQuery, ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer
+        },
     },
     sync::{SpinLock, WaitQueue},
 };
@@ -51,6 +57,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
                 consumer_ring_buffer: Default::default(),
                 n_consumers: 0,
                 observer_ring_buffers: Default::default(),
+                inline_strong_observers: Default::default(),
+                inline_consumer: None,
             }),
             len,
             supports_consume,
@@ -66,6 +74,11 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         if inner.n_consumers == 0 {
             inner.consumer_ring_buffer = None;
         }
+    }
+
+    pub(super) fn detach_inline_consumer(&self) {
+        let mut inner = self.inner.lock();   
+        inner.inline_consumer = None;
     }
 
     /// Create a new ring buffer for values of type `U` and attach it to this `self` as an
@@ -122,6 +135,17 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         })
     }
 
+    /// Attach a strong observer to the OQueue by calling a strong observer function with each
+    /// value.
+    pub(super) fn attach_inline_strong_observer(
+        &self,
+        f: impl Fn(&T) + Send + 'static,
+    ) -> Result<(), super::AttachmentError> {
+        let mut inner = self.inner.lock();
+        inner.inline_strong_observers.push(wrap_closure_ref(f));
+        Ok(())
+    }
+
     /// Attach a weak observer.
     pub(super) fn attach_weak_observer<U>(
         self: &Arc<Self>,
@@ -145,6 +169,22 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         super::AnyOQueueRef {
             inner: self.clone(),
         }
+    }
+}
+
+/// Wrap a closure to run in the context of the current server if there is one.
+fn wrap_closure_ref<T: ?Sized + 'static>(
+    f: impl Fn(&T) + Send + 'static,
+) -> Box<dyn Fn(&T) + Send> {
+    if let Some(s) = CurrentServer::current_cloned() {
+        let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
+            let _ = s
+                .orpc_server_base()
+                .call_in_context::<_, RPCError>(|| Ok(f(v)));
+        });
+        f
+    } else {
+        Box::new(f)
     }
 }
 
@@ -180,6 +220,9 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
                 .filter_map(|v| v.as_mut())
             {
                 query.call_into(v, ring_buffer);
+            }
+            for f in inner.inline_strong_observers.iter() {
+                f(v)
             }
             drop(inner);
 
@@ -235,10 +278,15 @@ impl<T: Send + 'static> OQueueImplementation<T> {
             {
                 query.call_into(&v, ring_buffer);
             }
-
+            for f in inner.inline_strong_observers.iter_mut() {
+                f(&v)
+            }
+            assert!(inner.consumer_ring_buffer.is_none() || inner.inline_consumer.is_none());
             if let Some(ring_buffer) = &mut inner.consumer_ring_buffer {
                 let v = ring_buffer.try_produce(v);
                 assert!(v.is_none());
+            } else if let Some(consumer) = &inner.inline_consumer {
+                consumer(v);
             }
             drop(inner);
 
@@ -307,6 +355,13 @@ impl<T: Send + 'static> OQueueImplementation<T> {
             _phantom: PhantomData,
         })
     }
+
+    pub(super) fn attach_inline_consumer(self: &Arc<Self>, f: impl Fn(T) + Send + 'static) -> Result<(), AttachmentError> {
+        let mut inner = self.inner.lock();   
+        ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
+        inner.inline_consumer = Some(Box::new(f));
+        Ok(())
+    }
 }
 
 /// The part of [`OQueueImplementation`] which is protected by a lock.
@@ -325,6 +380,8 @@ struct OQueueInner<T: ?Sized> {
     // now, the consumer is always inlined even when it's not in use, and the observer never is.
     // TODO: PERFORMANCE: This needs a way to share ring buffers when multiple consumers use the
     // same query.
+    inline_strong_observers: SmallVec<[Box<dyn Fn(&T) + Send>; 1]>,
+    inline_consumer: Option<Box<dyn Fn(T) + Send>>,
 }
 
 impl<T: ?Sized> OQueueInner<T> {
