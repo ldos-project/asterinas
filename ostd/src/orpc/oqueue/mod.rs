@@ -50,6 +50,9 @@ pub(crate) mod query;
 
 pub use query::ObservationQuery;
 
+#[cfg(ktest)]
+pub(crate) mod generic_test;
+
 mod interface {
     use alloc::boxed::Box;
 
@@ -387,5 +390,303 @@ impl<U: Copy + Send> WeakObserver<U> {
             buf[i] = self.weak_observe(recent - (buf.len() - i - 1))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use alloc::string::String;
+    use core::assert_matches::assert_matches;
+
+    use super::*;
+    use crate::orpc::oqueue::generic_test;
+    use crate::prelude::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Message {
+        id: u32,
+        payload: String,
+    }
+
+    fn new_message(id: u32, payload: &str) -> Message {
+        Message {
+            id,
+            payload: String::from(payload),
+        }
+    }
+
+    #[ktest]
+    fn communication_oqueue_consume() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+
+        producer.produce(new_message(7, "hello"));
+        let consumed = consumer.consume();
+
+        assert_eq!(consumed, new_message(7, "hello"));
+    }
+
+    #[ktest]
+    fn communication_oqueue_strong_observe() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        producer.produce(new_message(3, "world"));
+
+        let observed_id = observer.strong_observe().unwrap();
+
+        assert_eq!(observed_id, 3);
+    }
+
+    #[ktest]
+    fn communication_oqueue_weak_observe_recent() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let observer = queue
+            .attach_weak_observer(1, ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        producer.produce(new_message(1, "abcde"));
+
+        let observed = observer.weak_observe_recent(1).unwrap();
+
+        assert_eq!(observed, vec![Some(5)]);
+    }
+
+    #[ktest]
+    fn observation_oqueue_strong_observe() {
+        let queue = ObservationOQueueRef::new();
+        let producer = queue.attach_observation_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        producer.produce_ref(&new_message(3, "world"));
+
+        let observed_id = observer.strong_observe().unwrap();
+
+        assert_eq!(observed_id, 3);
+    }
+
+    fn setup_for_weak_observation(
+        history: usize,
+    ) -> (ObservationProducer<Message>, WeakObserver<u32>) {
+        let queue = ObservationOQueueRef::new();
+        let producer = queue.attach_observation_producer().unwrap();
+        let observer = queue
+            .attach_weak_observer(
+                history,
+                ObservationQuery::new(|m: &Message| m.payload.len() as u32),
+            )
+            .unwrap();
+        (producer, observer)
+    }
+
+    #[ktest]
+    fn weak_observe_recent() {
+        let (producer, observer) = setup_for_weak_observation(1);
+
+        producer.produce_ref(&new_message(1, "abcde"));
+
+        let observed = observer.weak_observe_recent(1).unwrap();
+
+        assert_eq!(observed, vec![Some(5)]);
+    }
+
+    #[ktest]
+    fn weak_observe_recent_into() {
+        let (producer, observer) = setup_for_weak_observation(1);
+
+        producer.produce_ref(&new_message(3, "len"));
+
+        let mut buf = [None; 1];
+        observer.weak_observe_recent_into(&mut buf).unwrap();
+
+        assert_eq!(buf, [Some(3)]);
+    }
+
+    #[ktest]
+    fn weak_observe_recent_multiple_values() {
+        let (producer, observer) = setup_for_weak_observation(3);
+
+        producer.produce_ref(&new_message(10, "a"));
+        producer.produce_ref(&new_message(11, "bb"));
+        producer.produce_ref(&new_message(12, "ccc"));
+
+        let observed = observer.weak_observe_recent(3).unwrap();
+
+        assert_eq!(observed, vec![Some(10), Some(11), Some(12)]);
+
+        let observed = observer.weak_observe_recent(1).unwrap();
+
+        assert_eq!(observed, vec![Some(12)]);
+    }
+
+    #[ktest]
+    fn weak_observe() {
+        let (producer, observer) = setup_for_weak_observation(1);
+
+        producer.produce_ref(&new_message(2, "xyz"));
+        producer.produce_ref(&new_message(3, "xyz"));
+
+        let old = observer.old_cursor();
+        let recent = observer.recent_cursor();
+        assert!(old <= recent);
+        assert_eq!(recent - 1, old);
+
+        let observed = observer.weak_observe(recent).unwrap();
+        assert_eq!(observed, Some(3));
+    }
+
+    #[ktest]
+    fn unsupported_consumer() {
+        let queue = ObservationOQueueRef::<u32>::new();
+        assert_matches!(
+            queue.as_any_oqueue().attach_consumer().err().unwrap(),
+            AttachmentError::Unsupported
+        );
+    }
+
+    #[ktest]
+    fn communication_oqueue_strong_observe_filtered() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new_filter(|m: &Message| {
+                if m.id % 2 == 0 {
+                    Some(m.id)
+                } else {
+                    None
+                }
+            }))
+            .unwrap();
+
+        producer.produce(new_message(3, "skip"));
+        producer.produce(new_message(4, "observe"));
+
+        let observed = observer.strong_observe().unwrap();
+        assert_eq!(observed, 4);
+    }
+
+    #[ktest]
+    fn observation_oqueue_weak_observe_filtered() {
+        let (producer, observer) = setup_for_weak_observation_filtered();
+
+        producer.produce_ref(&new_message(1, "a"));
+        producer.produce_ref(&new_message(2, "bb"));
+        producer.produce_ref(&new_message(3, "ccc"));
+
+        let observed = observer.weak_observe_recent(1).unwrap();
+        // Only id=2 passes filter (even id), so we get its payload length
+        assert_eq!(observed, vec![Some(2)]);
+    }
+
+    fn setup_for_weak_observation_filtered() -> (ObservationProducer<Message>, WeakObserver<u32>) {
+        let queue = ObservationOQueueRef::new();
+        let producer = queue.attach_observation_producer().unwrap();
+        let observer = queue
+            .attach_weak_observer(
+                2,
+                ObservationQuery::new_filter(|m: &Message| {
+                    if m.id % 2 == 0 {
+                        Some(m.payload.len() as u32)
+                    } else {
+                        None
+                    }
+                }),
+            )
+            .unwrap();
+        (producer, observer)
+    }
+
+    #[ktest]
+    fn communication_oqueue_try_produce() {
+        let queue = CommunicationOQueueRef::new(1);
+        let producer = queue.attach_communication_producer().unwrap();
+
+        let msg1 = new_message(1, "first");
+        assert!(producer.try_produce(msg1.clone()).is_ok());
+
+        let msg2 = new_message(2, "blocked");
+        assert_eq!(producer.try_produce(msg2).unwrap_err(), new_message(2, "blocked"));
+    }
+
+    #[ktest]
+    fn communication_oqueue_try_consume() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+
+        assert_eq!(consumer.try_consume(), None);
+
+        producer.produce(new_message(7, "hello"));
+        assert_eq!(consumer.try_consume(), Some(new_message(7, "hello")));
+        assert_eq!(consumer.try_consume(), None);
+    }
+
+    #[ktest]
+    fn communication_oqueue_try_strong_observe() {
+        let queue = CommunicationOQueueRef::new(4);
+        let producer = queue.attach_communication_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        assert_eq!(observer.try_strong_observe().unwrap(), None);
+
+        producer.produce(new_message(5, "data"));
+        assert_eq!(observer.try_strong_observe().unwrap(), Some(5));
+        assert_eq!(observer.try_strong_observe().unwrap(), None);
+    }
+
+    // Run the generic integration tests for the new OQueue API, similar to legacy_oqueue.
+    #[ktest]
+    fn generic_produce_consume() {
+        generic_test::test_produce_consume(CommunicationOQueueRef::<generic_test::TestMessage>::new(2));
+    }
+
+    #[ktest]
+    fn generic_produce_strong_observe() {
+        generic_test::test_produce_strong_observe(CommunicationOQueueRef::<generic_test::TestMessage>::new(2));
+    }
+
+    #[ktest]
+    fn generic_produce_weak_observe() {
+        generic_test::test_produce_weak_observe(CommunicationOQueueRef::<generic_test::TestMessage>::new(3));
+    }
+
+    #[ktest]
+    fn generic_send_receive_blocker() {
+        let queue = CommunicationOQueueRef::<generic_test::TestMessage>::new(16);
+        generic_test::test_send_receive_blocker(queue, 32, 3);
+    }
+
+    #[ktest]
+    fn generic_produce_strong_observe_only() {
+        generic_test::test_produce_strong_observe_only(CommunicationOQueueRef::<generic_test::TestMessage>::new(2));
+    }
+
+    #[ktest]
+    fn generic_consumer_late_attach() {
+        generic_test::test_consumer_late_attach(CommunicationOQueueRef::<generic_test::TestMessage>::new(4));
+    }
+
+    #[ktest]
+    fn generic_consumer_detach() {
+        generic_test::test_consumer_detach(CommunicationOQueueRef::<generic_test::TestMessage>::new(4));
+    }
+
+    #[ktest]
+    fn generic_strong_observer_detach() {
+        generic_test::test_strong_observer_detach(CommunicationOQueueRef::<generic_test::TestMessage>::new(4));
+    }
+
+    #[ktest]
+    fn generic_strong_observer_late_attach() {
+        generic_test::test_strong_observer_late_attach(CommunicationOQueueRef::<generic_test::TestMessage>::new(4));
     }
 }
