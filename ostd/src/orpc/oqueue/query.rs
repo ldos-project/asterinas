@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
 
+use crate::orpc::oqueue::single_thread_ring_buffer::RingBuffer;
+
 /// A query for use 
 pub struct ObservationQuery<T: ?Sized, U> {
     /// The extractor function to call to extract the observed value from the message.

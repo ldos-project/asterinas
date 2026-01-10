@@ -77,7 +77,7 @@ pub(crate) fn test_produce_weak_observe(queue: CommunicationOQueueRef<TestMessag
     let producer = queue.attach_communication_producer().unwrap();
     let consumer = queue.attach_consumer().unwrap();
     let weak_observer = queue
-        .attach_weak_observer(3, ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_weak_observer(2, ObservationQuery::new(|m: &TestMessage| m.x))
         .unwrap();
 
     let recent_cursor = weak_observer.recent_cursor();
