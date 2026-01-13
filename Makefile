@@ -74,7 +74,7 @@ DOCKER_TAG := ldosproject/asterinas
 DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
 DOCKER_RUN_ARGS := --privileged --network=host --device=/dev/kvm
-DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
+DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup -v /var/local/ycao/LAKE/src/linnos/trace_tools:/root/trace_tools --device=/dev/nvme1n1p1:/dev/nvme1n1p1 --device=/dev/nvme0n1p1:/dev/nvme0n1p1 --device=/dev/nvme2n1p1:/dev/nvme2n1p1 
 
 ifeq ($(AUTO_TEST), syscall)
 BUILD_SYSCALL_TEST := 1
