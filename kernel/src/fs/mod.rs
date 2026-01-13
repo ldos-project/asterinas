@@ -67,19 +67,10 @@ pub fn lazy_init() {
         println!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
-    // FIXME: ExFat filesystem will cause hanging when trying to start. 
-    // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
-    //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
-    //     let target_path = FsPath::try_from("/exfat").unwrap();
-    //     println!("[kernel] Mounted ExFat fs at {:?} ", target_path);
-    //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
-    // }
-
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
-
 
     info!("[raid] RAID-1 device setup complete");
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
