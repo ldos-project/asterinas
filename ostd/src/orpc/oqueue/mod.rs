@@ -40,11 +40,7 @@
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
-    any::{Any as _, TypeId},
-    error::Error,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    ops::{Add, Sub},
+    any::{Any as _, TypeId}, cell::Cell, error::Error, marker::PhantomData, mem::MaybeUninit, ops::{Add, Sub}
 };
 
 mod inner;
@@ -57,7 +53,7 @@ pub use query::ObservationQuery;
 pub(crate) mod generic_test;
 
 mod interface {
-    use alloc::boxed::Box;
+    use alloc::{alloc::AllocError, boxed::Box};
 
     use super::*;
 
@@ -78,7 +74,7 @@ mod interface {
     #[derive(Debug)]
     pub enum AttachmentError {
         /// The operation is supported by this OQueue but the required resources are missing (e.g.,
-        /// observer slots).
+        /// observer slots or memory).
         ResourceUnavailable,
 
         /// The operation is not supported or not allowed by this OQueue. An operation may not be
@@ -89,6 +85,12 @@ mod interface {
         Unsupported,
     }
 
+    impl From<AllocError> for AttachmentError {
+        fn from(value: AllocError) -> Self {
+            Self::ResourceUnavailable
+        }
+    }
+    
     /// The interface provided by all OQueues.
     pub trait OQueue<T> {
         /// Attach a strong observer which will observe values of type `U` which are extracted from
@@ -387,15 +389,16 @@ impl Sub<usize> for Cursor {
 pub struct WeakObserver<U: Copy + Send> {
     oqueue: Arc<dyn inner::UntypedOQueueInner>,
     observer_id: usize,
+    last_observed: Cell<Cursor>,
     _phantom: PhantomData<core::cell::Cell<U>>,
 }
 
 impl<U: Copy + Send + 'static> WeakObserver<U> {
-    /// Wait until new values are available (that is values that have not yet been observed). This
-    /// does not guarantee that the caller will be able to observe those specific values. Only, that
-    /// the caller will run eventually when new values are produced.
+    /// Wait until new values are available (that is values that have not yet been observed by some
+    /// method on `self`). This does not guarantee that the caller will be able to observe those
+    /// specific values. Only, that the caller will run eventually when new values are produced.
     pub fn wait(&self) {
-        self.oqueue.wait(self.observer_id);
+        self.oqueue.wait(self.observer_id, self.last_observed.get());
     }
 
     // Low-level interface:
@@ -408,6 +411,7 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     }
 
     pub fn weak_observe(&self, i: Cursor) -> Result<Option<U>, HandleAccessError> {
+        self.last_observed.set(self.last_observed.get().max(i));
         let mut ret = MaybeUninit::uninit();
 
         let success = unsafe {

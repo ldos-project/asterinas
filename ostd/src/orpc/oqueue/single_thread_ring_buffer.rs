@@ -3,8 +3,8 @@
 //! implementation that supports all features, but it may have performance issues in highly
 //! contended cases.
 
+use alloc::alloc::AllocError;
 use core::{
-    alloc::Layout,
     any::{TypeId, type_name},
     mem::MaybeUninit,
 };
@@ -13,8 +13,7 @@ use smallvec::SmallVec;
 
 use crate::{
     orpc::oqueue::Cursor,
-    prelude::{Arc, Box, Vec},
-    sync::SpinLock,
+    util::untyped_box::SliceAllocation,
 };
 
 /// A non-thread-safe ring-buffer which supports multiple strong readers (consumers and strong
@@ -51,22 +50,17 @@ pub(super) struct RingBuffer {
     #[cfg(debug_assertions)]
     element_type_name: &'static str,
 
-    /// The stride of elements within the buffer.
-    stride: usize,
-
-    /// The number of elements in buffer. This is stored here to avoid some math when indexing
-    /// `buffer`.
-    n_buffer_elements: usize,
-
     /// The storage space for ringbuffer elements. This is a raw buffer which will be indexed based
     /// on the actual type of elements.
-    raw_buffer: Box<[MaybeUninit<u8>]>,
-    // TODO: PERFORMANCE: raw_buffer could be replaced with a raw pointer and manual allocation.
-    // This would: 1) Remove the stored array length (which duplicates n_buffer_elements), 2) Remove
-    // a bunch of range checks. However, it obviously introduces a bunch of additional complexity.
+    buffer: SliceAllocation,
+
     /// The index of the next element to write in the buffer. Used by producers. This must be stored
     /// for each buffer because different ring may move at different speed if there are filters in
     /// queries.
+    // TODO: PERFORMANCE: raw_buffer could be replaced with a raw pointer and manual allocation.
+    // This would: 1) Remove the stored array length (which duplicates n_buffer_elements), 2) Remove
+    // a bunch of range checks. However, it obviously introduces a bunch of additional complexity in
+    // code unsafe code we own.
     tail_index: usize,
 
     /// The heads used by consumers and strong observers.
@@ -80,24 +74,20 @@ pub(super) struct RingBuffer {
 }
 
 impl RingBuffer {
-    pub(super) fn new<T: 'static>(n_buffer_elements: usize) -> Self {
-        let element_layout = Layout::new::<T>();
-
+    pub(super) fn new<T: 'static>(n_buffer_elements: usize) -> Result<Self, AllocError> {
         // TODO: PERFORMANCE: We could potentially eliminate the padding and not align the values in
         // the buffer to save space. However, safety of this will require more thinking, so we leave
         // it as is for now. This would require replacing some references with pointer below.
-        let padded_element_layout = element_layout.pad_to_align();
+        let buffer = SliceAllocation::new::<T>(n_buffer_elements)?;
 
-        RingBuffer {
+        Ok(RingBuffer {
             element_type: TypeId::of::<T>(),
-            stride: padded_element_layout.size(),
-            n_buffer_elements,
-            raw_buffer: Box::new_uninit_slice(padded_element_layout.size() * n_buffer_elements),
+            buffer,
             tail_index: 0,
             strong_reader_heads: SmallVec::default(),
             #[cfg(debug_assertions)]
             element_type_name: type_name::<T>(),
-        }
+        })
     }
 
     /// Panic if the type doesn't match this ringbuffer.
@@ -122,7 +112,7 @@ impl RingBuffer {
     }
 
     fn mod_len(&self, i: usize) -> usize {
-        i % self.n_buffer_elements
+        i % self.buffer.len()
     }
 
     /// Get a reference to the slot which is used for the slot index `i`. This does no checking as
@@ -130,10 +120,8 @@ impl RingBuffer {
     fn slot_mut<T: 'static>(&mut self, i: usize) -> &mut MaybeUninit<T> {
         self.assert_type::<T>();
 
-        let slot_ptr = self.raw_buffer[i * self.stride].as_mut_ptr() as *mut MaybeUninit<T>;
-
-        // SAFETY: The slot pointer is well aligned due to the use of `Layout` operations and stride.
-        unsafe { slot_ptr.as_mut() }.expect("offset from non-null-array must be non-null")
+        // SAFETY: raw_buffer was constructed with type `T` as checked above.
+        unsafe { self.buffer.at_mut_unchecked(i) }
     }
 
     /// True if it is safe to produce by writing a value into the buffer and increasing the
@@ -232,7 +220,8 @@ impl RingBuffer {
         self.assert_type::<T>();
 
         let Cursor(index) = index;
-        if index < self.tail_index.saturating_sub(self.n_buffer_elements) || index >= self.tail_index
+        if index < self.tail_index.saturating_sub(self.buffer.len())
+            || index >= self.tail_index
         {
             return None;
         }
@@ -257,10 +246,10 @@ impl RingBuffer {
     pub fn old_cursor(&self) -> Cursor {
         let Cursor(i) = self.recent_cursor();
         // Return the most recent - the buffer size or zero if the buffer isn't full yet.
-        if i < self.n_buffer_elements {
+        if i < self.buffer.len() {
             Cursor(0)
         } else {
-            Cursor(i - (self.n_buffer_elements - 1))
+            Cursor(i - (self.buffer.len() - 1))
         }
     }
 }
