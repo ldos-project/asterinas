@@ -1,8 +1,6 @@
 use alloc::boxed::Box;
 
-use crate::orpc::oqueue::single_thread_ring_buffer::RingBuffer;
-
-/// A query for use 
+/// A query for use
 pub struct ObservationQuery<T: ?Sized, U> {
     /// The extractor function to call to extract the observed value from the message.
     extractor: Box<dyn Fn(&T) -> Option<U> + Sync + Send + 'static>,
@@ -16,7 +14,7 @@ pub struct ObservationQuery<T: ?Sized, U> {
 }
 
 impl<T: ?Sized, U> ObservationQuery<T, U> {
-    /// Create a query which extracts a value from the message. 
+    /// Create a query which extracts a value from the message.
     pub fn new(extractor: impl Fn(&T) -> U + Sync + Send + 'static) -> Self {
         Self {
             extractor: Box::new(move |v| Some(extractor(v))),

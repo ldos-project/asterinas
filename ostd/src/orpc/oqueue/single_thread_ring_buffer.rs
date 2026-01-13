@@ -11,10 +11,7 @@ use core::{
 
 use smallvec::SmallVec;
 
-use crate::{
-    orpc::oqueue::Cursor,
-    util::untyped_box::SliceAllocation,
-};
+use crate::{orpc::oqueue::Cursor, util::untyped_box::SliceAllocation};
 
 /// A non-thread-safe ring-buffer which supports multiple strong readers (consumers and strong
 /// observers) and weak observers. This is used for the internal ring-buffers of the locking OQueue
@@ -47,6 +44,8 @@ pub(super) struct RingBuffer {
     /// The type of the elements.
     element_type: TypeId,
 
+    /// The name of the type of this ring buffer for debug messages. The errors are rare enough that
+    /// this will likely be removed in the future.
     #[cfg(debug_assertions)]
     element_type_name: &'static str,
 
@@ -57,27 +56,21 @@ pub(super) struct RingBuffer {
     /// The index of the next element to write in the buffer. Used by producers. This must be stored
     /// for each buffer because different ring may move at different speed if there are filters in
     /// queries.
-    // TODO: PERFORMANCE: raw_buffer could be replaced with a raw pointer and manual allocation.
-    // This would: 1) Remove the stored array length (which duplicates n_buffer_elements), 2) Remove
-    // a bunch of range checks. However, it obviously introduces a bunch of additional complexity in
-    // code unsafe code we own.
     tail_index: usize,
 
     /// The heads used by consumers and strong observers.
     ///
     /// Using [`SmallVec`] here allows up to 2 heads to exist inline to the RingBuffer struct. This
-    /// will be enough for many cases and will always be enough for communication ring buffers with
-    /// only consumers. This avoids needing a pointer dereference to get the head in the consumer
-    /// case. (Note: Reducing the number of inline heads to 1 does not reduce the size of this
-    /// struct because of the implementation of `SmallVec`.)
+    /// will be enough for many cases and avoids needing a pointer dereference to get the head in
+    /// the consumer case.
     strong_reader_heads: SmallVec<[usize; 2]>,
 }
 
 impl RingBuffer {
     pub(super) fn new<T: 'static>(n_buffer_elements: usize) -> Result<Self, AllocError> {
         // TODO: PERFORMANCE: We could potentially eliminate the padding and not align the values in
-        // the buffer to save space. However, safety of this will require more thinking, so we leave
-        // it as is for now. This would require replacing some references with pointer below.
+        // the buffer to save space. However, safety of this will require more thinking and may well
+        // not help, so we leave it as is for now.
         let buffer = SliceAllocation::new::<T>(n_buffer_elements)?;
 
         Ok(RingBuffer {
@@ -92,8 +85,8 @@ impl RingBuffer {
 
     /// Panic if the type doesn't match this ringbuffer.
     ///
-    /// TODO: PERFORMANCE: This is called a lot, and while it will probabibly be elided most of the
-    /// type. Making the callers to this unsafe and having their callers perform the check might
+    /// TODO: PERFORMANCE: This is called a lot, and while it will probably be elided most of the
+    /// time. Making the callers to this unsafe and having their callers perform the check might
     /// reduce the number of checks.
     #[inline(always)]
     #[track_caller]
@@ -120,7 +113,7 @@ impl RingBuffer {
     fn slot_mut<T: 'static>(&mut self, i: usize) -> &mut MaybeUninit<T> {
         self.assert_type::<T>();
 
-        // SAFETY: raw_buffer was constructed with type `T` as checked above.
+        // SAFETY: buffer was constructed with type `T` as checked above.
         unsafe { self.buffer.at_mut_unchecked(i) }
     }
 
@@ -220,9 +213,7 @@ impl RingBuffer {
         self.assert_type::<T>();
 
         let Cursor(index) = index;
-        if index < self.tail_index.saturating_sub(self.buffer.len())
-            || index >= self.tail_index
-        {
+        if index < self.tail_index.saturating_sub(self.buffer.len()) || index >= self.tail_index {
             return None;
         }
         let slot = self.slot_mut(self.mod_len(index));
@@ -239,13 +230,15 @@ impl RingBuffer {
         id
     }
 
-    pub fn recent_cursor(&self) -> Cursor {
+    /// Get the cursor for the most recent value in `self`.
+    pub fn newest_cursor(&self) -> Cursor {
         Cursor(self.tail_index.saturating_sub(1))
     }
 
-    pub fn old_cursor(&self) -> Cursor {
-        let Cursor(i) = self.recent_cursor();
-        // Return the most recent - the buffer size or zero if the buffer isn't full yet.
+    /// Get the cursor for the oldest value still available in `self`.
+    pub fn oldest_cursor(&self) -> Cursor {
+        let Cursor(i) = self.newest_cursor();
+        // Return the (most recent() - (the buffer size) or zero if the buffer isn't full yet.
         if i < self.buffer.len() {
             Cursor(0)
         } else {

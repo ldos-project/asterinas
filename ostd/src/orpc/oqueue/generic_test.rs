@@ -81,36 +81,36 @@ pub(crate) fn test_produce_weak_observe(queue: CommunicationOQueueRef<TestMessag
         .attach_weak_observer(2, ObservationQuery::new(|m: &TestMessage| m.x))
         .unwrap();
 
-    let recent_cursor = weak_observer.recent_cursor();
-    assert_eq!(weak_observer.weak_observe(recent_cursor).unwrap(), None);
+    let newest_cursor = weak_observer.newest_cursor();
+    assert_eq!(weak_observer.weak_observe(newest_cursor).unwrap(), None);
 
     let test_message = TestMessage { x: 42 };
     producer.produce(test_message);
 
     // Check recent cursor
-    let recent_cursor = weak_observer.recent_cursor();
+    let newest_cursor = weak_observer.newest_cursor();
     assert_eq!(
-        weak_observer.weak_observe(recent_cursor).unwrap(),
+        weak_observer.weak_observe(newest_cursor).unwrap(),
         Some(test_message.x)
     );
 
     // Check old cursor
-    let old_cursor = weak_observer.old_cursor();
+    let oldest_cursor = weak_observer.oldest_cursor();
     assert_eq!(
-        weak_observer.weak_observe(old_cursor).unwrap(),
+        weak_observer.weak_observe(oldest_cursor).unwrap(),
         Some(test_message.x)
     );
 
     assert_eq!(consumer.consume(), test_message);
 
-    assert_eq!(weak_observer.recent_cursor(), recent_cursor);
-    assert_eq!(weak_observer.old_cursor(), old_cursor);
+    assert_eq!(weak_observer.newest_cursor(), newest_cursor);
+    assert_eq!(weak_observer.oldest_cursor(), oldest_cursor);
     assert_eq!(
-        weak_observer.weak_observe(recent_cursor).unwrap(),
+        weak_observer.weak_observe(newest_cursor).unwrap(),
         Some(test_message.x)
     );
     assert_eq!(
-        weak_observer.weak_observe(old_cursor).unwrap(),
+        weak_observer.weak_observe(oldest_cursor).unwrap(),
         Some(test_message.x)
     );
 
@@ -119,14 +119,14 @@ pub(crate) fn test_produce_weak_observe(queue: CommunicationOQueueRef<TestMessag
     producer.produce(test_message_2);
     assert_eq!(consumer.consume(), test_message_2);
 
-    let recent_cursor = weak_observer.recent_cursor();
+    let newest_cursor = weak_observer.newest_cursor();
     assert_eq!(
-        weak_observer.weak_observe(recent_cursor).unwrap(),
+        weak_observer.weak_observe(newest_cursor).unwrap(),
         Some(test_message_2.x)
     );
-    let old_cursor = weak_observer.old_cursor();
+    let oldest_cursor = weak_observer.oldest_cursor();
     assert_eq!(
-        weak_observer.weak_observe(old_cursor).unwrap(),
+        weak_observer.weak_observe(oldest_cursor).unwrap(),
         Some(test_message.x)
     );
 
@@ -134,13 +134,13 @@ pub(crate) fn test_produce_weak_observe(queue: CommunicationOQueueRef<TestMessag
 
     producer.produce(test_message_3);
 
-    assert_eq!(weak_observer.weak_observe(old_cursor).unwrap(), None);
+    assert_eq!(weak_observer.weak_observe(oldest_cursor).unwrap(), None);
     assert_eq!(
-        weak_observer.weak_observe(old_cursor + 1).unwrap(),
+        weak_observer.weak_observe(oldest_cursor + 1).unwrap(),
         Some(test_message_2.x)
     );
     assert_eq!(
-        weak_observer.weak_observe(old_cursor + 2).unwrap(),
+        weak_observer.weak_observe(oldest_cursor + 2).unwrap(),
         Some(test_message_3.x)
     );
 
