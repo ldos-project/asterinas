@@ -53,7 +53,7 @@ pub use query::ObservationQuery;
 pub(crate) mod generic_test;
 
 mod interface {
-    use alloc::{alloc::AllocError, boxed::Box};
+    use alloc::alloc::AllocError;
 
     use super::*;
 
@@ -129,6 +129,8 @@ mod interface {
             &self,
         ) -> Result<CommunicationProducer<T>, AttachmentError>;
 
+        /// Attach a consumer to the queue which will receive ownership of each message that is
+        /// produced.
         fn attach_consumer(&self) -> Result<Consumer<T>, AttachmentError>;
     }
 
@@ -206,7 +208,7 @@ macro_rules! impl_observation_oqueue_forward {
 /// A dynamically typed OQueue that allows attempting any kind of attachment, but dynamically
 /// returns errors for unsupported ones.
 pub struct AnyOQueueRef<T> {
-    inner: Arc<inner::OQueueInner<T>>,
+    inner: Arc<inner::OQueueImplementation<T>>,
 }
 
 impl_oqueue_forward!(AnyOQueueRef, inner);
@@ -216,21 +218,23 @@ impl_observation_oqueue_forward!(AnyOQueueRef, inner);
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 #[derive(Clone)]
 pub struct OQueueRef<T> {
-    inner: Arc<inner::OQueueInner<T>>,
+    inner: Arc<inner::OQueueImplementation<T>>,
 }
 
 impl_oqueue_forward!(OQueueRef, inner);
 
-/// A reference to a communication OQueue.
+/// A reference to a communication OQueue. Communication OQueues can have consumers and publication
+/// is by value so that ownership of the message can be transferred to the consumer.
 #[derive(Clone)]
 pub struct CommunicationOQueueRef<T> {
-    inner: Arc<inner::OQueueInner<T>>,
+    inner: Arc<inner::OQueueImplementation<T>>,
 }
 
 impl<T> CommunicationOQueueRef<T> {
+    /// Create a new communication OQueue with the specified buffer length.
     pub fn new(len: usize) -> Self {
         Self {
-            inner: Arc::new(inner::OQueueInner::new(len, true)),
+            inner: Arc::new(inner::OQueueImplementation::new(len, true)),
         }
     }
 }
@@ -238,16 +242,18 @@ impl<T> CommunicationOQueueRef<T> {
 impl_oqueue_forward!(CommunicationOQueueRef, inner);
 impl_communication_oqueue_forward!(CommunicationOQueueRef, inner);
 
-/// A reference to an observation OQueue.
+/// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
+/// values by reference.
 #[derive(Clone)]
 pub struct ObservationOQueueRef<T> {
-    inner: Arc<inner::OQueueInner<T>>,
+    inner: Arc<inner::OQueueImplementation<T>>,
 }
 
 impl<T> ObservationOQueueRef<T> {
+    /// Create a new observation OQueue with the specified buffer length.
     pub fn new(len: usize) -> Self {
         Self {
-            inner: Arc::new(inner::OQueueInner::new(len, false)),
+            inner: Arc::new(inner::OQueueImplementation::new(len, false)),
         }
     }
 }
@@ -258,7 +264,7 @@ impl_observation_oqueue_forward!(ObservationOQueueRef, inner);
 /// An attachment to an OQueue which allows transferring ownership of messages from the producer to
 /// the consumer without copying or cloning.
 pub struct CommunicationProducer<T> {
-    oqueue: Arc<inner::OQueueInner<T>>,
+    oqueue: Arc<inner::OQueueImplementation<T>>,
     _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
@@ -278,7 +284,7 @@ impl<T: Send + 'static> CommunicationProducer<T> {
 /// An attachment to an OQueue which allows producing values values by reference for observation.
 /// There can be no consumers since the message is not moved into the OQueue.
 pub struct ObservationProducer<T> {
-    oqueue: Arc<inner::OQueueInner<T>>,
+    oqueue: Arc<inner::OQueueImplementation<T>>,
     _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
@@ -297,7 +303,7 @@ impl<T: Send + 'static> ObservationProducer<T> {
 }
 
 pub struct Consumer<T> {
-    oqueue: Arc<inner::OQueueInner<T>>,
+    oqueue: Arc<inner::OQueueImplementation<T>>,
     _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
@@ -724,11 +730,11 @@ mod test {
         );
     }
 
-    // #[ktest]
-    // fn generic_send_receive_blocker() {
-    //     let queue = CommunicationOQueueRef::<generic_test::TestMessage>::new(16);
-    //     generic_test::test_send_receive_blocker(queue, 32, 3);
-    // }
+    #[ktest]
+    fn generic_send_receive_blocker() {
+        let queue = CommunicationOQueueRef::<generic_test::TestMessage>::new(16);
+        generic_test::test_send_receive_blocker(queue, 32, 3);
+    }
 
     #[ktest]
     fn generic_produce_strong_observe_only() {

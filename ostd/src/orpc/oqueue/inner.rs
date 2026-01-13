@@ -1,21 +1,20 @@
+// SPDX-License-Identifier: MPL-2.0
+
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{any::TypeId, marker::PhantomData};
 
-use hashbrown::HashMap;
 use static_assertions::assert_obj_safe;
 
 use crate::{
-    early_println,
     orpc::oqueue::{
         Cursor, HandleAccessError, ObservationQuery, single_thread_ring_buffer::RingBuffer,
     },
     sync::{SpinLock, WaitQueue},
 };
 
-// XXX: DO IT
-
-pub(crate) struct OQueueInner<T> {
-    inner: SpinLock<OQueueInnerData<T>>,
+/// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue internally. Externally, code will use [`super::OQueueRef`] and similar.
+pub(crate) struct OQueueImplementation<T> {
+    inner: SpinLock<OQueueInner<T>>,
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     is_communication_oqueue: bool,
@@ -23,10 +22,10 @@ pub(crate) struct OQueueInner<T> {
     read_wait_queue: WaitQueue,
 }
 
-impl<T> OQueueInner<T> {
+impl<T> OQueueImplementation<T> {
     pub(crate) fn new(len: usize, is_communication_oqueue: bool) -> Self {
         Self {
-            inner: SpinLock::new(OQueueInnerData {
+            inner: SpinLock::new(OQueueInner {
                 consumer_ring_buffer: Default::default(),
                 n_consumers: 0,
                 observer_ring_buffers: Default::default(),
@@ -47,14 +46,15 @@ impl<T> OQueueInner<T> {
     }
 }
 
-struct OQueueInnerData<T> {
+/// The part of [`OQueueImplementation`] which is protected by a lock.
+struct OQueueInner<T> {
     /// The ring buffer used for consumers.
     consumer_ring_buffer: Option<RingBuffer>,
     /// The number of attached consumers. This is required to detect when the `consumer_ring_buffer`
     /// can be discarded.
     n_consumers: usize,
     /// The ring buffers used for observers.
-    observer_ring_buffers: Vec<Option<RingBufferRecord<T>>>,
+    observer_ring_buffers: Vec<Option<ObservationRingBuffer<T>>>,
     // TODO: PERFORMANCE: There will be a bunch of cases where there is *only* a consumer ring
     // buffer, or *only* a single observer ring. It would be nice if either could be inlined. As of
     // now, the consumer is always inlined even when it's not in use, and the observer never is.
@@ -62,7 +62,7 @@ struct OQueueInnerData<T> {
     // same query.
 }
 
-impl<T> OQueueInnerData<T> {
+impl<T> OQueueInner<T> {
     fn can_produce(&self) -> bool {
         self.observer_ring_buffers
             .iter()
@@ -71,9 +71,13 @@ impl<T> OQueueInnerData<T> {
     }
 }
 
+/// A partially type erased [`ObservationQuery`] with `U` (the observed query output type) erased,
+/// but `T` (the message type) retained statically. This is used in the OQueue machinery to dispatch
+/// to the query and produce it's result into a [`RingBuffer`].
 trait ErasedObservationQuery<T: ?Sized>: Send {
-    /// Call the query and then insert the value into the provided ring buffer. The ring buffer must
-    /// have a type matching the result of the query (`U` below).
+    /// Call the query and then produce the value into the provided ring buffer. The ring buffer
+    /// must have a type matching the result of the query (`U` below). Returns false if the value
+    /// could not be produced into `ring_buffer`.
     fn call_into(&self, v: &T, ring_buffer: &mut RingBuffer) -> bool;
 }
 
@@ -87,16 +91,21 @@ impl<T: ?Sized, U: 'static> ErasedObservationQuery<T> for ObservationQuery<T, U>
     }
 }
 
-struct RingBufferRecord<T> {
+struct ObservationRingBuffer<T> {
     // TODO: PERFORMANCE: Replace the dyn ref and optimize based on the known structure of
     // ObservationQuery. This should remove a level of pointer indirection.
+    /// The query to filter `T` and place the result into the ring buffer.
     query: Box<dyn ErasedObservationQuery<T>>,
+    /// Function to extract a value from the ring buffer with strong observer semantics. This
+    /// indirection is needed since the type `U` in the ring buffer is not statically known.
     try_strong_observe_into: fn(&mut RingBuffer, dest: *mut ()) -> bool,
+    /// Function to extract a value from the ring buffer. This indirection is needed since the
+    /// type `U` in the ring buffer is not statically known.
     weak_observe_into: fn(&mut RingBuffer, Cursor, dest: *mut ()) -> bool,
     ring_buffer: RingBuffer,
 }
 
-impl<T: Send + 'static> OQueueInner<T> {
+impl<T: Send + 'static> OQueueImplementation<T> {
     fn can_produce(&self) -> bool {
         self.inner.lock().can_produce()
     }
@@ -106,7 +115,8 @@ impl<T: Send + 'static> OQueueInner<T> {
         loop {
             if let Err(ret) = self.try_produce(v) {
                 v = ret;
-                // TODO: PERFORMANCE: Using can_produce here and try_produce above requires 2 acquires
+                // TODO: PERFORMANCE: Using can_produce here and try_produce above requires 2
+                // acquires.
                 self.put_wait_queue
                     .wait_until(|| if self.can_produce() { Some(()) } else { None })
             } else {
@@ -118,7 +128,7 @@ impl<T: Send + 'static> OQueueInner<T> {
     pub(super) fn try_produce(&self, v: T) -> Result<(), T> {
         let mut data = self.inner.lock();
         if data.can_produce() {
-            for RingBufferRecord {
+            for ObservationRingBuffer {
                 query, ring_buffer, ..
             } in data
                 .observer_ring_buffers
@@ -131,6 +141,7 @@ impl<T: Send + 'static> OQueueInner<T> {
                 let v = ring_buffer.try_produce(v);
                 assert!(v.is_none());
             }
+            self.read_wait_queue.wake_all();
             Ok(())
         } else {
             Err(v)
@@ -151,7 +162,7 @@ impl<T: Send + 'static> OQueueInner<T> {
         let mut data = self.inner.lock();
         assert!(data.consumer_ring_buffer.is_none());
         if data.can_produce() {
-            for RingBufferRecord {
+            for ObservationRingBuffer {
                 query, ring_buffer, ..
             } in data
                 .observer_ring_buffers
@@ -160,6 +171,7 @@ impl<T: Send + 'static> OQueueInner<T> {
             {
                 query.call_into(&v, ring_buffer);
             }
+            self.read_wait_queue.wake_all();
             true
         } else {
             false
@@ -173,12 +185,16 @@ impl<T: Send + 'static> OQueueInner<T> {
     pub(super) fn try_consume(&self) -> Option<T> {
         let mut data = self.inner.lock();
         // SAFETY: The consumer ring buffer is never used for observation.
-        unsafe {
+        let ret = unsafe {
             data.consumer_ring_buffer
                 .as_mut()
                 .expect("consume not supported")
                 .try_consume()
+        };
+        if ret.is_some() {
+            self.put_wait_queue.wake_one();
         }
+        ret
     }
 
     pub(super) fn attach_communication_producer(
@@ -242,7 +258,7 @@ impl<T: Send + 'static> OQueueInner<T> {
             assert_eq!(id, 0);
         }
         // We never reuse ring_buffers, so the ID is discarded and always 0, but that will change.
-        let ring_buffer = RingBufferRecord {
+        let ring_buffer = ObservationRingBuffer {
             query: Box::new(query),
             try_strong_observe_into: |r, d| {
                 // TODO: Use a real head_id when we share ring buffers.
@@ -404,7 +420,7 @@ pub(super) trait UntypedOQueueInner: Sync + Send {
 
 assert_obj_safe!(UntypedOQueueInner);
 
-impl<T: Send> UntypedOQueueInner for OQueueInner<T> {
+impl<T: Send> UntypedOQueueInner for OQueueImplementation<T> {
     unsafe fn try_strong_observe_into(
         &self,
         observer_id: usize,
@@ -412,14 +428,19 @@ impl<T: Send> UntypedOQueueInner for OQueueInner<T> {
         dest: *mut (),
     ) -> Result<bool, HandleAccessError> {
         let mut data = self.inner.lock();
-        let RingBufferRecord {
+        let ObservationRingBuffer {
             try_strong_observe_into,
             ring_buffer,
             ..
         } = data.observer_ring_buffers[observer_id]
             .as_mut()
             .expect("should only be called with an id returned from new_observation_ring_buffer");
-        Ok(try_strong_observe_into(ring_buffer, dest))
+
+        let ret = try_strong_observe_into(ring_buffer, dest);
+        if ret {
+            self.put_wait_queue.wake_one();
+        }
+        Ok(ret)
     }
 
     unsafe fn strong_observe_into(
@@ -444,7 +465,7 @@ impl<T: Send> UntypedOQueueInner for OQueueInner<T> {
         dest: *mut (),
     ) -> Result<bool, HandleAccessError> {
         let mut data = self.inner.lock();
-        let RingBufferRecord {
+        let ObservationRingBuffer {
             weak_observe_into,
             ring_buffer,
             ..
@@ -466,7 +487,7 @@ impl<T: Send> UntypedOQueueInner for OQueueInner<T> {
 
     fn recent_cursor(&self, observer_id: usize) -> Cursor {
         let mut data = self.inner.lock();
-        let RingBufferRecord { ring_buffer, .. } = data.observer_ring_buffers[observer_id]
+        let ObservationRingBuffer { ring_buffer, .. } = data.observer_ring_buffers[observer_id]
             .as_mut()
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.recent_cursor()
@@ -474,7 +495,7 @@ impl<T: Send> UntypedOQueueInner for OQueueInner<T> {
 
     fn old_cursor(&self, observer_id: usize) -> Cursor {
         let mut data = self.inner.lock();
-        let RingBufferRecord { ring_buffer, .. } = data.observer_ring_buffers[observer_id]
+        let ObservationRingBuffer { ring_buffer, .. } = data.observer_ring_buffers[observer_id]
             .as_mut()
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.old_cursor()
