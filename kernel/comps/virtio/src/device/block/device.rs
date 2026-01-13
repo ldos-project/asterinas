@@ -89,10 +89,10 @@ impl BlockDevice {
         // Thread 2: Handle requests from the OQueue and enqueue them
         let server_for_oqueue = block_device_server.clone();
         spawn_thread(server_for_oqueue.clone(), {
+            let consumer = server_for_oqueue.bio_submission_oqueue().attach_consumer().unwrap();
             move || {
                 // Attach consumer ONCE outside the loop to avoid race condition
                 // where items could be skipped between consumer drop and re-attach
-                let consumer = server_for_oqueue.bio_submission_oqueue().attach_consumer().unwrap();
                 loop {
                     let request = consumer.consume();
                     server_for_oqueue.queue.enqueue(request).unwrap();
