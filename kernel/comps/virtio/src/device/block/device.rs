@@ -22,7 +22,7 @@ use id_alloc::IdAlloc;
 use log::{debug, info};
 use ostd::{
     Pod,
-    mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Segment, VmIo},
+    mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
     orpc::{
         framework::spawn_thread,
         oqueue::{OQueueRef, Producer},
@@ -276,7 +276,7 @@ impl DeviceInner {
             // Completes the bio request
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
-                /// FIXME(yingqi): How to make sure the reply can only be called once?
+                // FIXME(yingqi): How to make sure the reply can only be called once?
                 bio.reply();
             });
         }

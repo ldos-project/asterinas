@@ -1,20 +1,15 @@
-use alloc::boxed::Box;
-
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
     oqueue::{
-        OQueue as _, OQueueRef, Producer,
+        OQueueRef,
         locking::{LockingQueue, ObservableLockingQueue},
-        reply::ReplyQueue,
     },
     orpc_trait,
 };
 
 use crate::device::VirtioDeviceError;
-type Result<T> = core::result::Result<T, VirtioDeviceError>;
 use ostd::{
     orpc::{framework::errors::RPCError, oqueue::OQueueAttachError},
-    timer::Jiffies,
 };
 
 impl From<RPCError> for VirtioDeviceError {

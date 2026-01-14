@@ -27,7 +27,6 @@ use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
     fs::{
-        exfat::{ExfatFS, ExfatMountOptions},
         ext2::Ext2,
         fs_resolver::FsPath,
     },
@@ -57,7 +56,6 @@ fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
 pub fn lazy_init() {
     //The device name is specified in qemu args as --serial={device_name}
     let ext2_device_name = "vext2";
-    let exfat_device_name = "vexfat";
     let raid1_device_name = "raid_device";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
@@ -114,7 +112,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     info!("[raid] creating selection policy");
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
-    Raid1Device::new(raid_device_name, members, selection_policy).map_err(|err| match err {
+    Raid1Device::init(raid_device_name, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }

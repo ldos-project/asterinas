@@ -33,7 +33,6 @@ use aster_block::{
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
-use log::{error, info};
 use ostd::orpc::orpc_server;
 
 use crate::server_traits::SelectionPolicy;
@@ -64,7 +63,7 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    pub fn new(
+    pub fn init(
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
