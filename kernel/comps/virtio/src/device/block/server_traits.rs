@@ -1,16 +1,14 @@
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
+    framework::errors::RPCError,
     oqueue::{
-        OQueueRef,
+        OQueueAttachError, OQueueRef,
         locking::{LockingQueue, ObservableLockingQueue},
     },
     orpc_trait,
 };
 
 use crate::device::VirtioDeviceError;
-use ostd::{
-    orpc::{framework::errors::RPCError, oqueue::OQueueAttachError},
-};
 
 impl From<RPCError> for VirtioDeviceError {
     fn from(value: RPCError) -> Self {

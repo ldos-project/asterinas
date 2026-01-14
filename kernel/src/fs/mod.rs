@@ -26,10 +26,7 @@ use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPo
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
-    fs::{
-        ext2::Ext2,
-        fs_resolver::FsPath,
-    },
+    fs::{ext2::Ext2, fs_resolver::FsPath},
     prelude::*,
 };
 
