@@ -1,9 +1,8 @@
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use alloc::{sync::Arc, vec::Vec};
 use aster_block::BlockDevice;
-use ostd::Error;
-use ostd::orpc::orpc_server;
+use ostd::{Error, orpc::orpc_server};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
@@ -87,10 +86,10 @@ impl SelectionPolicy for LinnOSPolicy {
                 + self.model[6] * completion_trace[3].latency.as_nanos() as f32
                 + self.model[7] * completion_trace[3].outstanding_requests as f32;
 
-            // FIXME: There isn't a math library in Asterinas yet, so we cannot use sigmoid. 
+            // FIXME: There isn't a math library in Asterinas yet, so we cannot use sigmoid.
             // let e: f32 = 2.71828;
             // let prob = 1.0 / (1.0 + e.powf(-x));
-            
+
             // FIXME: Temporariliy use a threshold to determine the selection.
             if x > 2.0 {
                 return Ok(self.members[idx % self.members.len()].clone());

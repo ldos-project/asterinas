@@ -4,10 +4,8 @@ use alloc::sync::Arc;
 use core::fmt::Debug;
 
 use aster_block::BlockDevice;
-use ostd::orpc::orpc_trait;
-use ostd::Error;
-
 pub use aster_virtio::device::block::server_traits::BlockIOObservable;
+use ostd::{Error, orpc::orpc_trait};
 
 /// A combined trait for block devices that support I/O performance tracing.
 ///

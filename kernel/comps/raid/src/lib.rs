@@ -33,12 +33,10 @@ use aster_block::{
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
-
-use crate::server_traits::SelectionPolicy;
-
+use log::{error, info};
 use ostd::orpc::orpc_server;
 
-use log::{info, error};
+use crate::server_traits::SelectionPolicy;
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
@@ -81,7 +79,7 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        let device = Self::new_with( |orpc_internal, _weak_self| Raid1Device {
+        let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
             orpc_internal,
             members,
             queue,
@@ -127,8 +125,7 @@ impl Raid1Device {
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
     fn process_read(&self, request: BioRequest) {
-
-        // TODO(yingqi): Implement asynchronous read with policy selector. 
+        // TODO(yingqi): Implement asynchronous read with policy selector.
         // Submit all children first to overlap device I/O.
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 

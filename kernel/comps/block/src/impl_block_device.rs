@@ -77,12 +77,7 @@ impl dyn BlockDevice {
         segments: Vec<BioSegment>,
         complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
     ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(
-            BioType::Read,
-            sid,
-            segments,
-            complete_fn,
-        );
+        let bio = Bio::new_with_closure(BioType::Read, sid, segments, complete_fn);
         let _ = bio.submit(self)?;
         Ok(())
     }
@@ -145,12 +140,7 @@ impl dyn BlockDevice {
         segments: Vec<BioSegment>,
         complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
     ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(
-            BioType::Write,
-            sid,
-            segments,
-            complete_fn,
-        );
+        let bio = Bio::new_with_closure(BioType::Write, sid, segments, complete_fn);
         let _ = bio.submit(self)?;
         Ok(())
     }

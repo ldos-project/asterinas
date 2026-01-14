@@ -1,27 +1,27 @@
 use alloc::boxed::Box;
 
+use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
     oqueue::{
-        OQueue as _, OQueueRef, Producer, locking::ObservableLockingQueue, reply::ReplyQueue, locking::LockingQueue
+        OQueue as _, OQueueRef, Producer,
+        locking::{LockingQueue, ObservableLockingQueue},
+        reply::ReplyQueue,
     },
     orpc_trait,
 };
 
-use aster_block::bio::{SubmittedBio, BlockDeviceCompletionStats};
 use crate::device::VirtioDeviceError;
 type Result<T> = core::result::Result<T, VirtioDeviceError>;
-use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
-use ostd::timer::Jiffies;
+use ostd::{
+    orpc::{framework::errors::RPCError, oqueue::OQueueAttachError},
+    timer::Jiffies,
+};
 
 impl From<RPCError> for VirtioDeviceError {
     fn from(value: RPCError) -> Self {
         match value {
-            RPCError::Panic { message: _ } => {
-                VirtioDeviceError::ORPCServerPanicked
-            }
-            RPCError::ServerMissing => {
-                VirtioDeviceError::ORPCServerMissing
-            }
+            RPCError::Panic { message: _ } => VirtioDeviceError::ORPCServerPanicked,
+            RPCError::ServerMissing => VirtioDeviceError::ORPCServerMissing,
         }
     }
 }
@@ -29,9 +29,7 @@ impl From<RPCError> for VirtioDeviceError {
 impl From<OQueueAttachError> for VirtioDeviceError {
     fn from(value: OQueueAttachError) -> Self {
         match value {
-            OQueueAttachError::Unsupported { .. } => {
-                VirtioDeviceError::OQueueAttachmentUnsupported
-            }
+            OQueueAttachError::Unsupported { .. } => VirtioDeviceError::OQueueAttachmentUnsupported,
             OQueueAttachError::AllocationFailed { .. } => {
                 VirtioDeviceError::OQueueAttachmentAllocationFailed
             }
@@ -41,8 +39,8 @@ impl From<OQueueAttachError> for VirtioDeviceError {
 
 #[orpc_trait]
 pub trait BlockIOObservable {
-    /// The OQueue containing every bio submission request. 
-    /// The submission queue doesn't needed to be observable. 
+    /// The OQueue containing every bio submission request.
+    /// The submission queue doesn't needed to be observable.
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio> {
         LockingQueue::new(32)
     }
@@ -56,4 +54,3 @@ pub trait BlockIOObservable {
 
 /// A unique identifier for tracking I/O requests.
 pub type IoRequestId = u64;
-

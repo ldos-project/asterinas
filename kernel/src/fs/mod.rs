@@ -22,7 +22,7 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{selection_policies::RoundRobinPolicy, Raid1Device, Raid1DeviceError};
+use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPolicy};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// Start a thread of the block device to pop requests from the block device's
-/// request queue and process them if there are any. If the request queue is empty, 
+/// request queue and process them if there are any. If the request queue is empty,
 /// the thread will wait until there is a request in the queue.
 fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
     if let Some(device) = aster_block::get_device(device_name) {
@@ -126,9 +126,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
     let task_fn = move || {
         info!("spawn the RAID-1 device thread");
-        let raid = worker
-            .downcast_ref::<Raid1Device>()
-            .unwrap();
+        let raid = worker.downcast_ref::<Raid1Device>().unwrap();
         loop {
             raid.handle_requests();
         }
