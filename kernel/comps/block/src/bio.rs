@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::boxed::Box;
-use core::fmt::Display;
-use core::time::Duration;
+use core::{fmt::Display, time::Duration};
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
@@ -19,9 +18,7 @@ use ostd::{
 use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
-use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
-
-use crate::request_queue::BioRequestSingleQueue;
+use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingleQueue};
 
 /// Trace data for block device I/O completion.
 ///
@@ -34,9 +31,7 @@ pub struct BlockDeviceCompletionTrace {
     pub outstanding_requests: usize,
 }
 
-use ostd::orpc::{
-    oqueue::{Producer, OQueueAttachError},
-};
+use ostd::orpc::oqueue::{OQueueAttachError, Producer};
 
 /// The unit for block I/O.
 ///
@@ -145,7 +140,7 @@ impl Bio {
         assert!(result.is_ok());
 
         // enqueue to the block device
-        // A SubmittedBio is created here from a Bio, and then pass down to the lower layers. 
+        // A SubmittedBio is created here from a Bio, and then pass down to the lower layers.
         if let Err(e) = block_device.enqueue(SubmittedBio {
             bio_inner: self.0.clone(),
             reply_handle: None,
@@ -212,7 +207,9 @@ impl From<OQueueAttachError> for BioEnqueueError {
     fn from(err: OQueueAttachError) -> Self {
         match err {
             OQueueAttachError::Unsupported { .. } => BioEnqueueError::OQueueAttachmentUnsupported,
-            OQueueAttachError::AllocationFailed { .. } => BioEnqueueError::OQueueAttachmentAllocationFailed,
+            OQueueAttachError::AllocationFailed { .. } => {
+                BioEnqueueError::OQueueAttachmentAllocationFailed
+            }
         }
     }
 }
@@ -321,11 +318,11 @@ impl Default for BioWaiter {
 /// A submitted `Bio` object.
 ///
 /// The request queue
-/// FIXME(yingqi): This clone method is added to satisfies the trait bound for the OQueue, because OQueue needs to 
-/// be able to clone elements in the queue in the case there are mutiple observers. However, 
+/// FIXME(yingqi): This clone method is added to satisfies the trait bound for the OQueue, because OQueue needs to
+/// be able to clone elements in the queue in the case there are mutiple observers. However,
 /// A BIO REQUEST SHOULD NEVER BE CLONED!!!
 // #[derive(Clone)]
-pub struct SubmittedBio{
+pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
     reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionTrace>>>,
@@ -340,7 +337,10 @@ impl core::fmt::Debug for SubmittedBio {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SubmittedBio")
             .field("bio_inner", &self.bio_inner)
-            .field("reply_handle", &self.reply_handle.as_ref().map(|_| "<Producer>"))
+            .field(
+                "reply_handle",
+                &self.reply_handle.as_ref().map(|_| "<Producer>"),
+            )
             .field("submission_time", &self.submission_time)
             .field("bio_request_single_queue", &self.bio_request_single_queue)
             .finish()
@@ -394,22 +394,30 @@ impl SubmittedBio {
     }
 
     pub fn num_outstanding_requests(&self) -> usize {
-        self.bio_request_single_queue.as_ref().unwrap().num_requests()
+        self.bio_request_single_queue
+            .as_ref()
+            .unwrap()
+            .num_requests()
     }
 
-    pub fn prepare_enqueue(&mut self, 
+    pub fn prepare_enqueue(
+        &mut self,
         reply_handle: Box<dyn Producer<BlockDeviceCompletionTrace>>,
-        bio_request_single_queue: Arc<BioRequestSingleQueue>) {
+        bio_request_single_queue: Arc<BioRequestSingleQueue>,
+    ) {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(bio_request_single_queue);
         self.submission_time = Some(read_monotonic_time());
     }
 
     pub fn reply(&self) {
-        self.reply_handle.as_ref().unwrap().produce(BlockDeviceCompletionTrace {
-            latency: read_monotonic_time() - self.submission_time.unwrap(),
-            outstanding_requests: self.num_outstanding_requests(),
-        });
+        self.reply_handle
+            .as_ref()
+            .unwrap()
+            .produce(BlockDeviceCompletionTrace {
+                latency: read_monotonic_time() - self.submission_time.unwrap(),
+                outstanding_requests: self.num_outstanding_requests(),
+            });
     }
 }
 

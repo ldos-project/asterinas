@@ -22,7 +22,7 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{selection_policies::RoundRobinPolicy, Raid1Device, Raid1DeviceError};
+use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPolicy};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// Start a thread of the block device to pop requests from the block device's
-/// request queue and process them if there are any. If the request queue is empty, 
+/// request queue and process them if there are any. If the request queue is empty,
 /// the thread will wait until there is a request in the queue.
 fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
     if let Some(device) = aster_block::get_device(device_name) {
@@ -67,7 +67,7 @@ pub fn lazy_init() {
         println!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
-    // FIXME: ExFat filesystem will cause hanging when trying to start. 
+    // FIXME: ExFat filesystem will cause hanging when trying to start.
     // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
     //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
     //     let target_path = FsPath::try_from("/exfat").unwrap();
@@ -79,7 +79,6 @@ pub fn lazy_init() {
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
-
 
     info!("[raid] RAID-1 device setup complete");
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
@@ -135,7 +134,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     })?;
     info!("[raid] RAID-1 device created");
 
-    // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs. 
+    // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs.
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
     // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
