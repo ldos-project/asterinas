@@ -209,7 +209,7 @@ pub enum BioEnqueueError {
 }
 
 impl From<OQueueAttachError> for BioEnqueueError {
-    fn from(err: OQueueAttachError) -> Self {
+    fn from(err: OQueueAttachError) -> Self {  
         match err {
             OQueueAttachError::Unsupported { .. } => BioEnqueueError::OQueueAttachmentUnsupported,
             OQueueAttachError::AllocationFailed { .. } => BioEnqueueError::OQueueAttachmentAllocationFailed,

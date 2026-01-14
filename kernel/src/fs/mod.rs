@@ -72,17 +72,13 @@ pub fn lazy_init() {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
-    info!("[raid] RAID-1 device setup complete");
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-        info!("[raid] got RAID-1 device");
         let raid_fs = Ext2::open(raid).unwrap();
-        info!("[raid] opened RAID-1 filesystem");
         let target_path = FsPath::try_from("/raid1").unwrap();
-        info!("[raid] got target path");
         if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
             error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
         }
-        println!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+        info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
     } else {
         error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
     }
@@ -118,7 +114,6 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     info!("[raid] creating selection policy");
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
-    info!("[raid] creating RAID-1 device");
     Raid1Device::new(raid_device_name, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
@@ -126,16 +121,19 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     })?;
     info!("[raid] RAID-1 device created");
 
-    // TODO(Yingqi): No need to spawn a thread to handle the requests because they are already serevrs. 
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
     // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
-    let task_fn = move || loop {
+    let task_fn = move || {
+        info!("spawn the RAID-1 device thread");
         let raid = worker
             .downcast_ref::<Raid1Device>()
-            .expect("RAID device type mismatch");
-        raid.handle_requests();
+            .unwrap();
+        loop {
+            raid.handle_requests();
+        }
     };
+
     crate::ThreadOptions::new(task_fn).spawn();
 
     info!(
