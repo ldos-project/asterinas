@@ -73,7 +73,6 @@ impl BioRequestSingleQueue {
 
         let new_request = BioRequest::from(bio);
         queue.push_front(new_request);
-        // info!("[BioRequestSingleQueue] Enqueued a new request, number of requests: {}", self.num_requests());
         self.inc_num_requests();
         drop(queue);
 

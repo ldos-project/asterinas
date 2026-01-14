@@ -41,7 +41,7 @@ use ostd::{
 };
 
 use crate::device::block::server_traits;
-use aster_block::bio::{BlockDeviceCompletionTrace};
+use aster_block::bio::{BlockDeviceCompletionStats};
 use crate::device::block::server_traits::BlockIOObservable;
 
 #[derive(Debug)]
@@ -57,7 +57,7 @@ pub struct BlockDevice {
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio>;
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionTrace>;
+    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
 }
 
 
@@ -133,7 +133,7 @@ impl BlockDevice {
 
 impl aster_block::BlockDevice for BlockDevice {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
-        let reply_handle: Box<dyn Producer<BlockDeviceCompletionTrace>> = self.bio_completion_oqueue().attach_producer()?;
+        let reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>> = self.bio_completion_oqueue().attach_producer()?;
 
         let mut bio = bio;
         bio.prepare_enqueue(reply_handle, self.queue.clone());

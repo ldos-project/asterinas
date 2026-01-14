@@ -23,20 +23,20 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
 
 use crate::request_queue::BioRequestSingleQueue;
 
+use ostd::orpc::{
+    oqueue::{Producer, OQueueAttachError},
+};
+
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
 #[derive(Clone)]
-pub struct BlockDeviceCompletionTrace {
+pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request (time from submission to completion).
     pub latency: Duration,
     /// The number of outstanding requests at completion time.
     pub outstanding_requests: usize,
 }
-
-use ostd::orpc::{
-    oqueue::{Producer, OQueueAttachError},
-};
 
 /// The unit for block I/O.
 ///
@@ -321,14 +321,10 @@ impl Default for BioWaiter {
 /// A submitted `Bio` object.
 ///
 /// The request queue
-/// FIXME(yingqi): This clone method is added to satisfies the trait bound for the OQueue, because OQueue needs to 
-/// be able to clone elements in the queue in the case there are mutiple observers. However, 
-/// A BIO REQUEST SHOULD NEVER BE CLONED!!!
-// #[derive(Clone)]
 pub struct SubmittedBio{
     bio_inner: Arc<BioInner>,
 
-    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionTrace>>>,
+    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
     submission_time: Option<Duration>,
 
     /// Since SubmittedBio is created after the bio is submitted to some block device, which
@@ -398,7 +394,7 @@ impl SubmittedBio {
     }
 
     pub fn prepare_enqueue(&mut self, 
-        reply_handle: Box<dyn Producer<BlockDeviceCompletionTrace>>,
+        reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>>,
         bio_request_single_queue: Arc<BioRequestSingleQueue>) {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(bio_request_single_queue);
@@ -406,7 +402,7 @@ impl SubmittedBio {
     }
 
     pub fn reply(&self) {
-        self.reply_handle.as_ref().unwrap().produce(BlockDeviceCompletionTrace {
+        self.reply_handle.as_ref().unwrap().produce(BlockDeviceCompletionStats {
             latency: read_monotonic_time() - self.submission_time.unwrap(),
             outstanding_requests: self.num_outstanding_requests(),
         });

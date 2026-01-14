@@ -7,7 +7,7 @@ use ostd::orpc::{
     orpc_trait,
 };
 
-use aster_block::bio::{SubmittedBio, BlockDeviceCompletionTrace};
+use aster_block::bio::{SubmittedBio, BlockDeviceCompletionStats};
 use crate::device::VirtioDeviceError;
 type Result<T> = core::result::Result<T, VirtioDeviceError>;
 use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
@@ -44,13 +44,13 @@ pub trait BlockIOObservable {
     /// The OQueue containing every bio submission request. 
     /// The submission queue doesn't needed to be observable. 
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio> {
-        LockingQueue::new(1024)
+        LockingQueue::new(32)
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionTrace> {
-        ObservableLockingQueue::new(1024, 1)
+    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats> {
+        ObservableLockingQueue::new(32, 1)
     }
 }
 

@@ -24,7 +24,6 @@ use crate::{
 ///
 /// This function can only be called once and must be called during the initialization of kernel.
 pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
-
     SCHEDULER.call_once(|| scheduler);
 
     timer::register_callback(|| {
