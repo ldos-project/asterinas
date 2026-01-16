@@ -54,6 +54,7 @@ fn madv_free(start: Vaddr, end: Vaddr, ctx: &Context) -> Result<()> {
     let user_space = ctx.user_space();
     let root_vmar = user_space.root_vmar();
     let advised_range = start..end;
+    // This is advise, so failing silently is acceptable.
     let _ = root_vmar.remove_mapping(advised_range);
 
     Ok(())

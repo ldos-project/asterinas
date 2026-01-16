@@ -1085,6 +1085,8 @@ impl TxData for RawLogStoreEdit {}
 mod tests {
     use std::thread::{self, JoinHandle};
 
+    use ostd::{ignore_err, util::log_result};
+
     use super::*;
     use crate::layers::{
         bio::{Buf, MemDisk},
