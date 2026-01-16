@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
-
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
     framework::errors::RPCError,
@@ -16,21 +14,13 @@ use crate::device::VirtioDeviceError;
 
 impl From<RPCError> for VirtioDeviceError {
     fn from(value: RPCError) -> Self {
-        match value {
-            RPCError::Panic { message: _ } => VirtioDeviceError::ORPCServerPanicked,
-            RPCError::ServerMissing => VirtioDeviceError::ORPCServerMissing,
-        }
+        VirtioDeviceError::RPCError(value)
     }
 }
 
 impl From<OQueueAttachError> for VirtioDeviceError {
     fn from(value: OQueueAttachError) -> Self {
-        match value {
-            OQueueAttachError::Unsupported { .. } => VirtioDeviceError::OQueueAttachmentUnsupported,
-            OQueueAttachError::AllocationFailed { .. } => {
-                VirtioDeviceError::OQueueAttachmentAllocationFailed
-            }
-        }
+        VirtioDeviceError::OQueueAttachError(value)
     }
 }
 

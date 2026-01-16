@@ -189,7 +189,7 @@ impl Bio {
 }
 
 /// The error type returned when enqueueing the `Bio`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Debug)]
 pub enum BioEnqueueError {
     /// The request queue is full
     IsFull,
@@ -198,18 +198,12 @@ pub enum BioEnqueueError {
     /// Too big bio
     TooBig,
     /// OQueue attachment failures
-    OQueueAttachmentAllocationFailed,
-    OQueueAttachmentUnsupported,
+    OQueueAttachError(OQueueAttachError),
 }
 
 impl From<OQueueAttachError> for BioEnqueueError {
     fn from(err: OQueueAttachError) -> Self {
-        match err {
-            OQueueAttachError::Unsupported { .. } => BioEnqueueError::OQueueAttachmentUnsupported,
-            OQueueAttachError::AllocationFailed { .. } => {
-                BioEnqueueError::OQueueAttachmentAllocationFailed
-            }
-        }
+        Self::OQueueAttachError(err)
     }
 }
 

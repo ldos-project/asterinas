@@ -456,12 +456,7 @@ impl From<aster_block::bio::BioEnqueueError> for Error {
             aster_block::bio::BioEnqueueError::TooBig => {
                 Error::with_message(Errno::EINVAL, "Bio is too big")
             }
-            aster_block::bio::BioEnqueueError::OQueueAttachmentAllocationFailed => {
-                Error::with_message(Errno::ENOMEM, "OQueue attachment allocation failed")
-            }
-            aster_block::bio::BioEnqueueError::OQueueAttachmentUnsupported => {
-                Error::with_message(Errno::EPERM, "OQueue attachment not supported")
-            }
+            aster_block::bio::BioEnqueueError::OQueueAttachError(err) => err.into(),
         }
     }
 }
