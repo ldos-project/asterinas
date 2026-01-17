@@ -397,7 +397,7 @@ impl SubmittedBio {
         self.submission_time = Some(read_monotonic_time());
     }
 
-    pub fn reply(&self) {
+    pub fn report_statistics(&self) {
         self.reply_handle
             .as_ref()
             .unwrap()

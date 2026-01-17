@@ -275,8 +275,7 @@ impl DeviceInner {
             // Completes the bio request
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
-                // FIXME(yingqi): How to make sure the reply can only be called once?
-                bio.reply();
+                bio.report_statistics();
             });
         }
     }
