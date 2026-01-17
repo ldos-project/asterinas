@@ -53,7 +53,6 @@ fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
 pub fn lazy_init() {
     //The device name is specified in qemu args as --serial={device_name}
     let ext2_device_name = "vext2";
-    let exfat_device_name = "vexfat";
     let raid1_device_name = "raid_device";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
@@ -65,6 +64,7 @@ pub fn lazy_init() {
 
     // Starting the ExFat filesystem cause hanging at boot.
     // See issue: https://github.com/ldos-project/asterinas/issues/149
+    // let exfat_device_name = "vexfat";
     // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
     //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
     //     let target_path = FsPath::try_from("/exfat").unwrap();
