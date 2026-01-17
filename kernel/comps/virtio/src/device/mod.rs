@@ -2,6 +2,7 @@
 
 use int_to_c_enum::TryFromInt;
 use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
+
 use crate::queue::QueueError;
 
 pub mod block;

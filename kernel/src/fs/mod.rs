@@ -63,7 +63,7 @@ pub fn lazy_init() {
         info!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
     }
 
-    // Starting the ExFat filesystem cause hanging at boot. 
+    // Starting the ExFat filesystem cause hanging at boot.
     // See issue: https://github.com/ldos-project/asterinas/issues/149
     // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
     //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
@@ -129,7 +129,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
     // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
-    // TODO(Yingqi): Merge the starting of the RAID-1 thread inside block device server. 
+    // TODO(Yingqi): Merge the starting of the RAID-1 thread inside block device server.
     let task_fn = move || {
         info!("spawn the RAID-1 device thread");
         let raid = worker.downcast_ref::<Raid1Device>().unwrap();
