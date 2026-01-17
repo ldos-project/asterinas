@@ -119,6 +119,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
     // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
+    // TODO(Yingqi): Merge the starting of the RAID-1 thread inside block device server. 
     let task_fn = move || {
         info!("spawn the RAID-1 device thread");
         let raid = worker.downcast_ref::<Raid1Device>().unwrap();
