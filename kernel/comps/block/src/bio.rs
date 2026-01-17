@@ -317,8 +317,6 @@ pub struct SubmittedBio {
     reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
     submission_time: Option<Duration>,
 
-    /// Since SubmittedBio is created after the bio is submitted to some block device, which
-    /// means it definitely has an outstanding request in the request queue of the block device.
     bio_request_single_queue: Option<Arc<BioRequestSingleQueue>>,
 }
 

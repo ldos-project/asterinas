@@ -48,7 +48,6 @@ pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: Arc<BioRequestSingleQueue>,
-    // oqueue_consumer: Option<Box<dyn Consumer<SubmittedBio>>>,
 }
 
 #[orpc_impl]
