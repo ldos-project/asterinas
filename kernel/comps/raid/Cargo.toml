@@ -8,6 +8,8 @@ edition = "2024"
 [dependencies]
 ostd = { path = "../../../ostd" }
 aster-block = { path = "../block" }
+aster-virtio = { path = "../virtio" }
+log = "0.4"
 
 [lints]
 workspace = true

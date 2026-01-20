@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use int_to_c_enum::TryFromInt;
+use ostd::orpc::{framework::errors::RPCError, oqueue::OQueueAttachError};
 
 use crate::queue::QueueError;
 
@@ -47,6 +48,10 @@ pub enum VirtioDeviceError {
     QueueUnknownError,
     /// The input virtio capability list contains invalid element
     CapabilityListError,
+    /// The ORPC Errors
+    RPCError(RPCError),
+    /// The OQueue attachment errors
+    OQueueAttachError(OQueueAttachError),
 }
 
 impl From<QueueError> for VirtioDeviceError {

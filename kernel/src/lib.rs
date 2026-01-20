@@ -83,6 +83,14 @@ mod benchmarks;
 #[ostd::main]
 #[controlled]
 pub fn main() {
+    // CRITICAL: Initialize scheduler and ORPC BEFORE component initialization!
+    // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
+    // - ORPC spawn function must be injected, otherwise ORPC threads are created without
+    //   Thread association and are ignored by the ClassScheduler
+    thread::init();
+    sched::init();
+    orpc_utils::init();
+
     ostd::early_println!("[kernel] OSTD initialized. Preparing components.");
     component::init_all(component::parse_metadata!()).unwrap();
     init();
@@ -100,14 +108,11 @@ pub fn main() {
 }
 
 pub fn init() {
-    orpc_utils::init();
-    thread::init();
     util::random::init();
     driver::init();
     time::init();
     #[cfg(target_arch = "x86_64")]
     net::init();
-    sched::init();
     fs::rootfs::init(boot_info().initramfs.expect("No initramfs found!")).unwrap();
     device::init().unwrap();
     syscall::init();
