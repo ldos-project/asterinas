@@ -20,6 +20,12 @@ use core::{alloc::Layout, mem::MaybeUninit, ptr::NonNull};
 /// provide any safe interface. It does not store the type it was created with, so it cannot check
 /// it dynamically.
 ///
+/// This does **not** handle dropping values in the buffer. It cannot because the values may or may
+/// not be initialized (see the use of [`MaybeUninit`] in the method return types). Code using this
+/// type should include a drop implementation which iterates over valid indices and uses
+/// [`MaybeUninit::assume_init_drop`] (or [`assume_init_read`](`MaybeUninit::assume_init_read`)) to
+/// drop the value in that location.
+///
 /// ## Implementation
 ///
 /// Theoretically this could be made smaller by only storing the array layout, and inferring the
@@ -125,8 +131,9 @@ impl<A: Allocator> SliceAllocation<A> {
 
     /// The layout of the overall array.
     pub fn layout(&self) -> Layout {
-        Layout::from_size_align(self.stride * self.len, self.alignment)
-            .expect("layout was invalid despite having been taken from a layout")
+        Layout::from_size_align(self.stride * self.len, self.alignment).expect(
+            "layout was invalid, despite being valid when constructed identically in new_in",
+        )
     }
 
     /// The length of the array in elements.
