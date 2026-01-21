@@ -2,6 +2,8 @@
 
 use core::sync::atomic::Ordering;
 
+use ostd::ignore_err;
+
 use super::{Pid, Process, process_table};
 use crate::{prelude::*, process::signal::signals::kernel::KernelSignal};
 
@@ -110,7 +112,9 @@ fn move_children_to_reaper_process(current_process: &Process) {
         return;
     };
 
-    let _ = move_process_children(current_process, &init_process);
+    ignore_err!(
+        move_process_children(current_process, &init_process).map_err(|_| "failed to move")
+    );
 }
 
 /// Sends a child-death signal to the parent.

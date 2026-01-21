@@ -21,7 +21,7 @@ use aster_block::{
 use id_alloc::IdAlloc;
 use log::{debug, info};
 use ostd::{
-    Pod,
+    Pod, ignore_err,
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
     orpc::{
         framework::spawn_thread,
@@ -339,7 +339,7 @@ impl DeviceInner {
         let device_id = {
             device_id_slice.sync().unwrap();
             let mut device_id = vec![0u8; MAX_ID_LENGTH];
-            let _ = device_id_slice.read_bytes(0, &mut device_id);
+            ignore_err!(device_id_slice.read_bytes(0, &mut device_id));
             let len = device_id
                 .iter()
                 .position(|&b| b == 0)
