@@ -46,6 +46,10 @@ use crate::{orpc::oqueue::Cursor, util::untyped_box::SliceAllocation};
 /// This type is `Send` and that is only safe if the erased type held in this is also `Send`. This
 /// is guaranteed by the type bound on [`RingBuffer::new`]. The implementation is internally checked
 /// by the bound on [`RingBuffer::slot_mut`].
+///
+/// This will attempt to drop any values still in the buffer when this is dropped when they are
+/// overwritten. However, if there is no consumer, this will not happen. Because of this, any
+/// RingBuffer with a type which is not `Copy` should have a consumer.
 pub(super) struct RingBuffer {
     /// The type of the elements.
     element_type: TypeId,
@@ -70,6 +74,16 @@ pub(super) struct RingBuffer {
     /// will be enough for many cases and avoids needing a pointer dereference to get the head in
     /// the consumer case.
     strong_reader_heads: SmallVec<[usize; 2]>,
+
+    /// Function to drop all values still in the queue. This is safe, because it will simply discard
+    /// values until the queue has no droppable values in it.
+    drop_fn: fn(&mut RingBuffer),
+}
+
+impl Drop for RingBuffer {
+    fn drop(&mut self) {
+        (self.drop_fn)(self);
+    }
 }
 
 impl RingBuffer {
@@ -87,6 +101,23 @@ impl RingBuffer {
             strong_reader_heads: SmallVec::default(),
             #[cfg(debug_assertions)]
             element_type_name: type_name::<T>(),
+            drop_fn: |this| {
+                if this.strong_reader_heads.is_empty() {
+                    // There is no reader so there is no way to know what part of the buffer can be
+                    // safely dropped.
+                    return;
+                }
+                let head_id = 0;
+                while let Some(v) = this.try_get_for_head::<T>(head_id) {
+                    // SAFETY: The return value of `try_get_for_head` is always initialized. If head
+                    // ID 0 is the consumer and `T` has a `drop`, then we are dropping the values as
+                    // if they were consumed. If head ID 0 is a strong observer, draining is not
+                    // needed because `T: Copy`. Regardless, there are no active consumer or
+                    // observers because `this` is being dropped.
+                    unsafe { v.assume_init_read() };
+                    this.strong_reader_heads[head_id] += 1;
+                }
+            },
         })
     }
 
@@ -149,8 +180,8 @@ impl RingBuffer {
 
         let uninit_ref = self.slot_mut(self.mod_len(self.tail_index));
 
-        // This will never leak an instance of T, because either: The value has been moved out by a
-        // consumer, or has no `Drop`.
+        // This can destroy an instance without dropping when there is no consumer. This is still
+        // safe. See the note in the safety section of the RingBuffer doc.
         uninit_ref.write(v);
 
         self.tail_index += 1;
