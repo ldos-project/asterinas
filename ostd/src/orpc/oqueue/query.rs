@@ -25,7 +25,7 @@ pub struct ObservationQuery<T: ?Sized, U> {
 impl<T: ?Sized, U> ObservationQuery<T, U> {
     /// Create a query which extracts a value from the message.
     ///
-    /// This function **must** by fast and side-effect free. It is called on the publication path
+    /// This function **must** be fast and side-effect free. It is called on the publication path
     /// for any OQueue it is used to observer.
     pub fn new(extractor: impl Fn(&T) -> U + Sync + Send + 'static) -> Self {
         Self {
@@ -35,7 +35,7 @@ impl<T: ?Sized, U> ObservationQuery<T, U> {
 
     /// Create a query which extracts a value from the message or discards it.
     ///
-    /// This function **must** by fast and side-effect free. It is called on the publication path
+    /// This function **must** be fast and side-effect free. It is called on the publication path
     /// for any OQueue it is used to observer.
     pub fn new_filter(extractor: impl (Fn(&T) -> Option<U>) + Sync + Send + 'static) -> Self {
         Self {
