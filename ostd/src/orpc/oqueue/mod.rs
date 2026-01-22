@@ -159,8 +159,8 @@ pub trait OQueue<T: ?Sized>: OQueueBase<T> {
     fn attach_ref_producer(&self) -> Result<RefProducer<T>, AttachmentError>;
 }
 
-/// Generate an impl which forwards the OQueue trait to a member.
-macro_rules! impl_oqueue_forward {
+/// Generate an impl which forwards the OQueueBase trait to a member.
+macro_rules! impl_oqueue_base_forward {
     ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
         impl<T: Send + 'static $($added_bounds)*> OQueueBase<T> for $type_name<T> {
             fn attach_strong_observer<U>(
@@ -199,8 +199,8 @@ macro_rules! impl_oqueue_forward {
     };
 }
 
-/// Generate an impl which forwards the CommunicationOQueue trait to a member.
-macro_rules! impl_communication_oqueue_forward {
+/// Generate an impl which forwards the ConsumableOQueue trait to a member.
+macro_rules! impl_consumable_oqueue_forward {
     ($type_name:ident, $member:ident) => {
         impl<T: Send + 'static> ConsumableOQueue<T> for $type_name<T> {
             fn attach_value_producer(&self) -> Result<ValueProducer<T>, AttachmentError> {
@@ -214,8 +214,8 @@ macro_rules! impl_communication_oqueue_forward {
     };
 }
 
-/// Generate an impl which forwards the ObservationOQueue trait to a member.
-macro_rules! impl_observation_oqueue_forward {
+/// Generate an impl which forwards the OQueue trait to a member.
+macro_rules! impl_oqueue_forward {
     ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
         impl<T: Send + 'static $($added_bounds)*> OQueue<T> for $type_name<T> {
             fn attach_ref_producer(
@@ -234,9 +234,9 @@ pub struct AnyOQueueRef<T: ?Sized> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
+impl_oqueue_base_forward!(AnyOQueueRef, inner, [+ ?Sized]);
+impl_consumable_oqueue_forward!(AnyOQueueRef, inner);
 impl_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
-impl_communication_oqueue_forward!(AnyOQueueRef, inner);
-impl_observation_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 #[derive(Clone)]
@@ -245,17 +245,18 @@ pub struct OQueueBaseRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_forward!(OQueueBaseRef, inner, []);
+impl_oqueue_base_forward!(OQueueBaseRef, inner, []);
 
-/// A reference to a communication OQueue. Communication OQueues can have consumers and publication
-/// is by value so that ownership of the message can be transferred to the consumer.
+/// A reference to an OQueue which supports consumers. These OQueues support publication is by value
+/// so that ownership of the message can be transferred to the consumer.
 #[derive(Clone)]
 pub struct ConsumableOQueueRef<T: 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
 
 impl<T> ConsumableOQueueRef<T> {
-    /// Create a new communication OQueue with the specified buffer length.
+    /// Create a new OQueue with the specified buffer length and support for produce by value and
+    /// consumers.
     pub fn new(len: usize) -> Self {
         Self {
             inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
@@ -264,8 +265,8 @@ impl<T> ConsumableOQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_forward!(ConsumableOQueueRef, inner, []);
-impl_communication_oqueue_forward!(ConsumableOQueueRef, inner);
+impl_oqueue_base_forward!(ConsumableOQueueRef, inner, []);
+impl_consumable_oqueue_forward!(ConsumableOQueueRef, inner);
 
 /// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
 /// values by reference.
@@ -284,8 +285,8 @@ impl<T: ?Sized + 'static> OQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
+impl_oqueue_base_forward!(OQueueRef, inner, [+ ?Sized]);
 impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
-impl_observation_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
 
 /// An attachment to an OQueue which allows transferring ownership of messages from the producer to
 /// the consumer without copying or cloning.
@@ -605,7 +606,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_consume() {
+    fn consumable_oqueue_consume() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
@@ -617,7 +618,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_strong_observe() {
+    fn consumable_oqueue_strong_observe() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -632,7 +633,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_weak_observe_recent() {
+    fn consumable_oqueue_weak_observe_recent() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -647,7 +648,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_strong_observe() {
+    fn oqueue_strong_observe() {
         let queue = OQueueRef::new(4);
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
@@ -662,7 +663,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_strong_observe_unsized() {
+    fn oqueue_strong_observe_unsized() {
         let msg = &[1, 2, 3];
         let queue = OQueueRef::<[u32]>::new(4);
         let producer = queue.attach_ref_producer().unwrap();
@@ -752,7 +753,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_strong_observe_filtered() {
+    fn consumable_oqueue_strong_observe_filtered() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -769,7 +770,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_weak_observe_filtered() {
+    fn oqueue_weak_observe_filtered() {
         let (producer, observer) = setup_for_weak_observation_filtered();
 
         producer.produce_ref(&new_message(1, "a"));
@@ -798,7 +799,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_produce() {
+    fn consumable_oqueue_try_produce() {
         let queue = ConsumableOQueueRef::new(2);
         let producer = queue.attach_value_producer().unwrap();
         let _consumer = queue.attach_consumer().unwrap();
@@ -814,7 +815,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_consume() {
+    fn consumable_oqueue_try_consume() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
@@ -827,7 +828,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_strong_observe() {
+    fn consumable_oqueue_try_strong_observe() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -842,7 +843,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_inline_consumer() {
+    fn consumable_oqueue_inline_consumer() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
@@ -871,7 +872,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_inline_strong_observer() {
+    fn consumable_oqueue_inline_strong_observer() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -904,7 +905,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_inline_strong_observer() {
+    fn oqueue_inline_strong_observer() {
         let queue = OQueueRef::new(4);
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
@@ -935,7 +936,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_attach_inline_strong_observer() {
+    fn consumable_oqueue_attach_inline_strong_observer() {
         let queue = ConsumableOQueueRef::<Message>::new(4);
         let producer = queue.attach_value_producer().unwrap();
 
@@ -966,7 +967,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_attach_inline_strong_observer() {
+    fn oqueue_attach_inline_strong_observer() {
         let queue = OQueueRef::<Message>::new(4);
         let producer = queue.attach_ref_producer().unwrap();
 

@@ -63,7 +63,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// Create a new OQueue.
     ///
     /// * `len` is the ring buffer length used for consumers and strong-observers.
-    /// * `is_communication_oqueue` specifies the attachment it allows later.
+    /// * `supports_consume` specifies the attachment it allows later.
     pub(crate) fn new(len: usize, supports_consume: bool) -> Self {
         Self {
             inner: SpinLock::new(OQueueInner {
@@ -373,7 +373,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         ret
     }
 
-    /// Attach a by-value producer to the OQueue if it is a communication OQueue.
+    /// Attach a by-value producer to the OQueue if this supports consumers.
     pub(super) fn attach_value_producer(
         self: &Arc<Self>,
     ) -> Result<super::ValueProducer<T>, super::AttachmentError> {
@@ -386,7 +386,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         })
     }
 
-    /// Attach a consumer to the OQueue if it is a communication OQueue.
+    /// Attach a consumer to the OQueue if this does not support consumers.
     pub(super) fn attach_consumer(
         self: &Arc<Self>,
     ) -> Result<super::Consumer<T>, super::AttachmentError> {
