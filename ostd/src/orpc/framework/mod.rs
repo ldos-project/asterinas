@@ -32,7 +32,7 @@ use alloc::{sync::Weak, vec::Vec};
 use core::{
     fmt::Display,
     num::NonZeroUsize,
-    ops::{Deref, DerefMut},
+    ops::DerefMut,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -43,7 +43,7 @@ use crate::{
     orpc::framework::errors::RPCError,
     prelude::Arc,
     sync::Mutex,
-    task::{CurrentTask, Task, TaskOptions, disable_preempt, scheduler},
+    task::{Task, TaskOptions, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -174,6 +174,7 @@ pub struct CurrentServer {
 }
 
 impl CurrentServer {
+    /// Get a new Arc reference to the current server.
     pub fn current_cloned() -> Option<Arc<dyn Server + Send + Sync + 'static>> {
         Task::current().unwrap().server().borrow().clone()
     }

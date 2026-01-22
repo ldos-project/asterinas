@@ -9,23 +9,36 @@
 //! * By convention, methods which place their output into an untyped buffer are named `*_into` and
 //!   take a pointer parameter `dest: *mut ()`.
 
-use alloc::{alloc::AllocError, boxed::Box, sync::Arc, vec::Vec};
-use snafu::ensure;
-use core::{any::TypeId, marker::PhantomData};
+// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/155): Add support for sharing ring
+// buffers between multiple observers.
 
-use smallvec::SmallVec;
+use alloc::{alloc::AllocError, boxed::Box, sync::Arc};
+use core::{
+    any::{Any, TypeId},
+    marker::PhantomData,
+};
+
+use slotmap::{SlotMap, new_key_type};
+use snafu::ensure;
 use static_assertions::assert_obj_safe;
 
 use crate::{
     orpc::{
-        closure::new_closure_1,
         framework::{CurrentServer, errors::RPCError},
         oqueue::{
-            AttachmentError, Cursor, ObservationError, ObservationQuery, ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer
+            AttachmentError, Cursor, InlineStrongObserver, ObservationError, ObservationQuery,
+            ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer,
         },
     },
     sync::{SpinLock, WaitQueue},
 };
+
+new_key_type! {
+    /// A unique identifier for an observer ring buffer.
+    pub struct ObserverKey;
+    /// A unique identifier for an inline strong observer.
+    pub struct InlineObserverKey;
+}
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
 /// internally. Externally, code will use [`super::OQueueRef`] and similar.
@@ -77,7 +90,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     }
 
     pub(super) fn detach_inline_consumer(&self) {
-        let mut inner = self.inner.lock();   
+        let mut inner = self.inner.lock();
         inner.inline_consumer = None;
     }
 
@@ -88,7 +101,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         query: ObservationQuery<T, U>,
         len: usize,
         is_strong: bool,
-    ) -> Result<usize, super::AttachmentError>
+    ) -> Result<ObserverKey, super::AttachmentError>
     where
         U: Copy + Send + 'static,
     {
@@ -102,20 +115,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
 
         let mut inner = self.inner.lock();
-        // Reuse any slot that is None, otherwise extend the vec.
-        let observer_id = if let Some((id, slot)) = inner
-            .observer_ring_buffers
-            .iter_mut()
-            .enumerate()
-            .find(|(_, v)| v.is_none())
-        {
-            *slot = Some(ring_buffer);
-            id
-        } else {
-            inner.observer_ring_buffers.push(Some(ring_buffer));
-            inner.observer_ring_buffers.len() - 1
-        };
-        Ok(observer_id)
+        let observer_key = inner.observer_ring_buffers.insert(ring_buffer);
+        Ok(observer_key)
     }
 
     /// Attach a strong observer.
@@ -126,24 +127,81 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     where
         U: Copy + Send + 'static,
     {
-        let observer_id = self.new_observation_ring_buffer(query, self.len, true)?;
+        let observer_key = self.new_observation_ring_buffer(query, self.len, true)?;
         let oqueue: Arc<dyn UntypedOQueueImplementation> = self.clone();
         Ok(super::StrongObserver {
             oqueue,
-            observer_id,
+            observer_id: observer_key,
+            convert_to_inline: Self::convert_strong_observer_to_inline,
             _phantom: PhantomData,
         })
     }
 
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
     /// value.
+    ///
+    /// This cannot be combined with the below query based one because the "identity query" cannot
+    /// exist for `T: !Copy`.
     pub(super) fn attach_inline_strong_observer(
-        &self,
+        self: &Arc<Self>,
         f: impl Fn(&T) + Send + 'static,
-    ) -> Result<(), super::AttachmentError> {
+    ) -> Result<InlineStrongObserver, super::AttachmentError> {
         let mut inner = self.inner.lock();
-        inner.inline_strong_observers.push(wrap_closure_ref(f));
-        Ok(())
+        let key = inner.inline_strong_observers.insert(wrap_closure_ref(f));
+        Ok(super::InlineStrongObserver {
+            oqueue: self.clone(),
+            inline_observer_id: key,
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Attach a strong observer to the OQueue by calling a strong observer function with each
+    /// value. The value is passed through a query. This is used for converting a strong-observer
+    /// attachment into an inline.
+    ///
+    /// This removes the ring buffer associated with `observer_id` so it is no longer valid (and may
+    /// be reallocated). This should *only* be called from something which take ownership of
+    /// observer_id and converts it into the new form.
+    ///
+    /// This returns a new ID associated with the registered inline attachment. This will not be the
+    /// same as the argument.
+    pub(super) fn convert_strong_observer_to_inline<U: Send + Copy + 'static>(
+        this: &dyn UntypedOQueueImplementation,
+        observer_id: ObserverKey,
+        f: Box<dyn Fn(&U) + Send + 'static>,
+    ) -> Result<InlineObserverKey, super::AttachmentError> {
+        let this: &Self = (this as &dyn Any).downcast_ref().unwrap();
+        let mut inner = this.inner.lock();
+
+        // Move the ring buffer out
+        let mut observation_ring_buffer = inner
+            .observer_ring_buffers
+            .remove(observer_id)
+            .expect("tried to attach inline strong observer for observer_id which did not exist");
+        let query = (observation_ring_buffer.query as Box<dyn Any>)
+            .downcast::<ObservationQuery<T, U>>()
+            .expect("tried to attach inline strong observer with a different type from original attachment");
+
+        // Drain the ring buffer into the function.
+        // TODO: Use a real head_id when we share ring buffers.
+        let head_id = 0;
+        while let Some(v) = observation_ring_buffer
+            .ring_buffer
+            .try_strong_observe::<U>(head_id)
+        {
+            f(&v)
+        }
+
+        // Register the actual handler
+        let key = inner
+            .inline_strong_observers
+            .insert(wrap_closure_ref(move |v| {
+                if let Some(v) = query.call(v) {
+                    f(&v)
+                }
+            }));
+
+        Ok(key)
     }
 
     /// Attach a weak observer.
@@ -155,10 +213,10 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     where
         U: Copy + Send + 'static,
     {
-        let observer_id = self.new_observation_ring_buffer(query, history_len, false)?;
+        let observer_key = self.new_observation_ring_buffer(query, history_len, false)?;
         Ok(super::WeakObserver {
             oqueue: self.clone(),
-            observer_id,
+            observer_id: observer_key,
             last_observed: Cursor(0).into(),
             _phantom: PhantomData,
         })
@@ -178,9 +236,10 @@ fn wrap_closure_ref<T: ?Sized + 'static>(
 ) -> Box<dyn Fn(&T) + Send> {
     if let Some(s) = CurrentServer::current_cloned() {
         let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
-            let _ = s
-                .orpc_server_base()
-                .call_in_context::<_, RPCError>(|| Ok(f(v)));
+            let _ = s.orpc_server_base().call_in_context::<_, RPCError>(|| {
+                f(v);
+                Ok(())
+            });
         });
         f
     } else {
@@ -214,14 +273,11 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         if inner.can_produce() {
             for ObservationRingBuffer {
                 query, ring_buffer, ..
-            } in inner
-                .observer_ring_buffers
-                .iter_mut()
-                .filter_map(|v| v.as_mut())
+            } in inner.observer_ring_buffers.values_mut()
             {
                 query.call_into(v, ring_buffer);
             }
-            for f in inner.inline_strong_observers.iter() {
+            for f in inner.inline_strong_observers.values() {
                 f(v)
             }
             drop(inner);
@@ -271,14 +327,11 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         if inner.can_produce() {
             for ObservationRingBuffer {
                 query, ring_buffer, ..
-            } in inner
-                .observer_ring_buffers
-                .iter_mut()
-                .filter_map(|v| v.as_mut())
+            } in inner.observer_ring_buffers.values_mut()
             {
                 query.call_into(&v, ring_buffer);
             }
-            for f in inner.inline_strong_observers.iter_mut() {
+            for f in inner.inline_strong_observers.values() {
                 f(&v)
             }
             assert!(inner.consumer_ring_buffer.is_none() || inner.inline_consumer.is_none());
@@ -356,8 +409,11 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         })
     }
 
-    pub(super) fn attach_inline_consumer(self: &Arc<Self>, f: impl Fn(T) + Send + 'static) -> Result<(), AttachmentError> {
-        let mut inner = self.inner.lock();   
+    pub(super) fn attach_inline_consumer(
+        self: &Arc<Self>,
+        f: impl Fn(T) + Send + 'static,
+    ) -> Result<(), AttachmentError> {
+        let mut inner = self.inner.lock();
         ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
         inner.inline_consumer = Some(Box::new(f));
         Ok(())
@@ -374,13 +430,16 @@ struct OQueueInner<T: ?Sized> {
     /// The ring buffers used for observers. If a ring buffer is no longer needed, due to a
     /// detachment, its slot will be set to `None` and ignored. `None` slots are reused for later
     /// attachments.
-    observer_ring_buffers: Vec<Option<ObservationRingBuffer<T>>>,
+    observer_ring_buffers: SlotMap<ObserverKey, ObservationRingBuffer<T>>,
     // TODO: PERFORMANCE: There will be a bunch of cases where there is *only* a consumer ring
     // buffer, or *only* a single observer ring. It would be nice if either could be inlined. As of
     // now, the consumer is always inlined even when it's not in use, and the observer never is.
     // TODO: PERFORMANCE: This needs a way to share ring buffers when multiple consumers use the
     // same query.
-    inline_strong_observers: SmallVec<[Box<dyn Fn(&T) + Send>; 1]>,
+    /// Inline strong observers of the message type. These will be called during production.
+    #[expect(clippy::type_complexity)]
+    inline_strong_observers: SlotMap<InlineObserverKey, Box<dyn Fn(&T) + Send>>,
+    /// The inline consume if there is one.
     inline_consumer: Option<Box<dyn Fn(T) + Send>>,
 }
 
@@ -388,8 +447,8 @@ impl<T: ?Sized> OQueueInner<T> {
     /// True if all ring buffers can produce.
     fn can_produce(&self) -> bool {
         self.observer_ring_buffers
-            .iter()
-            .all(|r| r.as_ref().is_none_or(|r| r.ring_buffer.can_produce()))
+            .values()
+            .all(|r| r.ring_buffer.can_produce())
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
     }
 }
@@ -397,14 +456,14 @@ impl<T: ?Sized> OQueueInner<T> {
 /// A partially type erased [`ObservationQuery`] with `U` (the query output type) erased, but `T`
 /// (the message type) retained statically. This is used in the OQueue machinery to dispatch to the
 /// query and produce it's result into a [`RingBuffer`].
-trait ErasedObservationQuery<T: ?Sized>: Send {
+trait ErasedObservationQuery<T: ?Sized>: Send + Any {
     /// Call the query and then produce the value into the provided ring buffer. The ring buffer
     /// must have a type matching the result of the query (`U` below). Returns false if the value
     /// could not be produced into `ring_buffer`.
     fn call_into(&self, v: &T, ring_buffer: &mut RingBuffer) -> bool;
 }
 
-impl<T: ?Sized, U: Send + 'static> ErasedObservationQuery<T> for ObservationQuery<T, U> {
+impl<T: ?Sized + 'static, U: Send + 'static> ErasedObservationQuery<T> for ObservationQuery<T, U> {
     fn call_into(&self, v: &T, ring_buffer: &mut RingBuffer) -> bool {
         if let Some(v) = self.call(v) {
             ring_buffer.try_produce(v).is_none()
@@ -504,10 +563,13 @@ impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
 /// and written directly on the untyped representation, since they are not actually going to involve
 /// `T`. This would avoid an indirect function call and allow inlining. This would require using
 /// `repr(C)` and direct manipulation of the representation.
-pub(super) trait UntypedOQueueImplementation: Sync + Send {
+pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
     /// Release any resources held by observer with the given ID. Using that `observer_id` again may
     /// produce UB.
-    fn detach_strong_observer(&self, observer_id: usize);
+    fn detach_strong_observer(&self, observer_id: ObserverKey);
+
+    /// Release any resources held by inline observer with the given key.
+    fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey);
 
     /// Copy the next value available to the specified observer into `dest` if it is available. This
     /// returns `Ok(true)` if the value was copied, `Ok(false)` if there was not value available
@@ -528,7 +590,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send {
     /// observer_id). However, in debug mode it may be checked to catch bugs in the handles.
     unsafe fn try_strong_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         type_id: TypeId,
         dest: *mut (),
     ) -> Result<bool, ObservationError>;
@@ -538,7 +600,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send {
     /// `dest`, since it blocks waiting for a value.
     unsafe fn strong_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         type_id: TypeId,
         dest: *mut (),
     ) -> Result<(), ObservationError>;
@@ -562,33 +624,38 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send {
     /// observer_id). However, in debug mode it may be checked to catch bugs in the handles.
     unsafe fn weak_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         type_id: TypeId,
         cursor: Cursor,
         dest: *mut (),
     ) -> Result<bool, ObservationError>;
 
     /// Wait until new values are available for the specific observer.
-    fn wait(&self, observer_id: usize, cursor: Cursor);
+    fn wait(&self, observer_id: ObserverKey, cursor: Cursor);
 
     /// Get the most recent cursor which will return a value.
-    fn newest_cursor(&self, observer_id: usize) -> Cursor;
+    fn newest_cursor(&self, observer_id: ObserverKey) -> Cursor;
 
     /// Get the oldest cursor which will return a value.
-    fn oldest_cursor(&self, observer_id: usize) -> Cursor;
+    fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor;
 }
 
 assert_obj_safe!(UntypedOQueueImplementation);
 
-impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
-    fn detach_strong_observer(&self, observer_id: usize) {
+impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T> {
+    fn detach_strong_observer(&self, observer_id: ObserverKey) {
         let mut inner = self.inner.lock();
-        inner.observer_ring_buffers[observer_id] = None;
+        inner.observer_ring_buffers.remove(observer_id);
+    }
+
+    fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey) {
+        let mut inner = self.inner.lock();
+        inner.inline_strong_observers.remove(inline_observer_id);
     }
 
     unsafe fn try_strong_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         _type_id: TypeId,
         dest: *mut (),
     ) -> Result<bool, ObservationError> {
@@ -597,8 +664,9 @@ impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
             try_strong_observe_into,
             ring_buffer,
             ..
-        } = inner.observer_ring_buffers[observer_id]
-            .as_mut()
+        } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
 
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
@@ -612,7 +680,7 @@ impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
 
     unsafe fn strong_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         _type_id: TypeId,
         dest: *mut (),
     ) -> Result<(), ObservationError> {
@@ -626,7 +694,7 @@ impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
 
     unsafe fn weak_observe_into(
         &self,
-        observer_id: usize,
+        observer_id: ObserverKey,
         _type_id: TypeId,
         cursor: Cursor,
         dest: *mut (),
@@ -636,14 +704,15 @@ impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
             weak_observe_into,
             ring_buffer,
             ..
-        } = inner.observer_ring_buffers[observer_id]
-            .as_mut()
+        } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         Ok(unsafe { weak_observe_into(ring_buffer, cursor, dest) })
     }
 
-    fn wait(&self, observer_id: usize, cursor: Cursor) {
+    fn wait(&self, observer_id: ObserverKey, cursor: Cursor) {
         self.read_wait_queue.wait_until(|| {
             if self.newest_cursor(observer_id) > cursor {
                 Some(())
@@ -653,18 +722,20 @@ impl<T: ?Sized> UntypedOQueueImplementation for OQueueImplementation<T> {
         })
     }
 
-    fn newest_cursor(&self, observer_id: usize) -> Cursor {
+    fn newest_cursor(&self, observer_id: ObserverKey) -> Cursor {
         let mut inner = self.inner.lock();
-        let ObservationRingBuffer { ring_buffer, .. } = inner.observer_ring_buffers[observer_id]
-            .as_mut()
+        let ObservationRingBuffer { ring_buffer, .. } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.newest_cursor()
     }
 
-    fn oldest_cursor(&self, observer_id: usize) -> Cursor {
+    fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor {
         let mut inner = self.inner.lock();
-        let ObservationRingBuffer { ring_buffer, .. } = inner.observer_ring_buffers[observer_id]
-            .as_mut()
+        let ObservationRingBuffer { ring_buffer, .. } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.oldest_cursor()
     }
