@@ -18,6 +18,7 @@ use core::{
     marker::PhantomData,
 };
 
+use log::warn;
 use slotmap::{SlotMap, new_key_type};
 use snafu::ensure;
 use static_assertions::assert_obj_safe;
@@ -64,7 +65,13 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     ///
     /// * `len` is the ring buffer length used for consumers and strong-observers.
     /// * `supports_consume` specifies the attachment it allows later.
-    pub(crate) fn new(len: usize, supports_consume: bool) -> Self {
+    pub(crate) fn new(mut len: usize, supports_consume: bool) -> Self {
+        if len < 2 {
+            warn!(
+                "Creating an OQueue with length {len} is automatically increased to 2. Ring buffers smaller than 2 are not supported."
+            );
+            len = 2;
+        }
         Self {
             inner: SpinLock::new(OQueueInner {
                 consumer_ring_buffer: Default::default(),
@@ -234,6 +241,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
 fn wrap_closure_ref<T: ?Sized + 'static>(
     f: impl Fn(&T) + Send + 'static,
 ) -> Box<dyn Fn(&T) + Send> {
+    // XXX: This embeds a detail of ORPC in the middle of the OQueue implementation. It also forces
+    // this overhead on every closure regardless of it's origin.
     if let Some(s) = CurrentServer::current_cloned() {
         let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
             let _ = s.orpc_server_base().call_in_context::<_, RPCError>(|| {
@@ -298,7 +307,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
         Ok(super::RefProducer {
             oqueue: self.clone(),
-            _phantom: PhantomData,
+            // _phantom: PhantomData,
         })
     }
 }
@@ -382,7 +391,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         }
         Ok(super::ValueProducer {
             oqueue: self.clone(),
-            _phantom: PhantomData,
+            // _phantom: PhantomData,
         })
     }
 

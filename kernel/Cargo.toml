@@ -78,6 +78,7 @@ tdx-guest = { version = "0.2.1", optional = true }
 riscv = { version = "0.11.1", features = ["s-mode"] }
 
 [features]
+default = ["capture_stacks"]
 all = ["cvm_guest"]
 capture_stacks = ["ostd/capture_stacks"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]

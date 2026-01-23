@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
+
 //! A trait [`Blocker`] which allows a thread to wait for a wake-up from another thread. The API is designed to allow a
 //! waiter to wait on multiple blockers at the same time to support [`select!`].
-//!
-//! TODO(#73): This needs to be reworked significantly because is forces some rather odd syntax in select and is not as
-//! flexible as it should be.
 
 pub use orpc_macros::select;
 
@@ -112,6 +110,17 @@ pub trait Blocker {
             };
         }
     }
+}
+
+/// A blocker which never unblocks. This will not affect the result when passed to
+/// [`CurrentTask::block_on`], so it can be used to replace non-existant blockers.
+pub struct NullBlocker;
+
+impl Blocker for NullBlocker {
+    fn should_try(&self) -> bool {
+        false
+    }
+    fn prepare_to_wait(&self, _waker: &Arc<Waker>) {}
 }
 
 impl CurrentTask {

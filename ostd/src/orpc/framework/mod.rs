@@ -23,13 +23,18 @@
 
 pub mod errors;
 
+// pub mod dsl;
 mod integration_test;
+pub mod monitor;
 pub mod notifier;
 pub mod shutdown;
 pub mod threads;
+// pub mod dsl;
+// pub mod monitor;
 
 use alloc::{sync::Weak, vec::Vec};
 use core::{
+    any::Any,
     fmt::Display,
     num::NonZeroUsize,
     ops::DerefMut,
@@ -47,7 +52,7 @@ use crate::{
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
-pub trait Server: Sync + Send + 'static {
+pub trait Server: Any + Sync + Send + 'static {
     /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
     /// use it.
     ///
@@ -70,6 +75,7 @@ pub struct ServerBase {
     server_threads: Mutex<Vec<Arc<Task>>>,
     /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
     /// is available.
+    // TODO(arthurp): This could be removed a number of things simplified by using intrusive reference counts.
     weak_this: Weak<dyn Server + Send + Sync + 'static>,
     /// An opaque ID for the server. This is non-zero to allow compact representations of
     /// `Option<id>` in errors.

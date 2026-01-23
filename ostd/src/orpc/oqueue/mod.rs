@@ -66,7 +66,7 @@ pub use query::ObservationQuery;
 use snafu::Snafu;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
-use crate::sync::SpinLock;
+use crate::{orpc::sync::Blocker, sync::SpinLock};
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -292,7 +292,7 @@ impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
 /// the consumer without copying or cloning.
 pub struct ValueProducer<T> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
+    // _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + 'static> ValueProducer<T> {
@@ -312,7 +312,7 @@ impl<T: Send + 'static> ValueProducer<T> {
 /// There can be no consumers since the message is not moved into the OQueue.
 pub struct RefProducer<T: ?Sized> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
+    // _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + ?Sized + 'static> RefProducer<T> {
@@ -340,6 +340,14 @@ impl<T> Drop for Consumer<T> {
     fn drop(&mut self) {
         self.oqueue.detach_consumer();
     }
+}
+
+impl<T: 'static> Blocker for Consumer<T> {
+    fn should_try(&self) -> bool {
+        true
+    }
+
+    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {}
 }
 
 impl<T: Send + 'static> Consumer<T> {
@@ -401,17 +409,25 @@ type ConvertToInlineFn<U> = fn(
 ) -> Result<InlineObserverKey, AttachmentError>;
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
-pub struct StrongObserver<U: Copy + Send> {
+pub struct StrongObserver<U> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
     observer_id: ObserverKey,
     convert_to_inline: ConvertToInlineFn<U>,
     _phantom: PhantomData<core::cell::Cell<U>>,
 }
 
-impl<U: Copy + Send> Drop for StrongObserver<U> {
+impl<U> Drop for StrongObserver<U> {
     fn drop(&mut self) {
         self.oqueue.detach_strong_observer(self.observer_id);
     }
+}
+
+impl<U> Blocker for StrongObserver<U> {
+    fn should_try(&self) -> bool {
+        true
+    }
+
+    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {}
 }
 
 impl<U: Copy + Send + 'static> StrongObserver<U> {
@@ -526,6 +542,13 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     /// specific values. Only, that the caller will run eventually when new values are produced.
     pub fn wait(&self) {
         self.oqueue.wait(self.observer_id, self.last_observed.get());
+
+        /*
+        I realized there are some important subtleties as to what it means to "wait for new data" as a weak observer. The question is: After what point in the history is data "new"?
+        * Is data new if it has not been explicitly observed?
+        * Is it new if it was published after the moment the weak observer started waiting? (This has the problem where a weak observer can block indefinitely even when there is data it hasn't seen. This isn't fundamentally wrong, but it is kinda confusing.)
+        * Or do we define this kind of backwards with the weak observer definitely not waking until there is new data, but not even guaranteeing to wake at all.
+                 */
     }
 
     /// Get the cursor for most recent value in the OQueue. This is concurrent and the returned

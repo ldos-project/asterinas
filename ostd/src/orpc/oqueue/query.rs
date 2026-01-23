@@ -49,6 +49,17 @@ impl<T: ?Sized, U> ObservationQuery<T, U> {
     }
 }
 
+impl<T: Copy> ObservationQuery<T, T> {
+    /// A query which observes the entire message.
+    ///
+    /// This is equivalent to `ObservationQuery::new(|x| *x)`, but may be optimized.
+    pub fn identity() -> Self {
+        Self {
+            extractor: Box::new(|x| Some(*x)),
+        }
+    }
+}
+
 #[cfg(ktest)]
 mod test {
     use super::*;
