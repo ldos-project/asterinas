@@ -10,7 +10,7 @@ use inherit_methods_macro::inherit_methods;
 use ostd::{
     const_assert,
     mm::UntypedMem,
-    orpc::{oqueue::OQueueRef, orpc_impl, orpc_server},
+    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
     util::callback_counter::CallbackCounter,
 };
 

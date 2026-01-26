@@ -4,7 +4,7 @@
 extern crate alloc;
 
 pub mod framework;
-pub mod oqueue;
+pub mod legacy_oqueue;
 pub mod statistics;
 pub mod sync;
 

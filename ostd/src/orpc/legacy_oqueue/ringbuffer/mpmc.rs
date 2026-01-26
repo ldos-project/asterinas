@@ -24,7 +24,7 @@ use crossbeam_utils::CachePadded;
 // SPDX-License-Identifier: MPL-2.0
 use super::Element;
 use crate::{
-    orpc::oqueue::{
+    orpc::legacy_oqueue::{
         Blocker, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver,
         WeakObserver,
     },
@@ -799,7 +799,7 @@ impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, true> {
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{orpc::oqueue::generic_test, prelude::*};
+    use crate::{orpc::legacy_oqueue::generic_test, prelude::*};
     #[ktest]
     fn test_produce_consume() {
         generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 0));

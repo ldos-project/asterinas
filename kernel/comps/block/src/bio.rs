@@ -13,7 +13,7 @@ use ostd::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
-    orpc::oqueue::{OQueueAttachError, Producer},
+    orpc::legacy_oqueue::{OQueueAttachError, Producer},
     sync::{SpinLock, WaitQueue},
 };
 use spin::{Mutex, Once};

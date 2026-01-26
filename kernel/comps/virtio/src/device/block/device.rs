@@ -25,7 +25,7 @@ use ostd::{
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
     orpc::{
         framework::spawn_thread,
-        oqueue::{OQueueRef, Producer},
+        legacy_oqueue::{OQueueRef, Producer},
         orpc_impl, orpc_server,
     },
     sync::SpinLock,

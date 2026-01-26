@@ -12,7 +12,7 @@ use core::{
 use super::{super::sync::select, *};
 use crate::{
     arch::timer::TIMER_FREQ,
-    orpc::oqueue::locking::LockingQueue,
+    orpc::legacy_oqueue::locking::LockingQueue,
     prelude::Vec,
     sync::{Mutex, WaitQueue},
     task::{Task, TaskOptions},
