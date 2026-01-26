@@ -151,8 +151,11 @@ impl<A: Allocator> Drop for SliceAllocation<A> {
     fn drop(&mut self) {
         let layout = self.layout();
         // SAFETY: The layout is a reconstructed form of array_layout in `Self::new_in`. The data at
-        // `self.ptr` is owned by self and never escapes.
+        // `self.ptr` is owned by self and never escapes. Not calling drop (leaking resources) is
+        // considered safe.
         unsafe {
+            // NOTE: This does *not* drop the values in `self.ptr`. It just frees the memory. We do
+            // not know if they are valid objects at this point.
             self.alloc.deallocate(self.ptr, layout);
         }
     }
