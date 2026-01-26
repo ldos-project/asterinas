@@ -40,6 +40,7 @@ pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
+    orpc::framework::errors::RPCError,
     prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
@@ -131,6 +132,32 @@ impl ServerBase {
     /// Get a strong reference to `self`.
     pub fn get_ref(&self) -> Option<Arc<dyn Server + Send + Sync + 'static>> {
         self.weak_this.upgrade()
+    }
+
+    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
+    /// code must use it.
+    ///
+    /// Call a function in the context of this server. This is used to implement method calls on
+    /// servers and similar things.
+    #[doc(hidden)]
+    pub fn call_in_context<T, E>(&self, f: impl FnOnce() -> Result<T, E>) -> Result<T, E>
+    where
+        RPCError: Into<E>,
+    {
+        if self.is_aborted() {
+            return Result::Err(RPCError::ServerMissing.into());
+        }
+        match ostd::panic::catch_unwind(|| {
+            let _server_context = CurrentServer::enter_server_context(self);
+            f()
+        }) {
+            Ok(ret) => ret,
+            Err(payload) => {
+                let e = RPCError::from_panic(payload);
+                self.abort(&e);
+                Err(e.into())
+            }
+        }
     }
 
     /// Get an opaque ID for the server. There are no guarantees about the ID other than that it is
