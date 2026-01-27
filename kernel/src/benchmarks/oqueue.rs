@@ -13,7 +13,6 @@ use core::{
     marker::PhantomData,
     mem::MaybeUninit,
     num::NonZero,
-    ops::Add,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -808,8 +807,8 @@ impl Benchmark for OQueueBenchmark {
 
 enum OQueueScalingBenchmarkType {
     Consumer,
-    StrongObs,
-    WeakObs,
+    StrongObserver,
+    WeakObserver,
 }
 
 struct OQueueScalingBenchmark {
@@ -836,9 +835,9 @@ impl Benchmark for OQueueScalingBenchmark {
 
     fn run(&self, completed: Arc<AtomicUsize>) {
         // large number of producers pushing a fixed # of msgs with:
-        //  1 consumer + 0 sobs + 0 wobs
-        //  0 consumer + 1 sobs + 0 wobs
-        //  0 consumer + 0 sobs + 1 wobs
+        //  1 consumer + 0 strong observer + 0 weak observer
+        //  0 consumer + 1 strong observer + 0 weak observer
+        //  0 consumer + 0 strong observer + 1 weak observer
         // measure producer throughput (and latency?)
         let n_threads = self.n_threads;
         let n_producers: usize = n_threads - 1;
@@ -884,7 +883,7 @@ impl Benchmark for OQueueScalingBenchmark {
                 {
                     for (c, cursor) in q.iter().zip(cursors.iter_mut()) {
                         while c.weak_observe(*cursor).is_some() {
-                            *cursor = cursor.add(1);
+                            *cursor = *cursor + 1;
                             n_recv += 1;
                         }
                         *cursor = c.recent_cursor();
@@ -954,7 +953,7 @@ impl Benchmark for OQueueScalingBenchmark {
                 .cpu_affinity(cpu_set)
                 .spawn();
             }
-            OQueueScalingBenchmarkType::StrongObs => {
+            OQueueScalingBenchmarkType::StrongObserver => {
                 // Start strong observer
                 let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
                 cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
@@ -1043,10 +1042,10 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     ));
     bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::strong_obs",
-        OQueueScalingBenchmarkType::StrongObs,
+        OQueueScalingBenchmarkType::StrongObserver,
     ));
     bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::weak_obs",
-        OQueueScalingBenchmarkType::WeakObs,
+        OQueueScalingBenchmarkType::WeakObserver,
     ));
 }
