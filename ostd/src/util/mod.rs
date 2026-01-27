@@ -8,5 +8,6 @@ pub mod ignore_error;
 mod macros;
 pub(crate) mod ops;
 pub(crate) mod range_alloc;
+pub mod untyped_box;
 
 pub use either::Either;
