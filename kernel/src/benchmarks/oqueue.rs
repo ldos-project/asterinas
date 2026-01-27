@@ -739,12 +739,6 @@ fn strong_obs_bench(
     }
 }
 
-enum OQScalingBenchmarkType {
-    Consumer,
-    StrongObs,
-    WeakObs,
-}
-
 type OQueueBenchFn =
     &'static dyn Fn(&OQueueBenchmarkInput, &Arc<dyn OQueue<u64>>, &Arc<AtomicUsize>);
 
@@ -812,14 +806,20 @@ impl Benchmark for OQueueBenchmark {
     }
 }
 
-struct OQScalingBenchmark {
+enum OQueueScalingBenchmarkType {
+    Consumer,
+    StrongObs,
+    WeakObs,
+}
+
+struct OQueueScalingBenchmark {
     name: String,
-    test_type: OQScalingBenchmarkType,
+    test_type: OQueueScalingBenchmarkType,
     n_threads: usize,
 }
 
-impl OQScalingBenchmark {
-    fn new(name: &str, test_type: OQScalingBenchmarkType) -> Box<Self> {
+impl OQueueScalingBenchmark {
+    fn new(name: &str, test_type: OQueueScalingBenchmarkType) -> Box<Self> {
         let name = name.to_string();
         Box::new(Self {
             name,
@@ -829,7 +829,7 @@ impl OQScalingBenchmark {
     }
 }
 
-impl Benchmark for OQScalingBenchmark {
+impl Benchmark for OQueueScalingBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
         self.n_threads = n_threads;
     }
@@ -926,7 +926,7 @@ impl Benchmark for OQScalingBenchmark {
         }
 
         match self.test_type {
-            OQScalingBenchmarkType::Consumer => {
+            OQueueScalingBenchmarkType::Consumer => {
                 // Start conumser
                 let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
                 cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
@@ -954,7 +954,7 @@ impl Benchmark for OQScalingBenchmark {
                 .cpu_affinity(cpu_set)
                 .spawn();
             }
-            OQScalingBenchmarkType::StrongObs => {
+            OQueueScalingBenchmarkType::StrongObs => {
                 // Start strong observer
                 let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
                 cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
@@ -1037,16 +1037,16 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
         "oqueue::strong_obs_bench",
     ));
 
-    bc.register_benchmark(OQScalingBenchmark::new(
+    bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::consumer",
-        OQScalingBenchmarkType::Consumer,
+        OQueueScalingBenchmarkType::Consumer,
     ));
-    bc.register_benchmark(OQScalingBenchmark::new(
+    bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::strong_obs",
-        OQScalingBenchmarkType::StrongObs,
+        OQueueScalingBenchmarkType::StrongObs,
     ));
-    bc.register_benchmark(OQScalingBenchmark::new(
+    bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::weak_obs",
-        OQScalingBenchmarkType::WeakObs,
+        OQueueScalingBenchmarkType::WeakObs,
     ));
 }
