@@ -13,6 +13,7 @@ use core::{
     marker::PhantomData,
     mem::MaybeUninit,
     num::NonZero,
+    ops::Add,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -21,7 +22,8 @@ use crossbeam_utils::CachePadded;
 use ostd::{
     orpc::{
         legacy_oqueue::{
-            Consumer, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+            Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+            ringbuffer::MPMCOQueue,
         },
         sync::Blocker,
     },
@@ -737,6 +739,12 @@ fn strong_obs_bench(
     }
 }
 
+enum OQScalingBenchmarkType {
+    Consumer,
+    StrongObs,
+    WeakObs,
+}
+
 type OQueueBenchFn =
     &'static dyn Fn(&OQueueBenchmarkInput, &Arc<dyn OQueue<u64>>, &Arc<AtomicUsize>);
 
@@ -804,6 +812,212 @@ impl Benchmark for OQueueBenchmark {
     }
 }
 
+struct OQScalingBenchmark {
+    name: String,
+    test_type: OQScalingBenchmarkType,
+    n_threads: usize,
+}
+
+impl OQScalingBenchmark {
+    fn new(name: &str, test_type: OQScalingBenchmarkType) -> Box<Self> {
+        let name = name.to_string();
+        Box::new(Self {
+            name,
+            test_type,
+            n_threads: 0,
+        })
+    }
+}
+
+impl Benchmark for OQScalingBenchmark {
+    fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
+        self.n_threads = n_threads;
+    }
+
+    fn run(&self, completed: Arc<AtomicUsize>) {
+        // large number of producers pushing a fixed # of msgs with:
+        //  1 consumer + 0 sobs + 0 wobs
+        //  0 consumer + 1 sobs + 0 wobs
+        //  0 consumer + 0 sobs + 1 wobs
+        // measure producer throughput (and latency?)
+        let n_threads = self.n_threads;
+        let n_producers: usize = n_threads - 1;
+
+        const N_MESSAGES_PER_PRODUCER: usize = 1024 * 1024;
+
+        fn producer_thread(q: Box<dyn Producer<()>>) {
+            for _ in 0..N_MESSAGES_PER_PRODUCER {
+                q.produce(());
+            }
+        }
+        let consumer_thread = move |q: Vec<Box<dyn Consumer<()>>>| {
+            let mut n_recv = 0;
+            while n_recv < (n_producers * N_MESSAGES_PER_PRODUCER) {
+                for c in &q {
+                    if c.try_consume().is_some() {
+                        n_recv += 1;
+                    }
+                }
+            }
+        };
+        let strong_obs_thread = move |q: Vec<Box<dyn StrongObserver<()>>>| {
+            let mut n_recv = 0;
+            while n_recv < (n_producers * N_MESSAGES_PER_PRODUCER) {
+                for c in &q {
+                    if c.try_strong_observe().is_some() {
+                        n_recv += 1;
+                    }
+                }
+            }
+        };
+        let weak_obs_thread = {
+            let completed = completed.clone();
+            move |q: Vec<Box<dyn WeakObserver<()>>>| {
+                let mut cursors = Vec::<Cursor>::new();
+                for c in &q {
+                    cursors.push(c.oldest_cursor());
+                }
+
+                let mut n_recv = 0;
+                while completed.load(Ordering::Relaxed) < n_producers
+                    && n_recv < (n_producers * N_MESSAGES_PER_PRODUCER)
+                {
+                    for (c, cursor) in q.iter().zip(cursors.iter_mut()) {
+                        while c.weak_observe(*cursor).is_some() {
+                            *cursor = cursor.add(1);
+                            n_recv += 1;
+                        }
+                        *cursor = c.recent_cursor();
+                    }
+                }
+                println!(
+                    "Weak Observer, observed {}/{}  msgs",
+                    n_recv,
+                    (n_producers * N_MESSAGES_PER_PRODUCER)
+                );
+            }
+        };
+
+        println!("Starting producers");
+        let barrier = Arc::new(AtomicUsize::new(n_threads));
+
+        let mut queues: Vec<Arc<dyn OQueue<()>>> = Vec::new();
+        for _ in 0..(n_threads - 1) {
+            queues.push(MPMCOQueue::<(), true, true>::new(1024, 1));
+        }
+
+        // Start all producers
+        for tid in 0..(n_threads - 1) {
+            let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+            cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+            ThreadOptions::new({
+                let barrier = barrier.clone();
+                let completed = completed.clone();
+                let producer = queues[tid].attach_producer().unwrap();
+                move || {
+                    barrier.fetch_sub(1, Ordering::Acquire);
+                    while barrier.load(Ordering::Relaxed) > 0 {}
+                    producer_thread(producer);
+                    completed.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .cpu_affinity(cpu_set)
+            .spawn();
+        }
+
+        match self.test_type {
+            OQScalingBenchmarkType::Consumer => {
+                // Start conumser
+                let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+                cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+                ThreadOptions::new({
+                    let barrier = barrier.clone();
+                    let completed = completed.clone();
+                    let handles = queues
+                        .iter()
+                        .map(|q| q.attach_consumer().unwrap())
+                        .collect();
+                    move || {
+                        barrier.fetch_sub(1, Ordering::Acquire);
+                        while barrier.load(Ordering::Relaxed) > 0 {}
+                        let now = time::clocks::RealTimeClock::get().read_time();
+                        consumer_thread(handles);
+                        let end = time::clocks::RealTimeClock::get().read_time();
+                        println!(
+                            "[consumer-{:?}] recv msg in {:?}",
+                            ostd::cpu::CpuId::current_racy(),
+                            end - now
+                        );
+                        completed.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .cpu_affinity(cpu_set)
+                .spawn();
+            }
+            OQScalingBenchmarkType::StrongObs => {
+                // Start strong observer
+                let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+                cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+                ThreadOptions::new({
+                    let barrier = barrier.clone();
+                    let completed = completed.clone();
+                    let handles = queues
+                        .iter()
+                        .map(|q| q.attach_strong_observer().unwrap())
+                        .collect();
+                    move || {
+                        barrier.fetch_sub(1, Ordering::Acquire);
+                        while barrier.load(Ordering::Relaxed) > 0 {}
+                        let now = time::clocks::RealTimeClock::get().read_time();
+                        strong_obs_thread(handles);
+                        let end = time::clocks::RealTimeClock::get().read_time();
+                        println!(
+                            "[consumer-{:?}] recv msg in {:?}",
+                            ostd::cpu::CpuId::current_racy(),
+                            end - now
+                        );
+                        completed.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .cpu_affinity(cpu_set)
+                .spawn();
+            }
+            _ => {
+                // Start weak observer
+                let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+                cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+                ThreadOptions::new({
+                    let barrier = barrier.clone();
+                    let completed = completed.clone();
+                    let handles = queues
+                        .iter()
+                        .map(|q| q.attach_weak_observer().unwrap())
+                        .collect();
+                    move || {
+                        barrier.fetch_sub(1, Ordering::Acquire);
+                        while barrier.load(Ordering::Relaxed) > 0 {}
+                        let now = time::clocks::RealTimeClock::get().read_time();
+                        weak_obs_thread(handles);
+                        let end = time::clocks::RealTimeClock::get().read_time();
+                        println!(
+                            "[consumer-{:?}] recv msg in {:?}",
+                            ostd::cpu::CpuId::current_racy(),
+                            end - now
+                        );
+                        completed.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .cpu_affinity(cpu_set)
+                .spawn();
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueBenchmark::new(
         &produce_bench,
@@ -821,5 +1035,18 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueBenchmark::new(
         &strong_obs_bench,
         "oqueue::strong_obs_bench",
+    ));
+
+    bc.register_benchmark(OQScalingBenchmark::new(
+        "oqueue_scaling::consumer",
+        OQScalingBenchmarkType::Consumer,
+    ));
+    bc.register_benchmark(OQScalingBenchmark::new(
+        "oqueue_scaling::strong_obs",
+        OQScalingBenchmarkType::StrongObs,
+    ));
+    bc.register_benchmark(OQScalingBenchmark::new(
+        "oqueue_scaling::weak_obs",
+        OQScalingBenchmarkType::WeakObs,
     ));
 }
