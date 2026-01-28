@@ -906,13 +906,13 @@ impl Benchmark for OQueueScalingBenchmark {
         }
 
         // Start all producers
-        for tid in 0..(n_threads - 1) {
+        for (tid, q) in queues.iter().enumerate() {
             let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
             cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
             ThreadOptions::new({
                 let barrier = barrier.clone();
                 let completed = completed.clone();
-                let producer = queues[tid].attach_producer().unwrap();
+                let producer = q.attach_producer().unwrap();
                 move || {
                     barrier.fetch_sub(1, Ordering::Acquire);
                     while barrier.load(Ordering::Relaxed) > 0 {}
