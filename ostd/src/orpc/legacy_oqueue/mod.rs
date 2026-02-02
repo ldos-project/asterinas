@@ -51,7 +51,7 @@ impl Add<usize> for Cursor {
 }
 
 impl AddAssign<usize> for Cursor {
-    fn add_assign(&mut self, rhs: usize) -> () {
+    fn add_assign(&mut self, rhs: usize) {
         *self = *self + rhs;
     }
 }
