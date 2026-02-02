@@ -144,6 +144,9 @@ pub fn lazy_init() {
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
     // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
+fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
+    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
+    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
@@ -167,6 +170,31 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
             }
         }
     }
+
+    // early stop for testing
+    // Ok(());
+
+    info!("[raid] creating selection policy");
+    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+
+    Raid1Device::init(raid_device_name, members, selection_policy).map_err(|err| match err {
+        Raid1DeviceError::NotEnoughMembers => {
+            Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
+        }
+    })?;
+    info!("[raid] RAID-1 device created");
+
+    let worker = aster_block::get_device(raid_device_name).unwrap();
+    // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
+    // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
+    // TODO(Yingqi): Merge the starting of the RAID-1 thread inside block device server.
+    let task_fn = move || {
+        info!("spawn the RAID-1 device thread");
+        let raid = worker.downcast_ref::<Raid1Device>().unwrap();
+        loop {
+            raid.handle_requests();
+        }
+    };
 
     // early stop for testing
     // Ok(());
