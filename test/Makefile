@@ -17,8 +17,8 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
-RAID1_IMAGE0 := $(BUILD_DIR)/raid1_0.img
-RAID1_IMAGE1 := $(BUILD_DIR)/raid1_1.img
+# RAID1_IMAGE0 := $(BUILD_DIR)/raid1_0.img
+# RAID1_IMAGE1 := $(BUILD_DIR)/raid1_1.img
 
 INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/root \
