@@ -15,7 +15,7 @@ pub mod ringbuffer;
 use alloc::string::String;
 use core::{
     any::Any,
-    ops::{Add, Sub},
+    ops::{Add, AddAssign, Sub, SubAssign},
 };
 
 use snafu::Snafu;
@@ -50,11 +50,23 @@ impl Add<usize> for Cursor {
     }
 }
 
+impl AddAssign<usize> for Cursor {
+    fn add_assign(&mut self, rhs: usize) {
+        *self = *self + rhs;
+    }
+}
+
 impl Sub<usize> for Cursor {
     type Output = Self;
     fn sub(self, rhs: usize) -> Self::Output {
         let Cursor(i) = self;
         Cursor(i.saturating_sub(rhs))
+    }
+}
+
+impl SubAssign<usize> for Cursor {
+    fn sub_assign(&mut self, rhs: usize) {
+        *self = *self - rhs;
     }
 }
 

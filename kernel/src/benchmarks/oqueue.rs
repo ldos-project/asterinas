@@ -883,7 +883,7 @@ impl Benchmark for OQueueScalingBenchmark {
                 {
                     for (c, cursor) in q.iter().zip(cursors.iter_mut()) {
                         while c.weak_observe(*cursor).is_some() {
-                            *cursor = *cursor + 1;
+                            *cursor += 1;
                             n_recv += 1;
                         }
                         *cursor = c.recent_cursor();
