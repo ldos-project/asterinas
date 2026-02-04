@@ -484,6 +484,8 @@ impl<'a> CursorMut<'a> {
         unsafe { self.pt_cursor.protect_next(len, &mut op) }
     }
 
+    /// Run `f` on every mapped page in the range `start` to `end`. This will only run on regions
+    /// that have TLB entries.
     pub fn do_for_each_submapping<F>(&mut self, start: usize, end: usize, mut f: F) -> Result<()>
     where
         F: FnMut(&Range<Vaddr>, &Frame<dyn AnyUFrameMeta>, &PageProperty) -> Result<()>,
