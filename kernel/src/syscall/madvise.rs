@@ -3,13 +3,17 @@
 use core::ops::Range;
 
 use align_ext::AlignExt;
+use aster_rights::Full;
 use ostd::{
     mm::{PagingConsts, page_size},
     task::disable_preempt,
 };
 
 use super::SyscallReturn;
-use crate::{prelude::*, vm::vmar::huge_mapping_preserve_on_dontneed};
+use crate::{
+    prelude::*,
+    vm::vmar::{Vmar, huge_mapping_preserve_on_dontneed},
+};
 
 pub fn sys_madvise(
     start: Vaddr,
@@ -54,16 +58,22 @@ pub fn sys_madvise(
         // is already eager. Additionally, for hugepages, if the page cannot be released, the
         // subpages should be zeroed out. In the future we should implement a more sophisticated
         // DONTNEED and FREE.
-        MadviseBehavior::MADV_DONTNEED => madv_free(start, end, ctx)?,
-        MadviseBehavior::MADV_FREE => madv_free(start, end, ctx)?,
+        MadviseBehavior::MADV_DONTNEED => {
+            let user_space = ctx.user_space();
+            let root_vmar = user_space.root_vmar();
+            madv_free(root_vmar, start, end)?
+        }
+        MadviseBehavior::MADV_FREE => {
+            let user_space = ctx.user_space();
+            let root_vmar = user_space.root_vmar();
+            madv_free(root_vmar, start, end)?
+        }
         _ => todo!(),
     }
     Ok(SyscallReturn::Return(0))
 }
 
-fn madv_free(start: Vaddr, end: Vaddr, ctx: &Context) -> Result<()> {
-    let user_space = ctx.user_space();
-    let root_vmar = user_space.root_vmar();
+fn madv_free(root_vmar: &Vmar<Full>, start: Vaddr, end: Vaddr) -> Result<()> {
     let advised_range = start..end;
 
     let mut mappings_to_remove: Vec<Range<usize>> = vec![];
@@ -136,4 +146,88 @@ pub enum MadviseBehavior {
     MADV_POPULATE_WRITE = 23, /* populate (prefault) page tables writable */
 
     MADV_DONTNEED_LOCKED = 24, /* like DONTNEED, but drop locked pages too */
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::{
+        prelude::*,
+        sync::{RwLock, SpinLock},
+    };
+
+    use super::*;
+    use crate::{
+        thread::exception::PageFaultInfo,
+        vm::{
+            page_fault_handler::PageFaultHandler,
+            perms::VmPerms,
+            vmar::{Vmar, set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
+        },
+    };
+
+    const HUGE_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
+
+    fn count_huge_pages(vmar: &Vmar<Full>, start: Vaddr, end: Vaddr) -> usize {
+        let mut n_hugepages = 0;
+        let vm_space = vmar.vm_space();
+        let preempt_guard = disable_preempt();
+        let range = start..end;
+        let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &range) else {
+            return 0;
+        };
+
+        cursor
+            .do_for_each_submapping(start, end, |range, _, _| {
+                let size = range.end - range.start;
+                if size > page_size::<PagingConsts>(1) {
+                    n_hugepages += 1;
+                }
+
+                Ok(())
+            })
+            .unwrap();
+        n_hugepages
+    }
+
+    fn map_huge_page(vmar: &Vmar<Full>) -> Vaddr {
+        let opts = vmar
+            .new_map(HUGE_PAGE_SIZE, VmPerms::READ | VmPerms::WRITE)
+            .unwrap();
+        let vaddr = opts.align(HUGE_PAGE_SIZE).build().unwrap();
+        let info_ = PageFaultInfo {
+            address: vaddr,
+            required_perms: VmPerms::READ | VmPerms::WRITE,
+        };
+
+        // Trigger a "page fault" to force the actual page to be mapped in
+        vmar.handle_page_fault(&info_).unwrap();
+        vaddr
+    }
+
+    #[ktest]
+    fn huge_mappings_are_split() {
+        set_huge_mapping_enabled(true);
+        crate::vm::vmar::init();
+        let vmar = Vmar::<Full>::new_root();
+
+        let start = map_huge_page(&vmar);
+        let end = start + HUGE_PAGE_SIZE;
+        assert_eq!(count_huge_pages(&vmar, start, end), 1);
+        let _ = madv_free(&vmar, start, end);
+        assert_eq!(count_huge_pages(&vmar, start, end), 0);
+    }
+
+    #[ktest]
+    fn huge_mappings_are_not_split() {
+        set_huge_mapping_enabled(true);
+        set_huge_mapping_preserve_on_dontneed(true);
+        crate::vm::vmar::init();
+        let vmar = Vmar::<Full>::new_root();
+
+        let start = map_huge_page(&vmar);
+        let end = start + HUGE_PAGE_SIZE;
+        assert_eq!(count_huge_pages(&vmar, start, end), 1);
+        let _ = madv_free(&vmar, start, end);
+        assert_eq!(count_huge_pages(&vmar, start, end), 1);
+    }
 }
