@@ -40,8 +40,10 @@ use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
 
 use crate::{
-    kcmdline::set_kernel_cmd_line, prelude::*, thread::kernel_thread::ThreadOptions,
-    vm::vmar::set_huge_mapping_enabled,
+    kcmdline::set_kernel_cmd_line,
+    prelude::*,
+    thread::kernel_thread::ThreadOptions,
+    vm::vmar::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
 };
 
 extern crate alloc;
@@ -153,6 +155,11 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
         .unwrap_or(false);
     set_huge_mapping_enabled(huge_mapping_enabled);
+
+    let huge_mapping_preserve_on_dontneed = karg
+        .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")
+        .unwrap_or(true);
+    set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
 
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
