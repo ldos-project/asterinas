@@ -150,10 +150,7 @@ pub enum MadviseBehavior {
 
 #[cfg(ktest)]
 mod test {
-    use ostd::{
-        prelude::*,
-        sync::{RwLock, SpinLock},
-    };
+    use ostd::prelude::*;
 
     use super::*;
     use crate::{
