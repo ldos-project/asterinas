@@ -41,9 +41,14 @@ pub fn sys_madvise(
             ctx.user_space()
                 .read_bytes(start, &mut VmWriter::from(buffer.as_mut_slice()))?;
         }
-        MadviseBehavior::MADV_DONTNEED => {
-            warn!("MADV_DONTNEED isn't implemented, do nothing for now.");
-        }
+        // TODO(aneesh): MADV_DONTNEED and MADV_FREE are not exactly the same - MADV_FREE is
+        // supposed to lazily reclaim pages when there is pressure, while MADV_DONTNEED is eager and
+        // should immediately free pages - i.e. MADV_DONTNEED can impact application performance by
+        // stalling until the resources are released. However, the implementation of madv_free below
+        // is already eager. Additionally, for hugepages, if the page cannot be released, the
+        // subpages should be zeroed out. In the future we should implement a more sophisticated
+        // DONTNEED and FREE.
+        MadviseBehavior::MADV_DONTNEED => madv_free(start, end, ctx)?,
         MadviseBehavior::MADV_FREE => madv_free(start, end, ctx)?,
         _ => todo!(),
     }
