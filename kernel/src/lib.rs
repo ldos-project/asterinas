@@ -158,7 +158,7 @@ fn init_thread() {
 
     let huge_mapping_preserve_on_dontneed = karg
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")
-        .unwrap_or(true);
+        .unwrap_or(false);
     set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
 
     #[cfg(target_arch = "x86_64")]

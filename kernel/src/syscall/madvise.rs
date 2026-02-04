@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::ops::Range;
+
 use align_ext::AlignExt;
+use ostd::{
+    mm::{PagingConsts, page_size},
+    task::disable_preempt,
+};
 
 use super::SyscallReturn;
-use crate::prelude::*;
+use crate::{prelude::*, vm::vmar::huge_mapping_preserve_on_dontneed};
 
 pub fn sys_madvise(
     start: Vaddr,
@@ -59,8 +65,34 @@ fn madv_free(start: Vaddr, end: Vaddr, ctx: &Context) -> Result<()> {
     let user_space = ctx.user_space();
     let root_vmar = user_space.root_vmar();
     let advised_range = start..end;
-    // This is advise, so failing silently is acceptable.
-    let _ = root_vmar.remove_mapping(advised_range);
+
+    let mut mappings_to_remove: Vec<Range<usize>> = vec![];
+    {
+        let vm_space = root_vmar.vm_space();
+        let preempt_guard = disable_preempt();
+        let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &advised_range) else {
+            return Ok(());
+        };
+
+        cursor
+            .do_for_each_submapping(start, end, |range, _, _| {
+                let size = range.end - range.start;
+                if huge_mapping_preserve_on_dontneed() && size > page_size::<PagingConsts>(1) {
+                    // TODO(aneesh): zero out the intersection of start..end and
+                    // range.start..range.end
+                } else {
+                    mappings_to_remove.push(range.start..range.end);
+                }
+
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    for range in mappings_to_remove {
+        // This is advise, so failing silently is acceptable.
+        let _ = root_vmar.remove_mapping(range.start..range.end);
+    }
 
     Ok(())
 }
