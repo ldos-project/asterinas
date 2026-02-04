@@ -69,12 +69,17 @@ CARGO_OSDK_TEST_ARGS :=
 CARGO_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/cargo
 RUSTUP_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/rustup
 
+# Persistent Bash history
+BASH_HISTORY := $(DOCKER_RUST_CACHE_LOCATION)/.bash_history
+BASH_RC := $(DOCKER_RUST_CACHE_LOCATION)/.bashrc
+
 # Docker Configs
 DOCKER_TAG := ldosproject/asterinas
 DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
 DOCKER_RUN_ARGS := --privileged --network=host --device=/dev/kvm
 DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
+DOCKER_MOUNTS += -v $(BASH_RC):/root/.bashrc -v $(BASH_HISTORY):/root/.bash_history
 
 ifeq ($(AUTO_TEST), syscall)
 BUILD_SYSCALL_TEST := 1
@@ -469,6 +474,10 @@ ${DOCKER_RUST_CACHE_LOCATION}/generated:
 	docker create --name dummy $(DOCKER_IMAGE_TAG)
 	docker cp dummy:/root/.cargo ${CARGO_CACHE}
 	docker cp dummy:/root/.rustup ${RUSTUP_CACHE}
+	# Persistent bash history and config
+	touch ${BASH_HISTORY}
+	docker cp dummy:/root/.bashrc ${BASH_RC}
+	# Clean up dummy container
 	docker rm dummy
 	# Touch a file at the end to create some degree of "atomicity". If the cache
 	# location exists but hasn't been initialized yet, we still need to run this
