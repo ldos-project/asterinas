@@ -55,9 +55,8 @@ pub fn sys_madvise(
         // supposed to lazily reclaim pages when there is pressure, while MADV_DONTNEED is eager and
         // should immediately free pages - i.e. MADV_DONTNEED can impact application performance by
         // stalling until the resources are released. However, the implementation of madv_free below
-        // is already eager. Additionally, for hugepages, if the page cannot be released, the
-        // subpages should be zeroed out. In the future we should implement a more sophisticated
-        // DONTNEED and FREE.
+        // is already eager. In the future we should implement a more sophisticated DONTNEED and
+        // FREE.
         MadviseBehavior::MADV_DONTNEED => {
             let user_space = ctx.user_space();
             let root_vmar = user_space.root_vmar();
@@ -91,7 +90,7 @@ fn madv_free(root_vmar: &Vmar<Full>, start: Vaddr, end: Vaddr) -> Result<()> {
                     // TODO(aneesh): zero out the intersection of start..end and
                     // range.start..range.end
                 } else {
-                    mappings_to_remove.push(range.start..range.end);
+                    mappings_to_remove.push(range.clone());
                 }
 
                 Ok(())
@@ -101,7 +100,7 @@ fn madv_free(root_vmar: &Vmar<Full>, start: Vaddr, end: Vaddr) -> Result<()> {
 
     for range in mappings_to_remove {
         // This is advise, so failing silently is acceptable.
-        let _ = root_vmar.remove_mapping(range.start..range.end);
+        let _ = root_vmar.remove_mapping(range);
     }
 
     Ok(())
