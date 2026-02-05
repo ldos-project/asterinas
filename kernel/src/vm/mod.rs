@@ -17,16 +17,15 @@
 //! as zero-cost capabilities.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{ops::Range, time::Duration};
+use core::time::Duration;
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
 use ostd::{
-    mm::{
-        AnyUFrameMeta, Frame, FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
-        UntypedMem, Vaddr, page_size, vm_space::CursorMut,
-    },
+    Error,
+    error::InvalidArgsSnafu,
+    mm::{FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame, UntypedMem, page_size},
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
         legacy_oqueue::OQueue,
@@ -76,42 +75,10 @@ pub fn mem_total() -> usize {
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
-fn do_for_each_submapping<F>(
-    cursor: &mut CursorMut,
-    start: usize,
-    end: usize,
-    mut f: F,
-) -> Result<(), ()>
-where
-    F: FnMut(&Range<Vaddr>, &Frame<dyn AnyUFrameMeta>, &PageProperty) -> Result<(), ()>,
-{
-    cursor.jump(start).map_err(|_| ())?;
-
-    while cursor.virt_addr() < end {
-        // Query under the current cursor. If the virtual address is unmapped then we
-        // fail and cannot map a huge page.
-        let (sub_range, sub_mapping) = cursor.query().map_err(|_| ())?;
-
-        // The mapping might not exist if the page hasn't been faulted in yet. We can
-        // skip over such mappings.
-        if let Some((ref sub_frame, sub_props)) = sub_mapping {
-            f(&sub_range, sub_frame, &sub_props)?;
-        }
-
-        if sub_range.end >= end {
-            break;
-        }
-        // Advance the cursor to the end of this mapping
-        cursor.jump(sub_range.end).map_err(|_| ())?;
-    }
-
-    Ok(())
-}
-
 fn promote_hugepages(
     proc: &Arc<Process>,
     fault_hint: Option<PageFaultOQueueMessage>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     // Ensure that the current process doesn't run until we have scanned it's mappings
     let _ = PauseProcGuard::new(proc.clone());
 
@@ -130,11 +97,12 @@ fn promote_hugepages(
     };
 
     let mut real_rss = 0;
-    do_for_each_submapping(&mut cursor, 0, space_len, |range, _, _| {
-        real_rss += range.end - range.start;
-        Ok(())
-    })
-    .unwrap();
+    cursor
+        .do_for_each_submapping(0, space_len, |range, _, _| {
+            real_rss += range.end - range.start;
+            Ok(())
+        })
+        .unwrap();
     // TODO(aneesh): produce this into an OQueue instead of logging it.
     crate::prelude::info!(
         "proc={} RSS={} real_rss_n_pages={}",
@@ -152,7 +120,7 @@ fn promote_hugepages(
             return Ok(());
         }
         let addr_hint = fault_hint.fault_info.address.align_down(PROMOTED_PAGE_SIZE);
-        cursor.jump(addr_hint).map_err(|_| ())?;
+        cursor.jump(addr_hint)?;
         // We need to ensure that we are refining the space, not expanding it
         let huge_region_end = addr_hint + PROMOTED_PAGE_SIZE;
         if huge_region_end > space_len {
@@ -197,8 +165,7 @@ fn promote_hugepages(
         // Tracks whether we can remap the following region as huge are not. This depends on every
         // page in the region being mapped and having compatible flags.
         let mut should_remap = true;
-        let res = do_for_each_submapping(
-            &mut cursor,
+        let res = cursor.do_for_each_submapping(
             range.start,
             range.start + PROMOTED_PAGE_SIZE,
             |_, _, sub_props| {
@@ -208,13 +175,13 @@ fn promote_hugepages(
                     // the bits from the subflags.
                     if !sub_props.equal_ignoring_accessed_dirty(&page_props) {
                         should_remap = false;
-                        return Err(());
+                        return InvalidArgsSnafu.fail();
                     }
                 } else {
                     // Only consider writeable pages to avoid CoW/sharing issues.
                     if !sub_props.flags.contains(PageFlags::W) {
                         should_remap = false;
-                        return Err(());
+                        return InvalidArgsSnafu.fail();
                     }
                     props = Some(*sub_props);
                 }
@@ -241,7 +208,7 @@ fn promote_hugepages(
             {
                 Ok(f) => f.into(),
                 Err(_) => {
-                    return Err(());
+                    return InvalidArgsSnafu.fail();
                 }
             };
 
@@ -249,22 +216,22 @@ fn promote_hugepages(
             let mut writer = new_frame.writer();
             // Offset into the writer to track advancing the writer
             let mut last_copied = start;
-            if do_for_each_submapping(
-                &mut cursor,
-                range.start,
-                range.start + PROMOTED_PAGE_SIZE,
-                |sub_range, sub_frame, _| {
-                    // Advance the writer since not every part of the subspace might be
-                    // mapped.
-                    writer.skip(sub_range.start - last_copied);
-                    // Copy from this frame to the huge frame
-                    let mut reader = sub_frame.reader();
-                    reader.read(&mut writer);
-                    last_copied = sub_range.end;
-                    Ok(())
-                },
-            )
-            .is_err()
+            if cursor
+                .do_for_each_submapping(
+                    range.start,
+                    range.start + PROMOTED_PAGE_SIZE,
+                    |sub_range, sub_frame, _| {
+                        // Advance the writer since not every part of the subspace might be
+                        // mapped.
+                        writer.skip(sub_range.start - last_copied);
+                        // Copy from this frame to the huge frame
+                        let mut reader = sub_frame.reader();
+                        reader.read(&mut writer);
+                        last_copied = sub_range.end;
+                        Ok(())
+                    },
+                )
+                .is_err()
             {
                 return Ok(());
             }

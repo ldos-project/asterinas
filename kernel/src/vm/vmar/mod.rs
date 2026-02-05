@@ -60,6 +60,17 @@ pub fn set_huge_mapping_enabled(value: bool) {
     MAP_HUGE_ENABLED.store(value, Ordering::Relaxed)
 }
 
+static MAP_HUGE_PRESERVE_ON_DONTNEED: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if huge page mappings should be preserved when a MADV_DONTNEED is issued.
+pub fn huge_mapping_preserve_on_dontneed() -> bool {
+    MAP_HUGE_PRESERVE_ON_DONTNEED.load(Ordering::Relaxed)
+}
+
+pub fn set_huge_mapping_preserve_on_dontneed(value: bool) {
+    MAP_HUGE_PRESERVE_ON_DONTNEED.store(value, Ordering::Relaxed)
+}
+
 /// VmMappingPolicy implementation that always maps a huge page when possible.
 #[orpc_server(VmMappingPolicy)]
 struct VmMappingPolicyGreedyHugeMapping {}
