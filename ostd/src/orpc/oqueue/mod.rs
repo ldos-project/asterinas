@@ -48,7 +48,7 @@
 // TODO: Do we need a 5th struct `UntypedOQueueRef` has no message type parameter and represents an
 // unknown OQueue. It only supports casting dynamically to an `AnyOQueueRef<T>`.
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     any::TypeId,
     cell::Cell,
@@ -64,6 +64,9 @@ mod single_thread_ring_buffer;
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
+
+use self::implementation::{InlineObserverKey, ObserverKey};
+use crate::sync::SpinLock;
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -109,6 +112,16 @@ pub trait OQueueBase<T: ?Sized> {
     where
         U: Copy + Send + 'static;
 
+    /// Attach a strong observer to the OQueue by calling a strong observer function with each
+    /// value.
+    ///
+    /// Note: This is different from [`StrongObserver::strong_observe_inline`] because this
+    /// observes the entire message without requiring a filter.
+    fn attach_inline_strong_observer(
+        &self,
+        f: impl Fn(&T) + Send + 'static,
+    ) -> Result<InlineStrongObserver, AttachmentError>;
+
     /// Attach a weak observer which will observer values of type `U` which are extracted from
     /// the messages using the query. The history length specifies how many previous values the
     /// observer wishes to see.
@@ -146,8 +159,8 @@ pub trait OQueue<T: ?Sized>: OQueueBase<T> {
     fn attach_ref_producer(&self) -> Result<RefProducer<T>, AttachmentError>;
 }
 
-/// Generate an impl which forwards the OQueue trait to a member.
-macro_rules! impl_oqueue_forward {
+/// Generate an impl which forwards the OQueueBase trait to a member.
+macro_rules! impl_oqueue_base_forward {
     ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
         impl<T: Send + 'static $($added_bounds)*> OQueueBase<T> for $type_name<T> {
             fn attach_strong_observer<U>(
@@ -171,6 +184,14 @@ macro_rules! impl_oqueue_forward {
                 self.$member.attach_weak_observer(history_len, query)
             }
 
+            fn attach_inline_strong_observer(
+                &self,
+                f: impl Fn(&T) + Send + 'static,
+            ) -> Result<InlineStrongObserver, AttachmentError>
+            {
+                self.$member.attach_inline_strong_observer(f)
+            }
+
             fn as_any_oqueue(&self) -> AnyOQueueRef<T> {
                 self.$member.as_any_oqueue()
             }
@@ -178,8 +199,8 @@ macro_rules! impl_oqueue_forward {
     };
 }
 
-/// Generate an impl which forwards the CommunicationOQueue trait to a member.
-macro_rules! impl_communication_oqueue_forward {
+/// Generate an impl which forwards the ConsumableOQueue trait to a member.
+macro_rules! impl_consumable_oqueue_forward {
     ($type_name:ident, $member:ident) => {
         impl<T: Send + 'static> ConsumableOQueue<T> for $type_name<T> {
             fn attach_value_producer(&self) -> Result<ValueProducer<T>, AttachmentError> {
@@ -193,8 +214,8 @@ macro_rules! impl_communication_oqueue_forward {
     };
 }
 
-/// Generate an impl which forwards the ObservationOQueue trait to a member.
-macro_rules! impl_observation_oqueue_forward {
+/// Generate an impl which forwards the OQueue trait to a member.
+macro_rules! impl_oqueue_forward {
     ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
         impl<T: Send + 'static $($added_bounds)*> OQueue<T> for $type_name<T> {
             fn attach_ref_producer(
@@ -213,9 +234,9 @@ pub struct AnyOQueueRef<T: ?Sized> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
+impl_oqueue_base_forward!(AnyOQueueRef, inner, [+ ?Sized]);
+impl_consumable_oqueue_forward!(AnyOQueueRef, inner);
 impl_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
-impl_communication_oqueue_forward!(AnyOQueueRef, inner);
-impl_observation_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 #[derive(Clone)]
@@ -224,17 +245,18 @@ pub struct OQueueBaseRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_forward!(OQueueBaseRef, inner, []);
+impl_oqueue_base_forward!(OQueueBaseRef, inner, []);
 
-/// A reference to a communication OQueue. Communication OQueues can have consumers and publication
-/// is by value so that ownership of the message can be transferred to the consumer.
+/// A reference to an OQueue which supports consumers. These OQueues support publication is by value
+/// so that ownership of the message can be transferred to the consumer.
 #[derive(Clone)]
 pub struct ConsumableOQueueRef<T: 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
 
 impl<T> ConsumableOQueueRef<T> {
-    /// Create a new communication OQueue with the specified buffer length.
+    /// Create a new OQueue with the specified buffer length and support for produce by value and
+    /// consumers.
     pub fn new(len: usize) -> Self {
         Self {
             inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
@@ -243,8 +265,8 @@ impl<T> ConsumableOQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_forward!(ConsumableOQueueRef, inner, []);
-impl_communication_oqueue_forward!(ConsumableOQueueRef, inner);
+impl_oqueue_base_forward!(ConsumableOQueueRef, inner, []);
+impl_consumable_oqueue_forward!(ConsumableOQueueRef, inner);
 
 /// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
 /// values by reference.
@@ -263,8 +285,8 @@ impl<T: ?Sized + 'static> OQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
+impl_oqueue_base_forward!(OQueueRef, inner, [+ ?Sized]);
 impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
-impl_observation_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
 
 /// An attachment to an OQueue which allows transferring ownership of messages from the producer to
 /// the consumer without copying or cloning.
@@ -330,12 +352,59 @@ impl<T: Send + 'static> Consumer<T> {
     pub fn try_consume(&self) -> Option<T> {
         self.oqueue.try_consume()
     }
+
+    /// Register a function to be called by the OQueue to observe each message.
+    ///
+    /// This consumes `self`, because the messages will now be consumed via a different mechanism.
+    /// This will return an error if switching to inline is impossible or meaningless, for example
+    /// if there are other consumers present.
+    ///
+    /// ## WARNING
+    ///
+    /// `f` **must** be fast and non-blocking. It will be run on the producers thread.
+    pub fn consume_inline(
+        self,
+        f: impl Fn(T) + Send + 'static,
+    ) -> Result<InlineConsumer<T>, AttachmentError> {
+        self.oqueue.attach_inline_consumer(f)?;
+        Ok(InlineConsumer {
+            oqueue: self.oqueue.clone(),
+            _phantom: PhantomData,
+        })
+    }
 }
+
+/// A handle to an inline consumer. That consumer will be detached and no longer called when this is
+/// dropped.
+pub struct InlineConsumer<T: 'static> {
+    oqueue: Arc<implementation::OQueueImplementation<T>>,
+    _phantom: PhantomData<core::cell::Cell<()>>,
+}
+
+impl<T> Drop for InlineConsumer<T> {
+    fn drop(&mut self) {
+        self.oqueue.detach_inline_consumer();
+    }
+}
+
+/// A function to convert a `StrongObserver` into an `InlineStrongObserver`. This erases the message
+/// type `T` by having the function itself perform a downcast to the specific types. The function
+/// will also use the observer key to get the query function used by the existing non-inline strong
+/// observer.
+///
+/// This is always an instance of
+/// [`implementation::OQueueImplementation::convert_strong_observer_to_inline`].
+type ConvertToInlineFn<U> = fn(
+    &(dyn implementation::UntypedOQueueImplementation + 'static),
+    ObserverKey,
+    Box<dyn Fn(&U) + Send + 'static>,
+) -> Result<InlineObserverKey, AttachmentError>;
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
 pub struct StrongObserver<U: Copy + Send> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
-    observer_id: usize,
+    observer_id: ObserverKey,
+    convert_to_inline: ConvertToInlineFn<U>,
     _phantom: PhantomData<core::cell::Cell<U>>,
 }
 
@@ -385,6 +454,42 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
             Ok(None)
         }
     }
+
+    /// Register a function to be called by the OQueue to observe each message.
+    ///
+    /// This consumes `self`, because the messages will now be observed via a different mechanism.
+    /// This will return an error if switching to inline is impossible.
+    ///
+    ///  ## WARNING
+    ///
+    /// `f` **must** be fast and non-blocking. It will be run on the producers thread.
+    pub fn strong_observe_inline(
+        self,
+        f: impl Fn(&U) + Send + 'static,
+    ) -> Result<InlineStrongObserver, AttachmentError> {
+        let inline_observer_id =
+            (self.convert_to_inline)(self.oqueue.as_ref(), self.observer_id, Box::new(f))?;
+        Ok(InlineStrongObserver {
+            oqueue: self.oqueue.clone(),
+            inline_observer_id,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+/// A handle for an inline strong observer. The strong observer function will no longer be called
+/// when this value is dropped.
+pub struct InlineStrongObserver {
+    oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
+    inline_observer_id: InlineObserverKey,
+    _phantom: PhantomData<core::cell::Cell<()>>,
+}
+
+impl Drop for InlineStrongObserver {
+    fn drop(&mut self) {
+        self.oqueue
+            .detach_inline_strong_observer(self.inline_observer_id);
+    }
 }
 
 /// A cursor into an OQueue.
@@ -410,9 +515,9 @@ impl Sub<usize> for Cursor {
 /// An attachment to an OQueue which allows reading values from the history of the OQueue.
 pub struct WeakObserver<U: Copy + Send> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
-    observer_id: usize,
+    observer_id: ObserverKey,
     last_observed: Cell<Cursor>,
-    _phantom: PhantomData<core::cell::Cell<U>>,
+    _phantom: PhantomData<Cell<U>>,
 }
 
 impl<U: Copy + Send + 'static> WeakObserver<U> {
@@ -501,7 +606,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_consume() {
+    fn consumable_oqueue_consume() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
@@ -513,7 +618,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_strong_observe() {
+    fn consumable_oqueue_strong_observe() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -528,7 +633,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_weak_observe_recent() {
+    fn consumable_oqueue_weak_observe_recent() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -543,7 +648,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_strong_observe() {
+    fn oqueue_strong_observe() {
         let queue = OQueueRef::new(4);
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
@@ -558,7 +663,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_strong_observe_unsized() {
+    fn oqueue_strong_observe_unsized() {
         let msg = &[1, 2, 3];
         let queue = OQueueRef::<[u32]>::new(4);
         let producer = queue.attach_ref_producer().unwrap();
@@ -648,7 +753,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_strong_observe_filtered() {
+    fn consumable_oqueue_strong_observe_filtered() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -665,7 +770,7 @@ mod test {
     }
 
     #[ktest]
-    fn observation_oqueue_weak_observe_filtered() {
+    fn oqueue_weak_observe_filtered() {
         let (producer, observer) = setup_for_weak_observation_filtered();
 
         producer.produce_ref(&new_message(1, "a"));
@@ -694,7 +799,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_produce() {
+    fn consumable_oqueue_try_produce() {
         let queue = ConsumableOQueueRef::new(2);
         let producer = queue.attach_value_producer().unwrap();
         let _consumer = queue.attach_consumer().unwrap();
@@ -710,7 +815,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_consume() {
+    fn consumable_oqueue_try_consume() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
@@ -723,7 +828,7 @@ mod test {
     }
 
     #[ktest]
-    fn communication_oqueue_try_strong_observe() {
+    fn consumable_oqueue_try_strong_observe() {
         let queue = ConsumableOQueueRef::new(4);
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
@@ -735,6 +840,159 @@ mod test {
         producer.produce(new_message(5, "data"));
         assert_eq!(observer.try_strong_observe().unwrap(), Some(5));
         assert_eq!(observer.try_strong_observe().unwrap(), None);
+    }
+
+    #[ktest]
+    fn consumable_oqueue_inline_consumer() {
+        let queue = ConsumableOQueueRef::new(4);
+        let producer = queue.attach_value_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+
+        let received: Arc<SpinLock<alloc::vec::Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
+
+        let inline_consumer = consumer
+            .consume_inline({
+                let received = received.clone();
+                move |msg| {
+                    let mut vec = received.lock();
+                    vec.push(msg);
+                }
+            })
+            .unwrap();
+
+        producer.produce(new_message(1, "first"));
+        producer.produce(new_message(2, "second"));
+
+        let result = received.lock();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], new_message(1, "first"));
+        assert_eq!(result[1], new_message(2, "second"));
+
+        drop(inline_consumer);
+    }
+
+    #[ktest]
+    fn consumable_oqueue_inline_strong_observer() {
+        let queue = ConsumableOQueueRef::new(4);
+        let producer = queue.attach_value_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        let observed_ids: Arc<SpinLock<alloc::vec::Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
+
+        let inline_observer = observer
+            .strong_observe_inline({
+                let observed_ids = observed_ids.clone();
+                move |id| {
+                    let mut vec = observed_ids.lock();
+                    vec.push(*id);
+                }
+            })
+            .unwrap();
+
+        producer.produce(new_message(10, "msg1"));
+        producer.produce(new_message(20, "msg2"));
+        producer.produce(new_message(30, "msg3"));
+
+        let result = observed_ids.lock();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], 10);
+        assert_eq!(result[1], 20);
+        assert_eq!(result[2], 30);
+
+        drop(inline_observer);
+    }
+
+    #[ktest]
+    fn oqueue_inline_strong_observer() {
+        let queue = OQueueRef::new(4);
+        let producer = queue.attach_ref_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        let observed_ids: Arc<SpinLock<alloc::vec::Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
+
+        let inline_observer = observer
+            .strong_observe_inline({
+                let observed_ids = observed_ids.clone();
+                move |id| {
+                    let mut vec = observed_ids.lock();
+                    vec.push(*id);
+                }
+            })
+            .unwrap();
+
+        producer.produce_ref(&new_message(5, "ref1"));
+        producer.produce_ref(&new_message(15, "ref2"));
+
+        let result = observed_ids.lock();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], 5);
+        assert_eq!(result[1], 15);
+
+        drop(inline_observer);
+    }
+
+    #[ktest]
+    fn consumable_oqueue_attach_inline_strong_observer() {
+        let queue = ConsumableOQueueRef::<Message>::new(4);
+        let producer = queue.attach_value_producer().unwrap();
+
+        let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
+            Arc::new(SpinLock::new(Vec::new()));
+
+        let inline_observer = queue
+            .attach_inline_strong_observer({
+                let observed_messages = observed_messages.clone();
+                move |msg| {
+                    let mut vec = observed_messages.lock();
+                    vec.push(msg.clone());
+                }
+            })
+            .unwrap();
+
+        producer.produce(new_message(7, "first"));
+        producer.produce(new_message(8, "second"));
+        producer.produce(new_message(9, "third"));
+
+        let result = observed_messages.lock();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], new_message(7, "first"));
+        assert_eq!(result[1], new_message(8, "second"));
+        assert_eq!(result[2], new_message(9, "third"));
+
+        drop(inline_observer);
+    }
+
+    #[ktest]
+    fn oqueue_attach_inline_strong_observer() {
+        let queue = OQueueRef::<Message>::new(4);
+        let producer = queue.attach_ref_producer().unwrap();
+
+        let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
+            Arc::new(SpinLock::new(Vec::new()));
+
+        let inline_observer = queue
+            .attach_inline_strong_observer({
+                let observed_messages = observed_messages.clone();
+                move |msg| {
+                    let mut vec = observed_messages.lock();
+                    vec.push(msg.clone());
+                }
+            })
+            .unwrap();
+
+        producer.produce_ref(&new_message(100, "ref1"));
+        producer.produce_ref(&new_message(101, "ref2"));
+
+        let result = observed_messages.lock();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], new_message(100, "ref1"));
+        assert_eq!(result[1], new_message(101, "ref2"));
+
+        drop(inline_observer);
     }
 
     // TODO: Deduplicate the tests and remove the generic package. Probably move all tests into a
