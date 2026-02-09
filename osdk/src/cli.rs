@@ -354,6 +354,18 @@ pub struct TestArgs {
         help = "Only run tests containing this string in their names"
     )]
     pub test_name: Option<String>,
+    #[arg(
+        long = "gdb-server",
+        help = "Enable the QEMU GDB server for debugging\n\
+                This option supports an additional comma separated configuration list:\n\t \
+                    addr=ADDR:   the network or unix socket address on which the GDB server listens, \
+                                 `.osdk-gdb-socket` by default;\n\t \
+                    wait-client: let the GDB server wait for the GDB client before execution;\n\t \
+                    vscode:      generate a '.vscode/launch.json' for debugging with Visual Studio Code.",
+        value_name = "[addr=ADDR][,wait-client][,vscode]",
+        default_missing_value = ""
+    )]
+    pub gdb_server: Option<String>,
     #[command(flatten)]
     pub common_args: CommonArgs,
 }

@@ -162,6 +162,11 @@ pub fn do_cached_build(
     }
     let mut bundle = Bundle::new(&bundle_path, config, action);
 
+    println!(
+        "Kernel image: {}",
+        aster_elf.path().to_str().unwrap_or("[INVALID UNICODE]")
+    );
+
     match boot.method {
         BootMethod::GrubRescueIso | BootMethod::GrubQcow2 => {
             info!("Building boot device image");

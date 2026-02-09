@@ -198,15 +198,24 @@ fn package_contains_ostd_main(package: &serde_json::Value) -> bool {
 
 fn file_contains_ostd_main_macro(file: &syn::File) -> bool {
     for item in &file.items {
-        let syn::Item::Fn(item_fn) = item else {
-            continue;
-        };
-
-        for attr in &item_fn.attrs {
-            let attr = format!("{}", attr.to_token_stream());
-            if attr.as_str() == "# [ostd :: main]" || attr.as_str() == "#[main]" {
-                return true;
+        match item {
+            syn::Item::Fn(item_fn) => {
+                for attr in &item_fn.attrs {
+                    let attr = format!("{}", attr.to_token_stream());
+                    if attr.as_str() == "# [ostd :: main]"
+                        || attr.as_str() == "#[main]"
+                        || attr.as_str() == "# [ostd :: ktest :: main]"
+                    {
+                        return true;
+                    }
+                }
             }
+            syn::Item::ExternCrate(syn::ItemExternCrate { ident, .. }) => {
+                if ident.to_token_stream().to_string() == "osdk_test_kernel" {
+                    return true;
+                }
+            }
+            _ => {}
         }
     }
 

@@ -21,6 +21,14 @@ pub fn execute_debug_command(_profile: &str, args: &DebugArgs) {
         "-ex",
         format!("target remote {}", remote).as_str(),
     ]);
+    println!(
+        "Debug command: {} {}",
+        gdb.get_program().to_str().unwrap_or("[INVALID UNICODE]"),
+        gdb.get_args()
+            .map(|s| format!("\"{}\"", s.to_str().unwrap_or("[INVALID UNICODE]")))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     gdb.status().unwrap();
 }
 

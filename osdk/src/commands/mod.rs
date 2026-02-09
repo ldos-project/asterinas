@@ -5,6 +5,7 @@
 mod build;
 mod debug;
 mod enhance_log;
+mod gdb;
 mod new;
 mod profile;
 mod run;
