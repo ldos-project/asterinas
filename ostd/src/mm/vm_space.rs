@@ -483,6 +483,35 @@ impl<'a> CursorMut<'a> {
         // SAFETY: It is safe to protect memory in the userspace.
         unsafe { self.pt_cursor.protect_next(len, &mut op) }
     }
+
+    /// Run `f` on every mapped page in the range `start` to `end`. This will only run on regions
+    /// that have TLB entries.
+    pub fn do_for_each_submapping<F>(&mut self, start: usize, end: usize, mut f: F) -> Result<()>
+    where
+        F: FnMut(&Range<Vaddr>, &Frame<dyn AnyUFrameMeta>, &PageProperty) -> Result<()>,
+    {
+        self.jump(start)?;
+
+        while self.virt_addr() < end {
+            // Query under the current cursor. If the virtual address is unmapped then we
+            // fail and cannot map a huge page.
+            let (sub_range, sub_mapping) = self.query()?;
+
+            // The mapping might not exist if the page hasn't been faulted in yet. We can
+            // skip over such mappings.
+            if let Some((ref sub_frame, sub_props)) = sub_mapping {
+                f(&sub_range, sub_frame, &sub_props)?;
+            }
+
+            if sub_range.end >= end {
+                break;
+            }
+            // Advance the cursor to the end of this mapping
+            self.jump(sub_range.end)?;
+        }
+
+        Ok(())
+    }
 }
 
 cpu_local_cell! {
