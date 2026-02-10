@@ -6,6 +6,7 @@ VDSO_LIB := $(VDSO_DIR)/vdso64.so
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 ATOMIC_WGET := $(CUR_DIR)/../tools/atomic_wget.sh
+COPY_SSHD := $(CUR_DIR)/tools/copy_sshd.sh
 BUILD_DIR := $(CUR_DIR)/build
 INITRAMFS := $(BUILD_DIR)/initramfs
 INITRAMFS_FILELIST := $(BUILD_DIR)/initramfs.filelist
@@ -29,7 +30,9 @@ INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/sys \
 	$(INITRAMFS)/ext2 \
 	$(INITRAMFS)/exfat \
-	$(INITRAMFS)/raid1
+	$(INITRAMFS)/raid1 \
+	$(INITRAMFS)/var/empty \
+	$(INITRAMFS)/run/sshd \
 INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/etc \
 	$(INITRAMFS)/lib/x86_64-linux-gnu \
@@ -45,6 +48,9 @@ INITRAMFS_ALL_DIRS := \
 ifeq ($(BENCHMARK), none)
 INITRAMFS_ALL_DIRS += $(INITRAMFS)/test
 endif
+
+# Include sshd in build
+INITRAMFS_ALL_DIRS += $(INITRAMFS)/usr/sbin
 
 SYSCALL_TEST_DIR := $(INITRAMFS)/opt/syscall_test
 
@@ -122,6 +128,11 @@ $(INITRAMFS)/usr/local:
 	@cp -r /usr/local/nginx $@
 	@cp -r /usr/local/redis $@
 	@cp -r /usr/local/memcached $@
+
+# Install sshd and its dependencies
+.PHONY: $(INITRAMFS)/usr/sbin
+$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/lib/x86_64-linux-gnu $(INITRAMFS)/usr/bin
+	@$(COPY_SSHD) $(INITRAMFS)
 
 .PHONY: $(INITRAMFS)/test
 $(INITRAMFS)/test:
