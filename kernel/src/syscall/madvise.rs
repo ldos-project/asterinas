@@ -90,7 +90,9 @@ fn madv_free(root_vmar: &Vmar<Full>, start: Vaddr, end: Vaddr) -> Result<()> {
                     // TODO(aneesh): zero out the intersection of start..end and
                     // range.start..range.end
                 } else {
-                    mappings_to_remove.push(range.clone());
+                    let intersection =
+                        core::cmp::max(start, range.start)..core::cmp::min(end, range.end);
+                    mappings_to_remove.push(intersection);
                 }
 
                 Ok(())
