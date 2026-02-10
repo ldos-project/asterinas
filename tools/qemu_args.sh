@@ -89,9 +89,10 @@ COMMON_QEMU_ARGS="\
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive if=none,format=raw,id=x0,file=./test/build/ext2.img \
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
-    -drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1,cache=directsync \
-    -drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1,cache=directsync \
-    -drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1,cache=directsync \
+    -drive if=none,format=raw,id=r0,file=/root/asterinas/mounts/nvme0n1p1/fs.img \
+    -drive if=none,format=raw,id=r1,file=/root/asterinas/mounts/nvme1n1p1/fs.img \
+    -drive if=none,format=raw,id=r2,file=/root/asterinas/mounts/nvme2n1p1/fs.img \
+    -drive if=none,format=raw,id=baseline,file=/root/asterinas/mounts/nvme0n1p2/fs.img \
 "
 
 if [ "$1" = "iommu" ]; then
@@ -115,6 +116,7 @@ QEMU_ARGS="\
     -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=r0,serial=raid0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=baseline,serial=nvme1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
     -device virtconsole,chardev=mux \
@@ -130,6 +132,7 @@ MICROVM_QEMU_ARGS="\
     -device virtio-blk-device,drive=x1,serial=vexfat \
     -device virtio-blk-device,drive=r0,serial=raid0 \
     -device virtio-blk-device,drive=r1,serial=raid1 \
+    -device virtio-blk-device,drive=baseline,serial=nvme1 \
     -device virtio-keyboard-device \
     -device virtio-net-device,netdev=net01 \
     -device virtio-serial-device \
