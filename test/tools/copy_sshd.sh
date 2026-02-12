@@ -58,6 +58,18 @@ if [ -s "$ALL_LIBS" ]; then
     done
 fi
 
+# Explicitly copy libwarp.so.0 if it exists (may not be found by ldd)
+# for libwarp_path in /lib/x86_64-linux-gnu/libwarp.so.0 /usr/lib/x86_64-linux-gnu/libwarp.so.0 /lib/libwarp.so.0 /usr/lib/libwarp.so.0; do
+#     if [ -f "$libwarp_path" ]; then
+#         lib_rel_path="${libwarp_path#/}"
+#         lib_dest="$INITRAMFS_DIR/$lib_rel_path"
+#         mkdir -p "$(dirname "$lib_dest")"
+#         cp -L "$libwarp_path" "$lib_dest" 2>/dev/null || true
+#         echo "Copied libwarp.so.0 from $libwarp_path"
+#         break
+#     fi
+# done
+
 # Copy sshd binary
 if [ -f /usr/sbin/sshd ]; then
     cp -L /usr/sbin/sshd "$INITRAMFS_DIR/usr/sbin/sshd"
@@ -73,42 +85,63 @@ for ssh_bin in /usr/bin/ssh /usr/bin/scp /usr/bin/ssh-keygen /usr/bin/ssh-add; d
 done
 
 # Copy SSH configuration files
-if [ -d /etc/ssh ]; then
-    # Copy main config files
-    for config in /etc/ssh/sshd_config /etc/ssh/ssh_config; do
-        if [ -f "$config" ]; then
-            cp "$config" "$INITRAMFS_DIR/etc/ssh/$(basename "$config")"
-            echo "Copied $(basename "$config")"
-        fi
-    done
-    
-    # Configure sshd to bind to Asterinas network IP (10.0.2.15)
-    # Asterinas configures network at kernel level, so we need to bind to specific IP
-    SSHD_CONFIG="$INITRAMFS_DIR/etc/ssh/sshd_config"
-    if [ -f "$SSHD_CONFIG" ]; then
-        # Uncomment and set ListenAddress if it's commented, or add it if missing
-        if grep -q "^#ListenAddress" "$SSHD_CONFIG" || grep -q "^ListenAddress" "$SSHD_CONFIG"; then
-            # Replace existing ListenAddress line (commented or not)
-            sed -i 's/^#*ListenAddress.*/ListenAddress 10.0.2.15/' "$SSHD_CONFIG"
-        else
-            # Add ListenAddress after Port directive or at the beginning
+THIS_SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+SSHD_CONFIG_TEMPLATE="$THIS_SCRIPT_DIR/../etc/sshd_config"
+
+# Use Asterinas-specific sshd_config template if available
+if [ -f "$SSHD_CONFIG_TEMPLATE" ]; then
+    cp "$SSHD_CONFIG_TEMPLATE" "$INITRAMFS_DIR/etc/ssh/sshd_config"
+    echo "Copied Asterinas sshd_config template"
+else
+    # Fallback: copy from host system and modify
+    if [ -d /etc/ssh ]; then
+        if [ -f /etc/ssh/sshd_config ]; then
+            cp /etc/ssh/sshd_config "$INITRAMFS_DIR/etc/ssh/sshd_config"
+            echo "Copied sshd_config from host system"
+            
+            # Apply Asterinas-specific modifications
+            SSHD_CONFIG="$INITRAMFS_DIR/etc/ssh/sshd_config"
+            # Remove ALL existing ListenAddress lines (commented or not) to avoid duplicates
+            sed -i '/^#*ListenAddress/d' "$SSHD_CONFIG"
+            # Add a single ListenAddress after Port directive or at the beginning
             if grep -q "^Port" "$SSHD_CONFIG"; then
                 sed -i '/^Port/a ListenAddress 10.0.2.15' "$SSHD_CONFIG"
             else
                 sed -i '1i ListenAddress 10.0.2.15' "$SSHD_CONFIG"
             fi
+            # Disable PAM
+            sed -i 's/^#*UsePAM.*/UsePAM no/' "$SSHD_CONFIG"
+            if ! grep -q "^UsePAM" "$SSHD_CONFIG"; then
+                echo "UsePAM no" >> "$SSHD_CONFIG"
+            fi
+            # Disable privilege separation
+            sed -i 's/^#*UsePrivilegeSeparation.*/UsePrivilegeSeparation no/' "$SSHD_CONFIG"
+            if ! grep -q "^UsePrivilegeSeparation" "$SSHD_CONFIG"; then
+                echo "UsePrivilegeSeparation no" >> "$SSHD_CONFIG"
+            fi
+            # Ensure PidFile is set
+            sed -i 's/^#*PidFile.*/PidFile \/var\/run\/sshd.pid/' "$SSHD_CONFIG"
+            if ! grep -q "^PidFile" "$SSHD_CONFIG"; then
+                echo "PidFile /var/run/sshd.pid" >> "$SSHD_CONFIG"
+            fi
+            echo "Applied Asterinas compatibility settings to sshd_config"
         fi
-        echo "Configured sshd to listen on 10.0.2.15"
+        
+        # Copy ssh_config if it exists
+        if [ -f /etc/ssh/ssh_config ]; then
+            cp /etc/ssh/ssh_config "$INITRAMFS_DIR/etc/ssh/ssh_config"
+            echo "Copied ssh_config"
+        fi
     fi
-    
-    # Copy host keys if they exist (they may need to be generated in the target system)
-    for key in /etc/ssh/ssh_host_*_key*; do
-        if [ -f "$key" ]; then
-            cp "$key" "$INITRAMFS_DIR/etc/ssh/$(basename "$key")"
-            echo "Copied host key: $(basename "$key")"
-        fi
-    done
 fi
+
+# Copy host keys if they exist (they may need to be generated in the target system)
+for key in /etc/ssh/ssh_host_*_key*; do
+    if [ -f "$key" ]; then
+        cp "$key" "$INITRAMFS_DIR/etc/ssh/$(basename "$key")"
+        echo "Copied host key: $(basename "$key")"
+    fi
+done
 
 # Create empty directory for sshd (sshd needs /var/empty for privilege separation)
 mkdir -p "$INITRAMFS_DIR/var/empty"
