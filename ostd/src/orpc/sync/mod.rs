@@ -112,15 +112,18 @@ pub trait Blocker {
     }
 }
 
-/// A blocker which never unblocks. This will not affect the result when passed to
-/// [`CurrentTask::block_on`], so it can be used to replace non-existant blockers.
-pub struct NullBlocker;
-
-impl Blocker for NullBlocker {
+// Optional Blockers are allowed. If the blocker is `None`, then it will never wake up and performs
+// no other handling.
+impl<T: Blocker> Blocker for Option<T> {
     fn should_try(&self) -> bool {
-        false
+        self.as_ref().is_some_and(T::should_try)
     }
-    fn prepare_to_wait(&self, _waker: &Arc<Waker>) {}
+
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+        if let Some(blocker) = self {
+            blocker.prepare_to_wait(waker);
+        }
+    }
 }
 
 impl CurrentTask {

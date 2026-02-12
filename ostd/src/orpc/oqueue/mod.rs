@@ -66,7 +66,7 @@ pub use query::ObservationQuery;
 use snafu::Snafu;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
-use crate::{orpc::sync::Blocker, sync::SpinLock};
+use crate::{orpc::{oqueue, sync::Blocker}, sync::SpinLock};
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -342,12 +342,14 @@ impl<T> Drop for Consumer<T> {
     }
 }
 
-impl<T: 'static> Blocker for Consumer<T> {
+impl<T: Send + 'static> Blocker for Consumer<T> {
     fn should_try(&self) -> bool {
-        true
+        self.oqueue.can_consume()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {}
+    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {
+        self.oqueue.read_wait_queue.enqueue(waker.clone());
+    }
 }
 
 impl<T: Send + 'static> Consumer<T> {
@@ -424,10 +426,12 @@ impl<U> Drop for StrongObserver<U> {
 
 impl<U> Blocker for StrongObserver<U> {
     fn should_try(&self) -> bool {
-        true
+        self.oqueue.can_strong_observe(self.observer_id)
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {}
+    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) {
+        self.oqueue.enqueue_read_waker(waker);
+    }
 }
 
 impl<U: Copy + Send + 'static> StrongObserver<U> {

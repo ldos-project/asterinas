@@ -56,8 +56,8 @@ pub(crate) struct OQueueImplementation<T: ?Sized> {
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
-    put_wait_queue: WaitQueue,
-    read_wait_queue: WaitQueue,
+    pub(super) put_wait_queue: WaitQueue,
+    pub(super) read_wait_queue: WaitQueue,
 }
 
 impl<T: ?Sized + 'static> OQueueImplementation<T> {
@@ -364,6 +364,14 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         self.read_wait_queue.wait_until(|| self.try_consume())
     }
 
+    pub(super) fn can_consume(&self) -> bool {
+        let inner = self.inner.lock();
+        inner
+            .consumer_ring_buffer.as_ref()
+            .expect("consume not supported")
+            .can_get_for_head(0)
+    }
+
     /// Attempt to consume a value from the consumer ring buffer, taking ownership of the value.
     pub(super) fn try_consume(&self) -> Option<T> {
         let mut inner = self.inner.lock();
@@ -580,6 +588,10 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
     /// Release any resources held by inline observer with the given key.
     fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey);
 
+    fn can_strong_observe(&self, observer_id: ObserverKey) -> bool;
+
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>);
+
     /// Copy the next value available to the specified observer into `dest` if it is available. This
     /// returns `Ok(true)` if the value was copied, `Ok(false)` if there was not value available
     /// yet, and an error if some other failure happened.
@@ -747,5 +759,19 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.oldest_cursor()
+    }
+    
+    fn can_strong_observe(&self, observer_id: ObserverKey) -> bool {
+        let mut inner = self.inner.lock();
+        let ObservationRingBuffer { ring_buffer, .. } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
+            .expect("should only be called with an id returned from new_observation_ring_buffer");
+        let head_id = 0;
+        ring_buffer.can_get_for_head(head_id)
+    }
+    
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) {
+        self.read_wait_queue.enqueue(waker.clone());
     }
 }
