@@ -86,53 +86,14 @@ done
 
 # Copy SSH configuration files
 THIS_SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
-SSHD_CONFIG_TEMPLATE="$THIS_SCRIPT_DIR/../etc/sshd_config"
+SSHD_CONFIG_TEMPLATE="$THIS_SCRIPT_DIR/../etc/ssh/sshd_config"
 
 # Use Asterinas-specific sshd_config template if available
 if [ -f "$SSHD_CONFIG_TEMPLATE" ]; then
     cp "$SSHD_CONFIG_TEMPLATE" "$INITRAMFS_DIR/etc/ssh/sshd_config"
     echo "Copied Asterinas sshd_config template"
 else
-    # Fallback: copy from host system and modify
-    if [ -d /etc/ssh ]; then
-        if [ -f /etc/ssh/sshd_config ]; then
-            cp /etc/ssh/sshd_config "$INITRAMFS_DIR/etc/ssh/sshd_config"
-            echo "Copied sshd_config from host system"
-            
-            # Apply Asterinas-specific modifications
-            SSHD_CONFIG="$INITRAMFS_DIR/etc/ssh/sshd_config"
-            # Remove ALL existing ListenAddress lines (commented or not) to avoid duplicates
-            sed -i '/^#*ListenAddress/d' "$SSHD_CONFIG"
-            # Add a single ListenAddress after Port directive or at the beginning
-            if grep -q "^Port" "$SSHD_CONFIG"; then
-                sed -i '/^Port/a ListenAddress 10.0.2.15' "$SSHD_CONFIG"
-            else
-                sed -i '1i ListenAddress 10.0.2.15' "$SSHD_CONFIG"
-            fi
-            # Disable PAM
-            sed -i 's/^#*UsePAM.*/UsePAM no/' "$SSHD_CONFIG"
-            if ! grep -q "^UsePAM" "$SSHD_CONFIG"; then
-                echo "UsePAM no" >> "$SSHD_CONFIG"
-            fi
-            # Disable privilege separation
-            sed -i 's/^#*UsePrivilegeSeparation.*/UsePrivilegeSeparation no/' "$SSHD_CONFIG"
-            if ! grep -q "^UsePrivilegeSeparation" "$SSHD_CONFIG"; then
-                echo "UsePrivilegeSeparation no" >> "$SSHD_CONFIG"
-            fi
-            # Ensure PidFile is set
-            sed -i 's/^#*PidFile.*/PidFile \/var\/run\/sshd.pid/' "$SSHD_CONFIG"
-            if ! grep -q "^PidFile" "$SSHD_CONFIG"; then
-                echo "PidFile /var/run/sshd.pid" >> "$SSHD_CONFIG"
-            fi
-            echo "Applied Asterinas compatibility settings to sshd_config"
-        fi
-        
-        # Copy ssh_config if it exists
-        if [ -f /etc/ssh/ssh_config ]; then
-            cp /etc/ssh/ssh_config "$INITRAMFS_DIR/etc/ssh/ssh_config"
-            echo "Copied ssh_config"
-        fi
-    fi
+    echo "Missing sshd_config template"
 fi
 
 # Copy host keys if they exist (they may need to be generated in the target system)

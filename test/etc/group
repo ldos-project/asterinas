@@ -6,6 +6,6 @@
 #
 # See the group(5) man page for additional information about this file.
 ##
-root:x:0:
+root::0:
 nogroup:x:65534:
 sshd:x:74:
