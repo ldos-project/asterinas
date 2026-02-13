@@ -142,10 +142,26 @@ impl WaitQueue {
 
     /// Enqueues the input [`Waker`] to the wait queue.
     #[doc(hidden)]
-    pub fn enqueue(&self, waker: Arc<Waker>) {
+    pub fn enqueue(&self, waker: Arc<Waker>) -> WakerKey {
         let mut wakers = self.wakers.lock();
+        let key = WakerKey(Some(waker.clone()));
         wakers.push_back(waker);
         self.num_wakers.fetch_add(1, Ordering::Acquire);
+        key
+    }
+
+    /// Remove a waker from the queue.
+    #[doc(hidden)]
+    pub fn remove(&self, key: WakerKey) {
+        let Some(key_waker) = key.0 else {
+            return;
+        };
+
+        let mut wakers = self.wakers.lock();
+        // TODO(arthurp): PERFORMANCE: This is O(n). We may need to optimize this or provide a
+        // variant of WaitQueue with faster remove. Probably by eliminating wake ordering.
+        wakers.retain(|w| w.task != key_waker.task);
+        self.num_wakers.swap(wakers.len() as u32, Ordering::Acquire);
     }
 }
 
@@ -166,6 +182,11 @@ pub struct Waiter {
 
 impl !Send for Waiter {}
 impl !Sync for Waiter {}
+
+/// A reference to a Waker in a WaitQueue. This can reference no waker at all. This is used for
+/// removing wakers from a wait queue.
+#[derive(Default)]
+pub struct WakerKey(Option<Arc<Waker>>);
 
 /// A waker that can wake up the associated [`Waiter`].
 ///

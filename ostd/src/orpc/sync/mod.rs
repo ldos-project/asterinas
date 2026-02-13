@@ -8,7 +8,7 @@ pub use orpc_macros::select;
 use crate::{
     orpc::framework::CurrentServer,
     prelude::Arc,
-    sync::{Waiter, Waker},
+    sync::{Waiter, Waker, WakerKey},
     task::{CurrentTask, Task},
 };
 
@@ -88,7 +88,11 @@ pub trait Blocker {
     ///
     /// This returns an ID which can be passed to [`Blocker::remove_task`] (on the same instance) to improve the
     /// performance of removal.
-    fn prepare_to_wait(&self, waker: &Arc<Waker>);
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey;
+
+    /// Remove a task from the wait queue of self. After this call, the task will not be awoken when
+    /// when `should_try` will return true. This undoes the effect of `prepare_to_wait`.
+    fn finish_wait(&self, key: WakerKey);
 
     /// Block on self repeately until `cond` returns Some. This assumes that this blocker will be woken if `cond()`
     /// would change.
@@ -119,9 +123,17 @@ impl<T: Blocker> Blocker for Option<T> {
         self.as_ref().is_some_and(T::should_try)
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
         if let Some(blocker) = self {
-            blocker.prepare_to_wait(waker);
+            blocker.prepare_to_wait(waker)
+        } else {
+            WakerKey::default()
+        }
+    }
+
+    fn finish_wait(&self, key: WakerKey) {
+        if let Some(blocker) = self {
+            blocker.finish_wait(key)
         }
     }
 }
@@ -131,21 +143,27 @@ impl CurrentTask {
     pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) {
         CurrentServer::abort_point();
         let (waiter, waker) = Waiter::new_pair();
-        if blockers.iter().any(|b| b.should_try()) {
-            return;
+
+        // 1. Register for all blockers.
+        let keys = blockers.map(|blocker| blocker.prepare_to_wait(&waker));
+
+        // 2. Check if any of the blockers are actually ready.
+        if !blockers.iter().any(|b| b.should_try()) {
+            // 3. Block if no blockers are ready. This will immediately wake if any blocker woke
+            //    between `prepare_to_wait` and here.
+            waiter.wait_cancellable(|| {
+                if CurrentServer::is_aborted() {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
         }
 
-        for blocker in blockers.iter() {
-            blocker.prepare_to_wait(&waker);
+        // 4. Run register with all the blockers.
+        for (blocker, key) in blockers.iter().zip(keys) {
+            blocker.finish_wait(key);
         }
-        // We will never
-        waiter.wait_cancellable(|| {
-            if CurrentServer::is_aborted() {
-                Err(())
-            } else {
-                Ok(())
-            }
-        });
 
         CurrentServer::abort_point();
     }

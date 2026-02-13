@@ -296,7 +296,7 @@ mod test {
     use super::*;
     use crate::{
         orpc::{legacy_oqueue::generic_test, sync::Blocker},
-        sync::Waker,
+        sync::{Waker, WakerKey},
     };
 
     struct InfiniteBlocker;
@@ -306,7 +306,11 @@ mod test {
             false
         }
 
-        fn prepare_to_wait(&self, _waker: &Arc<Waker>) {}
+        fn prepare_to_wait(&self, _task: &Arc<Waker>) -> WakerKey {
+            WakerKey::default()
+        }
+
+        fn finish_wait(&self, _key: WakerKey) {}
     }
 
     struct TestServer<F: Fn()> {

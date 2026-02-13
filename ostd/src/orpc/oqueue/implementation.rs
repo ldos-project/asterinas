@@ -31,7 +31,7 @@ use crate::{
             ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer,
         },
     },
-    sync::{SpinLock, WaitQueue},
+    sync::{SpinLock, WaitQueue, WakerKey},
 };
 
 new_key_type! {
@@ -367,7 +367,8 @@ impl<T: Send + 'static> OQueueImplementation<T> {
     pub(super) fn can_consume(&self) -> bool {
         let inner = self.inner.lock();
         inner
-            .consumer_ring_buffer.as_ref()
+            .consumer_ring_buffer
+            .as_ref()
             .expect("consume not supported")
             .can_get_for_head(0)
     }
@@ -590,7 +591,9 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
     fn can_strong_observe(&self, observer_id: ObserverKey) -> bool;
 
-    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>);
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey;
+
+    fn remove_read_waker(&self, key: WakerKey);
 
     /// Copy the next value available to the specified observer into `dest` if it is available. This
     /// returns `Ok(true)` if the value was copied, `Ok(false)` if there was not value available
@@ -760,7 +763,7 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.oldest_cursor()
     }
-    
+
     fn can_strong_observe(&self, observer_id: ObserverKey) -> bool {
         let mut inner = self.inner.lock();
         let ObservationRingBuffer { ring_buffer, .. } = inner
@@ -770,8 +773,12 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         let head_id = 0;
         ring_buffer.can_get_for_head(head_id)
     }
-    
-    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) {
-        self.read_wait_queue.enqueue(waker.clone());
+
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn remove_read_waker(&self, key: WakerKey) {
+        self.read_wait_queue.remove(key);
     }
 }

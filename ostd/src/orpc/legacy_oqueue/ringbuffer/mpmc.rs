@@ -28,7 +28,7 @@ use crate::{
         Blocker, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver,
         WeakObserver,
     },
-    sync::{Mutex, WaitQueue, Waker},
+    sync::{Mutex, WaitQueue, Waker, WakerKey},
     task::Task,
 };
 
@@ -471,8 +471,12 @@ impl<T: Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
         self.oqueue.size() < self.oqueue.capacity.into()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue.put_wait_queue.enqueue(waker.clone())
+    }
+
+    fn finish_wait(&self, key: WakerKey) {
+        self.oqueue.put_wait_queue.remove(key);
     }
 }
 
@@ -529,8 +533,12 @@ impl<T: Send, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Blocker
         !self.oqueue.empty()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn finish_wait(&self, key: WakerKey) {
+        self.oqueue.read_wait_queue.remove(key);
     }
 }
 
@@ -573,8 +581,12 @@ impl<T: Copy + Send, const WEAK_OBSERVERS: bool> Blocker for MPMCStrongObserver<
         !self.oqueue.empty()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn finish_wait(&self, key: WakerKey) {
+        self.oqueue.read_wait_queue.remove(key);
     }
 }
 
@@ -608,8 +620,12 @@ impl<T, const STRONG_OBSERVERS: bool> Blocker for MPMCWeakObserver<T, STRONG_OBS
         self.oqueue.size() > 0
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) {
+    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn finish_wait(&self, key: WakerKey) {
+        self.oqueue.read_wait_queue.remove(key);
     }
 }
 
