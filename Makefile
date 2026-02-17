@@ -304,6 +304,10 @@ else ifeq ($(AUTO_TEST), vsock)
 		|| (echo "Vsock test failed" && exit 1)
 endif
 
+.PHONY:
+kill_qemu:
+	pkill qemu-system-x86
+
 .PHONY: gdb_server
 gdb_server: initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
