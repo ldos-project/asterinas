@@ -5,27 +5,14 @@
 //! server. The standard usage is to have a single monitor holding all the state of the server and
 //! forwarding all server methods into that monitor.
 
-use crate::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, ValueProducer};
-
-pub use orpc_macros::orpc_monitor;
-
-/// Create a producer-consumer pair for a single message.
-fn new_reply_pair<T: Send + 'static>() -> (ValueProducer<T>, crate::orpc::oqueue::Consumer<T>) {
-    let reply = ConsumableOQueueRef::new(2);
-    let reply_consumer = reply
-        .attach_consumer()
-        .expect("new reply OQueue always allows consumer");
-    let reply_producer = reply
-        .attach_value_producer()
-        .expect("new reply OQueue always allows value producer");
-    (reply_producer, reply_consumer)
-}
+use crate::orpc::oqueue::{ValueProducer, new_reply_pair};
 
 /// **INTERNAL FOR MACRO USE ONLY**
 ///
 /// Make a synchronous request over an OQueue. `make_request` is called with the reply producer
 /// attachment to create the request message. The request is sent over `producer`. The consumer of
 /// that message should guarantee exactly one reply will be published.
+#[doc(hidden)]
 pub fn synchronous_request<C: Send + 'static, R: Send + 'static>(
     producer: &ValueProducer<C>,
     make_request: impl FnOnce(ValueProducer<R>) -> C,

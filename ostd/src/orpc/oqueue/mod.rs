@@ -60,14 +60,16 @@ use core::{
 mod implementation;
 pub mod query;
 mod single_thread_ring_buffer;
+mod utils;
 
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
+pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
 use crate::{
-    orpc::{oqueue, sync::Blocker},
+    orpc::sync::Blocker,
     sync::{SpinLock, WakerKey},
 };
 
