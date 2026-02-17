@@ -7,12 +7,13 @@
 //!
 //! Generally IRQs are disabled while printing. So do not print long log messages.
 
+use alloc::format;
 use core::str::FromStr;
 
 use log::{LevelFilter, Metadata, Record};
 use spin::Once;
 
-use crate::boot::EARLY_INFO;
+use crate::{boot::EARLY_INFO, task::Task};
 
 static LOGGER: Logger = Logger::new();
 
@@ -57,7 +58,12 @@ impl log::Log for Logger {
 
         // Default implementation.
         let level = record.level();
-        crate::console::early_print(format_args!("{}: {}\n", level, record.args()));
+        // TODO(arthurp, ldos-project/asterinas#95): This will allocate a string. In Rust 1.90,
+        // using `format_args!` here becomes possible.
+        let tid = Task::current()
+            .map(|t| format!("[tid={}] ", t.id()))
+            .unwrap_or_default();
+        crate::console::early_print(format_args!("{}: {tid}{}\n", level, record.args()));
     }
 
     fn flush(&self) {
