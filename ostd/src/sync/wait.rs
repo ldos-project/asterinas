@@ -34,6 +34,11 @@ use crate::task::{Task, scheduler};
 // Note that dropping a waiter must be treated as a `wait()` with zero timeout, because we need to
 // make sure that the wake event isn't lost in this case.
 
+// TODO(arthurp): PERFORMANCE: waiters and wait queues are used quite a bit and require allocation
+// and some inefficient data structures. Optimizations: use a "wakers" list data structure that
+// allow faster removal; create a way to store a Waker without reference counting and generalized
+// allocation (maybe generational references into thread local storage).
+
 /// A wait queue.
 ///
 /// One may wait on a wait queue to put its executing thread to sleep.

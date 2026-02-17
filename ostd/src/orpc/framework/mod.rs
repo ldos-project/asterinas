@@ -23,14 +23,11 @@
 
 pub mod errors;
 
-// pub mod dsl;
 mod integration_test;
 pub mod monitor;
 pub mod notifier;
 pub mod shutdown;
 pub mod threads;
-// pub mod dsl;
-// pub mod monitor;
 
 use alloc::{sync::Weak, vec::Vec};
 use core::{
@@ -306,11 +303,11 @@ mod test {
             false
         }
 
-        fn prepare_to_wait(&self, _task: &Arc<Waker>) -> WakerKey {
+        fn enqueue(&self, _task: &Arc<Waker>) -> WakerKey {
             WakerKey::default()
         }
 
-        fn finish_wait(&self, _key: WakerKey) {}
+        fn remove(&self, _key: WakerKey) {}
     }
 
     struct TestServer<F: Fn()> {

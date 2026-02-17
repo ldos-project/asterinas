@@ -301,11 +301,11 @@ impl<T: Copy + Send> Blocker for RigtorpProducer<T> {
         true
     }
 
-    fn prepare_to_wait(&self, _waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, _waker: &Arc<Waker>) -> WakerKey {
         panic!("!");
     }
 
-    fn finish_wait(&self, _key: ostd::sync::WakerKey) {
+    fn remove(&self, _key: ostd::sync::WakerKey) {
         panic!("!");
     }
 }
@@ -332,11 +332,11 @@ impl<T: Copy + Send> Blocker for RigtorpConsumer<T> {
         true
     }
 
-    fn prepare_to_wait(&self, _waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, _waker: &Arc<Waker>) -> WakerKey {
         panic!("!");
     }
 
-    fn finish_wait(&self, _key: ostd::sync::WakerKey) {
+    fn remove(&self, _key: ostd::sync::WakerKey) {
         panic!("!");
     }
 }

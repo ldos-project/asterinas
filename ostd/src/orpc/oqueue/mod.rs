@@ -352,11 +352,11 @@ impl<T: Send + 'static> Blocker for Consumer<T> {
         self.oqueue.can_consume()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
         self.oqueue.read_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue.read_wait_queue.remove(key);
     }
 }
@@ -438,11 +438,11 @@ impl<U> Blocker for StrongObserver<U> {
         self.oqueue.can_strong_observe(self.observer_id)
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
         self.oqueue.enqueue_read_waker(waker)
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue.remove_read_waker(key)
     }
 }

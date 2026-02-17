@@ -334,11 +334,11 @@ impl<T: Send> Blocker for LockingProducer<T> {
         self.oqueue().inner.lock().can_produce().is_some()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue().put_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue().put_wait_queue.remove(key);
     }
 }
@@ -379,11 +379,11 @@ impl<T> Blocker for LockingConsumer<T> {
         self.oqueue.inner.lock().can_consume()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue.read_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue.read_wait_queue.remove(key);
     }
 }
@@ -450,11 +450,11 @@ impl<T> Blocker for CloningLockingConsumer<T> {
         self.oqueue().inner.lock().can_consume()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue().read_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue().read_wait_queue.remove(key);
     }
 }
@@ -479,11 +479,11 @@ impl<T> Blocker for LockingStrongObserver<T> {
         self.oqueue().inner.lock().can_strong_observe(self.index)
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue().read_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue().read_wait_queue.remove(key);
     }
 }
@@ -536,11 +536,11 @@ impl<T> Blocker for LockingWeakObserver<T> {
         self.oqueue().inner.lock().tail_index > self.max_observed_tail.get()
     }
 
-    fn prepare_to_wait(&self, waker: &Arc<Waker>) -> WakerKey {
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
         self.oqueue().read_wait_queue.enqueue(waker.clone())
     }
 
-    fn finish_wait(&self, key: WakerKey) {
+    fn remove(&self, key: WakerKey) {
         self.oqueue().read_wait_queue.remove(key);
     }
 }
