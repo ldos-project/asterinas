@@ -3,6 +3,8 @@
 //! A trait [`Blocker`] which allows a thread to wait for a wake-up from another thread. The API is designed to allow a
 //! waiter to wait on multiple blockers at the same time to support [`select!`].
 
+use alloc::vec::Vec;
+
 pub use orpc_macros::select;
 
 use crate::{
@@ -124,5 +126,62 @@ impl CurrentTask {
         }
 
         CurrentServer::abort_point();
+    }
+}
+
+/// The struct implementing blocking on an unknown number of blockers at the same time.
+///
+/// This is a struct instead of a method to allow caching an internal allocation between calls.
+/// Without this, each call would cause an allocation and free. The optimization assumes that each
+/// call to [`Self::block_on`] will be called with an iterator of roughly the same length.
+pub struct BlockOnMany {
+    cached_keys: Vec<WakerKey>,
+}
+
+impl BlockOnMany {
+    /// Create a new BlockOnMany
+    pub fn new() -> Self {
+        BlockOnMany {
+            cached_keys: Vec::new(),
+        }
+    }
+
+    /// Wait for multiple blockers, waking if any wake. This clones `blockers` 3 times, so it is
+    /// important that `clone()` be fast.
+    pub fn block_on<'a>(&mut self, blockers: impl Iterator<Item = &'a dyn Blocker> + Clone) {
+        CurrentServer::abort_point();
+        let (waiter, waker) = Waiter::new_pair();
+
+        // 1. Register for all blockers.
+        self.cached_keys
+            .extend(blockers.clone().map(|blocker| blocker.enqueue(&waker)));
+
+        // 2. Check if any of the blockers are actually ready.
+        if !blockers.clone().any(|b| b.should_try()) {
+            // 3. Block if no blockers are ready. This will immediately wake if any blocker woke
+            //    between `enqueue` and here. This prevents this thread from dropping a wake between
+            //    `should_try` and `wait_cancellable`.
+            waiter.wait_cancellable(|| {
+                if CurrentServer::is_aborted() {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
+        // 4. Unregister with all the blockers. This avoids the blocker queues growing without
+        //    bound.
+        for (blocker, key) in blockers.zip(self.cached_keys.drain(..)) {
+            blocker.remove(key);
+        }
+
+        CurrentServer::abort_point();
+    }
+}
+
+impl Default for BlockOnMany {
+    fn default() -> Self {
+        Self::new()
     }
 }
