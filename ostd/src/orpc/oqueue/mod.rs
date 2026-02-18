@@ -227,11 +227,24 @@ macro_rules! impl_oqueue_forward {
     };
 }
 
+/// Derive `Clone` without requiring `T: Clone`. The body simply clones `inner`.
+macro_rules! clone_without_t {
+    ($t:ident, $($bounds:tt)*) => {
+        impl<T $($bounds)*> Clone for $t<T> {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone() }
+            }
+        }        
+    };
+}
+
 /// A dynamically typed OQueue that allows attempting any kind of attachment, but dynamically
 /// returns errors for unsupported ones.
 pub struct AnyOQueueRef<T: ?Sized> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(AnyOQueueRef, : ?Sized);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(AnyOQueueRef, inner, [+ ?Sized]);
@@ -239,20 +252,22 @@ impl_consumable_oqueue_forward!(AnyOQueueRef, inner);
 impl_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
-#[derive(Clone)]
 pub struct OQueueBaseRef<T> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(OQueueBaseRef,);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(OQueueBaseRef, inner, []);
 
 /// A reference to an OQueue which supports consumers. These OQueues support publication is by value
 /// so that ownership of the message can be transferred to the consumer.
-#[derive(Clone)]
 pub struct ConsumableOQueueRef<T: 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(ConsumableOQueueRef, : 'static);
 
 impl<T> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
@@ -270,10 +285,11 @@ impl_consumable_oqueue_forward!(ConsumableOQueueRef, inner);
 
 /// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
 /// values by reference.
-#[derive(Clone)]
 pub struct OQueueRef<T: ?Sized + 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(OQueueRef, : ?Sized + 'static);
 
 impl<T: ?Sized + 'static> OQueueRef<T> {
     /// Create a new observation OQueue with the specified buffer length.
