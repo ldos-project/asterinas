@@ -356,6 +356,18 @@ RUN make autotools \
     && install -m 00755 ./ver_linux /opt/ltp/ver_linux \
     && install -m 00755 ./IDcheck.sh /opt/ltp/IDcheck.sh
 
+#= Build Dropbear SSH ==========================================================
+
+FROM build-base AS build-dropbear
+
+WORKDIR /root
+RUN wget https://matt.ucc.asn.au/dropbear/dropbear-2025.89.tar.bz2 \
+    && tar xf dropbear-2025.89.tar.bz2
+
+WORKDIR /root/dropbear-2025.89
+RUN ./configure --enable-static \
+    && make PROGRAMS="dropbear dropbearkey scp"
+
 #= Build busybox ==============================================================
 
 FROM build-base AS build-busybox
@@ -427,6 +439,11 @@ COPY --from=build-applications /usr/local/apache2 /usr/local/apache2
 COPY --from=build-applications /usr/local/wrk /usr/local/wrk
 
 COPY --from=build-linux /opt/linux_binary_cache /opt/linux_binary_cache
+
+# Install Dropbear SSH binaries built from the previous stages
+COPY --from=build-dropbear /root/dropbear-2025.89/dropbear /root/dropbear-2025.89/dropbear
+COPY --from=build-dropbear /root/dropbear-2025.89/dropbearkey /root/dropbear-2025.89/dropbearkey
+COPY --from=build-dropbear /root/dropbear-2025.89/scp /root/dropbear-2025.89/scp
 
 # Add the path of Asterinas tools
 ENV PATH="/root/asterinas/target/bin:${PATH}"

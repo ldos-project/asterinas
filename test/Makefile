@@ -6,9 +6,14 @@ VDSO_LIB := $(VDSO_DIR)/vdso64.so
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 ATOMIC_WGET := $(CUR_DIR)/../tools/atomic_wget.sh
-COPY_SSHD := $(CUR_DIR)/tools/copy_dropbear.sh
+DROPBEAR_PREFIX := /root/dropbear-2025.89
 BUILD_DIR := $(CUR_DIR)/build
 INITRAMFS := $(BUILD_DIR)/initramfs
+# Dropbear host keys generated on the host and copied into initramfs for the guest
+DROPBEAR_HOST_KEYS := \
+	$(INITRAMFS)/etc/dropbear/dropbear_rsa_host_key \
+	$(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key \
+	$(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key
 INITRAMFS_FILELIST := $(BUILD_DIR)/initramfs.filelist
 INITRAMFS_SKIP_GZIP ?= 0
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
@@ -184,17 +189,29 @@ $(INITRAMFS_IMAGE): $(INITRAMFS_FILELIST)
 # If the BUILD_SYSCALL_TEST variable is set, we should depend on the
 # sub make output to do incremental building.
 ifeq ($(BUILD_SYSCALL_TEST), 1)
-$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(SYSCALL_TEST_DIR)
+$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(SYSCALL_TEST_DIR) $(DROPBEAR_HOST_KEYS)
 else
-$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS)
+$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(DROPBEAR_HOST_KEYS)
 endif
 	@(cd $(INITRAMFS); find . -printf "%T@ %p\n") > $(INITRAMFS_FILELIST)
 
-# Install sshd and its dependencies
+# Install Dropbear ssh and its dependencies
 .PHONY: $(INITRAMFS)/usr/sbin
-$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin
+$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin $(INITRAMFS)/bin
 	@mkdir -p $@
-	@$(COPY_SSHD) $(INITRAMFS)
+	@cp $(DROPBEAR_PREFIX)/dropbear $(INITRAMFS)/usr/sbin/
+	@cp $(DROPBEAR_PREFIX)/dropbearkey $(INITRAMFS)/usr/bin/
+	@cp $(DROPBEAR_PREFIX)/scp $(INITRAMFS)/bin/
+
+# Generate Dropbear host keys on the host; they are included in initramfs for the guest.
+# Override with e.g. make DROPBEARKEY=/usr/bin/dropbearkey if the prefix binary is not available.
+DROPBEARKEY ?= $(DROPBEAR_PREFIX)/dropbearkey
+$(INITRAMFS)/etc/dropbear/dropbear_rsa_host_key: | $(INITRAMFS)/etc/dropbear
+	@$(DROPBEARKEY) -t rsa -f $@
+$(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key: | $(INITRAMFS)/etc/dropbear
+	@$(DROPBEARKEY) -t ecdsa -f $@
+$(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key: | $(INITRAMFS)/etc/dropbear
+	@$(DROPBEARKEY) -t ed25519 -f $@
 
 $(EXT2_IMAGE):
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
