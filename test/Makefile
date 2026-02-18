@@ -6,7 +6,7 @@ VDSO_LIB := $(VDSO_DIR)/vdso64.so
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 ATOMIC_WGET := $(CUR_DIR)/../tools/atomic_wget.sh
-COPY_SSHD := $(CUR_DIR)/tools/copy_sshd.sh
+COPY_SSHD := $(CUR_DIR)/tools/copy_dropbear.sh
 BUILD_DIR := $(CUR_DIR)/build
 INITRAMFS := $(BUILD_DIR)/initramfs
 INITRAMFS_FILELIST := $(BUILD_DIR)/initramfs.filelist
@@ -31,9 +31,8 @@ INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/ext2 \
 	$(INITRAMFS)/exfat \
 	$(INITRAMFS)/raid1 \
-	$(INITRAMFS)/var/empty \
-	$(INITRAMFS)/run/sshd \
-	$(INITRAMFS)/var/run
+	$(INITRAMFS)/.ssh \
+	$(INITRAMFS)/etc/dropbear
 
 INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/etc \
@@ -42,6 +41,7 @@ INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/bin \
 	$(INITRAMFS)/sbin \
 	$(INITRAMFS)/usr/bin \
+	$(INITRAMFS)/usr/sbin \
 	$(INITRAMFS)/usr/local \
 	$(INITRAMFS)/benchmark \
 	$(INITRAMFS_EMPTY_DIRS)
@@ -131,11 +131,6 @@ $(INITRAMFS)/usr/local:
 	@cp -r /usr/local/redis $@
 	@cp -r /usr/local/memcached $@
 
-# Install sshd and its dependencies
-.PHONY: $(INITRAMFS)/usr/sbin
-$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/lib/x86_64-linux-gnu $(INITRAMFS)/usr/bin
-	@$(COPY_SSHD) $(INITRAMFS)
-
 .PHONY: $(INITRAMFS)/test
 $(INITRAMFS)/test:
 	@$(MAKE) --no-print-directory -C apps
@@ -197,6 +192,12 @@ else
 $(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS)
 endif
 	@(cd $(INITRAMFS); find . -printf "%T@ %p\n") > $(INITRAMFS_FILELIST)
+
+# Install sshd and its dependencies
+.PHONY: $(INITRAMFS)/usr/sbin
+$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin
+	@mkdir -p $@
+	@$(COPY_SSHD) $(INITRAMFS)
 
 $(EXT2_IMAGE):
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
