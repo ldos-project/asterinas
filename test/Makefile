@@ -51,9 +51,6 @@ ifeq ($(BENCHMARK), none)
 INITRAMFS_ALL_DIRS += $(INITRAMFS)/test
 endif
 
-# Include sshd in build
-INITRAMFS_ALL_DIRS += $(INITRAMFS)/usr/sbin
-
 SYSCALL_TEST_DIR := $(INITRAMFS)/opt/syscall_test
 
 .PHONY: all
@@ -109,7 +106,7 @@ $(INITRAMFS)/lib64:
 
 $(INITRAMFS)/etc:
 	@mkdir -p $@
-	@cp -r $(CUR_DIR)/etc/* $@
+	@cp $(CUR_DIR)/etc/* $@
 
 # Install busybox into /bin and /usr/bin.
 $(INITRAMFS)/bin:
