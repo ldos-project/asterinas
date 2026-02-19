@@ -2,6 +2,7 @@
 /// A set of macros for use with ORPC. The most important are the ORPC attribute macros `orpc_trait`, `orpc_server`, and
 /// `orpc_impl`. The `select` macro (for waiting on multiple OQueues) is also defined here.
 mod orpc_impl;
+mod orpc_monitor;
 mod orpc_server;
 mod orpc_trait;
 mod parsing_utils;
@@ -9,7 +10,8 @@ mod select;
 
 use proc_macro::TokenStream;
 use syn::{
-    ItemImpl, ItemStruct, ItemTrait, Path, Token, parse_macro_input, punctuated::Punctuated,
+    ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
+    punctuated::Punctuated,
 };
 
 /// Declare a trait as an ORPC trait that can be implemented by ORPC server.
@@ -128,6 +130,59 @@ pub fn orpc_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemImpl);
     let output = orpc_impl::orpc_impl_macro_impl(attr, input);
     output.into()
+}
+
+/// Declare an [ORPC monitor type](`ostd::orpc::framework::monitor`). This is applied to the `impl`
+/// for monitor methods.
+///
+/// This will generate the `*Monitor` type and methods on it to call methods and attach methods to
+/// OQueues and a `start` method. The `start` method will initialize the monitor, giving it it's
+/// initial state and associating it with a server. The default implementation spawns a thread which
+/// handles all calls in an event loop.
+///
+/// ```ignore
+/// pub struct XYZ {
+///     x: i32,
+/// }
+///
+/// #[orpc_monitor(pub)]
+/// impl XYZ {
+///     #[strong_observer]
+///     pub fn update(&mut self, x: i32) -> Result<(), RPCError> {
+///         // ...
+///         Ok(())
+///     }
+///
+///     #[consumer]
+///     pub fn next(&mut self, _: ()) -> Result<(), RPCError> {
+///         // ...
+///         Ok(())
+///     }
+///
+///     pub fn get(&mut self) -> Result<i32, RPCError> {
+///         Ok(self.x)
+///     }
+/// }
+/// ```
+///
+/// This will generate methods:
+///
+/// ```ignore
+/// impl TestStateMonitor {
+///     pub fn attach_update(&self, attachment: StrongObserver<i32>) -> Result<(), AttachmentError>;
+///     pub fn update(&self, arg: i32) -> Result<(), RPCError>;
+///     pub fn attach_next(&self, attachment: Consumer<()>) -> Result<(), AttachmentError>;
+///     pub fn next(&self, arg: ()) -> Result<(), RPCError>;
+///     pub fn get(&self) -> Result<i32, RPCError>;
+///     fn start(&self, server: Arc<dyn Server>, state: TestState);
+///     pub fn new() -> Self;
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn orpc_monitor(arg: TokenStream, input: TokenStream) -> TokenStream {
+    let input_impl = parse_macro_input!(input as ItemImpl);
+    let vis = parse_macro_input!(arg as Visibility);
+    orpc_monitor::orpc_monitor_impl(vis, input_impl).into()
 }
 
 // TODO: The select syntax (and name) should be revisited. This provides a good starting point, but it also has some

@@ -73,6 +73,17 @@ pub struct Task {
     server: ForceSync<RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>>>,
 }
 
+impl PartialEq for Task {
+    fn eq(&self, other: &Self) -> bool {
+        let ret = core::ptr::eq(self as *const Self, other as *const Self);
+        // Check that id equality matches pointer equality.
+        debug_assert_eq!(self.id == other.id, ret);
+        ret
+    }
+}
+
+impl Eq for Task {}
+
 impl core::fmt::Debug for Task {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Task")

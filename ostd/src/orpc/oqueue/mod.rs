@@ -60,13 +60,18 @@ use core::{
 mod implementation;
 pub mod query;
 mod single_thread_ring_buffer;
+mod utils;
 
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
+pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
-use crate::sync::SpinLock;
+use crate::{
+    orpc::sync::Blocker,
+    sync::{SpinLock, WakerKey},
+};
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -292,7 +297,6 @@ impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
 /// the consumer without copying or cloning.
 pub struct ValueProducer<T> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + 'static> ValueProducer<T> {
@@ -312,7 +316,6 @@ impl<T: Send + 'static> ValueProducer<T> {
 /// There can be no consumers since the message is not moved into the OQueue.
 pub struct RefProducer<T: ?Sized> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + ?Sized + 'static> RefProducer<T> {
@@ -339,6 +342,20 @@ pub struct Consumer<T: 'static> {
 impl<T> Drop for Consumer<T> {
     fn drop(&mut self) {
         self.oqueue.detach_consumer();
+    }
+}
+
+impl<T: Send + 'static> Blocker for Consumer<T> {
+    fn should_try(&self) -> bool {
+        self.oqueue.can_consume()
+    }
+
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.oqueue.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn remove(&self, key: WakerKey) {
+        self.oqueue.read_wait_queue.remove(key);
     }
 }
 
@@ -401,16 +418,30 @@ type ConvertToInlineFn<U> = fn(
 ) -> Result<InlineObserverKey, AttachmentError>;
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
-pub struct StrongObserver<U: Copy + Send> {
+pub struct StrongObserver<U> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
     observer_id: ObserverKey,
     convert_to_inline: ConvertToInlineFn<U>,
     _phantom: PhantomData<core::cell::Cell<U>>,
 }
 
-impl<U: Copy + Send> Drop for StrongObserver<U> {
+impl<U> Drop for StrongObserver<U> {
     fn drop(&mut self) {
         self.oqueue.detach_strong_observer(self.observer_id);
+    }
+}
+
+impl<U> Blocker for StrongObserver<U> {
+    fn should_try(&self) -> bool {
+        self.oqueue.can_strong_observe(self.observer_id)
+    }
+
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.oqueue.enqueue_read_waker(waker)
+    }
+
+    fn remove(&self, key: WakerKey) {
+        self.oqueue.remove_read_waker(key)
     }
 }
 

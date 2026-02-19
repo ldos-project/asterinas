@@ -18,6 +18,7 @@ use core::{
     marker::PhantomData,
 };
 
+use log::warn;
 use slotmap::{SlotMap, new_key_type};
 use snafu::ensure;
 use static_assertions::assert_obj_safe;
@@ -30,7 +31,7 @@ use crate::{
             ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer,
         },
     },
-    sync::{SpinLock, WaitQueue},
+    sync::{SpinLock, WaitQueue, WakerKey},
 };
 
 new_key_type! {
@@ -55,8 +56,8 @@ pub(crate) struct OQueueImplementation<T: ?Sized> {
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
-    put_wait_queue: WaitQueue,
-    read_wait_queue: WaitQueue,
+    pub(super) put_wait_queue: WaitQueue,
+    pub(super) read_wait_queue: WaitQueue,
 }
 
 impl<T: ?Sized + 'static> OQueueImplementation<T> {
@@ -64,7 +65,13 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     ///
     /// * `len` is the ring buffer length used for consumers and strong-observers.
     /// * `supports_consume` specifies the attachment it allows later.
-    pub(crate) fn new(len: usize, supports_consume: bool) -> Self {
+    pub(crate) fn new(mut len: usize, supports_consume: bool) -> Self {
+        if len < 2 {
+            warn!(
+                "Creating an OQueue with length {len} is automatically increased to 2. Ring buffers smaller than 2 are not supported."
+            );
+            len = 2;
+        }
         Self {
             inner: SpinLock::new(OQueueInner {
                 consumer_ring_buffer: Default::default(),
@@ -234,6 +241,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
 fn wrap_closure_ref<T: ?Sized + 'static>(
     f: impl Fn(&T) + Send + 'static,
 ) -> Box<dyn Fn(&T) + Send> {
+    // TODO(arthurp): This embeds a detail of ORPC in the middle of the OQueue implementation. It
+    // also forces this overhead on every closure regardless of it's origin.
     if let Some(s) = CurrentServer::current_cloned() {
         let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
             let _ = s.orpc_server_base().call_in_context::<_, RPCError>(|| {
@@ -298,7 +307,6 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
         Ok(super::RefProducer {
             oqueue: self.clone(),
-            _phantom: PhantomData,
         })
     }
 }
@@ -355,6 +363,15 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         self.read_wait_queue.wait_until(|| self.try_consume())
     }
 
+    pub(super) fn can_consume(&self) -> bool {
+        let inner = self.inner.lock();
+        inner
+            .consumer_ring_buffer
+            .as_ref()
+            .expect("consume not supported")
+            .can_get_for_head(0)
+    }
+
     /// Attempt to consume a value from the consumer ring buffer, taking ownership of the value.
     pub(super) fn try_consume(&self) -> Option<T> {
         let mut inner = self.inner.lock();
@@ -382,7 +399,6 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         }
         Ok(super::ValueProducer {
             oqueue: self.clone(),
-            _phantom: PhantomData,
         })
     }
 
@@ -571,6 +587,12 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
     /// Release any resources held by inline observer with the given key.
     fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey);
 
+    fn can_strong_observe(&self, observer_id: ObserverKey) -> bool;
+
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey;
+
+    fn remove_read_waker(&self, key: WakerKey);
+
     /// Copy the next value available to the specified observer into `dest` if it is available. This
     /// returns `Ok(true)` if the value was copied, `Ok(false)` if there was not value available
     /// yet, and an error if some other failure happened.
@@ -738,5 +760,23 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         ring_buffer.oldest_cursor()
+    }
+
+    fn can_strong_observe(&self, observer_id: ObserverKey) -> bool {
+        let mut inner = self.inner.lock();
+        let ObservationRingBuffer { ring_buffer, .. } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
+            .expect("should only be called with an id returned from new_observation_ring_buffer");
+        let head_id = 0;
+        ring_buffer.can_get_for_head(head_id)
+    }
+
+    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn remove_read_waker(&self, key: WakerKey) {
+        self.read_wait_queue.remove(key);
     }
 }
