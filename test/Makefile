@@ -49,6 +49,7 @@ INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/usr/sbin \
 	$(INITRAMFS)/usr/local \
 	$(INITRAMFS)/benchmark \
+	$(INITRAMFS)/service \
 	$(INITRAMFS_EMPTY_DIRS)
 
 # Include test as target if BENCHMARK is not set.
@@ -197,11 +198,19 @@ endif
 
 # Install Dropbear ssh and its dependencies
 .PHONY: $(INITRAMFS)/usr/sbin
-$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin $(INITRAMFS)/bin
+$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin $(INITRAMFS)/bin $(INITRAMFS)/.ssh/authorized_keys
 	@mkdir -p $@
 	@cp $(DROPBEAR_PREFIX)/dropbear $(INITRAMFS)/usr/sbin/
 	@cp $(DROPBEAR_PREFIX)/dropbearkey $(INITRAMFS)/usr/bin/
 	@cp $(DROPBEAR_PREFIX)/scp $(INITRAMFS)/bin/
+
+# generate client key and setup the authorized_keys file
+.PHONY: $(INITRAMFS)/.ssh/authorized_keys
+$(INITRAMFS)/.ssh/authorized_keys:
+	@mkdir -p $(dir $@)
+	@rm -f /root/.ssh/id_rsa /root/.ssh/id_rsa.pub /root/.ssh/known_hosts
+	@ssh-keygen -t rsa -f /root/.ssh/id_rsa -N "" -q
+	@cp /root/.ssh/id_rsa.pub $(INITRAMFS)/.ssh/authorized_keys
 
 # Generate Dropbear host keys on the host; they are included in initramfs for the guest.
 # Override with e.g. make DROPBEARKEY=/usr/bin/dropbearkey if the prefix binary is not available.
@@ -212,6 +221,10 @@ $(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key: | $(INITRAMFS)/etc/dropbear
 	@$(DROPBEARKEY) -t ecdsa -f $@
 $(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key: | $(INITRAMFS)/etc/dropbear
 	@$(DROPBEARKEY) -t ed25519 -f $@
+
+$(INITRAMFS)/service:
+	@mkdir -p $@
+	@cp $(CUR_DIR)/service/* $@
 
 $(EXT2_IMAGE):
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
