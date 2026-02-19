@@ -99,6 +99,7 @@ impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
     #[track_caller]
     pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
+        backend.upgrade().unwrap().path().append(path!(page_cache));
         let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)

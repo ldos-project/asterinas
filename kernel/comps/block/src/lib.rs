@@ -41,7 +41,7 @@ pub mod request_queue;
 pub mod test_utils;
 
 use component::{ComponentInitError, init_component};
-use ostd::sync::SpinLock;
+use ostd::{orpc::path::Path, sync::SpinLock};
 use spin::Once;
 
 use self::{
@@ -58,6 +58,8 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
 
     /// Returns the metadata of the block device.
     fn metadata(&self) -> BlockDeviceMeta;
+
+    fn path(&self) -> Path;
 }
 
 /// Metadata for a block device.

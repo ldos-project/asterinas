@@ -92,7 +92,7 @@ mod test {
             increment: usize,
             atomic_count: AtomicUsize,
         ) -> Result<Arc<ServerAState>, Whatever> {
-            let server = Self::new_with(|orpc_internal, _| Self {
+            let server = Self::new_with(Path::test(), |orpc_internal, _| Self {
                 increment,
                 atomic_count,
                 orpc_internal,
@@ -226,7 +226,8 @@ mod test {
 
         impl TestServer {
             fn spawn() -> Result<Arc<Self>, Whatever> {
-                let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
+                let server =
+                    Self::new_with(Path::test(), |orpc_internal, _| Self { orpc_internal });
                 Ok(server)
             }
         }
@@ -263,7 +264,7 @@ mod test {
 
         impl TestServer {
             fn spawn() -> Result<Arc<Self>, Whatever> {
-                let server = Self::new_with(|orpc_internal, _| Self {
+                let server = Self::new_with(Path::test(), |orpc_internal, _| Self {
                     x: Default::default(),
                     orpc_internal,
                 });
@@ -309,7 +310,7 @@ mod test {
     impl SimpleServer {
         fn spawn() -> Result<Arc<Self>, Whatever> {
             let thread_exited = Arc::new(AtomicBool::new(false));
-            let server = new_server!(|_| Self {
+            let server = new_server!(Path::test(), |_| Self {
                 shutdown_state: ShutdownState::new(Path::test()),
                 thread_exited: thread_exited.clone(),
             });
@@ -406,7 +407,7 @@ mod test {
 
         impl MessageCounterServer {
             fn spawn_with_queue(queue: ConsumableOQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
-                let server = new_server!(|_| Self {
+                let server = new_server!(Path::test(), |_| Self {
                     processed_count: AtomicUsize::new(0),
                     shutdown_state: ShutdownState::new(path!(server_type_name)),
                 });
@@ -503,7 +504,7 @@ mod test {
 
         impl MessageCounterServer {
             fn spawn_with_queue(queue: OQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
-                let server = new_server!(|_| Self {
+                let server = new_server!(Path::test(), |_| Self {
                     processed_count: AtomicUsize::new(0),
                     shutdown_state: ShutdownState::new(path!(message_counter_server)),
                 });

@@ -31,16 +31,14 @@ mod tests {
     use orpc_macros::{orpc_monitor, orpc_server};
 
     use crate::{
-        assert_eq_eventually,
-        orpc::{
+        assert_eq_eventually, new_server, orpc::{
             errors::RPCError,
             oqueue::{
                 ConsumableOQueue, ConsumableOQueueRef, OQueue, OQueueBase, OQueueRef,
                 ObservationQuery,
             },
             path::Path,
-        },
-        prelude::{Arc, ktest},
+        }, prelude::{Arc, ktest}
     };
 
     #[orpc_server()]
@@ -77,8 +75,7 @@ mod tests {
     }
 
     fn spawn_server() -> Arc<TestServer> {
-        let server = TestServer::new_with(|orpc_internal, _| TestServer {
-            orpc_internal,
+        let server = new_server!(Path::test(), |_| TestServer {
             monitor: TestStateMonitor::new(Path::test()),
         });
         server.monitor.start(server.clone(), TestState { x: 0 });

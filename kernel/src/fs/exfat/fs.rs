@@ -81,7 +81,7 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = new_server!(|weak_self| ExfatFS {
+        let exfat_fs = new_server!(path!(fs.exfat[unique]), |weak_self| ExfatFS {
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),

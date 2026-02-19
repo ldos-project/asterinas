@@ -11,6 +11,8 @@
 
 use core::{mem::ManuallyDrop, ops::Range, sync::atomic::Ordering};
 
+#[cfg(not(baseline_asterinas))]
+use crate::{new_server, path};
 use crate::{
     arch::mm::{PageTableEntry, PagingConsts, current_page_table_paddr},
     cpu::{AtomicCpuSet, CpuSet, PinCurrentCpu},
@@ -120,8 +122,8 @@ impl VmSpace {
             cpus: AtomicCpuSet::new(CpuSet::new_empty()),
             // Set the default policy to be base pages only. This can updated by calling
             // with_mapping_policy.
-            vm_mapping_policy: VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
-                VmMappingPolicyBasePagesOnly { orpc_internal }
+            vm_mapping_policy: new_server!(path!(vmspace[unique]), |_| {
+                VmMappingPolicyBasePagesOnly {}
             }),
         };
         #[cfg(baseline_asterinas)]

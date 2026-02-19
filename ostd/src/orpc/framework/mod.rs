@@ -40,7 +40,7 @@ pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
-    orpc::{framework::errors::{RPCError, ServerMissingSnafu}, path::Path},
+    orpc::{errors::{RPCError, ServerMissingSnafu}, path::Path},
     prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},

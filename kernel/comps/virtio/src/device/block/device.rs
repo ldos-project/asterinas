@@ -31,6 +31,7 @@ use ostd::orpc::{orpc_impl, orpc_server};
 use ostd::{
     Pod, ignore_err,
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
+    path,
     sync::SpinLock,
     trap::TrapFrame,
 };
@@ -99,7 +100,7 @@ impl BlockDevice {
 
         #[cfg(not(baseline_asterinas))]
         {
-            let block_device_server = new_server!(|_| BlockDevice {
+            let block_device_server = new_server!(path!(block.virtio.{device_id.clone()}), |_weak_self| BlockDevice {
                 device,
                 queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,

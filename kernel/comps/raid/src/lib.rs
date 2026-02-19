@@ -35,7 +35,7 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::orpc_server;
+use ostd::{orpc::orpc_server, path};
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
@@ -122,13 +122,16 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
-            orpc_internal,
-            members,
-            queue,
-            metadata,
-            selection_policy,
-        });
+        let device = Self::new_with(
+            path!(block.raid1.{name.to_owned()}),
+            |orpc_internal, _weak_self| Raid1Device {
+                orpc_internal,
+                members,
+                queue,
+                metadata,
+                selection_policy,
+            },
+        );
 
         aster_block::register_device(name.to_owned(), device.clone());
 

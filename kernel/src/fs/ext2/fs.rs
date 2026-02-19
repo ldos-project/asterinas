@@ -27,6 +27,7 @@ pub struct Ext2 {
     block_size: usize,
     group_descriptors_segment: USegment,
     self_ref: Weak<Self>,
+    path: Path,
 }
 
 impl Ext2 {
