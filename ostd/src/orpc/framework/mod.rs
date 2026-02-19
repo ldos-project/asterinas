@@ -174,20 +174,30 @@ pub struct CurrentServer {
 }
 
 impl CurrentServer {
+    /// Call `f` with a reference to the current server.
+    pub fn with_server<T>(f: impl Fn(Option<&Arc<dyn Server + Send + Sync + 'static>>) -> T) -> T {
+        f(Task::current().unwrap().server().borrow().as_ref())
+    }
+
     /// Get a new Arc reference to the current server.
     pub fn current_cloned() -> Option<Arc<dyn Server + Send + Sync + 'static>> {
-        Task::current().unwrap().server().borrow().clone()
+        Self::with_server(|s| s.cloned())
     }
 
     /// Check if the current server has aborted
     pub fn is_aborted() -> bool {
-        Task::current()
-            .unwrap()
-            .server()
-            .borrow()
-            .as_ref()
-            .map(|s| s.orpc_server_base().is_aborted())
-            .unwrap_or(false)
+        Self::with_server(|s| {
+            s.map(|s| s.orpc_server_base().is_aborted())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Get the path of the current server.
+    pub fn path() -> Path {
+        Self::with_server(|s| {
+            s.map(|s| s.orpc_server_base().path().clone())
+                .unwrap_or_default()
+        })
     }
 
     /// Check the if the current server has aborted and panic if it has. This should be called periodically from all
