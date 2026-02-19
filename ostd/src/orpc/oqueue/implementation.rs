@@ -241,8 +241,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
 fn wrap_closure_ref<T: ?Sized + 'static>(
     f: impl Fn(&T) + Send + 'static,
 ) -> Box<dyn Fn(&T) + Send> {
-    // XXX: This embeds a detail of ORPC in the middle of the OQueue implementation. It also forces
-    // this overhead on every closure regardless of it's origin.
+    // TODO(arthurp): This embeds a detail of ORPC in the middle of the OQueue implementation. It
+    // also forces this overhead on every closure regardless of it's origin.
     if let Some(s) = CurrentServer::current_cloned() {
         let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
             let _ = s.orpc_server_base().call_in_context::<_, RPCError>(|| {
@@ -307,7 +307,6 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
         Ok(super::RefProducer {
             oqueue: self.clone(),
-            // _phantom: PhantomData,
         })
     }
 }
@@ -400,7 +399,6 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         }
         Ok(super::ValueProducer {
             oqueue: self.clone(),
-            // _phantom: PhantomData,
         })
     }
 

@@ -72,7 +72,6 @@ pub struct ServerBase {
     server_threads: Mutex<Vec<Arc<Task>>>,
     /// A weak reference to this server. This is used to create strong references to the server when only `&dyn Server`
     /// is available.
-    // TODO(arthurp): This could be removed a number of things simplified by using intrusive reference counts.
     weak_this: Weak<dyn Server + Send + Sync + 'static>,
     /// An opaque ID for the server. This is non-zero to allow compact representations of
     /// `Option<id>` in errors.

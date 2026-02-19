@@ -4,6 +4,10 @@
 //! state. They are **not** servers, and are orthogonal to them. As such, monitors must be inside a
 //! server. The standard usage is to have a single monitor holding all the state of the server and
 //! forwarding all server methods into that monitor.
+//!
+//! Monitors are created using the [`orpc_monitor`] macro.
+
+pub use orpc_macros::orpc_monitor;
 
 use crate::orpc::oqueue::{ValueProducer, new_reply_pair};
 
@@ -49,7 +53,6 @@ mod tests {
 
     #[orpc_monitor(pub)]
     impl TestState {
-        /// The update method thingy
         #[strong_observer]
         pub fn update(&mut self, x: i32) -> Result<(), RPCError> {
             self.x = (self.x + x * 3) / 4;
@@ -62,7 +65,6 @@ mod tests {
             Ok(())
         }
 
-        /// Test
         pub fn get(&mut self) -> Result<i32, RPCError> {
             Ok(self.x)
         }

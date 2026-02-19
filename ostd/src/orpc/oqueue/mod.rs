@@ -297,7 +297,6 @@ impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
 /// the consumer without copying or cloning.
 pub struct ValueProducer<T> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    // _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + 'static> ValueProducer<T> {
@@ -317,7 +316,6 @@ impl<T: Send + 'static> ValueProducer<T> {
 /// There can be no consumers since the message is not moved into the OQueue.
 pub struct RefProducer<T: ?Sized> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    // _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + ?Sized + 'static> RefProducer<T> {
@@ -559,13 +557,6 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     /// specific values. Only, that the caller will run eventually when new values are produced.
     pub fn wait(&self) {
         self.oqueue.wait(self.observer_id, self.last_observed.get());
-
-        /*
-        I realized there are some important subtleties as to what it means to "wait for new data" as a weak observer. The question is: After what point in the history is data "new"?
-        * Is data new if it has not been explicitly observed?
-        * Is it new if it was published after the moment the weak observer started waiting? (This has the problem where a weak observer can block indefinitely even when there is data it hasn't seen. This isn't fundamentally wrong, but it is kinda confusing.)
-        * Or do we define this kind of backwards with the weak observer definitely not waking until there is new data, but not even guaranteeing to wake at all.
-                 */
     }
 
     /// Get the cursor for most recent value in the OQueue. This is concurrent and the returned

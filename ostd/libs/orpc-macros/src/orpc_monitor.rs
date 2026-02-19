@@ -56,13 +56,11 @@ impl MethodDefinition {
 }
 
 pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> TokenStream {
-    let state_type = &input_impl.self_ty;
+    // A set of errors encountered.
+    let mut errors = Vec::new();
 
     // Information about each method definition
     let mut method_definitions = Vec::new();
-
-    // A set of errors encountered.
-    let mut errors = Vec::new();
 
     for item in &input_impl.items {
         if let syn::ImplItem::Method(method) = item {
@@ -131,13 +129,13 @@ pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> Token
     }
 
     // The name of the state type
-    let state_name = match state_type.as_ref() {
+    let state_name = match input_impl.self_ty.as_ref() {
         Type::Path(syn::TypePath { qself: None, path }) if path.get_ident().is_some() => {
             path.get_ident().unwrap().clone()
         }
         _ => {
             errors.push(Error::new(
-                state_type.span(),
+                input_impl.self_ty.span(),
                 "impl'd type must be referenced by a simple identifier",
             ));
             format_ident!("__ERROR__")
@@ -197,47 +195,42 @@ pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> Token
     for method_def in &method_definitions {
         let method_name = &method_def.definition.sig.ident;
         let variant_name = format_ident!("{}", method_name.to_string().to_upper_camel_case());
-        let attachment_variant_name = format_ident!("Attach{}", variant_name);
-        let attachment_method_name =
-            format_ident!("attach_{}", method_name, span = method_name.span());
 
         let method_attrs = &method_def.definition.attrs;
         let method_vis = &method_def.definition.vis;
 
         if let Ok(param_type) = method_def.argument_type() {
-            match method_def.attachment_type {
-                MethodAttachmentType::None => {}
-                _ => {
-                    let param_type = param_type.clone().unwrap_or(parse_quote! {()});
-                    if let Some(attachment_type_base) =
-                        method_def.attachment_type.to_attachment_type_symbol()
-                    {
-                        let attachment_type = quote! { #attachment_type_base<#param_type> };
-                        let span = method_def.definition.span();
-                        let attachment_docs = format!(
-                            "
+            if let Some(attachment_type_base) =
+                method_def.attachment_type.to_attachment_type_symbol()
+            {
+                let attachment_variant_name = format_ident!("Attach{}", variant_name);
+                let attachment_method_name =
+                    format_ident!("attach_{}", method_name, span = method_name.span());
+                let param_type = param_type.clone().unwrap_or(parse_quote! {()});
+                let attachment_type = quote! { #attachment_type_base<#param_type> };
+                let span = method_def.definition.span();
+                let attachment_docs = format!(
+                    "
 Configure the monitor to run `{method_name}` to handle values from `attachment`.
 
 The documentation for [`Self::{method_name}`] is:\n\n",
-                        );
-                        monitor_methods.push(
-                            quote_spanned! { span =>
-                                #[doc = #attachment_docs]
-                                #(#method_attrs)*
-                                #[allow(clippy::allow_attributes)]
-                                #[allow(unused)]
-                                #method_vis fn #attachment_method_name(&self, attachment: #attachment_type)
-                                    -> ::core::result::Result<(), ::ostd::orpc::oqueue::AttachmentError>
-                                {
-                                    ::ostd::orpc::framework::monitor::synchronous_request(
-                                        &self.command_producer,
-                                        |reply_producer| #command_enum_name::#attachment_variant_name(attachment, reply_producer)
-                                    )
-                                }
-                            }
-                        );
+                );
+                monitor_methods.push(
+                    quote_spanned! { span =>
+                        #[doc = #attachment_docs]
+                        #(#method_attrs)*
+                        #[allow(clippy::allow_attributes)]
+                        #[allow(unused)]
+                        #method_vis fn #attachment_method_name(&self, attachment: #attachment_type)
+                            -> ::core::result::Result<(), ::ostd::orpc::oqueue::AttachmentError>
+                        {
+                            ::ostd::orpc::framework::monitor::synchronous_request(
+                                &self.command_producer,
+                                |reply_producer| #command_enum_name::#attachment_variant_name(attachment, reply_producer)
+                            )
+                        }
                     }
-                }
+                );
             }
 
             let return_type = match &method_def.definition.sig.output {
