@@ -74,12 +74,12 @@ pub fn lazy_init() {
 
 
     // mount the device to /raid0, /raid1, /raid2
-    // if let Ok(block_device_raid0) = start_block_device("raid0") {
-    //     let raid0_fs = Ext2::open(block_device_raid0).unwrap();  // result in error invalid FS state
-    //     let target_path = FsPath::try_from("/raid0").unwrap();
-    //     self::rootfs::mount_fs_at(raid0_fs, &target_path).unwrap();
-    //     info!("[kernel] Mounted RAID-0 at {:?} ", target_path);
-    // }
+    if let Ok(block_device_raid0) = start_block_device("raid0") {
+        let raid0_fs = Ext2::open(block_device_raid0).unwrap();  // result in error invalid FS state
+        let target_path = FsPath::try_from("/raid0").unwrap();
+        self::rootfs::mount_fs_at(raid0_fs, &target_path).unwrap();
+        info!("[kernel] Mounted RAID-0 at {:?} ", target_path);
+    }
     // if let Ok(block_device_raid1) = start_block_device("raid1") {
     //     let raid1_fs = Ext2::open(block_device_raid1).unwrap();
     //     let target_path = FsPath::try_from("/raid1").unwrap();
@@ -92,8 +92,7 @@ pub fn lazy_init() {
     //     self::rootfs::mount_fs_at(raid2_fs, &target_path).unwrap();
     //     info!("[kernel] Mounted RAID-2 at {:?} ", target_path);
     // }
-    // early stop for testing
-    // return;
+    return;
 
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
