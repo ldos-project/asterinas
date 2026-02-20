@@ -292,7 +292,7 @@ run_dropbear: initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
-	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --init-args="/service/start.sh"
+	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --init-args="/service/start_dropbear.sh"
 
 # Check the running status of auto tests from the QEMU log
 ifeq ($(AUTO_TEST), syscall)

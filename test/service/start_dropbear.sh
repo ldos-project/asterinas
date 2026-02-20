@@ -7,3 +7,5 @@ set -e
 
 echo "Dropbear started (PID $!)."
 lsof -p $!
+
+exec sh
