@@ -6,8 +6,14 @@ VDSO_LIB := $(VDSO_DIR)/vdso64.so
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 ATOMIC_WGET := $(CUR_DIR)/../tools/atomic_wget.sh
+DROPBEAR_PREFIX := /root/dropbear-2025.89
 BUILD_DIR := $(CUR_DIR)/build
 INITRAMFS := $(BUILD_DIR)/initramfs
+# Dropbear host keys generated on the host and copied into initramfs for the guest
+DROPBEAR_HOST_KEYS := \
+	$(INITRAMFS)/etc/dropbear/dropbear_rsa_host_key \
+	$(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key \
+	$(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key
 INITRAMFS_FILELIST := $(BUILD_DIR)/initramfs.filelist
 INITRAMFS_SKIP_GZIP ?= 0
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
@@ -29,7 +35,10 @@ INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/sys \
 	$(INITRAMFS)/ext2 \
 	$(INITRAMFS)/exfat \
-	$(INITRAMFS)/raid1
+	$(INITRAMFS)/raid1 \
+	$(INITRAMFS)/.ssh \
+	$(INITRAMFS)/etc/dropbear
+
 INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/etc \
 	$(INITRAMFS)/lib/x86_64-linux-gnu \
@@ -37,8 +46,10 @@ INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/bin \
 	$(INITRAMFS)/sbin \
 	$(INITRAMFS)/usr/bin \
+	$(INITRAMFS)/usr/sbin \
 	$(INITRAMFS)/usr/local \
 	$(INITRAMFS)/benchmark \
+	$(INITRAMFS)/service \
 	$(INITRAMFS_EMPTY_DIRS)
 
 # Include test as target if BENCHMARK is not set.
@@ -179,11 +190,57 @@ $(INITRAMFS_IMAGE): $(INITRAMFS_FILELIST)
 # If the BUILD_SYSCALL_TEST variable is set, we should depend on the
 # sub make output to do incremental building.
 ifeq ($(BUILD_SYSCALL_TEST), 1)
-$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(SYSCALL_TEST_DIR)
+$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(SYSCALL_TEST_DIR) $(DROPBEAR_HOST_KEYS)
 else
-$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS)
+$(INITRAMFS_FILELIST): | $(INITRAMFS_ALL_DIRS) $(DROPBEAR_HOST_KEYS)
 endif
 	@(cd $(INITRAMFS); find . -printf "%T@ %p\n") > $(INITRAMFS_FILELIST)
+
+# Install Dropbear ssh and its dependencies
+.PHONY: $(INITRAMFS)/usr/sbin
+$(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin $(INITRAMFS)/bin $(INITRAMFS)/.ssh/authorized_keys
+	@mkdir -p $@
+	@if [ -d "$(DROPBEAR_PREFIX)" ]; then \
+		cp $(DROPBEAR_PREFIX)/dropbear $(INITRAMFS)/usr/sbin/; \
+		cp $(DROPBEAR_PREFIX)/dropbearkey $(INITRAMFS)/usr/bin/; \
+		cp $(DROPBEAR_PREFIX)/scp $(INITRAMFS)/bin/; \
+	else \
+		echo "Dropbear wasn't build, not copied"; \
+	fi
+
+# generate client key and setup the authorized_keys file
+.PHONY: $(INITRAMFS)/.ssh/authorized_keys
+$(INITRAMFS)/.ssh/authorized_keys:
+	@mkdir -p $(dir $@)
+	@rm -f /root/.ssh/id_rsa /root/.ssh/id_rsa.pub /root/.ssh/known_hosts
+	@ssh-keygen -t rsa -f /root/.ssh/id_rsa -N "" -q
+	@cp /root/.ssh/id_rsa.pub $(INITRAMFS)/.ssh/authorized_keys
+
+# Generate Dropbear host keys on the host; they are included in initramfs for the guest.
+# Override with e.g. make DROPBEARKEY=/usr/bin/dropbearkey if the prefix binary is not available.
+DROPBEARKEY ?= $(DROPBEAR_PREFIX)/dropbearkey
+$(INITRAMFS)/etc/dropbear/dropbear_rsa_host_key: | $(INITRAMFS)/etc/dropbear
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t rsa -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
+$(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key: | $(INITRAMFS)/etc/dropbear
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t ecdsa -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
+$(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key: | $(INITRAMFS)/etc/dropbear
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t ed25519 -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
+
+$(INITRAMFS)/service:
+	@mkdir -p $@
+	@cp $(CUR_DIR)/service/* $@
 
 $(EXT2_IMAGE):
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
