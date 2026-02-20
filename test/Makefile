@@ -200,9 +200,13 @@ endif
 .PHONY: $(INITRAMFS)/usr/sbin
 $(INITRAMFS)/usr/sbin: | $(INITRAMFS)/usr/bin $(INITRAMFS)/bin $(INITRAMFS)/.ssh/authorized_keys
 	@mkdir -p $@
-	@cp $(DROPBEAR_PREFIX)/dropbear $(INITRAMFS)/usr/sbin/
-	@cp $(DROPBEAR_PREFIX)/dropbearkey $(INITRAMFS)/usr/bin/
-	@cp $(DROPBEAR_PREFIX)/scp $(INITRAMFS)/bin/
+	@if [ -d "$(DROPBEAR_PREFIX)" ]; then \
+		cp $(DROPBEAR_PREFIX)/dropbear $(INITRAMFS)/usr/sbin/; \
+		cp $(DROPBEAR_PREFIX)/dropbearkey $(INITRAMFS)/usr/bin/; \
+		cp $(DROPBEAR_PREFIX)/scp $(INITRAMFS)/bin/; \
+	else \
+		echo "Dropbear wasn't build, not copied"; \
+	fi
 
 # generate client key and setup the authorized_keys file
 .PHONY: $(INITRAMFS)/.ssh/authorized_keys
@@ -216,11 +220,23 @@ $(INITRAMFS)/.ssh/authorized_keys:
 # Override with e.g. make DROPBEARKEY=/usr/bin/dropbearkey if the prefix binary is not available.
 DROPBEARKEY ?= $(DROPBEAR_PREFIX)/dropbearkey
 $(INITRAMFS)/etc/dropbear/dropbear_rsa_host_key: | $(INITRAMFS)/etc/dropbear
-	@$(DROPBEARKEY) -t rsa -f $@
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t rsa -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
 $(INITRAMFS)/etc/dropbear/dropbear_ecdsa_host_key: | $(INITRAMFS)/etc/dropbear
-	@$(DROPBEARKEY) -t ecdsa -f $@
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t ecdsa -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
 $(INITRAMFS)/etc/dropbear/dropbear_ed25519_host_key: | $(INITRAMFS)/etc/dropbear
-	@$(DROPBEARKEY) -t ed25519 -f $@
+	@if [ -x "$(DROPBEARKEY)" ]; then \
+		$(DROPBEARKEY) -t ed25519 -f $@; \
+	else \
+		echo "Dropbear binary not found, host key not generated: $@"; \
+	fi
 
 $(INITRAMFS)/service:
 	@mkdir -p $@
