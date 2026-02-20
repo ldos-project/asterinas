@@ -8,7 +8,7 @@ if [ -x /usr/sbin/dropbear ]; then
 	echo "Dropbear started (PID $!)."
 	lsof -p $!
 else
-	echo "\033[31mWarning: dropbear not found, should not use run_dropbear!\033[0m"
+	echo "WARNING: dropbear not found, should not use run_dropbear!!!"
 fi
 
 exec sh
