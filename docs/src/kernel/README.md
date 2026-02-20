@@ -45,7 +45,6 @@ git clone https://github.com/ldos-project/asterinas
 
 ```bash
 docker run -it --privileged \
-               --network=host \
                --device=/dev/kvm \
                -v $(pwd)/asterinas:/root/asterinas \
                ldosproject/asterinas:0.15.2-20250613

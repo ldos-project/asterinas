@@ -271,7 +271,7 @@ RUN rm -rf memcached-1.6.32.tar.gz \
 # Install Apache httpd v2.4.62
 WORKDIR /root
 RUN apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev libpcre2-dev
-RUN wget https://dlcdn.apache.org/httpd/httpd-2.4.63.tar.bz2 \
+RUN wget https://archive.apache.org/dist/httpd/httpd-2.4.63.tar.bz2 \
     && tar xvf httpd-2.4.63.tar.bz2 \
     && cd httpd-2.4.63 \
     && ./configure \
