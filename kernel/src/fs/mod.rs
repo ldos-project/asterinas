@@ -75,53 +75,6 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
-
-    // mount the device to /raid0, /raid1, /raid2
-    if let Ok(block_device_raid0) = start_block_device("raid0") {
-        let raid0_fs = Ext2::open(block_device_raid0).unwrap();  // result in error invalid FS state
-        let target_path = FsPath::try_from("/raid0").unwrap();
-        self::rootfs::mount_fs_at(raid0_fs, &target_path).unwrap();
-        info!("[kernel] Mounted RAID-0 at {:?} ", target_path);
-    }
-    if let Ok(block_device_raid1) = start_block_device("raid1") {
-        let raid1_fs = Ext2::open(block_device_raid1).unwrap();
-        info!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
-    }
-
-    // Starting the ExFat filesystem cause hanging at boot.
-    // See issue: https://github.com/ldos-project/asterinas/issues/149
-    // let exfat_device_name = "vexfat";
-    // if let Ok(block_device_exfat) = start_block_device(exfat_device_name) {
-    //     let exfat_fs = ExfatFS::open(block_device_exfat, ExfatMountOptions::default()).unwrap();
-    //     let target_path = FsPath::try_from("/exfat").unwrap();
-    //     self::rootfs::mount_fs_at(exfat_fs, &target_path).unwrap();
-    //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
-    // }
-
-
-    // mount the device to /raid0, /raid1, /raid2
-    if let Ok(block_device_raid0) = start_block_device("raid0") {
-        let raid0_fs = Ext2::open(block_device_raid0).unwrap();  // result in error invalid FS state
-        let target_path = FsPath::try_from("/raid0").unwrap();
-        self::rootfs::mount_fs_at(raid0_fs, &target_path).unwrap();
-        info!("[kernel] Mounted RAID-0 at {:?} ", target_path);
-    }
-    if let Ok(block_device_raid1) = start_block_device("raid1") {
-        let raid1_fs = Ext2::open(block_device_raid1).unwrap();
-        let target_path = FsPath::try_from("/raid1").unwrap();
-        self::rootfs::mount_fs_at(raid1_fs, &target_path).unwrap();
-        info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
-    }
-    if let Ok(block_device_raid2) = start_block_device("raid2") {
-        let raid2_fs = Ext2::open(block_device_raid2).unwrap();
-        let target_path = FsPath::try_from("/raid2").unwrap();
-        self::rootfs::mount_fs_at(raid2_fs, &target_path).unwrap();
-        info!("[kernel] Mounted RAID-2 at {:?} ", target_path);
-    }
-    // early stop for testing
-    // Ok(());
-    return;
-
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
@@ -146,7 +99,6 @@ pub fn lazy_init() {
 
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
-    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
