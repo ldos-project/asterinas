@@ -144,9 +144,6 @@ pub fn lazy_init() {
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
     // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
-fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
-    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
-    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
