@@ -27,10 +27,7 @@ INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/sys \
 	$(INITRAMFS)/ext2 \
 	$(INITRAMFS)/exfat \
-	$(INITRAMFS)/raid0 \
-	$(INITRAMFS)/raid1 \
-	$(INITRAMFS)/raid2
-
+	$(INITRAMFS)/raid1
 
 INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/etc \
