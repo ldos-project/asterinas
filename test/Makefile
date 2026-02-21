@@ -17,8 +17,6 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
-RAID1_IMAGE0 := $(BUILD_DIR)/raid1_0.img
-RAID1_IMAGE1 := $(BUILD_DIR)/raid1_1.img
 
 INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/root \
@@ -30,6 +28,7 @@ INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/ext2 \
 	$(INITRAMFS)/exfat \
 	$(INITRAMFS)/raid1
+
 INITRAMFS_ALL_DIRS := \
 	$(INITRAMFS)/etc \
 	$(INITRAMFS)/lib/x86_64-linux-gnu \
@@ -186,20 +185,16 @@ endif
 	@(cd $(INITRAMFS); find . -printf "%T@ %p\n") > $(INITRAMFS_FILELIST)
 
 $(EXT2_IMAGE):
-	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
+	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=1G count=2
 	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
 	@dd if=/dev/zero of=$(EXFAT_IMAGE) bs=64M count=1
 	@mkfs.exfat $(EXFAT_IMAGE)
 
-$(RAID1_IMAGE0) $(RAID1_IMAGE1):
-	@dd if=/dev/zero of=$(RAID1_IMAGE0) bs=128M count=1
-	@mke2fs $(RAID1_IMAGE0)
-	@dd if=$(RAID1_IMAGE0) of=$(RAID1_IMAGE1)
 
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(RAID1_IMAGE0) $(RAID1_IMAGE1)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE)
 
 .PHONY: format
 format:
