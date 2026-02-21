@@ -242,7 +242,7 @@ $(INITRAMFS)/service:
 	@cp $(CUR_DIR)/service/* $@
 
 $(EXT2_IMAGE):
-	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=1G count=8
+	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=1G count=2
 	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
@@ -251,7 +251,6 @@ $(EXFAT_IMAGE):
 
 
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE)
 build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE)
 
 .PHONY: format
