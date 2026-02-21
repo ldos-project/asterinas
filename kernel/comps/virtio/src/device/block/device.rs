@@ -107,7 +107,7 @@ impl BlockDevice {
     /// processes the request.
     pub fn handle_requests(&self) {
         let request = self.queue.dequeue();
-        info!("Handle Request: {:?}", request);
+        // info!("Handle Request: {:?}", request);
         match request.type_() {
             BioType::Read => self.device.read(request),
             BioType::Write => self.device.write(request),
