@@ -91,11 +91,11 @@ You can start Asterinas with Dropbear SSH enabled in the kernel so you can conne
 
 To enable this, use `make run_dropbear` to start the Asterinas kernel (rather than `make run`). A private key will be automatically generated at `~/.ssh/id_rsa` in the container and the public key will be automatically copied to the `authorized_keys` in the kernel. Thus after the kernel started, you can ssh into the kernel from the container using:
 ```bash
-ssh -i ~/.ssh/id_rsa root@localhost
+ssh root@localhost
 ```
 or use `scp` as:
 ```bash
-scp -O -i ~/.ssh/id_rsa ./testscp root@localhost:/root/
+scp -O ./testscp root@localhost:/root/
 ```
 Note: 
 - We need to use the `-O` flag here since Asterinas doesn't currently have `sftp-server`. 
