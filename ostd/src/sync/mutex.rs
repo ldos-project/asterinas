@@ -11,9 +11,18 @@ use core::{
 use super::WaitQueue;
 
 /// A mutex with waitqueue.
+///
+///
 pub struct Mutex<T: ?Sized> {
     lock: AtomicBool,
     queue: WaitQueue,
+    /// True if context information should be captured when the lock is acquired.
+    #[cfg(feature = "track_mutex")]
+    capture_acquire_info: bool,
+    /// The captured context information from acquire. This lock should only be held to copy the
+    /// bytes in an out.
+    #[cfg(feature = "track_mutex")]
+    acquire_info: super::SpinLock<Option<crate::stack_info::StackInfo>>,
     val: UnsafeCell<T>,
 }
 
@@ -27,8 +36,48 @@ impl<T> Mutex<T> {
         Self {
             lock: AtomicBool::new(false),
             queue: WaitQueue::new(),
+            #[cfg(feature = "track_mutex")]
+            capture_acquire_info: false,
+            #[cfg(feature = "track_mutex")]
+            acquire_info: super::SpinLock::new(None),
             val: UnsafeCell::new(val),
         }
+    }
+
+    /// Set mutex to capture acquire information.
+    ///
+    /// This captures the call context (stack, thread, etc) when the lock is acquired and prints it
+    /// when a thread blocks on the lock.
+    ///
+    /// This is a no-op if the library is built without the `track_mutex` feature.
+    ///
+    /// ## Usage
+    ///
+    /// When this is enabled, any time a thread fails to acquire the lock it will log (at the `info` level):
+    ///
+    /// ```text
+    /// INFO: Failed to acquire lock:
+    /// Held by: [information about holder]
+    /// Failed at: [information about failing acquire]
+    /// ```
+    /// (The information is provided by [`crate::stack_info::StackInfo`].)
+    ///
+    /// The result can be processed with `cargo osdk enhance-log`.
+    pub const fn with_acquire_info(self, capture_acquire_info: bool) -> Self {
+        self.maybe_with_acquire_info(capture_acquire_info)
+    }
+
+    // The private method is used to simplify the `cfg`s.
+
+    #[cfg(feature = "track_mutex")]
+    const fn maybe_with_acquire_info(mut self, capture_acquire_info: bool) -> Self {
+        self.capture_acquire_info = capture_acquire_info;
+        self
+    }
+
+    #[cfg(not(feature = "track_mutex"))]
+    const fn maybe_with_acquire_info(self, _capture_acquire_info: bool) -> Self {
+        self
     }
 }
 
@@ -39,11 +88,30 @@ impl<T: Default> Default for Mutex<T> {
 }
 
 impl<T: ?Sized> Mutex<T> {
+    #[cfg(feature = "track_mutex")]
+    #[track_caller]
+    fn report_acquire_failure(&self) {
+        let info = *self.acquire_info.lock();
+        if let Some(info) = info {
+            use crate::stack_info::StackInfo;
+            log::info!(
+                "Blocking on Mutex:\nHeld by: {info}\nFailed to acquire at: {}",
+                StackInfo::new(2)
+            );
+        }
+    }
+
     /// Acquires the mutex.
     ///
     /// This method runs in a block way until the mutex can be acquired.
     #[track_caller]
     pub fn lock(&self) -> MutexGuard<T> {
+        #[cfg(feature = "track_mutex")]
+        if let Some(r) = self.try_lock() {
+            return r;
+        } else {
+            self.report_acquire_failure();
+        }
         self.queue.wait_until(|| self.try_lock())
     }
 
@@ -55,10 +123,17 @@ impl<T: ?Sized> Mutex<T> {
     /// [`lock`]: Self::lock
     #[track_caller]
     pub fn lock_arc(self: &Arc<Self>) -> ArcMutexGuard<T> {
+        #[cfg(feature = "track_mutex")]
+        if let Some(r) = self.try_lock_arc() {
+            return r;
+        } else {
+            self.report_acquire_failure();
+        }
         self.queue.wait_until(|| self.try_lock_arc())
     }
 
     /// Tries Acquire the mutex immedidately.
+    #[track_caller]
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
         // Cannot be reduced to `then_some`, or the possible dropping of the temporary
         // guard will cause an unexpected unlock.
@@ -73,6 +148,7 @@ impl<T: ?Sized> Mutex<T> {
     /// for compile-time checked lifetimes of the mutex guard.
     ///
     /// [`try_lock`]: Self::try_lock
+    #[track_caller]
     pub fn try_lock_arc(self: &Arc<Self>) -> Option<ArcMutexGuard<T>> {
         self.acquire_lock().then(|| ArcMutexGuard {
             mutex: self.clone(),
@@ -93,13 +169,26 @@ impl<T: ?Sized> Mutex<T> {
         self.queue.wake_one();
     }
 
+    #[track_caller]
     fn acquire_lock(&self) -> bool {
-        self.lock
+        let succeeded = self
+            .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        #[cfg(feature = "track_mutex")]
+        if succeeded && self.capture_acquire_info {
+            use crate::stack_info::StackInfo;
+            let info = Some(StackInfo::new(2));
+            *self.acquire_info.lock() = info;
+        }
+        succeeded
     }
 
     fn release_lock(&self) {
+        #[cfg(feature = "track_mutex")]
+        if self.capture_acquire_info {
+            *self.acquire_info.lock() = None;
+        }
         self.lock.store(false, Ordering::Release);
     }
 }
@@ -173,8 +262,16 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
 #[cfg(ktest)]
 mod test {
+    use core::time::Duration;
+
+    use log::info;
+
     use super::*;
-    use crate::prelude::*;
+    use crate::{
+        assertion::{sleep, sleep_with_predicate},
+        prelude::*,
+        task::TaskOptions,
+    };
 
     // A regression test for a bug fixed in [#1279](https://github.com/asterinas/asterinas/pull/1279).
     #[ktest]
@@ -192,5 +289,35 @@ mod test {
 
         // Ensure the lock is held until here
         drop(guard1);
+    }
+
+    #[ktest]
+    fn test_mutex_tracking_threaded() {
+        let mutex = Arc::new(Mutex::new(0).with_acquire_info(true));
+
+        let guard = mutex.lock();
+
+        let _handle = TaskOptions::new({
+            let mutex = mutex.clone();
+            move || {
+                let mut v = mutex.lock();
+                *v = 1;
+            }
+        })
+        .spawn()
+        .unwrap();
+
+        sleep(Duration::from_millis(1000));
+
+        drop(guard);
+
+        sleep_with_predicate(Duration::from_millis(1000), || *mutex.lock() == 1);
+
+        info!(
+            "The test should have printed:
+Failed to acquire lock:
+Held by: [stack info from main thread]
+Failed at: [stack info from spawned task]"
+        );
     }
 }
