@@ -40,6 +40,30 @@ pub struct StackInfo {
     pub location: Option<&'static Location<'static>>,
 }
 
+impl StackInfo {
+    /// Create a new `StackInfo`, dropping `skip` stackframes starting from the caller to this
+    /// function.
+    #[track_caller]
+    pub fn new(skip: usize) -> StackInfo {
+        let current_task = Task::current();
+        let task_id = current_task.as_ref().map(|t| t.id());
+        let server_id = current_task.and_then(|t| {
+            t.server()
+                .borrow()
+                .as_ref()
+                .map(|s| s.orpc_server_base().id())
+        });
+        let stack_trace = CapturedStackTrace::capture(skip + 1);
+        StackInfo {
+            stack_trace,
+            task_id,
+            cpu_id: CpuId::current_racy(),
+            server_id,
+            location: Some(Location::caller()),
+        }
+    }
+}
+
 impl Display for StackInfo {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(location) = self.location {
@@ -60,24 +84,9 @@ impl Display for StackInfo {
 impl GenerateImplicitData for StackInfo {
     #[track_caller]
     fn generate() -> Self {
-        let current_task = Task::current();
-        let task_id = current_task.as_ref().map(|t| t.id());
-        let server_id = current_task.and_then(|t| {
-            t.server()
-                .borrow()
-                .as_ref()
-                .map(|s| s.orpc_server_base().id())
-        });
         // We drop 2 frames: one for this call to `generate`, and one for the error constructor
         // (such as, a snafu generated `into_error` method).
-        let stack_trace = CapturedStackTrace::capture(2);
-        StackInfo {
-            stack_trace,
-            task_id,
-            cpu_id: CpuId::current_racy(),
-            server_id,
-            location: Some(Location::caller()),
-        }
+        StackInfo::new(2)
     }
 }
 
