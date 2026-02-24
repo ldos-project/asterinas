@@ -83,6 +83,7 @@ impl core::fmt::Debug for Task {
             .field("ctx", &self.ctx)
             .field("kstack", &self.kstack)
             .field("switched_to_cpu", &self.switched_to_cpu)
+            .field("id", &self.id)
             .field("schedule_info", &self.schedule_info)
             // server's implementation might not be Debug, so omit it for now
             .finish()
