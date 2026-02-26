@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //
+#![cfg(not(baseline_asterinas))]
 #![allow(unsafe_code)]
 use alloc::{
     alloc::{alloc, handle_alloc_error},

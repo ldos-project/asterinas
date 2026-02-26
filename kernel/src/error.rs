@@ -354,6 +354,7 @@ impl From<RPCError> for Error {
     }
 }
 
+#[cfg(not(baseline_asterinas))]
 impl From<OQueueAttachError> for Error {
     #[track_caller]
     fn from(value: OQueueAttachError) -> Self {
@@ -455,6 +456,7 @@ impl From<aster_block::bio::BioEnqueueError> for Error {
             aster_block::bio::BioEnqueueError::TooBig => {
                 Error::with_message(Errno::EINVAL, "Bio is too big")
             }
+            #[cfg(not(baseline_asterinas))]
             aster_block::bio::BioEnqueueError::OQueueAttachError(err) => err.into(),
         }
     }
@@ -624,8 +626,9 @@ mod test {
 
     use super::*;
 
+    #[cfg(not(baseline_asterinas))]
     #[ktest]
-    fn convert_errors() {
+    fn convert_errors_oqueue_attach() {
         fn oqueue_attach() -> Result<(), Error> {
             Err(OQueueAttachError::Unsupported {
                 table_type: "test".to_owned(),
@@ -634,7 +637,10 @@ mod test {
         }
 
         assert!(oqueue_attach().is_err());
+    }
 
+    #[ktest]
+    fn convert_errors_orpc() {
         fn orpc() -> Result<(), Error> {
             Err(RPCError::ServerMissing)?;
             Ok(())

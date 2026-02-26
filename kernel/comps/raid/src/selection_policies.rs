@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![cfg(not(baseline_asterinas))]
+
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 

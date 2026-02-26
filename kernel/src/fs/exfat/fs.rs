@@ -5,6 +5,8 @@
 
 use core::{num::NonZeroUsize, ops::Range, sync::atomic::AtomicU64};
 
+#[cfg(baseline_asterinas)]
+use aster_block::bio::BioWaiter;
 use aster_block::{
     BlockDevice,
     bio::{BioDirection, BioSegment},
@@ -13,10 +15,9 @@ use aster_block::{
 use hashbrown::HashMap;
 use lru::LruCache;
 pub(super) use ostd::mm::VmIo;
-use ostd::{
-    mm::Segment,
-    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
-};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
+use ostd::{mm::Segment, new_server, orpc::orpc_server};
 
 use super::{
     bitmap::ExfatBitmap,
@@ -25,10 +26,13 @@ use super::{
     super_block::{ExfatBootSector, ExfatSuperBlock},
     upcase_table::ExfatUpcaseTable,
 };
+#[cfg(not(baseline_asterinas))]
+use crate::fs::server_traits::{self, PageIOObservable as _, PageStore};
+#[cfg(baseline_asterinas)]
+use crate::fs::utils::{CachePage, page_cache::PageCacheBackend};
 use crate::{
     fs::{
         exfat::{constants::*, inode::Ino},
-        server_traits::{self, PageIOObservable as _, PageStore},
         utils::{FileSystem, FsFlags, Inode, PageCache, SuperBlock},
     },
     prelude::*,
@@ -73,8 +77,7 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = Self::new_with(|orpc_internal, weak_self| ExfatFS {
-            orpc_internal,
+        let exfat_fs = new_server!(|weak_self| ExfatFS {
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),
@@ -375,6 +378,7 @@ impl ExfatFS {
     }
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatFS {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
@@ -383,6 +387,7 @@ impl server_traits::PageIOObservable for ExfatFS {
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageStore for ExfatFS {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
@@ -441,6 +446,41 @@ impl PageStore for ExfatFS {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.fs_size() / PAGE_SIZE)
+    }
+}
+
+#[cfg(baseline_asterinas)]
+impl PageCacheBackend for ExfatFS {
+    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        if self.fs_size() < idx * PAGE_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid read size")
+        }
+        let bio_segment = BioSegment::new_from_segment(
+            Segment::from(frame.clone()).into(),
+            BioDirection::FromDevice,
+        );
+        let waiter = self
+            .block_device
+            .read_blocks_async(BlockId::new(idx as u64), bio_segment)?;
+        Ok(waiter)
+    }
+
+    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        if self.fs_size() < idx * PAGE_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid write size")
+        }
+        let bio_segment = BioSegment::new_from_segment(
+            Segment::from(frame.clone()).into(),
+            BioDirection::ToDevice,
+        );
+        let waiter = self
+            .block_device
+            .write_blocks_async(BlockId::new(idx as u64), bio_segment)?;
+        Ok(waiter)
+    }
+
+    fn npages(&self) -> usize {
+        self.fs_size() / PAGE_SIZE
     }
 }
 

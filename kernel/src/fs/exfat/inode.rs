@@ -7,15 +7,20 @@ use alloc::string::String;
 use core::{cmp::Ordering, time::Duration};
 
 pub(super) use align_ext::AlignExt;
+#[cfg(baseline_asterinas)]
+use aster_block::bio::BioWaiter;
 use aster_block::{
     BLOCK_SIZE,
     bio::{BioDirection, BioSegment},
     id::{Bid, BlockId},
 };
 use aster_rights::Full;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueueRef;
 use ostd::{
     mm::{Segment, VmIo},
-    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
+    new_server,
+    orpc::{orpc_impl, orpc_server},
 };
 
 use super::{
@@ -28,12 +33,15 @@ use super::{
     fs::{EXFAT_ROOT_INO, ExfatMountOptions},
     utils::{DosTimestamp, make_hash_index},
 };
+#[cfg(not(baseline_asterinas))]
+use crate::fs::server_traits::{self, PageIOObservable as _};
+#[cfg(baseline_asterinas)]
+use crate::fs::utils::{CachePage, page_cache::PageCacheBackend};
 use crate::{
     events::IoEvents,
     fs::{
         exfat::{dentry::ExfatDentryIterator, fat::ExfatChain, fs::ExfatFS},
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable},
         utils::{
             DirentVisitor, Extension, Inode, InodeMode, InodeType, IoctlCmd, Metadata, MknodType,
             PageCache,
@@ -140,6 +148,7 @@ struct ExfatInodeInner {
     page_cache: PageCache,
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageIOObservable for ExfatInode {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
@@ -148,6 +157,7 @@ impl server_traits::PageIOObservable for ExfatInode {
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageStore for ExfatInode {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
@@ -207,6 +217,49 @@ impl server_traits::PageStore for ExfatInode {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.inner.read().size.align_up(PAGE_SIZE) / PAGE_SIZE)
+    }
+}
+
+#[cfg(baseline_asterinas)]
+impl PageCacheBackend for ExfatInode {
+    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let inner = self.inner.read();
+        if inner.size < idx * PAGE_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "Invalid read size")
+        }
+        let sector_id = inner.get_sector_id(idx * PAGE_SIZE / inner.fs().sector_size())?;
+        let bio_segment = BioSegment::new_from_segment(
+            Segment::from(frame.clone()).into(),
+            BioDirection::FromDevice,
+        );
+        let waiter = inner.fs().block_device().read_blocks_async(
+            BlockId::from_offset(sector_id * inner.fs().sector_size()),
+            bio_segment,
+        )?;
+        Ok(waiter)
+    }
+
+    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let inner = self.inner.read();
+        let sector_size = inner.fs().sector_size();
+
+        let sector_id = inner.get_sector_id(idx * PAGE_SIZE / inner.fs().sector_size())?;
+
+        // FIXME: We may need to truncate the file if write_page fails.
+        // To fix this issue, we need to change the interface of the PageCacheBackend trait.
+        let bio_segment = BioSegment::new_from_segment(
+            Segment::from(frame.clone()).into(),
+            BioDirection::ToDevice,
+        );
+        let waiter = inner.fs().block_device().write_blocks_async(
+            BlockId::from_offset(sector_id * inner.fs().sector_size()),
+            bio_segment,
+        )?;
+        Ok(waiter)
+    }
+
+    fn npages(&self) -> usize {
+        self.inner.read().size.align_up(PAGE_SIZE) / PAGE_SIZE
     }
 }
 
@@ -687,8 +740,7 @@ impl ExfatInode {
 
         let name = ExfatName::new();
 
-        let inode = Self::new_with(|orpc_internal, weak_self| ExfatInode {
-            orpc_internal,
+        let inode = new_server!(|weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino: EXFAT_ROOT_INO,
                 dentry_set_position: ExfatChainPosition::default(),
@@ -715,7 +767,10 @@ impl ExfatInode {
 
         let inner = inode.inner.upread();
 
-        inner.page_cache.start_prefetcher()?;
+        #[cfg(not(baseline_asterinas))]
+        {
+            inner.page_cache.start_prefetcher()?;
+        }
 
         let fs = inner.fs();
         let fs_guard = fs.lock();
@@ -801,8 +856,7 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = Self::new_with(|orpc_internal, weak_self| ExfatInode {
-            orpc_internal,
+        let inode = new_server!(|weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino,
                 dentry_set_position,
@@ -827,6 +881,7 @@ impl ExfatInode {
             extension: Extension::new(),
         });
 
+        #[cfg(not(baseline_asterinas))]
         {
             let inner = inode.inner.upread();
             inner.page_cache.start_prefetcher()?;

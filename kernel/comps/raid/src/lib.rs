@@ -21,7 +21,9 @@
 
 extern crate alloc;
 
+#[cfg(not(baseline_asterinas))]
 pub mod selection_policies;
+#[cfg(not(baseline_asterinas))]
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
@@ -33,11 +35,25 @@ use aster_block::{
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
+#[cfg(not(baseline_asterinas))]
 use ostd::orpc::orpc_server;
 
+#[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
+#[cfg(baseline_asterinas)]
+#[derive(Debug)]
+pub struct Raid1Device {
+    /// Member block devices that store identical data (mirrors).
+    members: Vec<Arc<dyn BlockDevice>>,
+    queue: BioRequestSingleQueue,
+
+    /// Basic capacity limits for the logical device (min across members).
+    metadata: BlockDeviceMeta,
+}
+
+#[cfg(not(baseline_asterinas))]
 #[derive(Debug)]
 #[orpc_server]
 pub struct Raid1Device {
@@ -63,6 +79,35 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
+    #[cfg(baseline_asterinas)]
+    pub fn init(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Result<(), Raid1DeviceError> {
+        if members.len() < 2 {
+            return Err(Raid1DeviceError::NotEnoughMembers);
+        }
+
+        // Compute the minimal metadata across all members.
+        let metadata = Self::min_metadata(&members);
+        // Initialize the admission queue using the strictest segment limit.
+        let queue =
+            BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
+
+        let device = Arc::new(Raid1Device {
+            members,
+            queue,
+            metadata,
+        });
+
+        aster_block::register_device(name.to_owned(), device.clone());
+
+        Ok(())
+    }
+
+    /// Creates a new RAID-1 device backed by `members`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if fewer than two members are provided.
+    #[cfg(not(baseline_asterinas))]
     pub fn init(
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
@@ -123,6 +168,35 @@ impl Raid1Device {
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
+    #[cfg(baseline_asterinas)]
+    fn process_read(&self, request: BioRequest) {
+        for parent in request.bios() {
+            let member = self.members[0].clone();
+            let child = Bio::new(
+                BioType::Read,
+                parent.sid_range().start,
+                Self::clone_segments(parent),
+                None,
+            );
+            match child.submit(&*member) {
+                Ok(waiter) => {
+                    let status = match waiter.wait() {
+                        Some(s) => s,
+                        None => BioStatus::IoError,
+                    };
+                    parent.complete(status);
+                }
+                Err(_) => parent.complete(BioStatus::IoError),
+            }
+        }
+    }
+
+    /// Processes read requests asynchronously.
+    ///
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
+    /// member (round-robin) and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.
+    #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
         // TODO(yingqi): Implement asynchronous read with policy selector.
         // Submit all children first to overlap device I/O.

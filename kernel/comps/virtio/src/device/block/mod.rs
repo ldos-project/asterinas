@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub mod device;
+#[cfg(not(baseline_asterinas))]
 pub mod server_traits;
 
 use core::mem::offset_of;
