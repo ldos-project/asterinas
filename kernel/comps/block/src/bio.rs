@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Weak};
 use core::{fmt::Display, time::Duration};
 
 use align_ext::AlignExt;
@@ -317,7 +317,7 @@ pub struct SubmittedBio {
     reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
     submission_time: Option<Duration>,
 
-    bio_request_single_queue: Option<Arc<BioRequestSingleQueue>>,
+    bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -380,11 +380,11 @@ impl SubmittedBio {
         self.submission_time
     }
 
-    pub fn num_outstanding_requests(&self) -> usize {
+    pub fn num_outstanding_requests(&self) -> Option<usize> {
         self.bio_request_single_queue
             .as_ref()
-            .unwrap()
-            .num_requests()
+            .and_then(|w| w.upgrade())
+            .map(|q| q.num_requests())
     }
 
     pub fn prepare_enqueue(
@@ -393,7 +393,7 @@ impl SubmittedBio {
         bio_request_single_queue: Arc<BioRequestSingleQueue>,
     ) {
         self.reply_handle = Some(reply_handle);
-        self.bio_request_single_queue = Some(bio_request_single_queue);
+        self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time = Some(read_monotonic_time());
     }
 
@@ -403,7 +403,7 @@ impl SubmittedBio {
             .unwrap()
             .produce(BlockDeviceCompletionStats {
                 latency: read_monotonic_time() - self.submission_time.unwrap(),
-                outstanding_requests: self.num_outstanding_requests(),
+                outstanding_requests: self.num_outstanding_requests().unwrap_or(0),
             });
     }
 }
