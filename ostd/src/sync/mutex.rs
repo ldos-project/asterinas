@@ -91,10 +91,13 @@ impl<T: ?Sized> Mutex<T> {
     #[cfg(feature = "track_mutex")]
     #[track_caller]
     fn report_acquire_failure(&self) {
+        use crate::early_println;
+
         if let Some(acquire_info) = &self.acquire_info {
             let info = *acquire_info.lock();
-            log::info!(
-                "Blocking on Mutex:\nHeld by: {info}\nFailed to acquire at: {}",
+            early_println!(
+                "Blocking on Mutex:\nHeld by: {}\nFailed to acquire at: {}",
+                info,
                 StackInfo::new(2)
             );
         }
