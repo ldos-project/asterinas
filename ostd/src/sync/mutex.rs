@@ -9,6 +9,7 @@ use core::{
 };
 
 use super::WaitQueue;
+use crate::stack_info::StackInfo;
 
 /// A mutex with waitqueue.
 ///
@@ -16,13 +17,10 @@ use super::WaitQueue;
 pub struct Mutex<T: ?Sized> {
     lock: AtomicBool,
     queue: WaitQueue,
-    /// True if context information should be captured when the lock is acquired.
-    #[cfg(feature = "track_mutex")]
-    capture_acquire_info: bool,
     /// The captured context information from acquire. This lock should only be held to copy the
     /// bytes in an out.
     #[cfg(feature = "track_mutex")]
-    acquire_info: super::SpinLock<Option<crate::stack_info::StackInfo>>,
+    acquire_info: Option<super::SpinLock<StackInfo>>,
     val: UnsafeCell<T>,
 }
 
@@ -37,9 +35,7 @@ impl<T> Mutex<T> {
             lock: AtomicBool::new(false),
             queue: WaitQueue::new(),
             #[cfg(feature = "track_mutex")]
-            capture_acquire_info: false,
-            #[cfg(feature = "track_mutex")]
-            acquire_info: super::SpinLock::new(None),
+            acquire_info: None,
             val: UnsafeCell::new(val),
         }
     }
@@ -60,7 +56,7 @@ impl<T> Mutex<T> {
     /// Held by: [information about holder]
     /// Failed at: [information about failing acquire]
     /// ```
-    /// (The information is provided by [`crate::stack_info::StackInfo`].)
+    /// (The information is provided by [`StackInfo`].)
     ///
     /// The result can be processed with `cargo osdk enhance-log`.
     pub const fn with_acquire_info(self, capture_acquire_info: bool) -> Self {
@@ -71,7 +67,11 @@ impl<T> Mutex<T> {
 
     #[cfg(feature = "track_mutex")]
     const fn maybe_with_acquire_info(mut self, capture_acquire_info: bool) -> Self {
-        self.capture_acquire_info = capture_acquire_info;
+        if capture_acquire_info {
+            self.acquire_info = Some(super::SpinLock::new(StackInfo::empty()));
+        } else {
+            self.acquire_info = None;
+        }
         self
     }
 
@@ -91,9 +91,8 @@ impl<T: ?Sized> Mutex<T> {
     #[cfg(feature = "track_mutex")]
     #[track_caller]
     fn report_acquire_failure(&self) {
-        let info = *self.acquire_info.lock();
-        if let Some(info) = info {
-            use crate::stack_info::StackInfo;
+        if let Some(acquire_info) = &self.acquire_info {
+            let info = *acquire_info.lock();
             log::info!(
                 "Blocking on Mutex:\nHeld by: {info}\nFailed to acquire at: {}",
                 StackInfo::new(2)
@@ -176,20 +175,23 @@ impl<T: ?Sized> Mutex<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         #[cfg(feature = "track_mutex")]
-        if succeeded && self.capture_acquire_info {
-            use crate::stack_info::StackInfo;
-            let info = Some(StackInfo::new(2));
-            *self.acquire_info.lock() = info;
+        if succeeded && let Some(acquire_info) = &self.acquire_info {
+            let info = StackInfo::new(2);
+            *acquire_info.lock() = info;
         }
         succeeded
     }
 
     fn release_lock(&self) {
-        #[cfg(feature = "track_mutex")]
-        if self.capture_acquire_info {
-            *self.acquire_info.lock() = None;
-        }
         self.lock.store(false, Ordering::Release);
+    }
+
+    /// Get information about the last point in the program this mutex was acquired.
+    pub fn last_acquire_info(&self) -> Option<StackInfo> {
+        #[cfg(feature = "track_mutex")]
+        return self.acquire_info.as_ref().map(|i| *i.lock());
+        #[cfg(not(feature = "track_mutex"))]
+        return None;
     }
 }
 

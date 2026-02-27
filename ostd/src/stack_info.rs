@@ -62,6 +62,17 @@ impl StackInfo {
             location: Some(Location::caller()),
         }
     }
+
+    /// Create an "empty" [`StackInfo`] which contains all default information.
+    pub const fn empty() -> Self {
+        Self {
+            stack_trace: CapturedStackTrace::empty(),
+            task_id: None,
+            cpu_id: CpuId::bsp(),
+            server_id: None,
+            location: None,
+        }
+    }
 }
 
 impl Display for StackInfo {
