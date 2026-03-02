@@ -37,7 +37,7 @@ pub fn sleep_with_predicate(d: Duration, mut predicate: impl FnMut() -> bool) {
 /// # Parameters:
 /// - `d`: The duration to sleep for.
 pub fn sleep(d: Duration) {
-    sleep_with_predicate(d, || true);
+    sleep_with_predicate(d, || false);
 }
 
 /// Macro to assert that a condition becomes true within a timeout (specified or a
@@ -259,5 +259,14 @@ mod tests {
             timeout = Duration::from_millis(200),
             "Value should be equal to 1"
         );
+    }
+
+    #[ktest]
+    fn test_sleep_duration() {
+        let start = Jiffies::elapsed().as_duration();
+        sleep(Duration::from_millis(10));
+        let end = Jiffies::elapsed().as_duration();
+
+        assert!(end - start >= Duration::from_millis(10));
     }
 }
