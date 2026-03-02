@@ -24,8 +24,8 @@ pub(crate) type SpawnThreadFn = fn(Arc<dyn Server + Send + Sync + 'static>, Thre
 pub(crate) static SPAWN_THREAD_FN: Once<SpawnThreadFn> = Once::new();
 
 /// Start a new server thread. This should only be called while spawning a server.
-pub fn spawn_thread<T: Server>(
-    server: Arc<T>,
+pub fn spawn_thread(
+    server: Arc<dyn Server + Send + Sync + 'static>,
     body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
 ) {
     if let Some(spawn_fn) = SPAWN_THREAD_FN.get() {

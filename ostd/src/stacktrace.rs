@@ -88,11 +88,9 @@ impl CapturedStackTrace {
                 if pc == 0 {
                     return UnwindReasonCode::NORMAL_STOP;
                 }
-                if data.count >= data.skip {
-                    if data.res.frames.try_push(pc).is_some() {
-                        // Stop if there is no more space available in the frames vec.
-                        return UnwindReasonCode::NORMAL_STOP;
-                    }
+                if data.count >= data.skip && data.res.frames.try_push(pc).is_some() {
+                    // Stop if there is no more space available in the frames vec.
+                    return UnwindReasonCode::NORMAL_STOP;
                 }
                 data.count += 1;
                 UnwindReasonCode::NO_REASON

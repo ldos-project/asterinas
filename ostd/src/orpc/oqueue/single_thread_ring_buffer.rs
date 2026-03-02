@@ -189,8 +189,7 @@ impl RingBuffer {
         None
     }
 
-    /// Return `Some(slot to read next)` if that head has value in the buffer to read.
-    pub(super) fn can_get_for_head(&mut self, head_id: usize) -> bool {
+    pub(super) fn can_get_for_head(&self, head_id: usize) -> bool {
         self.strong_reader_heads[head_id] != self.tail_index
     }
 

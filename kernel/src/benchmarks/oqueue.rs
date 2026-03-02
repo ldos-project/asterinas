@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//
+
 #![allow(unsafe_code)]
 use alloc::{
     alloc::{alloc, handle_alloc_error},
@@ -26,7 +26,7 @@ use ostd::{
         },
         sync::Blocker,
     },
-    sync::Waker,
+    sync::{Waker, WakerKey},
 };
 
 use super::{Benchmark, BenchmarkHarness, time, *};
@@ -301,7 +301,11 @@ impl<T: Copy + Send> Blocker for RigtorpProducer<T> {
         true
     }
 
-    fn prepare_to_wait(&self, _waker: &Arc<Waker>) {
+    fn enqueue(&self, _waker: &Arc<Waker>) -> WakerKey {
+        panic!("!");
+    }
+
+    fn remove(&self, _key: ostd::sync::WakerKey) {
         panic!("!");
     }
 }
@@ -328,7 +332,11 @@ impl<T: Copy + Send> Blocker for RigtorpConsumer<T> {
         true
     }
 
-    fn prepare_to_wait(&self, _waker: &Arc<Waker>) {
+    fn enqueue(&self, _waker: &Arc<Waker>) -> WakerKey {
+        panic!("!");
+    }
+
+    fn remove(&self, _key: ostd::sync::WakerKey) {
         panic!("!");
     }
 }
