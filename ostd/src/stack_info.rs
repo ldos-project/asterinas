@@ -47,12 +47,15 @@ impl StackInfo {
     pub fn new(skip: usize) -> StackInfo {
         let current_task = Task::current();
         let task_id = current_task.as_ref().map(|t| t.id());
+        #[cfg(not(baseline_asterinas))]
         let server_id = current_task.and_then(|t| {
             t.server()
                 .borrow()
                 .as_ref()
                 .map(|s| s.orpc_server_base().id())
         });
+        #[cfg(baseline_asterinas)]
+        let server_id = None;
         let stack_trace = CapturedStackTrace::capture(skip + 1);
         StackInfo {
             stack_trace,
