@@ -47,7 +47,7 @@ do_publish_for() {
     pushd $ASTER_SRC_DIR/$1
 
     ADDITIONAL_ARGS="${@:2}"
-    RF="$RUSTFLAGS --check-cfg cfg(ktest)"
+    RF="$RUSTFLAGS --check-cfg cfg(ktest) --check-cfg cfg(baseline_asterinas)"
 
     if [ -n "$DRY_RUN" ]; then
         # Perform checks

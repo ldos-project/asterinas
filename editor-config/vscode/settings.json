@@ -1,7 +1,9 @@
+// Use lines marked "Baseline asterinas" to configure rust-analyzer to build in baseline mode.
 {
     "rust-analyzer.cargo.target": "x86_64-unknown-none",
     "rust-analyzer.check.extraEnv": {
-        "RUSTFLAGS": "--check-cfg cfg(ktest) --cfg ktest"
+        "RUSTFLAGS": "--check-cfg cfg(ktest) --check-cfg cfg(baseline_asterinas) --cfg ktest"
+        // Baseline asterinas: "RUSTFLAGS": "--check-cfg cfg(ktest) --check-cfg cfg(baseline_asterinas) --cfg ktest --cfg baseline_asterinas"
     },
     "rust-analyzer.check.overrideCommand": [
         "cargo",
@@ -18,6 +20,7 @@
     "rust-analyzer.cargo.cfgs": [
         "debug_assertions",
         "miri",
-        "ktest"
+        "ktest",
+        // Baseline asterinas: "baseline_asterinas"
     ]
 }

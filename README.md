@@ -100,6 +100,28 @@ scp -O ./testscp root@localhost:/root/
 Note: 
 - We need to use the `-O` flag here since Asterinas doesn't currently have `sftp-server`. 
 
+### Baseline Asterinas mode
+
+Mariposa can be compiled without ORPC support and without the LDOS features. This is used for as a
+baseline for benchmarking the overhead of LDOS features.
+
+This is controlled by the `baseline_asterinas` configuration flag. This flag is off by default.
+
+To build in baseline mode:
+
+```bash
+make BASELINE_ASTERINAS=1 ... arguments as usual ...
+```
+
+To configure VSCode to provide IDE features based on the baseline build, see the comments in the
+`editor-config/vscode/settings.json` file.
+
+Kernel code that needs to be different in the baseline and the Mariposa kernels should use:
+`#[cfg(not(baseline_asterinas))]` and `#[cfg(baseline_asterinas)]` as appropriate. The 
+`#[path = "..."]` attribute may also be useful, though it's use should be kept to a minimum. When it
+is used the baseline variant should be named `{original}_baseline` (e.g., the `orpc` module stubs
+for the baseline are in `orpc_baseline.rs`).
+
 ## The Book
 
 See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.

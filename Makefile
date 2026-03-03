@@ -22,6 +22,8 @@ OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
+BASELINE_ASTERINAS ?= 0
+RUSTFLAGS ?= 
 # End of global build options.
 
 # GDB debugging and profiling options.
@@ -64,6 +66,8 @@ CARGO_OSDK_COMMON_ARGS := --target-arch=$(ARCH)
 # The build arguments also apply to the `cargo osdk run` command.
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
 CARGO_OSDK_TEST_ARGS :=
+# Common arguments for all `cargo clippy` and `cargo osdk clippy` commands.
+CLIPPY_COMMON_ARGS := 
 
 # Rust Cache
 CARGO_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/cargo
@@ -157,6 +161,11 @@ CARGO_OSDK_COMMON_ARGS += --features="$(FEATURES)"
 endif
 ifeq ($(NO_DEFAULT_FEATURES), 1)
 CARGO_OSDK_COMMON_ARGS += --no-default-features
+endif
+
+ifeq ($(BASELINE_ASTERINAS), 1)
+RUSTFLAGS += --cfg=baseline_asterinas
+CLIPPY_COMMON_ARGS += --cfg=baseline_asterinas -A unused-imports -A dead-code -A unfulfilled-lint-expectations
 endif
 
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's
@@ -260,7 +269,7 @@ $(CARGO_OSDK): $(OSDK_SRC_FILES)
 
 .PHONY: check_osdk
 check_osdk:
-	cd osdk && cargo clippy -- -D warnings
+	cd osdk && cargo clippy -- $(CLIPPY_COMMON_ARGS) -D warnings
 
 .PHONY: test_osdk
 test_osdk:
@@ -457,14 +466,14 @@ lint_check_%:
 clippy_check_non_osdk: $(addprefix clippy_check_non_osdk_, $(NON_OSDK_CRATE_TARGETS))
 
 clippy_check_non_osdk_%:
-	cd $(subst @@,/,$*) && cargo clippy -- -D warnings
+	cd $(subst @@,/,$*) && cargo clippy -- $(CLIPPY_COMMON_ARGS) -D warnings
 
 # For each OSDK crate, invoke a rule which runs clippy
 .PHONY: clippy_check_osdk
 clippy_check_osdk: $(addprefix clippy_check_osdk_, $(OSDK_CRATE_TARGETS))
 
 clippy_check_osdk_%:  $(CARGO_OSDK)
-	cd $(subst @@,/,$*) && cargo osdk clippy -- -- -D warnings
+	cd $(subst @@,/,$*) && cargo osdk clippy -- -- $(CLIPPY_COMMON_ARGS) -D warnings
 
 .PHONY: clippy_check
 clippy_check: clippy_check_non_osdk clippy_check_osdk
