@@ -4,7 +4,7 @@
 use orpc_macros::orpc_trait;
 
 use crate::orpc::{
-    framework::errors::RPCError,
+    errors::RPCError,
     legacy_oqueue::{OQueueRef, ringbuffer::MPMCOQueue},
 };
 

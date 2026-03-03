@@ -2,7 +2,7 @@
 
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
-    framework::errors::RPCError,
+    errors::RPCError,
     legacy_oqueue::{
         OQueueAttachError, OQueueRef,
         locking::{LockingQueue, ObservableLockingQueue},

@@ -4,8 +4,8 @@ use core::time::Duration;
 
 use ostd::{
     orpc::{
+        errors::RPCError,
         framework::{
-            errors::RPCError,
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },

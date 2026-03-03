@@ -10,3 +10,5 @@ pub mod statistics;
 pub mod sync;
 
 pub use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
+
+pub use crate::{new_server, orpc_common::errors};

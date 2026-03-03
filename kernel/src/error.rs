@@ -2,10 +2,9 @@
 
 use alloc::format;
 
-use ostd::{
-    orpc::{framework::errors::RPCError, legacy_oqueue::OQueueAttachError},
-    ostd_error,
-};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueueAttachError;
+use ostd::{orpc::errors::RPCError, ostd_error};
 use snafu::Snafu;
 
 /// Error number.

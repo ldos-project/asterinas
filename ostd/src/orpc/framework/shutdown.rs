@@ -8,7 +8,8 @@ use log::error;
 use orpc_macros::orpc_trait;
 
 use crate::orpc::{
-    framework::{CurrentServer, errors::RPCError},
+    errors::RPCError,
+    framework::CurrentServer,
     legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
 };
 

@@ -25,7 +25,7 @@ use ostd::{
         vm_space::{CursorMut, VmMappingPolicy, VmMappingPolicyOQueues, VmMappingRequest},
     },
     orpc::{
-        framework::errors::RPCError,
+        errors::RPCError,
         legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue},
         orpc_impl, orpc_server,
     },

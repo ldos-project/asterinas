@@ -24,7 +24,8 @@ use static_assertions::assert_obj_safe;
 
 use crate::{
     orpc::{
-        framework::{CurrentServer, errors::RPCError},
+        errors::RPCError,
+        framework::CurrentServer,
         oqueue::{
             AttachmentError, Cursor, InlineStrongObserver, ObservationError, ObservationQuery,
             ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer,

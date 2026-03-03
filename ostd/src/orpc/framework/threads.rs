@@ -9,7 +9,10 @@ use log::error;
 use spin::Once;
 
 use crate::{
-    orpc::framework::{CurrentServer, Server, errors},
+    orpc::{
+        errors,
+        framework::{CurrentServer, Server},
+    },
     prelude::{Arc, Box},
     task::TaskOptions,
 };

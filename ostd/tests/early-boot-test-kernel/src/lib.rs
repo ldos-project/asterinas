@@ -12,7 +12,7 @@ extern crate alloc;
 
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
+    orpc::{errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     prelude::println,
 };
 

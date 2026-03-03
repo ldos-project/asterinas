@@ -24,7 +24,7 @@ use crate::{
         page_table::{self, PageTable, PageTableConfig, PageTableFrag},
         tlb::{TlbFlushOp, TlbFlusher},
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
+    orpc::{errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     prelude::*,
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
