@@ -12,6 +12,10 @@ inputs:
     description: 'Whether to run in release mode'
     required: false
 
+  baseline_asterinas:
+    description: 'Whether to build the baseline configuration using `BASELINE_ASTERINAS=1`'
+    required: false
+
   # Virtualization Settings
   enable_kvm:
     description: 'Enable KVM acceleration'
@@ -74,6 +78,7 @@ runs:
         [[ "${{ matrix.id }}" == "usermode_test" ]] && CMD+="make test"
         [[ "${{ matrix.id }}" == "ktest" ]] && CMD+="make ktest NETDEV=tap"
         [[ "${{ matrix.id }}" == "early_boot_test" ]] && CMD+="make early_boot_test"
+        [[ "${{ inputs.baseline_asterinas }}" == "true" ]] && CMD+=" BASELINE_ASTERINAS=1"
         [[ -n "${{ inputs.arch }}" ]] && CMD+=" ARCH=${{ inputs.arch }}"
 
         echo "Executing: $CMD"
@@ -86,6 +91,7 @@ runs:
         CMD="make run AUTO_TEST=${{ inputs.auto_test }}"
         [[ "${{ inputs.intel_tdx }}" == "true" ]] && CMD+=" INTEL_TDX=1"
         [[ "${{ inputs.release }}" == "true" ]] && CMD+=" RELEASE=1"
+        [[ "${{ inputs.baseline_asterinas }}" == "true" ]] && CMD+=" BASELINE_ASTERINAS=1"
         [[ "${{ inputs.enable_kvm }}" == "false" ]] && CMD+=" ENABLE_KVM=0"
         [[ -n "${{ inputs.smp }}" ]] && CMD+=" SMP=${{ inputs.smp }}"
         [[ -n "${{ inputs.netdev }}" ]] && CMD+=" NETDEV=${{ inputs.netdev }}"
