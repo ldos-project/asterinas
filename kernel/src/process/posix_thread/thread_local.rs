@@ -68,11 +68,11 @@ impl ThreadLocal {
         &self.robust_list
     }
 
-    pub fn borrow_file_table(&self) -> FileTableRef {
+    pub fn borrow_file_table(&self) -> FileTableRef<'_> {
         FileTableRef(self.file_table.borrow())
     }
 
-    pub fn borrow_file_table_mut(&self) -> FileTableRefMut {
+    pub fn borrow_file_table_mut(&self) -> FileTableRefMut<'_> {
         FileTableRefMut(self.file_table.borrow_mut())
     }
 

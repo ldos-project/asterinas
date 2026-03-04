@@ -593,7 +593,7 @@ impl Process {
         &self.process_vm
     }
 
-    pub fn lock_root_vmar(&self) -> ProcessVmarGuard {
+    pub fn lock_root_vmar(&self) -> ProcessVmarGuard<'_> {
         self.process_vm.lock_root_vmar()
     }
 
@@ -601,7 +601,7 @@ impl Process {
         self.process_vm.heap()
     }
 
-    pub fn init_stack_reader(&self) -> InitStackReader {
+    pub fn init_stack_reader(&self) -> InitStackReader<'_> {
         self.process_vm.init_stack_reader()
     }
 

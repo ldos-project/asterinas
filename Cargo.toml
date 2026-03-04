@@ -51,7 +51,6 @@ exclude = [
 
 [workspace.lints.rust]
 function_casts_as_integer = "allow"
-mismatched_lifetime_syntaxes = "allow"
 missing_crate_level_docs = "warn"
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)'] }
 unpredictable-function-pointer-comparisons = "allow"

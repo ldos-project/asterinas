@@ -253,7 +253,7 @@ impl<R: TRights> Credentials<R> {
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
-    pub fn groups(&self) -> RwLockReadGuard<BTreeSet<Gid>, PreemptDisabled> {
+    pub fn groups(&self) -> RwLockReadGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
         self.0.groups()
     }
 
@@ -261,7 +261,7 @@ impl<R: TRights> Credentials<R> {
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn groups_mut(&self) -> RwLockWriteGuard<BTreeSet<Gid>, PreemptDisabled> {
+    pub fn groups_mut(&self) -> RwLockWriteGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
         self.0.groups_mut()
     }
 
