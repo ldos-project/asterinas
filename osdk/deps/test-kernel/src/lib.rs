@@ -149,7 +149,7 @@ fn run_crate_ktests(crate_: &KtestCrate, whitelist: &Option<SuffixTrie>) -> Ktes
             debug_assert_eq!(test.info().package, crate_name);
             match test.run(
                 &(ostd::panic::catch_unwind::<(), fn()>
-                    as fn(fn()) -> Result<(), Box<(dyn Any + Send + 'static)>>),
+                    as fn(fn()) -> Result<(), Box<dyn Any + Send + 'static>>),
             ) {
                 Ok(()) => {
                     early_print!(" {}\n", "ok".green());

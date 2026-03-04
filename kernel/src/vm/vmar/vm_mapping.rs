@@ -444,7 +444,7 @@ impl VmMapping {
     /// must not be either the start or the end of the mapping.
     pub fn split(self, at: Vaddr) -> Result<(Self, Self)> {
         debug_assert!(self.map_to_addr < at && at < self.map_end());
-        debug_assert!(at % PAGE_SIZE == 0);
+        debug_assert!(at.is_multiple_of(PAGE_SIZE));
 
         let (mut l_vmo, mut r_vmo) = (None, None);
 
@@ -619,7 +619,7 @@ impl MappedVmo {
         page_offset: usize,
     ) -> core::result::Result<UFrame, VmoCommitError> {
         debug_assert!(page_offset < self.range.len());
-        debug_assert!(page_offset % PAGE_SIZE == 0);
+        debug_assert!(page_offset.is_multiple_of(PAGE_SIZE));
         self.vmo.try_commit_page(self.range.start + page_offset)
     }
 

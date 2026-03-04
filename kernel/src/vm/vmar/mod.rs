@@ -83,7 +83,10 @@ impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
         Ok(
             // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
             // mapped at a level larger than 1.
-            if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
+            if req
+                .page_aligned_addr
+                .is_multiple_of(page_size::<PagingConsts>(2))
+            {
                 2
             } else {
                 1
@@ -577,8 +580,8 @@ impl Vmar_ {
     }
 
     fn protect(&self, perms: VmPerms, range: Range<usize>) -> Result<()> {
-        assert!(range.start % PAGE_SIZE == 0);
-        assert!(range.end % PAGE_SIZE == 0);
+        assert!(range.start.is_multiple_of(PAGE_SIZE));
+        assert!(range.end.is_multiple_of(PAGE_SIZE));
         self.do_protect_inner(perms, range)?;
         Ok(())
     }
@@ -1207,17 +1210,17 @@ where
     /// Checks whether all options are valid.
     fn check_options(&self) -> Result<()> {
         // Check align.
-        debug_assert!(self.align % PAGE_SIZE == 0);
+        debug_assert!(self.align.is_multiple_of(PAGE_SIZE));
         debug_assert!(self.align.is_power_of_two());
-        if self.align % PAGE_SIZE != 0 || !self.align.is_power_of_two() {
+        if !self.align.is_multiple_of(PAGE_SIZE) || !self.align.is_power_of_two() {
             return_errno_with_message!(Errno::EINVAL, "invalid align");
         }
-        debug_assert!(self.size % self.align == 0);
-        if self.size % self.align != 0 {
+        debug_assert!(self.size.is_multiple_of(self.align));
+        if !self.size.is_multiple_of(self.align) {
             return_errno_with_message!(Errno::EINVAL, "invalid mapping size");
         }
-        debug_assert!(self.vmo_offset % self.align == 0);
-        if self.vmo_offset % self.align != 0 {
+        debug_assert!(self.vmo_offset.is_multiple_of(self.align));
+        if !self.vmo_offset.is_multiple_of(self.align) {
             return_errno_with_message!(Errno::EINVAL, "invalid vmo offset");
         }
         if let Some(offset) = self.offset {

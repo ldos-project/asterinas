@@ -55,25 +55,11 @@ missing_crate_level_docs = "warn"
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)'] }
 unpredictable-function-pointer-comparisons = "allow"
 unsafe_op_in_unsafe_fn = "deny"
-unused_parens = "allow"
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
 collapsible_match = "allow"
-explicit_counter_loop = "allow"
-filter_next = "allow"
-implicit_saturating_sub = "allow"
-iter_kv_map = "allow"
-let_and_return = "allow"
-manual_is_multiple_of = "allow"
-manual_saturating_arithmetic = "allow"
-mem-replace-option-with-some = "allow"
-question_mark = "allow"
 unnecessary_cast = "allow"
-unnecessary_option_map_or_else = "allow"
-unnecessary_sort_by = "allow"
-unnecessary_unwrap = "allow"
-while_let_loop = "allow"
 
 # TODO(arthurp,  #48): Enable once the code can pass it.
 # undocumented_unsafe_blocks = "deny"

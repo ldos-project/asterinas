@@ -161,11 +161,7 @@ impl Task {
 
     /// Returns the user context of this task, if it has.
     pub fn user_ctx(&self) -> Option<&Arc<UserContext>> {
-        if self.user_ctx.is_some() {
-            Some(self.user_ctx.as_ref().unwrap())
-        } else {
-            None
-        }
+        self.user_ctx.as_ref()
     }
 
     /// Saves the FPU state for user task.

@@ -36,7 +36,7 @@ impl XApic {
 
     /// Reads a register from the MMIO region.
     fn read(&self, offset: u32) -> u32 {
-        assert!(offset as usize % 4 == 0);
+        assert!((offset as usize).is_multiple_of(4));
         let index = offset as usize / 4;
         debug_assert!(index < 256);
         unsafe { core::ptr::read_volatile(self.mmio_start.add(index)) }
@@ -44,7 +44,7 @@ impl XApic {
 
     /// Writes a register in the MMIO region.
     fn write(&self, offset: u32, val: u32) {
-        assert!(offset as usize % 4 == 0);
+        assert!((offset as usize).is_multiple_of(4));
         let index = offset as usize / 4;
         debug_assert!(index < 256);
         unsafe { core::ptr::write_volatile(self.mmio_start.add(index), val) }

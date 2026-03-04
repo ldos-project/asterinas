@@ -126,7 +126,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             }
 
             // Read the last unaligned block.
-            if end_offset % BLOCK_SIZE != 0 {
+            if !end_offset.is_multiple_of(BLOCK_SIZE) {
                 let offset = buf.as_slice().len() - BLOCK_SIZE;
                 let buf_mut = BufMut::try_from(&mut buf.as_mut_slice()[offset..]).unwrap();
                 if self.read(end_lba - 1, buf_mut).is_err() {
@@ -434,7 +434,7 @@ impl<D: BlockSet + 'static> DiskInner<D> {
 
         let mut res = range_query_ctx.into_results();
         let record_batches = {
-            res.sort_by(|(_, v1), (_, v2)| v1.hba.cmp(&v2.hba));
+            res.sort_by_key(|(_, v1)| v1.hba);
             res.chunk_by(|(_, v1), (_, v2)| v2.hba - v1.hba == 1)
         };
 

@@ -306,7 +306,7 @@ impl IoBar {
     /// Reads from port
     pub fn read<T: PortRead>(&self, offset: u32) -> Result<T> {
         // Check alignment
-        if (self.base + offset) % size_of::<T>() as u32 != 0 {
+        if !(self.base + offset).is_multiple_of(size_of::<T>() as u32) {
             return InvalidArgsSnafu.fail();
         }
         // Check overflow
@@ -321,7 +321,7 @@ impl IoBar {
     /// Writes to port
     pub fn write<T: PortWrite>(&self, offset: u32, value: T) -> Result<()> {
         // Check alignment
-        if (self.base + offset) % size_of::<T>() as u32 != 0 {
+        if !(self.base + offset).is_multiple_of(size_of::<T>() as u32) {
             return InvalidArgsSnafu.fail();
         }
         // Check overflow

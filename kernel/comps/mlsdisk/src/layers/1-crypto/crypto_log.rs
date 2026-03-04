@@ -263,12 +263,9 @@ impl<L: BlockLog> CryptoLog<L> {
         let data_nodes: Vec<Arc<DataNode>> = buf
             .iter()
             .map(|block_buf| {
-                let data_node = {
-                    let mut node = DataNode::new_uninit();
-                    node.0.copy_from_slice(block_buf.as_slice());
-                    Arc::new(node)
-                };
-                data_node
+                let mut node = DataNode::new_uninit();
+                node.0.copy_from_slice(block_buf.as_slice());
+                Arc::new(node)
             })
             .collect();
 
@@ -489,9 +486,8 @@ impl<L: BlockLog> MhtStorage<L> {
         let num_append = nodes.len();
         let mut node_entries = Vec::with_capacity(num_append);
         let mut cipher_buf = Buf::alloc(num_append)?;
-        let mut pos = self.block_log.nblocks() as BlockId;
-        let start_pos = pos;
-        for (i, node) in nodes.iter().enumerate() {
+        let start_pos = self.block_log.nblocks() as BlockId;
+        for (pos, (i, node)) in (start_pos..).zip(nodes.iter().enumerate()) {
             let plain = node.as_bytes();
             let cipher = &mut cipher_buf.as_mut_slice()[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             let key = Key::random();
@@ -499,7 +495,6 @@ impl<L: BlockLog> MhtStorage<L> {
 
             node_entries.push(MhtNodeEntry { pos, key, mac });
             self.node_cache.put(pos, node.clone());
-            pos += 1;
         }
 
         let append_pos = self.block_log.append(cipher_buf.as_ref())?;
@@ -515,15 +510,13 @@ impl<L: BlockLog> MhtStorage<L> {
         }
 
         let mut cipher_buf = Buf::alloc(num_append)?;
-        let mut pos = self.block_log.nblocks() as BlockId;
-        let start_pos = pos;
-        for (i, node) in nodes.iter().enumerate() {
+        let start_pos = self.block_log.nblocks() as BlockId;
+        for (pos, (i, node)) in (start_pos..).zip(nodes.iter().enumerate()) {
             let cipher = &mut cipher_buf.as_mut_slice()[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE];
             let key = Key::random();
             let mac = Aead::new().encrypt(&node.0, &key, &Iv::new_zeroed(), &[], cipher)?;
 
             node_entries.push(MhtNodeEntry { pos, key, mac });
-            pos += 1;
         }
 
         let append_pos = self.block_log.append(cipher_buf.as_ref())?;
@@ -607,7 +600,9 @@ impl MhtNode {
     }
 
     pub fn num_complete_children(&self) -> usize {
-        if self.num_data_nodes() % MHT_NBRANCHES == 0 || Self::is_lowest_level(self.height()) {
+        if self.num_data_nodes().is_multiple_of(MHT_NBRANCHES)
+            || Self::is_lowest_level(self.height())
+        {
             self.num_valid_entries()
         } else {
             self.num_valid_entries() - 1
