@@ -112,11 +112,18 @@ pub struct KtestItemInfo {
     pub col: usize,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct KtestItem {
     fn_: fn() -> (),
     should_panic: (bool, Option<&'static str>),
     info: KtestItemInfo,
+}
+
+impl PartialEq for KtestItem {
+    #[expect(unpredictable_function_pointer_comparisons)]
+    fn eq(&self, other: &Self) -> bool {
+        self.fn_ == other.fn_ && self.should_panic == other.should_panic && self.info == other.info
+    }
 }
 
 type CatchUnwindImpl = fn(f: fn() -> ()) -> Result<(), Box<dyn core::any::Any + Send>>;
