@@ -50,16 +50,13 @@ exclude = [
 ]
 
 [workspace.lints.rust]
-function_casts_as_integer = "allow"
 missing_crate_level_docs = "warn"
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)'] }
-unpredictable-function-pointer-comparisons = "allow"
 unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
 collapsible_match = "allow"
-unnecessary_cast = "allow"
 
 # TODO(arthurp,  #48): Enable once the code can pass it.
 # undocumented_unsafe_blocks = "deny"

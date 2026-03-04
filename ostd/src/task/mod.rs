@@ -281,7 +281,7 @@ impl TaskOptions {
             ctx.get_mut().set_tls_pointer(user_ctx.tls_pointer());
         };
         ctx.get_mut()
-            .set_instruction_pointer(kernel_task_entry as usize);
+            .set_instruction_pointer(kernel_task_entry as *const () as usize);
         // We should reserve space for the return address in the stack, otherwise
         // we will write across the page boundary due to the implementation of
         // the context switch.

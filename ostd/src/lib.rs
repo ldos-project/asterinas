@@ -165,10 +165,10 @@ fn invoke_ffi_init_funcs() {
         fn __sinit_array();
         fn __einit_array();
     }
-    let call_len = (__einit_array as usize - __sinit_array as usize) / 8;
+    let call_len = (__einit_array as *const () as usize - __sinit_array as *const () as usize) / 8;
     for i in 0..call_len {
         unsafe {
-            let function = (__sinit_array as usize + 8 * i) as *const fn();
+            let function = (__sinit_array as *const () as usize + 8 * i) as *const fn();
             (*function)();
         }
     }
