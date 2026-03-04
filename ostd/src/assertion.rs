@@ -4,7 +4,7 @@
 
 #![cfg(ktest)]
 
-use core::{assert_matches::assert_matches, time::Duration};
+use core::{assert_matches, time::Duration};
 
 use crate::{task::Task, timer::Jiffies};
 
