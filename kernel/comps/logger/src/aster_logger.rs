@@ -35,12 +35,15 @@ fn print_logs(record: &Record, timestamp: f64) {
         log::Level::Trace => Style::new().bright_black(),
     };
 
-    super::_print(format_args!(
-        "{} {:<5}: {}\n",
-        timestamp_style.style(format_args!("[{:>10.3}]", timestamp)),
-        level_style.style(record.level()),
-        record_style.style(record.args())
-    ));
+    super::_print(
+        format_args!(
+            "{} {:<5}: {}\n",
+            timestamp_style.style(format_args!("[{:>10.3}]", timestamp)),
+            level_style.style(record.level()),
+            record_style.style(record.args())
+        ),
+        false,
+    );
 }
 
 #[cfg(not(feature = "log_color"))]

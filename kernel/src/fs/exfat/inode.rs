@@ -1384,7 +1384,10 @@ impl Inode for ExfatInode {
                 .block_device()
                 .read_blocks(physical_bid, bio_segment.clone())?;
             bio_segment.reader().unwrap().read_fallible(writer)?;
-            buf_offset += BLOCK_SIZE;
+            #[expect(unused_assignments)]
+            {
+                buf_offset += BLOCK_SIZE;
+            }
 
             cur_offset += BLOCK_SIZE;
             if cur_offset >= cluster_size {
