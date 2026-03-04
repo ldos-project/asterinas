@@ -269,10 +269,10 @@ impl InodeHandle_ {
     }
 
     fn unlock_range_lock(&self, lock: &RangeLockItem) {
-        if let Some(extension) = self.dentry.inode().extension() {
-            if let Some(range_lock_list) = extension.get::<RangeLockList>() {
-                range_lock_list.unlock(lock);
-            }
+        if let Some(extension) = self.dentry.inode().extension()
+            && let Some(range_lock_list) = extension.get::<RangeLockList>()
+        {
+            range_lock_list.unlock(lock);
         }
     }
 
@@ -310,10 +310,10 @@ impl InodeHandle_ {
     }
 
     fn unlock_flock<R>(&self, req_owner: &InodeHandle<R>) {
-        if let Some(extension) = self.dentry.inode().extension() {
-            if let Some(flock_list) = extension.get::<FlockList>() {
-                flock_list.unlock(req_owner);
-            }
+        if let Some(extension) = self.dentry.inode().extension()
+            && let Some(flock_list) = extension.get::<FlockList>()
+        {
+            flock_list.unlock(req_owner);
         }
     }
 }

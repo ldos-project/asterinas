@@ -171,10 +171,10 @@ impl<E: Ext> IfaceCommon<E> {
     /// Releases the port so that it can be used again (if it is not being reused).
     fn release_port(&self, port: u16) {
         let mut used_ports = self.used_ports.lock();
-        if let Some(used_times) = used_ports.remove(&port) {
-            if used_times != 1 {
-                used_ports.insert(port, used_times - 1);
-            }
+        if let Some(used_times) = used_ports.remove(&port)
+            && used_times != 1
+        {
+            used_ports.insert(port, used_times - 1);
         }
     }
 }

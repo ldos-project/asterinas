@@ -210,10 +210,10 @@ fn file_contains_ostd_main_macro(file: &syn::File) -> bool {
                     }
                 }
             }
-            syn::Item::ExternCrate(syn::ItemExternCrate { ident, .. }) => {
-                if ident.to_token_stream().to_string() == "osdk_test_kernel" {
-                    return true;
-                }
+            syn::Item::ExternCrate(syn::ItemExternCrate { ident, .. })
+                if ident.to_token_stream().to_string() == "osdk_test_kernel" =>
+            {
+                return true;
             }
             _ => {}
         }
@@ -301,18 +301,16 @@ pub fn trace_panic_from_log(qemu_log: File, bin_path: PathBuf) {
             println!("[OSDK] The kernel seems panicked. Parsing stack trace for source lines:");
             trace_exists = true;
         }
-        if trace_exists {
-            if let Some(cap) = pc_matcher.captures(&line) {
-                let pc = cap.get(1).unwrap().as_str();
-                let mut stdin = addr2line_proc.stdin.as_ref().unwrap();
-                stdin.write_all(pc.as_bytes()).unwrap();
-                stdin.write_all(b"\n").unwrap();
-                let mut line = String::new();
-                let mut stdout = BufReader::new(addr2line_proc.stdout.as_mut().unwrap());
-                stdout.read_line(&mut line).unwrap();
-                stack_num += 1;
-                println!("({: >3}) {}", stack_num, line.trim());
-            }
+        if trace_exists && let Some(cap) = pc_matcher.captures(&line) {
+            let pc = cap.get(1).unwrap().as_str();
+            let mut stdin = addr2line_proc.stdin.as_ref().unwrap();
+            stdin.write_all(pc.as_bytes()).unwrap();
+            stdin.write_all(b"\n").unwrap();
+            let mut line = String::new();
+            let mut stdout = BufReader::new(addr2line_proc.stdout.as_mut().unwrap());
+            stdout.read_line(&mut line).unwrap();
+            stack_num += 1;
+            println!("({: >3}) {}", stack_num, line.trim());
         }
     }
     addr2line_proc.kill().unwrap();

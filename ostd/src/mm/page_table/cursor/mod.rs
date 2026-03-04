@@ -193,10 +193,10 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         // TODO(aneesh): handle levels larger than two.
         let rcu_guard = self.rcu_guard;
         let mut cur_entry = self.cur_entry();
-        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref() {
-            if let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard) {
-                self.push_level(split_child);
-            }
+        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref()
+            && let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard)
+        {
+            self.push_level(split_child);
         }
         self.jump(va).unwrap();
     }

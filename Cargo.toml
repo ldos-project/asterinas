@@ -60,7 +60,6 @@ unused_parens = "allow"
 [workspace.lints.clippy]
 allow_attributes = "warn"
 collapsible_match = "allow"
-collapsible-if = "allow"
 explicit_counter_loop = "allow"
 filter_next = "allow"
 implicit_saturating_sub = "allow"

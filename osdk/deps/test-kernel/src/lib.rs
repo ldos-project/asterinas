@@ -105,11 +105,11 @@ where
     let crate_set =
         crate_whitelist.map(|crates| crates.iter().copied().collect::<BTreeSet<&str>>());
     for crate_ in tree.iter() {
-        if let Some(crate_set) = &crate_set {
-            if !crate_set.contains(crate_.name()) {
-                early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
-                continue;
-            }
+        if let Some(crate_set) = &crate_set
+            && !crate_set.contains(crate_.name())
+        {
+            early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
+            continue;
         }
         match run_crate_ktests(crate_, &whitelist_trie) {
             KtestResult::Ok => {}
