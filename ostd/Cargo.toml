@@ -37,7 +37,7 @@ spin = "0.9.4"
 slotmap = { version = "1.0", default-features = false }
 smallvec = { version = "1.15.1", features = ["union"] }
 snafu = { workspace = true }
-unwinding = { version = "=0.2.5", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
+unwinding = { version = "0.2.8", default-features = false, features = ["fde-gnu-eh-frame-hdr", "hide-trace", "panic", "personality", "unwinder"] }
 volatile = "0.6.1"
 bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
 crossbeam-utils = { version = "0.8.21", default-features = false }

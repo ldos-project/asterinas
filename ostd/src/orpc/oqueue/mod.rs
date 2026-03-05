@@ -587,7 +587,7 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
 #[cfg(ktest)]
 mod test {
     use alloc::string::String;
-    use core::assert_matches::assert_matches;
+    use core::assert_matches;
 
     use super::*;
     use crate::{orpc::oqueue::generic_test, prelude::*};

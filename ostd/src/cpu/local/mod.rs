@@ -51,6 +51,7 @@ pub use cell::CpuLocalCell;
 pub use dyn_cpu_local::DynCpuLocalChunk;
 use dyn_cpu_local::DynamicStorage;
 use spin::Once;
+use static_assertions::assert_not_impl_any;
 use static_cpu_local::StaticStorage;
 
 use super::CpuId;
@@ -181,7 +182,7 @@ impl<T: 'static, S: AnyStorage<T>> !Clone for CpuLocal<T, S> {}
 
 // In general, it does not make any sense to send instances of static `CpuLocal`
 // to other tasks as they should live on other CPUs to make sending useful.
-impl<T: 'static> !Send for CpuLocal<T, StaticStorage<T>> {}
+assert_not_impl_any!(CpuLocal<usize, StaticStorage<usize>>: Send);
 
 /// The static CPU-local areas for APs.
 static CPU_LOCAL_STORAGES: Once<&'static [Paddr]> = Once::new();

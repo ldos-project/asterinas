@@ -5,7 +5,7 @@
 #[cfg(ktest)]
 mod test {
     use core::{
-        assert_matches::assert_matches,
+        assert_matches,
         cell::Cell,
         panic::{RefUnwindSafe, UnwindSafe},
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},

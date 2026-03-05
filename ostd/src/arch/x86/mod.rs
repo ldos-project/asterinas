@@ -145,13 +145,13 @@ pub fn read_random() -> Option<u64> {
 fn has_avx() -> bool {
     use core::arch::x86_64::{__cpuid, __cpuid_count};
 
-    let cpuid_result = unsafe { __cpuid(0) };
+    let cpuid_result = __cpuid(0);
     if cpuid_result.eax < 1 {
         // CPUID function 1 is not supported
         return false;
     }
 
-    let cpuid_result = unsafe { __cpuid_count(1, 0) };
+    let cpuid_result = __cpuid_count(1, 0);
     // Check for AVX (bit 28 of ecx)
     cpuid_result.ecx & (1 << 28) != 0
 }
@@ -159,13 +159,13 @@ fn has_avx() -> bool {
 fn has_avx512() -> bool {
     use core::arch::x86_64::{__cpuid, __cpuid_count};
 
-    let cpuid_result = unsafe { __cpuid(0) };
+    let cpuid_result = __cpuid(0);
     if cpuid_result.eax < 7 {
         // CPUID function 7 is not supported
         return false;
     }
 
-    let cpuid_result = unsafe { __cpuid_count(7, 0) };
+    let cpuid_result = __cpuid_count(7, 0);
     // Check for AVX-512 Foundation (bit 16 of ebx)
     cpuid_result.ebx & (1 << 16) != 0
 }
