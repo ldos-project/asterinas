@@ -16,13 +16,16 @@ pub mod pipe;
 pub mod procfs;
 pub mod ramfs;
 pub mod rootfs;
+#[cfg(not(baseline_asterinas))]
 pub mod server_traits;
 pub mod sysfs;
 pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPolicy};
+#[cfg(not(baseline_asterinas))]
+use aster_raid::selection_policies::RoundRobinPolicy;
+use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -116,10 +119,15 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     }
 
+    #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
+    #[cfg(not(baseline_asterinas))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
-
-    Raid1Device::init(raid_device_name, members, selection_policy).map_err(|err| match err {
+    #[cfg(not(baseline_asterinas))]
+    let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
+    #[cfg(baseline_asterinas)]
+    let raid1device = Raid1Device::init(raid_device_name, members);
+    raid1device.map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }

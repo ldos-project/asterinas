@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use id_alloc::IdAlloc;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueueRef;
 use ostd::{
     const_assert,
     mm::UntypedMem,
-    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
+    new_server,
+    orpc::{orpc_impl, orpc_server},
 };
 
 use super::{
@@ -14,7 +17,10 @@ use super::{
     prelude::*,
     super_block::SuperBlock,
 };
+#[cfg(not(baseline_asterinas))]
 use crate::fs::server_traits::{self, PageIOObservable, PageStore};
+#[cfg(baseline_asterinas)]
+use crate::fs::utils::page_cache::PageCacheBackend;
 
 /// Blocks are clustered into block groups in order to reduce fragmentation and minimise
 /// the amount of head seeking when reading a large amount of consecutive data.
@@ -80,8 +86,7 @@ impl BlockGroup {
                 }
             };
 
-            BlockGroupImpl::new_with(|orpc_internal, _| BlockGroupImpl {
-                orpc_internal,
+            new_server!(|_| BlockGroupImpl {
                 inode_table_bid: metadata.descriptor.inode_table_bid,
                 raw_inodes_size,
                 inner: RwMutex::new(Inner {
@@ -94,8 +99,6 @@ impl BlockGroup {
 
         let raw_inodes_cache =
             PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _)?;
-
-        raw_inodes_cache.start_prefetcher()?;
 
         Ok(Self {
             idx,
@@ -327,6 +330,7 @@ impl Debug for BlockGroup {
     }
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageIOObservable for BlockGroupImpl {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
@@ -335,6 +339,7 @@ impl PageIOObservable for BlockGroupImpl {
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageStore for BlockGroupImpl {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
@@ -390,6 +395,41 @@ impl PageStore for BlockGroupImpl {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.raw_inodes_size.div_ceil(BLOCK_SIZE))
+    }
+}
+
+#[cfg(baseline_asterinas)]
+impl PageCacheBackend for BlockGroupImpl {
+    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let bid = self.inode_table_bid + idx as Ext2Bid;
+        // TODO: Should we allocate the bio segment from the pool on reads?
+        // This may require an additional copy to the requested frame in the completion callback.
+        let bio_segment = BioSegment::new_from_segment(
+            Segment::from(frame.clone()).into(),
+            BioDirection::FromDevice,
+        );
+        self.fs
+            .upgrade()
+            .unwrap()
+            .read_blocks_async(bid, bio_segment)
+    }
+
+    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let bid = self.inode_table_bid + idx as Ext2Bid;
+        let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+        // This requires an additional copy to the pooled bio segment.
+        bio_segment
+            .writer()
+            .unwrap()
+            .write_fallible(&mut frame.reader().to_fallible())?;
+        self.fs
+            .upgrade()
+            .unwrap()
+            .write_blocks_async(bid, bio_segment)
+    }
+
+    fn npages(&self) -> usize {
+        self.raw_inodes_size.div_ceil(BLOCK_SIZE)
     }
 }
 

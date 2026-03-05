@@ -28,6 +28,7 @@ impl BenchmarkHarness {
         let mut bench = Self::new(karg);
 
         fn_call::register_benchmarks(&mut bench);
+        #[cfg(not(baseline_asterinas))]
         oqueue::register_benchmarks(&mut bench);
 
         bench.main();

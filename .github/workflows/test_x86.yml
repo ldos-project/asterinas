@@ -22,15 +22,25 @@ jobs:
       options: --device=/dev/kvm --privileged
     strategy:
       matrix:
-        id: ['lint', 'compile', 'usermode_test', 'ktest', 'early_boot_test']
+        include:
+          - id: 'lint'
+          - id: 'lint'
+            baseline_asterinas: true
+          - id: 'compile'
+          - id: 'usermode_test'
+          - id: 'ktest'
+          - id: 'ktest'
+            baseline_asterinas: true
+          - id: 'early_boot_test'
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - name: Run basic tests
+      - name: Run basic tests ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
         uses: ./.github/actions/test
         with:
           auto_test: 'general'
           runs_on: 'ubuntu-latest'
+          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
 
   integration-test:
     runs-on: ubuntu-latest
@@ -57,6 +67,10 @@ jobs:
           - test_id: 'syscall-ext2-microvm'
             scheme: 'microvm'
             syscall_test_workdir: '/ext2'
+          - test_id: 'syscall-ext2-microvm-baseline'
+            scheme: 'microvm'
+            syscall_test_workdir: '/ext2'
+            baseline_asterinas: true
           # Syscall Test at Ext2 (IOMMU) (Debug Build)
           - test_id: 'syscall-ext2-iommu-debug'
             scheme: 'iommu'
@@ -84,12 +98,13 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with LTP') || '' }}
+      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with LTP') || '' }} ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
         uses: ./.github/actions/test
         with:
           auto_test: ${{ (startsWith(matrix.test_id, 'boot') && 'boot') ||
               (startsWith(matrix.test_id, 'syscall') && 'syscall') || 'test' }}
           release: ${{ matrix.release || true }}
+          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
           enable_kvm: ${{ matrix.enable_kvm || true }}
           smp: ${{ matrix.smp }}
           netdev: ${{ matrix.netdev || 'tap' }}
@@ -98,13 +113,14 @@ jobs:
           syscall_test_suite: 'ltp'
           syscall_test_workdir: ${{ matrix.syscall_test_workdir }}
           boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
-      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with gVisor') || '' }}
+      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with gVisor') || '' }} ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
         if: ${{ startsWith(matrix.test_id, 'syscall') }}
         uses: ./.github/actions/test
         with:
           auto_test: ${{ (startsWith(matrix.test_id, 'boot') && 'boot') ||
               (startsWith(matrix.test_id, 'syscall') && 'syscall') || 'test' }}
           release: ${{ matrix.release || true }}
+          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
           enable_kvm: ${{ matrix.enable_kvm || true }}
           smp: ${{ matrix.smp }}
           netdev: ${{ matrix.netdev || 'tap' }}

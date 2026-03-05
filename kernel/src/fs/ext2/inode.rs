@@ -7,10 +7,13 @@ use alloc::{borrow::ToOwned, rc::Rc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use inherit_methods_macro::inherit_methods;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueueRef;
 use ostd::{
     const_assert,
     mm::UntypedMem,
-    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
+    new_server,
+    orpc::{orpc_impl, orpc_server},
     util::callback_counter::CallbackCounter,
 };
 
@@ -23,10 +26,13 @@ use super::{
     utils::now,
     xattr::Xattr,
 };
+#[cfg(not(baseline_asterinas))]
+use crate::fs::server_traits::{self, PageIOObservable as _};
+#[cfg(baseline_asterinas)]
+use crate::fs::utils::page_cache::PageCacheBackend;
 use crate::{
     fs::{
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{self, PageIOObservable as _},
         utils::{
             Extension, FallocMode, Inode as _, InodeMode, Metadata, Permission, XattrName,
             XattrNamespace, XattrSetFlags,
@@ -972,7 +978,10 @@ impl InodeInner {
                     Arc::downgrade(&inode_impl.block_manager) as _,
                 )
                 .unwrap();
-                cache.start_prefetcher().unwrap();
+                #[cfg(not(baseline_asterinas))]
+                {
+                    cache.start_prefetcher().unwrap();
+                }
                 cache
             },
             inode_impl,
@@ -1209,8 +1218,7 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = InodeBlockManager::new_with(|orpc_internal, _| InodeBlockManager {
-            orpc_internal,
+        let block_manager = new_server!(|_| InodeBlockManager {
             nblocks: AtomicUsize::new(desc.blocks_count() as _),
             block_ptrs: RwMutex::new(desc.block_ptrs),
             indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
@@ -2016,6 +2024,7 @@ impl InodeBlockManager {
     }
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageIOObservable for InodeBlockManager {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
@@ -2024,6 +2033,7 @@ impl server_traits::PageIOObservable for InodeBlockManager {
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageStore for InodeBlockManager {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
@@ -2052,6 +2062,23 @@ impl server_traits::PageStore for InodeBlockManager {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.nblocks())
+    }
+}
+
+#[cfg(baseline_asterinas)]
+impl PageCacheBackend for InodeBlockManager {
+    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let bid = idx as Ext2Bid;
+        self.read_block_async(bid, frame)
+    }
+
+    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        let bid = idx as Ext2Bid;
+        self.write_block_async(bid, frame)
+    }
+
+    fn npages(&self) -> usize {
+        self.nblocks()
     }
 }
 

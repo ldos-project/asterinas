@@ -16,8 +16,7 @@
 //! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
 //! as zero-cost capabilities.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::time::Duration;
+use alloc::sync::Arc;
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
@@ -26,21 +25,13 @@ use ostd::{
     Error,
     error::InvalidArgsSnafu,
     mm::{FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame, UntypedMem, page_size},
-    orpc::{
-        framework::{notifier::Notifier, spawn_thread},
-        legacy_oqueue::OQueue,
-        orpc_server, orpc_trait,
-        sync::select,
-    },
     task::disable_preempt,
 };
-use snafu::Whatever;
 use vmar::{PageFaultOQueueMessage, RssType};
 
-use crate::{
-    process::{PauseProcGuard, Process},
-    util::timer::TimerServer,
-};
+use crate::process::{PauseProcGuard, Process};
+#[cfg(not(baseline_asterinas))]
+pub mod hugepaged;
 
 pub mod page_fault_handler;
 pub mod perms;
@@ -269,64 +260,4 @@ fn promote_hugepages(
         }
     }
     Ok(())
-}
-
-#[orpc_trait]
-trait HugePageD {}
-
-/// HugePage daemon that periodically attempts to promote pages to huge pages
-#[orpc_server(HugePageD)]
-pub struct HugepagedServer {}
-
-impl HugepagedServer {
-    /// Create and spawn a new HugepagedServer.
-    pub fn spawn(initproc: Arc<Process>) -> Arc<Self> {
-        let hugepaged = Self::new().unwrap();
-        spawn_thread(hugepaged.clone(), {
-            let hugepaged = hugepaged.clone();
-            move || hugepaged.main(initproc)
-        });
-        hugepaged
-    }
-    pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
-        Ok(server)
-    }
-
-    pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
-        let notify_server = TimerServer::spawn(Duration::from_secs(1));
-
-        let pagefault_oq = vmar::get_page_fault_oqueue();
-        let pagefault_observer = pagefault_oq.attach_strong_observer()?;
-        let notify_observer = notify_server
-            .notification_oqueue()
-            .attach_strong_observer()?;
-        loop {
-            let mut value: Option<PageFaultOQueueMessage> = None;
-            loop {
-                select!(
-                    if let msg = pagefault_observer.try_strong_observe() {
-                        value = Some(msg);
-                        break;
-                    },
-                    if let _ = notify_observer.try_strong_observe() {
-                        break;
-                    }
-                );
-                ostd::task::Task::yield_now();
-            }
-
-            let mut procs: Vec<Arc<Process>> = Vec::new();
-            procs.push(initproc.clone());
-            while let Some(proc) = procs.pop() {
-                proc.current_children()
-                    .iter()
-                    .for_each(|c| procs.push(c.clone()));
-
-                if promote_hugepages(&proc, value).is_err() {
-                    break;
-                }
-            }
-        }
-    }
 }

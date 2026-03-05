@@ -12,34 +12,25 @@ extern crate alloc;
 
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     prelude::println,
 };
 
-/// The methods used for testing the ORPC framework in early-boot context.
-#[orpc_trait]
-trait TestTrait {
-    fn f(&self) -> Result<usize, RPCError>;
+#[cfg(not(baseline_asterinas))]
+mod orpc_tests;
+
+#[cfg(not(baseline_asterinas))]
+fn test_early_boot_server() {
+    orpc_tests::test_early_boot_server()
 }
 
-/// A server implementing `TestTrait` for testing.
-#[orpc_server(TestTrait)]
-struct TestServer {}
-
-#[orpc_impl]
-impl TestTrait for TestServer {
-    fn f(&self) -> Result<usize, RPCError> {
-        Ok(42)
-    }
-}
+#[cfg(baseline_asterinas)]
+fn test_early_boot_server() {}
 
 #[ostd::main]
 fn main() {
     println!("Early-boot tests...");
 
-    let server = TestServer::new_with(|orpc_internal, _| TestServer { orpc_internal });
-
-    assert_eq!(server.f().unwrap(), 42);
+    test_early_boot_server();
 
     println!("Tests passed.");
 

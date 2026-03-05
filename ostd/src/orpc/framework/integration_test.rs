@@ -19,9 +19,9 @@ mod test {
     use crate::{
         assert_eq_eventually, assert_eventually, assert_matches_eventually,
         orpc::{
+            errors::RPCError,
             framework::{
                 CurrentServer,
-                errors::RPCError,
                 shutdown::{Shutdown, ShutdownState},
                 spawn_thread,
             },

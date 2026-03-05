@@ -52,6 +52,7 @@ exclude = [
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_crate_level_docs = "warn"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)'] }
 
 [workspace.lints.clippy]
 allow_attributes = "warn"

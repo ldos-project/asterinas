@@ -69,6 +69,7 @@ pub mod fs;
 pub mod ipc;
 pub mod kcmdline;
 pub mod net;
+#[cfg(not(baseline_asterinas))]
 pub(crate) mod orpc_utils;
 pub mod prelude;
 mod process;
@@ -91,6 +92,7 @@ pub fn main() {
     //   Thread association and are ignored by the ClassScheduler
     thread::init();
     sched::init();
+    #[cfg(not(baseline_asterinas))]
     orpc_utils::init();
 
     ostd::early_println!("[kernel] OSTD initialized. Preparing components.");
@@ -197,12 +199,14 @@ fn init_thread() {
     )
     .expect("Run init process failed.");
 
+    #[cfg(not(baseline_asterinas))]
     if karg
         .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
         .unwrap_or(false)
     {
-        vm::HugepagedServer::spawn(initproc.clone());
+        vm::hugepaged::HugepagedServer::spawn(initproc.clone());
     }
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();

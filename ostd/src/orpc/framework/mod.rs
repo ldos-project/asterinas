@@ -21,8 +21,6 @@
 // early boot servers. This is not trivial because component initializers run before the init task
 // starts (this is true even for components initialized after the scheduler).
 
-pub mod errors;
-
 mod integration_test;
 pub mod notifier;
 pub mod shutdown;
@@ -40,7 +38,7 @@ pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
-    orpc::framework::errors::RPCError,
+    orpc::errors::RPCError,
     prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
@@ -289,7 +287,7 @@ mod test {
 
     use super::*;
     use crate::{
-        orpc::{legacy_oqueue::generic_test, sync::Blocker},
+        orpc::{errors, legacy_oqueue::generic_test, sync::Blocker},
         sync::Waker,
     };
 

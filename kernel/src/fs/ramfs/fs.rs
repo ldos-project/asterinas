@@ -6,16 +6,27 @@ use core::{
 };
 
 use align_ext::AlignExt;
+#[cfg(baseline_asterinas)]
+use aster_block::bio::BioWaiter;
 use aster_rights::Full;
 use aster_util::slot_vec::SlotVec;
 use hashbrown::HashMap;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueueRef;
 use ostd::{
     mm::{UntypedMem, VmIo},
-    orpc::{legacy_oqueue::OQueueRef, orpc_impl, orpc_server},
+    new_server,
+    orpc::{orpc_impl, orpc_server},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
 use super::{xattr::RamXattr, *};
+#[cfg(not(baseline_asterinas))]
+use crate::fs::server_traits::{
+    self, AsyncReadRequest, AsyncWriteRequest, PageIOObservable, PageStore,
+};
+#[cfg(baseline_asterinas)]
+use crate::fs::utils::{CachePage, page_cache::PageCacheBackend};
 use crate::{
     events::IoEvents,
     fs::{
@@ -23,10 +34,6 @@ use crate::{
         file_handle::FileLike,
         named_pipe::NamedPipe,
         path::{is_dot, is_dot_or_dotdot, is_dotdot},
-        server_traits::{
-            AsyncReadRequest, AsyncWriteRequest, PageIOObservable, PageIOObservableOQueues,
-            PageStore, PageStoreOQueues,
-        },
         utils::{
             CStr256, DirentVisitor, Extension, FallocMode, FileSystem, FsFlags, Inode, InodeMode,
             InodeType, IoctlCmd, Metadata, MknodType, Permission, SuperBlock, XattrName,
@@ -50,6 +57,7 @@ pub struct RamFS {
 }
 
 impl RamFS {
+    #[cfg(not(baseline_asterinas))]
     pub fn new() -> Arc<Self> {
         Arc::new_cyclic(|weak_fs| Self {
             sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX),
@@ -64,6 +72,28 @@ impl RamFS {
                 InodeType::Dir,
                 ROOT_INO,
             ),
+            inode_allocator: AtomicU64::new(ROOT_INO + 1),
+        })
+    }
+
+    #[cfg(baseline_asterinas)]
+    pub fn new() -> Arc<Self> {
+        Arc::new_cyclic(|weak_fs| Self {
+            sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX),
+            root: Arc::new_cyclic(|weak_root| RamInode {
+                inner: Inner::new_dir(weak_root.clone(), weak_root.clone()),
+                metadata: SpinLock::new(InodeMeta::new_dir(
+                    InodeMode::from_bits_truncate(0o755),
+                    Uid::new_root(),
+                    Gid::new_root(),
+                )),
+                ino: ROOT_INO,
+                typ: InodeType::Dir,
+                this: weak_root.clone(),
+                fs: weak_fs.clone(),
+                extension: Extension::new(),
+                xattr: RamXattr::new(),
+            }),
             inode_allocator: AtomicU64::new(ROOT_INO + 1),
         })
     }
@@ -93,7 +123,7 @@ impl FileSystem for RamFS {
 }
 
 /// An inode of `RamFs`.
-#[orpc_server(PageStore, PageIOObservable)]
+#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 struct RamInode {
     /// Inode inner specifics
     inner: Inner,
@@ -388,6 +418,7 @@ impl DirEntry {
     }
 }
 
+#[cfg(not(baseline_asterinas))]
 impl RamInode {
     fn new_inode_with(
         inner: impl FnOnce(&Weak<RamInode>) -> Inner,
@@ -396,7 +427,7 @@ impl RamInode {
         typ: InodeType,
         ino: u64,
     ) -> Arc<RamInode> {
-        Self::new_with(|orpc_internal, weak_self| RamInode {
+        new_server!(|weak_self| RamInode {
             inner: inner(weak_self),
             metadata: SpinLock::new(meta),
             ino,
@@ -405,7 +436,6 @@ impl RamInode {
             fs,
             extension: Extension::new(),
             xattr: RamXattr::new(),
-            orpc_internal,
         })
     }
 
@@ -501,6 +531,115 @@ impl RamInode {
     }
 }
 
+#[cfg(baseline_asterinas)]
+impl RamInode {
+    fn new_dir(
+        fs: &Arc<RamFS>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        parent: &Weak<RamInode>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_dir(weak_self.clone(), parent.clone()),
+            metadata: SpinLock::new(InodeMeta::new_dir(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::Dir,
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_file(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_file(weak_self.clone()),
+            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::File,
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_symlink(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_symlink(),
+            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::SymLink,
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_device(
+        fs: &Arc<RamFS>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        device: Arc<dyn Device>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_device(device.clone()),
+            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::from(device.type_()),
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_socket(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_socket(),
+            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::Socket,
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn new_named_pipe(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+        Arc::new_cyclic(|weak_self| RamInode {
+            inner: Inner::new_named_pipe(),
+            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            ino: fs.alloc_id(),
+            typ: InodeType::NamedPipe,
+            this: weak_self.clone(),
+            fs: Arc::downgrade(fs),
+            extension: Extension::new(),
+            xattr: RamXattr::new(),
+        })
+    }
+
+    fn find(&self, name: &str) -> Result<Arc<Self>> {
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        let (_, inode) = self
+            .inner
+            .as_direntry()
+            .unwrap()
+            .read()
+            .get_entry(name)
+            .ok_or(Error::new(Errno::ENOENT))?;
+        Ok(inode)
+    }
+}
+
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageIOObservable for RamInode {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
@@ -509,6 +648,7 @@ impl PageIOObservable for RamInode {
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
@@ -537,6 +677,28 @@ impl PageStore for RamInode {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.metadata.lock().blocks)
+    }
+}
+
+#[cfg(baseline_asterinas)]
+impl PageCacheBackend for RamInode {
+    fn read_page_async(&self, _idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+        // Initially, any block/page in a RamFs inode contains all zeros
+        frame
+            .writer()
+            .to_fallible()
+            .fill_zeros(frame.size())
+            .unwrap();
+        Ok(BioWaiter::new())
+    }
+
+    fn write_page_async(&self, _idx: usize, _frame: &CachePage) -> Result<BioWaiter> {
+        // do nothing
+        Ok(BioWaiter::new())
+    }
+
+    fn npages(&self) -> usize {
+        self.metadata.lock().blocks
     }
 }
 

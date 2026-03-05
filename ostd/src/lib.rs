@@ -46,7 +46,12 @@ pub mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
+#[cfg(not(baseline_asterinas))]
 pub mod orpc;
+#[cfg(baseline_asterinas)]
+#[path = "orpc_stub.rs"]
+pub mod orpc;
+mod orpc_common;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
@@ -144,6 +149,15 @@ unsafe fn init() {
     invoke_ffi_init_funcs();
 
     IN_BOOTSTRAP_CONTEXT.store(false, Ordering::Relaxed);
+
+    early_println!(
+        "[ostd] Running in {} mode.",
+        if cfg!(not(baseline_asterinas)) {
+            "ORPC/LDOS"
+        } else {
+            "non-ORPC/baseline"
+        }
+    );
 }
 
 /// Indicates whether the kernel is in bootstrap context.

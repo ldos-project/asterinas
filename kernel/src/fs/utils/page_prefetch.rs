@@ -12,8 +12,8 @@ use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
 
 use ostd::orpc::{
+    errors::RPCError,
     framework::{
-        errors::RPCError,
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
