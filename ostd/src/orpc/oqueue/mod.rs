@@ -48,7 +48,12 @@
 // TODO: Do we need a 5th struct `UntypedOQueueRef` has no message type parameter and represents an
 // unknown OQueue. It only supports casting dynamically to an `AnyOQueueRef<T>`.
 
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 use core::{
     any::TypeId,
     cell::Cell,
@@ -59,6 +64,7 @@ use core::{
 
 mod implementation;
 pub mod query;
+pub mod registry;
 mod single_thread_ring_buffer;
 
 use ostd_macros::ostd_error;
@@ -66,7 +72,7 @@ pub use query::ObservationQuery;
 use snafu::Snafu;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
-use crate::sync::SpinLock;
+use crate::{orpc::path::Path, sync::SpinLock};
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -227,11 +233,31 @@ macro_rules! impl_oqueue_forward {
     };
 }
 
+/// Derive `Clone` without requiring `T: Clone`. The body simply clones `inner`.
+macro_rules! clone_without_t {
+    ($t:ident, $($bounds:tt)*) => {
+        impl<T $($bounds)*> Clone for $t<T> {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone() }
+            }
+        }
+
+        impl<T $($bounds)*> $t<T> {
+            #[doc = "Convert a strong OQueue reference to a weak OQueue reference."]
+            pub fn downgrade(&self) -> WeakAnyOQueueRef<T> {
+                WeakAnyOQueueRef { inner: Arc::downgrade(&self.inner) }
+            }
+        }
+    };
+}
+
 /// A dynamically typed OQueue that allows attempting any kind of attachment, but dynamically
 /// returns errors for unsupported ones.
 pub struct AnyOQueueRef<T: ?Sized> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(AnyOQueueRef, : ?Sized);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(AnyOQueueRef, inner, [+ ?Sized]);
@@ -239,28 +265,32 @@ impl_consumable_oqueue_forward!(AnyOQueueRef, inner);
 impl_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
-#[derive(Clone)]
 pub struct OQueueBaseRef<T> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
+
+clone_without_t!(OQueueBaseRef,);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(OQueueBaseRef, inner, []);
 
 /// A reference to an OQueue which supports consumers. These OQueues support publication is by value
 /// so that ownership of the message can be transferred to the consumer.
-#[derive(Clone)]
 pub struct ConsumableOQueueRef<T: 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
 
-impl<T> ConsumableOQueueRef<T> {
+clone_without_t!(ConsumableOQueueRef, : 'static);
+
+impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
     /// consumers.
-    pub fn new(len: usize) -> Self {
-        Self {
+    pub fn new(len: usize, path: Path) -> Self {
+        let ret = Self {
             inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
-        }
+        };
+        registry::register(&path, ret.as_any_oqueue());
+        ret
     }
 }
 
@@ -270,23 +300,46 @@ impl_consumable_oqueue_forward!(ConsumableOQueueRef, inner);
 
 /// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
 /// values by reference.
-#[derive(Clone)]
 pub struct OQueueRef<T: ?Sized + 'static> {
     inner: Arc<implementation::OQueueImplementation<T>>,
 }
 
-impl<T: ?Sized + 'static> OQueueRef<T> {
+clone_without_t!(OQueueRef, : ?Sized + 'static);
+
+impl<T: ?Sized + Send + 'static> OQueueRef<T> {
     /// Create a new observation OQueue with the specified buffer length.
-    pub fn new(len: usize) -> Self {
-        Self {
+    pub fn new(len: usize, path: Path) -> Self {
+        let ret = Self {
             inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
-        }
+        };
+        registry::register(&path, ret.as_any_oqueue());
+        ret
     }
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(OQueueRef, inner, [+ ?Sized]);
 impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
+
+/// A weak reference to an OQueue. This has the same semantics as [`alloc::sync::Weak`].
+pub struct WeakAnyOQueueRef<T: ?Sized + 'static> {
+    inner: Weak<implementation::OQueueImplementation<T>>,
+}
+
+impl<T: ?Sized + 'static> Clone for WeakAnyOQueueRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T: ?Sized + 'static> WeakAnyOQueueRef<T> {
+    /// Get a strong reference to the OQueue if it still exists.
+    pub fn upgrade(&self) -> Option<AnyOQueueRef<T>> {
+        self.inner.upgrade().map(|inner| AnyOQueueRef { inner })
+    }
+}
 
 /// An attachment to an OQueue which allows transferring ownership of messages from the producer to
 /// the consumer without copying or cloning.
@@ -607,7 +660,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_consume() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -619,7 +672,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_strong_observe() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -634,7 +687,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_weak_observe_recent() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_weak_observer(1, ObservationQuery::new(|m: &Message| m.id))
@@ -649,7 +702,7 @@ mod test {
 
     #[ktest]
     fn oqueue_strong_observe() {
-        let queue = OQueueRef::new(4);
+        let queue = OQueueRef::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -665,7 +718,7 @@ mod test {
     #[ktest]
     fn oqueue_strong_observe_unsized() {
         let msg = &[1, 2, 3];
-        let queue = OQueueRef::<[u32]>::new(4);
+        let queue = OQueueRef::<[u32]>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &[u32]| m.len()))
@@ -679,7 +732,7 @@ mod test {
     }
 
     fn setup_for_weak_observation(history: usize) -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::new(4);
+        let queue = OQueueRef::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(history, ObservationQuery::new(|m: &Message| m.id))
@@ -745,7 +798,7 @@ mod test {
 
     #[ktest]
     fn unsupported_consumer() {
-        let queue = OQueueRef::<u32>::new(4);
+        let queue = OQueueRef::<u32>::new(4, Path::test());
         assert_matches!(
             queue.as_any_oqueue().attach_consumer().err().unwrap(),
             AttachmentError::Unsupported { .. }
@@ -754,7 +807,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_strong_observe_filtered() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new_filter(|m: &Message| {
@@ -783,7 +836,7 @@ mod test {
     }
 
     fn setup_for_weak_observation_filtered() -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::new(4);
+        let queue = OQueueRef::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(
@@ -800,7 +853,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_produce() {
-        let queue = ConsumableOQueueRef::new(2);
+        let queue = ConsumableOQueueRef::new(2, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let _consumer = queue.attach_consumer().unwrap();
 
@@ -816,7 +869,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_consume() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -829,7 +882,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_strong_observe() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -844,7 +897,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_inline_consumer() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -873,7 +926,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_inline_strong_observer() {
-        let queue = ConsumableOQueueRef::new(4);
+        let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -906,7 +959,7 @@ mod test {
 
     #[ktest]
     fn oqueue_inline_strong_observer() {
-        let queue = OQueueRef::new(4);
+        let queue = OQueueRef::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -937,7 +990,7 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_attach_inline_strong_observer() {
-        let queue = ConsumableOQueueRef::<Message>::new(4);
+        let queue = ConsumableOQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
 
         let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
@@ -968,7 +1021,7 @@ mod test {
 
     #[ktest]
     fn oqueue_attach_inline_strong_observer() {
-        let queue = OQueueRef::<Message>::new(4);
+        let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
 
         let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
@@ -1002,26 +1055,27 @@ mod test {
     fn generic_produce_consume() {
         generic_test::test_produce_consume(ConsumableOQueueRef::<generic_test::TestMessage>::new(
             2,
+            Path::test(),
         ));
     }
 
     #[ktest]
     fn generic_produce_strong_observe() {
         generic_test::test_produce_strong_observe(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(2),
+            ConsumableOQueueRef::<generic_test::TestMessage>::new(2, Path::test()),
         );
     }
 
     #[ktest]
     fn generic_produce_weak_observe() {
         generic_test::test_produce_weak_observe(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(3),
+            ConsumableOQueueRef::<generic_test::TestMessage>::new(3, Path::test()),
         );
     }
 
     #[ktest]
     fn generic_send_receive_blocker() {
-        let queue = ConsumableOQueueRef::<generic_test::TestMessage>::new(16);
+        let queue = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
         generic_test::test_send_receive_blocker(queue, 32, 3);
     }
 
@@ -1029,13 +1083,13 @@ mod test {
     fn generic_produce_strong_observe_only() {
         generic_test::test_produce_strong_observe_only(ConsumableOQueueRef::<
             generic_test::TestMessage,
-        >::new(2));
+        >::new(2, Path::test()));
     }
 
     #[ktest]
     fn generic_consumer_late_attach() {
         generic_test::test_consumer_late_attach(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(4),
+            ConsumableOQueueRef::<generic_test::TestMessage>::new(4, Path::test()),
         );
     }
 
@@ -1043,13 +1097,14 @@ mod test {
     fn generic_consumer_detach() {
         generic_test::test_consumer_detach(ConsumableOQueueRef::<generic_test::TestMessage>::new(
             4,
+            Path::test(),
         ));
     }
 
     #[ktest]
     fn generic_strong_observer_detach() {
         generic_test::test_strong_observer_detach(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(4),
+            ConsumableOQueueRef::<generic_test::TestMessage>::new(4, Path::test()),
         );
     }
 
@@ -1057,6 +1112,6 @@ mod test {
     fn generic_strong_observer_late_attach() {
         generic_test::test_strong_observer_late_attach(ConsumableOQueueRef::<
             generic_test::TestMessage,
-        >::new(4));
+        >::new(4, Path::test()));
     }
 }
