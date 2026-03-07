@@ -17,15 +17,17 @@
 
 #![no_std] // BlockDevice crate also not using rust std and not using unsafe code.
 #![deny(unsafe_code)]
-#![feature(trait_upcasting)]
 
 extern crate alloc;
 
-pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
-use core::{cmp, ops::Range};
+use core::{
+    cmp,
+    ops::Range,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
@@ -38,45 +40,16 @@ use ostd::orpc::orpc_server;
 use log::{debug, info};
 use crate::server_traits::SelectionPolicy;
 
-/// Ensures a parent [`SubmittedBio`] is always completed — either explicitly
-/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
-///
-/// This is used by the non-blocking read path: the guard is moved into the
-/// child BIO's completion callback. If the child completes normally, the
-/// callback calls [`complete`](Self::complete). If submission fails and the
-/// child is dropped, the guard's [`Drop`] impl completes the parent with an
-/// error so the filesystem thread is never left waiting.
-struct ParentGuard(Option<SubmittedBio>);
-
-impl ParentGuard {
-    fn complete(mut self, status: BioStatus) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(status);
-        }
-    }
-}
-
-impl Drop for ParentGuard {
-    fn drop(&mut self) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(BioStatus::IoError);
-        }
-    }
-}
-
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
-#[orpc_server]
 pub struct Raid1Device {
     /// Member block devices that store identical data (mirrors).
     members: Vec<Arc<dyn BlockDevice>>,
     queue: BioRequestSingleQueue,
-
     /// Basic capacity limits for the logical device (min across members).
     metadata: BlockDeviceMeta,
-
-    /// The policy to select the read member.
-    selection_policy: Arc<dyn SelectionPolicy>,
+    /// Round-robin cursor for selecting a read member without locking.
+    read_cursor: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -90,11 +63,7 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    pub fn init(
-        name: &str,
-        members: Vec<Arc<dyn BlockDevice>>,
-        selection_policy: Arc<dyn SelectionPolicy>,
-    ) -> Result<(), Raid1DeviceError> {
+    pub fn new(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Raid1DeviceError> {
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -105,17 +74,24 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
-            orpc_internal,
+        Ok(Arc::new(Self {
             members,
             queue,
             metadata,
-            selection_policy,
-        });
+            read_cursor: AtomicUsize::new(0),
+        }))
+    }
 
+    /// Registers a RAID-1 device into the global block device table so it can
+    /// be opened by upper layers (e.g., filesystems).
+    pub fn register(
+        name: &str,
+        members: Vec<Arc<dyn BlockDevice>>,
+    ) -> Result<Arc<Self>, Raid1DeviceError> {
+        let device = Self::new(name, members)?;
+        // Register under a stable name and return a shared handle.
         aster_block::register_device(name.to_owned(), device.clone());
-
-        Ok(())
+        Ok(device)
     }
 
     /// Dequeues and processes the next request from the staging queue.
@@ -145,106 +121,50 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests without blocking the worker thread.
+    /// Processes read requests asynchronously.
     ///
-    /// Each `SubmittedBio` is assigned to a member device and submitted with a
-    /// completion callback. The callback completes the parent BIO when the
-    /// child finishes, so the worker thread never blocks on I/O and can
-    /// immediately dequeue the next request.
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
+    /// member (round-robin) and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.
     fn process_read(&self, request: BioRequest) {
-        // let mut t_select_member = core::time::Duration::ZERO;
-        // let mut t_extract_sid = core::time::Duration::ZERO;
-        // let mut t_clone_segments = core::time::Duration::ZERO;
-        // let mut t_parent_guard = core::time::Duration::ZERO;
-        // let mut t_build_child = core::time::Duration::ZERO;
-        // let mut t_submit_child = core::time::Duration::ZERO;
-        // let mut parent_count: usize = 0;
+        // Submit all children first to overlap device I/O.
+        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
-        for parent in request.into_bios() {
-            // parent_count += 1;
-            // let mut ts = read_monotonic_time();
-
-            let member = self.members[0].clone();
-            // let now = read_monotonic_time();
-            // t_select_member += now - ts;
-            // ts = now;
-
-            let start_sid = parent.sid_range().start;
-            // let now = read_monotonic_time();
-            // t_extract_sid += now - ts;
-            // ts = now;
-            
-            let segments = parent.segments().to_vec();
-            // let now = read_monotonic_time();
-            // t_clone_segments += now - ts;
-            // ts = now;
-            
-            let guard = ParentGuard(Some(parent));
-            // let now = read_monotonic_time();
-            // t_parent_guard += now - ts;
-            // ts = now;
-
-            let child = Bio::new_with_closure(
+        for parent in request.bios() {
+            // Select a member to serve this read (round-robin).
+            let member = self.select_read_member(parent.sid_range());
+            let child = Bio::new(
+                // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
-                start_sid,
-                segments,
-                move |child_bio: &SubmittedBio| {
-                    guard.complete(child_bio.status());
-                },
+                parent.sid_range().start,
+                Self::clone_segments(parent),
+                None,
             );
-            // let now = read_monotonic_time();
-            // t_build_child += now - ts;
-            // ts = now;
-
-            let _ = child.submit(&*member);
-            // let now = read_monotonic_time();
-            // t_submit_child += now - ts;
-            // ts = now;
+            match child.submit(member.as_ref()) {
+                Ok(waiter) => pending.push((parent, waiter)),
+                // Err(_) => parent.complete(BioStatus::IoError),
+                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
+            }
         }
- 
-        // let total = t_select_member
-        //     + t_extract_sid
-        //     + t_clone_segments
-        //     + t_parent_guard
-        //     + t_build_child
-        //     + t_submit_child;
-        // let total_ns = total.as_nanos();
-        // let total_us = total.as_micros();
 
-        // if total_ns > 0 {
-        //     let pct_x100 = |d: core::time::Duration| -> u128 { d.as_nanos() * 10_000 / total_ns };
+        // Wait for each submitted child and complete the corresponding parent.
+        for (parent, waiter) in pending.into_iter() {
+            let status = match waiter.wait() {
+                // Guaranteed to be Complete on success when Some is returned.
+                Some(s) => s,
+                None => BioStatus::IoError,
+            };
+            // Report the completion status to the upper layer.
+            parent.complete(status);
+        }
+    }
 
-        //     let p_select = pct_x100(t_select_member);
-        //     let p_sid = pct_x100(t_extract_sid);
-        //     let p_segments = pct_x100(t_clone_segments);
-        //     let p_guard = pct_x100(t_parent_guard);
-        //     let p_build = pct_x100(t_build_child);
-        //     let p_submit = pct_x100(t_submit_child);
-
-        //     info!(
-        //         "[RAID-1 read timing] n_bios={} total={}ns({}us) select_member={}.{:02}% extract_sid={}.{:02}% clone_segments={}.{:02}% parent_guard={}.{:02}% build_child={}.{:02}% submit_child={}.{:02}%",
-        //         parent_count,
-        //         total_ns,
-        //         total_us,
-        //         p_select / 100,
-        //         p_select % 100,
-        //         p_sid / 100,
-        //         p_sid % 100,
-        //         p_segments / 100,
-        //         p_segments % 100,
-        //         p_guard / 100,
-        //         p_guard % 100,
-        //         p_build / 100,
-        //         p_build % 100,
-        //         p_submit / 100,
-        //         p_submit % 100,
-        //     );
-        // } else {
-        //     info!(
-        //         "[RAID-1 read timing] n_bios={} total=0ns(0us) total timing window is zero",
-        //         parent_count,
-        //     );
-        // }
+    /// Completes all the parents with the same status.
+    #[expect(dead_code)]
+    fn complete_all(&self, request: BioRequest, status: BioStatus) {
+        for parent in request.bios() {
+            parent.complete(status);
+        }
     }
 
     /// Processes write requests by fanning out to all mirrors and aggregating
@@ -285,7 +205,7 @@ impl Raid1Device {
         for member in &self.members {
             // Build a child BIO for this member.
             let child = Bio::new(bio_type, parent.sid_range().start, segments_builder(), None);
-            match member.submit(child) {
+            match child.submit(member.as_ref()) {
                 Ok(child_waiter) => waiter.concat(child_waiter),
                 Err(_) => submission_failed = true,
             }
@@ -308,6 +228,12 @@ impl Raid1Device {
 
         // Default to success if no errors were observed.
         aggregated_status.unwrap_or(BioStatus::Complete)
+    }
+
+    /// Selects a read member using a round-robin cursor (lock-free).
+    fn select_read_member(&self, _sid_range: &Range<Sid>) -> Arc<dyn BlockDevice> {
+        let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
+        self.members[idx % self.members.len()].clone()
     }
 
     /// Computes minimal metadata across members (capacity and segment limit).
