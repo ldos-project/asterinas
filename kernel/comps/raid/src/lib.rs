@@ -33,9 +33,36 @@ use aster_block::{
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
+use aster_time::read_monotonic_time;
 use ostd::orpc::orpc_server;
-
+use log::{debug, info};
 use crate::server_traits::SelectionPolicy;
+
+/// Ensures a parent [`SubmittedBio`] is always completed — either explicitly
+/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
+///
+/// This is used by the non-blocking read path: the guard is moved into the
+/// child BIO's completion callback. If the child completes normally, the
+/// callback calls [`complete`](Self::complete). If submission fails and the
+/// child is dropped, the guard's [`Drop`] impl completes the parent with an
+/// error so the filesystem thread is never left waiting.
+struct ParentGuard(Option<SubmittedBio>);
+
+impl ParentGuard {
+    fn complete(mut self, status: BioStatus) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(status);
+        }
+    }
+}
+
+impl Drop for ParentGuard {
+    fn drop(&mut self) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(BioStatus::IoError);
+        }
+    }
+}
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
@@ -118,50 +145,106 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
+    /// Processes read requests without blocking the worker thread.
     ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member (round-robin) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
+    /// Each `SubmittedBio` is assigned to a member device and submitted with a
+    /// completion callback. The callback completes the parent BIO when the
+    /// child finishes, so the worker thread never blocks on I/O and can
+    /// immediately dequeue the next request.
     fn process_read(&self, request: BioRequest) {
-        // TODO(yingqi): Implement asynchronous read with policy selector.
-        // Submit all children first to overlap device I/O.
-        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
+        // let mut t_select_member = core::time::Duration::ZERO;
+        // let mut t_extract_sid = core::time::Duration::ZERO;
+        // let mut t_clone_segments = core::time::Duration::ZERO;
+        // let mut t_parent_guard = core::time::Duration::ZERO;
+        // let mut t_build_child = core::time::Duration::ZERO;
+        // let mut t_submit_child = core::time::Duration::ZERO;
+        // let mut parent_count: usize = 0;
 
-        for parent in request.bios() {
-            let member = self.selection_policy.select_block_device().unwrap();
-            let child = Bio::new(
-                // Child BIO mirrors the parent’s type, range, and buffers.
+        for parent in request.into_bios() {
+            // parent_count += 1;
+            // let mut ts = read_monotonic_time();
+
+            let member = self.members[0].clone();
+            // let now = read_monotonic_time();
+            // t_select_member += now - ts;
+            // ts = now;
+
+            let start_sid = parent.sid_range().start;
+            // let now = read_monotonic_time();
+            // t_extract_sid += now - ts;
+            // ts = now;
+            
+            let segments = parent.segments().to_vec();
+            // let now = read_monotonic_time();
+            // t_clone_segments += now - ts;
+            // ts = now;
+            
+            let guard = ParentGuard(Some(parent));
+            // let now = read_monotonic_time();
+            // t_parent_guard += now - ts;
+            // ts = now;
+
+            let child = Bio::new_with_closure(
                 BioType::Read,
-                parent.sid_range().start,
-                Self::clone_segments(parent),
-                None,
+                start_sid,
+                segments,
+                move |child_bio: &SubmittedBio| {
+                    guard.complete(child_bio.status());
+                },
             );
-            match child.submit(&*member) {
-                Ok(waiter) => pending.push((parent, waiter)),
-                // Err(_) => parent.complete(BioStatus::IoError),
-                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
-            }
-        }
+            // let now = read_monotonic_time();
+            // t_build_child += now - ts;
+            // ts = now;
 
-        // Wait for each submitted child and complete the corresponding parent.
-        for (parent, waiter) in pending.into_iter() {
-            let status = match waiter.wait() {
-                // Guaranteed to be Complete on success when Some is returned.
-                Some(s) => s,
-                None => BioStatus::IoError,
-            };
-            // Report the completion status to the upper layer.
-            parent.complete(status);
+            let _ = child.submit(&*member);
+            // let now = read_monotonic_time();
+            // t_submit_child += now - ts;
+            // ts = now;
         }
-    }
+ 
+        // let total = t_select_member
+        //     + t_extract_sid
+        //     + t_clone_segments
+        //     + t_parent_guard
+        //     + t_build_child
+        //     + t_submit_child;
+        // let total_ns = total.as_nanos();
+        // let total_us = total.as_micros();
 
-    /// Completes all the parents with the same status.
-    #[expect(dead_code)]
-    fn complete_all(&self, request: BioRequest, status: BioStatus) {
-        for parent in request.bios() {
-            parent.complete(status);
-        }
+        // if total_ns > 0 {
+        //     let pct_x100 = |d: core::time::Duration| -> u128 { d.as_nanos() * 10_000 / total_ns };
+
+        //     let p_select = pct_x100(t_select_member);
+        //     let p_sid = pct_x100(t_extract_sid);
+        //     let p_segments = pct_x100(t_clone_segments);
+        //     let p_guard = pct_x100(t_parent_guard);
+        //     let p_build = pct_x100(t_build_child);
+        //     let p_submit = pct_x100(t_submit_child);
+
+        //     info!(
+        //         "[RAID-1 read timing] n_bios={} total={}ns({}us) select_member={}.{:02}% extract_sid={}.{:02}% clone_segments={}.{:02}% parent_guard={}.{:02}% build_child={}.{:02}% submit_child={}.{:02}%",
+        //         parent_count,
+        //         total_ns,
+        //         total_us,
+        //         p_select / 100,
+        //         p_select % 100,
+        //         p_sid / 100,
+        //         p_sid % 100,
+        //         p_segments / 100,
+        //         p_segments % 100,
+        //         p_guard / 100,
+        //         p_guard % 100,
+        //         p_build / 100,
+        //         p_build % 100,
+        //         p_submit / 100,
+        //         p_submit % 100,
+        //     );
+        // } else {
+        //     info!(
+        //         "[RAID-1 read timing] n_bios={} total=0ns(0us) total timing window is zero",
+        //         parent_count,
+        //     );
+        // }
     }
 
     /// Processes write requests by fanning out to all mirrors and aggregating

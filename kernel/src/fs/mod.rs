@@ -22,7 +22,8 @@ pub mod thread_info;
 pub mod utils;
 
 use aster_block::BlockDevice;
-use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPolicy};
+use aster_raid::{Raid1Device, Raid1DeviceError, selection_policies::RoundRobinPolicy, selection_policies::Dummy0Policy};
+use aster_time::read_monotonic_time;
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
 use crate::{
@@ -56,10 +57,17 @@ pub fn lazy_init() {
     let raid1_device_name = "raid_device";
 
     if let Ok(block_device_ext2) = start_block_device(ext2_device_name) {
+        let ext2_mount_start = read_monotonic_time();
         let ext2_fs = Ext2::open(block_device_ext2).unwrap();
         let target_path = FsPath::try_from("/ext2").unwrap();
         self::rootfs::mount_fs_at(ext2_fs, &target_path).unwrap();
         info!("[kernel] Mounted Ext2 fs at {:?} ", target_path);
+        let ext2_mount_elapsed = read_monotonic_time() - ext2_mount_start;
+        info!(
+            "[kernel] Ext2 mount time: {}ns ({}us)",
+            ext2_mount_elapsed.as_nanos(),
+            ext2_mount_elapsed.as_micros()
+        );
     }
 
     // Starting the ExFat filesystem cause hanging at boot.
@@ -72,18 +80,35 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
+    // let nvme_device_name = "nvme0n1p1";
+    // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
+    //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
+    //     let target_path = FsPath::try_from("/raid1").unwrap();
+    //     self::rootfs::mount_fs_at(nvme_fs, &target_path).unwrap();
+    //     info!("[kernel] Mount NVME fs at {:?} ", target_path);
+    // }
+    // return;
+
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-
+        let raid_mount_start = read_monotonic_time();
+        info!("[raid] got raid device: {:?}", raid);
         match Ext2::open(raid) {
             Ok(raid_fs) => {
+                info!("[raid] opened raid device: {:?}", raid_fs);
                 let target_path = FsPath::try_from("/raid1").unwrap();
                 self::rootfs::mount_fs_at(raid_fs, &target_path).unwrap();
                 info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+                let raid_mount_elapsed = read_monotonic_time() - raid_mount_start;
+                info!(
+                    "[kernel] RAID-1 mount time: {}ns ({}us)",
+                    raid_mount_elapsed.as_nanos(),
+                    raid_mount_elapsed.as_micros()
+                );
             }
             Err(err) => {
                 error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
@@ -121,7 +146,8 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     }
 
     info!("[raid] creating selection policy");
-    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+    let selection_policy = Dummy0Policy::new(members.clone()).unwrap();
+    // info!("[raid] selection policy created: {:?}", selection_policy);
 
     Raid1Device::init(raid_device_name, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {

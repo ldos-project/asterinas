@@ -18,6 +18,7 @@ use aster_block::{
     },
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
+use aster_time::read_monotonic_time;
 use id_alloc::IdAlloc;
 use log::{debug, info};
 use ostd::{
@@ -107,7 +108,7 @@ impl BlockDevice {
     /// processes the request.
     pub fn handle_requests(&self) {
         let request = self.queue.dequeue();
-        // info!("Handle Request: {:?}", request);
+        info!("Handle Request: {:?}", request);
         match request.type_() {
             BioType::Read => self.device.read(request),
             BioType::Write => self.device.write(request),
@@ -233,7 +234,7 @@ impl DeviceInner {
 
     /// Handles the irq issued from the device
     fn handle_irq(&self) {
-        info!("Virtio block device handle irq");
+        // info!("Virtio block device handle irq");
         // When we enter the IRQs handling function,
         // IRQs have already been disabled,
         // so there is no need to call `disable_irq`.
@@ -352,6 +353,7 @@ impl DeviceInner {
 
     /// Reads data from the device, this function is non-blocking.
     fn read(&self, bio_request: BioRequest) {
+        // let start_ts = read_monotonic_time();
         let id = self.id_allocator.disable_irq().lock().alloc().unwrap();
         let req_slice = {
             let req_slice =
@@ -410,6 +412,12 @@ impl DeviceInner {
                 .disable_irq()
                 .lock()
                 .insert(token, submitted_request);
+            // let elapsed = read_monotonic_time() - start_ts;
+            // info!(
+            //     "virtio_blk read total enqueue time: {}ns ({}us)",
+            //     elapsed.as_nanos(),
+            //     elapsed.as_micros()
+            // );
             return;
         }
     }

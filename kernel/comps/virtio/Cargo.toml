@@ -20,6 +20,7 @@ aster-systree = { path = "../systree" }
 id-alloc = { path = "../../../ostd/libs/id-alloc" }
 typeflags-util = { path = "../../libs/typeflags-util" }
 ostd = { path = "../../../ostd" }
+aster-time = { path = "../time" }
 component = { path = "../../libs/comp-sys/component" }
 log = "0.4"
 int-to-c-enum = { path = "../../libs/int-to-c-enum" }
