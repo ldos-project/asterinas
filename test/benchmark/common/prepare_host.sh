@@ -45,3 +45,20 @@ prepare_fs() {
     mke2fs -F -O ^ext_attr -O ^resize_inode -O ^dir_index ${BENCHMARK_ROOT}/../build/ext2.img
     make initramfs BENCHMARK=${benchmark}
 }
+
+JRE_URL="https://sdlc-esd.oracle.com/ESD6/JSCDL/jdk/8u481-b10/0d06828d282343ea81775b28020a7cd3/jre-8u481-linux-x64.tar.gz?GroupName=JSC&FilePath=/ESD6/JSCDL/jdk/8u481-b10/0d06828d282343ea81775b28020a7cd3/jre-8u481-linux-x64.tar.gz&BHost=javadl.sun.com&File=jre-8u481-linux-x64.tar.gz&AuthParam=1770754781_ce959abf084ce735fb0cae968215cbb6&ext=.gz"
+JRE_PATH="jre1.8.0_471"
+
+YCSB_URL="https://github.com/brianfrankcooper/YCSB/releases/download/0.17.0/ycsb-0.17.0.tar.gz"
+YCSB_PATH="ycsb-0.17.0"
+
+prepare_ycsb() {
+  if [ ! -d "$JRE_PATH" ]; then
+    wget "$JRE_URL" -O jre.tar.gz
+    tar -xvf ./jre.tar.gz
+  fi
+  if [ ! -d "$YCSB_PATH" ]; then
+    curl -O --location $YCSB_URL
+    tar xfvz "ycsb-0.17.0.tar.gz"
+  fi
+}
