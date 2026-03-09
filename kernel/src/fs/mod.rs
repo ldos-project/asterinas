@@ -80,7 +80,7 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
-    // let nvme_device_name = "nvme0n1p1";
+    // let nvme_device_name = "raid1";
     // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
     //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
     //     let target_path = FsPath::try_from("/raid1").unwrap();
@@ -146,7 +146,10 @@ fn setup_raid1_device() -> Result<Arc<Raid1Device>> {
     let task_fn = move || loop {
         worker.handle_requests();
     };
-    crate::ThreadOptions::new(task_fn).spawn();
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
