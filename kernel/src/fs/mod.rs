@@ -174,7 +174,10 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     };
 
-    crate::ThreadOptions::new(task_fn).spawn();
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
