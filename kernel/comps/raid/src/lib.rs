@@ -121,41 +121,38 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
+    /// Processes read requests fully asynchronously.
     ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member (round-robin) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to one read
+    /// member (round-robin) via `Bio::new_with_closure`.  The closure captures
+    /// ownership of the parent `SubmittedBio` and calls `parent.complete()` the
+    /// moment the device driver fires the child's completion callback — without
+    /// blocking this thread.  All child BIOs are enqueued before any I/O
+    /// completes, so backend devices can overlap their transfers freely and
+    /// consecutive calls to `handle_requests` can pipeline across requests.
     fn process_read(&self, request: BioRequest) {
-        // Submit all children first to overlap device I/O.
-        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
-
-        for parent in request.bios() {
-            // Select a member to serve this read (round-robin).
+        for parent in request.into_bios() {
             let member = self.select_read_member(parent.sid_range());
-            let child = Bio::new(
-                // Child BIO mirrors the parent’s type, range, and buffers.
+            let start_sid = parent.sid_range().start;
+            let segments = Self::clone_segments(&parent);
+
+            // The closure captures ownership of `parent` and completes it
+            // exactly once when the child BIO's driver callback fires.
+            let child = Bio::new_with_closure(
                 BioType::Read,
-                parent.sid_range().start,
-                Self::clone_segments(parent),
-                None,
+                start_sid,
+                segments,
+                move |child_bio| {
+                    parent.complete(child_bio.status());
+                },
             );
+
             match child.submit(member.as_ref()) {
-                Ok(waiter) => pending.push((parent, waiter)),
-                // Err(_) => parent.complete(BioStatus::IoError),
+                // Drop the waiter; completion is driven entirely by the
+                // callback above, so there is nothing to poll here.
+                Ok(_waiter) => {}
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
             }
-        }
-
-        // Wait for each submitted child and complete the corresponding parent.
-        for (parent, waiter) in pending.into_iter() {
-            let status = match waiter.wait() {
-                // Guaranteed to be Complete on success when Some is returned.
-                Some(s) => s,
-                None => BioStatus::IoError,
-            };
-            // Report the completion status to the upper layer.
-            parent.complete(status);
         }
     }
 
