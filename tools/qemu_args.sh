@@ -20,7 +20,7 @@ VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
 
-SSH_RAND_PORT=${SSH_PORT:-22}
+SSH_RAND_PORT=${SSH_PORT:-61541}
 NGINX_RAND_PORT=${NGINX_PORT:-8080}
 REDIS_RAND_PORT=${REDIS_PORT:-6379}
 IPERF_RAND_PORT=${IPERF_PORT:-5201}
@@ -91,9 +91,9 @@ COMMON_QEMU_ARGS="\
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
     -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
     -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
-    -drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1 \
-    -drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1 \
-    -drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1 \
+    -drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1,cache=directsync \
+    -drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1,cache=directsync \
+    -drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1,cache=directsync \
 "
 
 if [ "$1" = "iommu" ]; then
