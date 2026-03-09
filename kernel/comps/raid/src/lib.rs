@@ -28,6 +28,7 @@ pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
+use ostd::task::scheduler::info;
 use core::{cmp, ops::Range};
 
 use aster_block::{
@@ -148,6 +149,7 @@ impl Raid1Device {
     /// Dispatches a request by type. The RAID-1 device accepts the same BIOs as
     /// any `BlockDevice` and applies RAID semantics underneath.
     fn process_request(&self, request: BioRequest) {
+        // log::info!("Raid1Device process request, type: {:?}", request.type_());
         match request.type_() {
             BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
@@ -176,7 +178,7 @@ impl Raid1Device {
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
-            let member = self.members[0].clone();
+            let member = self.selection_policy.select_block_device().unwrap();
             let child = Bio::new(
                 BioType::Read,
                 parent.sid_range().start,
@@ -236,6 +238,7 @@ impl Raid1Device {
         }
     }
 
+
     /// Processes read requests asynchronously.
     ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
@@ -280,6 +283,8 @@ impl Raid1Device {
             let status =
                 self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
             parent.complete(status);
+            // let status = BioStatus::Complete;
+            // parent.complete(status);
         }
     }
 
