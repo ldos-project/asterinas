@@ -243,7 +243,7 @@ macro_rules! clone_without_t {
         }
 
         impl<T $($bounds)*> $t<T> {
-            #[doc = "Convert a strong OQueue reference to a weak OQueue reference."]
+            #[doc = "Convert a strong OQueue reference (as in [`alloc::sync::Arc`]) to a weak OQueue reference (as in [`alloc::sync::Weak`])."]
             pub fn downgrade(&self) -> WeakAnyOQueueRef<T> {
                 WeakAnyOQueueRef { inner: Arc::downgrade(&self.inner) }
             }
