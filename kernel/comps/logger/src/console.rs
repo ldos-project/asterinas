@@ -12,7 +12,7 @@ use aster_console::AnyConsoleDevice;
 use ostd::sync::{LocalIrqDisabled, SpinLockGuard};
 
 /// Prints the formatted arguments to the standard output.
-pub fn _print(args: fmt::Arguments, append_nl: bool) {
+pub fn _print(args: fmt::Arguments) {
     // We must call `all_devices_lock` instead of `all_devices` here, as `all_devices` invokes the
     // `clone` method of `String` and `Arc`, which may lead to a deadlock when there is low memory
     // in the heap. (The heap allocator will log a message when memory is low.)
@@ -31,11 +31,7 @@ pub fn _print(args: fmt::Arguments, append_nl: bool) {
             }
         }
 
-        let mut printer = Printer(devices);
-        printer.write_fmt(args).unwrap();
-        if append_nl {
-            printer.write_char('\n').unwrap();
-        }
+        Printer(devices).write_fmt(args).unwrap();
     } else {
         // Fall-back to early_print if we have no console setup.
         ostd::console::early_print(args);
@@ -46,18 +42,18 @@ pub fn _print(args: fmt::Arguments, append_nl: bool) {
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {{
-        $crate::_print(format_args!($($arg)*), false);
+        $crate::_print(format_args!($($arg)*));
     }};
 }
 
-/// Copied from Rust std: <https://github.com/rust-lang/rust/blob/master/library/std/src/macros.rs>
+/// The same as [`print!`], but adds a trailing new-line.
 #[macro_export]
 macro_rules! println {
     () => {
         $crate::print!("\n")
     };
     ($($arg:tt)*) => {{
-        $crate::_print(format_args!($($arg)*), true);
+        $crate::_print(format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 

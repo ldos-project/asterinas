@@ -10,7 +10,6 @@
 #![feature(debug_closure_helpers)]
 #![feature(extend_one)]
 #![feature(fn_traits)]
-#![feature(format_args_nl)]
 #![feature(int_roundings)]
 #![feature(linked_list_cursors)]
 #![feature(linked_list_remove)]
