@@ -46,19 +46,31 @@ prepare_fs() {
     make initramfs BENCHMARK=${benchmark}
 }
 
-JRE_URL="https://sdlc-esd.oracle.com/ESD6/JSCDL/jdk/8u481-b10/0d06828d282343ea81775b28020a7cd3/jre-8u481-linux-x64.tar.gz?GroupName=JSC&FilePath=/ESD6/JSCDL/jdk/8u481-b10/0d06828d282343ea81775b28020a7cd3/jre-8u481-linux-x64.tar.gz&BHost=javadl.sun.com&File=jre-8u481-linux-x64.tar.gz&AuthParam=1770754781_ce959abf084ce735fb0cae968215cbb6&ext=.gz"
-JRE_PATH="jre1.8.0_471"
-
-YCSB_URL="https://github.com/brianfrankcooper/YCSB/releases/download/0.17.0/ycsb-0.17.0.tar.gz"
-YCSB_PATH="ycsb-0.17.0"
+JDK_URL="https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.tar.gz"
+JDK_PATH="jdk-25.0.2"
+MVN_URL="https://dlcdn.apache.org/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz"
+export MVN_DIR=$(realpath "apache-maven-3.9.12")
+export YCSB_PATH=$(realpath "ycsb")
+export JAVA_HOME=$(realpath $JDK_PATH)
 
 prepare_ycsb() {
-  if [ ! -d "$JRE_PATH" ]; then
-    wget "$JRE_URL" -O jre.tar.gz
-    tar -xvf ./jre.tar.gz
+  if [ ! -d "$JDK_PATH" ]; then
+    wget "$JDK_URL" -O jdk.tar.gz
+    tar -xvf ./jdk.tar.gz
   fi
+
+  if [ ! -d "$MVN_DIR" ]; then
+    tar -xvf ./apache-maven-3.9.12-bin.tar.gz
+  fi
+
   if [ ! -d "$YCSB_PATH" ]; then
-    curl -O --location $YCSB_URL
-    tar xfvz "ycsb-0.17.0.tar.gz"
+    wget $MVN_URL
+    git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
+
+    # Build
+    pushd $YCSB_PATH
+    $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
+    $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
+    popd
   fi
 }

@@ -192,6 +192,12 @@ fn init_thread() {
         exit_qemu(QemuExitCode::Success);
     }
 
+    println!(
+        "[???] {} {:?} {:?}",
+        karg.get_initproc_path().unwrap(),
+        karg.get_initproc_argv().to_vec(),
+        karg.get_initproc_envp().to_vec(),
+    );
     let initproc = spawn_init_process(
         karg.get_initproc_path().unwrap(),
         karg.get_initproc_argv().to_vec(),
