@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The system time of Asterinas.
-#![feature(let_chains)]
 #![no_std]
 #![deny(unsafe_code)]
 

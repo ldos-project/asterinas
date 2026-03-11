@@ -60,7 +60,7 @@ impl XApic {
     }
 
     pub(super) fn has_xapic() -> bool {
-        let value = unsafe { core::arch::x86_64::__cpuid(1) };
+        let value = core::arch::x86_64::__cpuid(1);
         value.edx & 0x100 != 0
     }
 }

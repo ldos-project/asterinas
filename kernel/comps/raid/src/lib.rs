@@ -17,7 +17,6 @@
 
 #![no_std] // BlockDevice crate also not using rust std and not using unsafe code.
 #![deny(unsafe_code)]
-#![feature(trait_upcasting)]
 
 extern crate alloc;
 
