@@ -38,6 +38,7 @@ mod tests {
                 ConsumableOQueue, ConsumableOQueueRef, OQueue, OQueueBase, OQueueRef,
                 ObservationQuery,
             },
+            path::Path,
         },
         prelude::{Arc, ktest},
     };
@@ -73,7 +74,7 @@ mod tests {
     fn spawn_server() -> Arc<TestServer> {
         let server = TestServer::new_with(|orpc_internal, _| TestServer {
             orpc_internal,
-            monitor: Default::default(),
+            monitor: TestStateMonitor::new(Path::test()),
         });
         server.monitor.start(server.clone(), TestState { x: 0 });
         server
@@ -81,7 +82,7 @@ mod tests {
 
     #[ktest]
     fn monitor_updates_from_strong_observer() {
-        let values = OQueueRef::new(2);
+        let values = OQueueRef::new(2, Path::test());
         let server = spawn_server();
         server
             .monitor
@@ -116,7 +117,7 @@ mod tests {
 
     #[ktest]
     fn monitor_updates_from_consumer() {
-        let values = ConsumableOQueueRef::new(2);
+        let values = ConsumableOQueueRef::new(2, Path::test());
         let server = spawn_server();
         server
             .monitor

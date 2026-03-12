@@ -314,21 +314,18 @@ The documentation for [`Self::{method_name}`] is:\n\n",
         impl #monitor_name {
             #(#monitor_methods)*
 
-            #monitor_vis fn new() -> Self {
+            #monitor_vis fn new(path: ::ostd::orpc::path::Path) -> Self {
                 use ::ostd::orpc::oqueue::ConsumableOQueue;
-                let command_oqueue = ::ostd::orpc::oqueue::ConsumableOQueueRef::new(2);
+                let command_oqueue = ::ostd::orpc::oqueue::ConsumableOQueueRef::new(
+                    2,
+                    path.append(&::ostd::path!(commands)),
+                );
                 Self {
                     command_producer: command_oqueue
                         .attach_value_producer()
                         .expect("single purpose OQueue failed."),
                     command_oqueue,
                 }
-            }
-        }
-
-        impl ::core::default::Default for #monitor_name {
-            fn default() -> Self {
-                Self::new()
             }
         }
 
