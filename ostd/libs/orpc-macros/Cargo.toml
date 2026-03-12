@@ -6,12 +6,6 @@ edition = "2024"
 [lib]
 proc-macro = true
 
-[lints.rust]
-mismatched_lifetime_syntaxes = "allow"
-
-[lints.clippy]
-collapsible-if = "allow"
-
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"

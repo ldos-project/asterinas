@@ -57,7 +57,11 @@ impl Vmar<Rights> {
     /// Memory permissions may be changed through the `protect` method,
     /// which ensures that any updated memory permissions do not go beyond
     /// the access rights of the underlying VMOs.
-    pub fn new_map(&self, size: usize, perms: VmPerms) -> Result<VmarMapOptions<Rights, Rights>> {
+    pub fn new_map(
+        &self,
+        size: usize,
+        perms: VmPerms,
+    ) -> Result<VmarMapOptions<'_, Rights, Rights>> {
         Ok(VmarMapOptions::new(self, size, perms))
     }
 

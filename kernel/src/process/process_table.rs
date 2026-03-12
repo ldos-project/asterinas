@@ -56,7 +56,7 @@ impl ProcessTable {
     }
 
     /// Returns an iterator over the processes in the table.
-    pub fn iter(&self) -> ProcessTableIter {
+    pub fn iter(&self) -> ProcessTableIter<'_> {
         ProcessTableIter {
             inner: self.inner.values(),
         }

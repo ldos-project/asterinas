@@ -142,7 +142,7 @@ impl ProcessVm {
     }
 
     /// Locks the root VMAR and gets a guard to it.
-    pub fn lock_root_vmar(&self) -> ProcessVmarGuard {
+    pub fn lock_root_vmar(&self) -> ProcessVmarGuard<'_> {
         ProcessVmarGuard {
             inner: self.root_vmar.lock(),
         }
@@ -150,7 +150,7 @@ impl ProcessVm {
 
     /// Returns a reader for reading contents from
     /// the `InitStack`.
-    pub fn init_stack_reader(&self) -> InitStackReader {
+    pub fn init_stack_reader(&self) -> InitStackReader<'_> {
         self.init_stack.reader(self.lock_root_vmar())
     }
 

@@ -169,7 +169,7 @@ impl SemaphoreSet {
         );
     }
 
-    pub(super) fn inner(&self) -> SpinLockGuard<SemSetInner, PreemptDisabled> {
+    pub(super) fn inner(&self) -> SpinLockGuard<'_, SemSetInner, PreemptDisabled> {
         self.inner.lock()
     }
 

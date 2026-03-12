@@ -161,11 +161,7 @@ impl Task {
 
     /// Returns the user context of this task, if it has.
     pub fn user_ctx(&self) -> Option<&Arc<UserContext>> {
-        if self.user_ctx.is_some() {
-            Some(self.user_ctx.as_ref().unwrap())
-        } else {
-            None
-        }
+        self.user_ctx.as_ref()
     }
 
     /// Saves the FPU state for user task.
@@ -285,7 +281,7 @@ impl TaskOptions {
             ctx.get_mut().set_tls_pointer(user_ctx.tls_pointer());
         };
         ctx.get_mut()
-            .set_instruction_pointer(kernel_task_entry as usize);
+            .set_instruction_pointer(kernel_task_entry as *const () as usize);
         // We should reserve space for the return address in the stack, otherwise
         // we will write across the page boundary due to the implementation of
         // the context switch.

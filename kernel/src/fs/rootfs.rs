@@ -58,11 +58,7 @@ pub fn init(initramfs_buf: &[u8]) -> Result<()> {
     let mut decoder = CpioDecoder::new(reader);
     let fs = FsResolver::new();
 
-    loop {
-        let Some(entry_result) = decoder.next() else {
-            break;
-        };
-
+    while let Some(entry_result) = decoder.next() {
         let mut entry = entry_result?;
 
         // Make sure the name is a relative path, and is not end with "/".

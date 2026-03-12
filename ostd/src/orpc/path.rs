@@ -69,7 +69,7 @@ impl Hash for PathComponent {
 
 impl PathComponent {
     /// Returns a ref (-like) value which provides uniform access to names as a `&str`.
-    pub fn borrow(&self) -> PathComponentRef {
+    pub fn borrow(&self) -> PathComponentRef<'_> {
         match self {
             PathComponent::Name(s) => PathComponentRef::Name(s),
             PathComponent::OwnedName(s) => PathComponentRef::Name(s),

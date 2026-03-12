@@ -13,18 +13,18 @@ pub(crate) enum ORPCMethodKind<'a> {
 
 impl ORPCMethodKind<'_> {
     /// Extract all the required information from a signature.
-    pub(crate) fn of(sig: &syn::Signature) -> Option<ORPCMethodKind> {
+    pub(crate) fn of(sig: &'_ syn::Signature) -> Option<ORPCMethodKind<'_>> {
         let ret = &sig.output;
-        if let syn::ReturnType::Type(_, typ) = ret {
-            if let syn::Type::Path(syn::TypePath { qself: None, path }) = typ.as_ref() {
-                let path_segment = &path.segments.last()?;
-                let name = path_segment.ident.to_string();
-                return match name.as_str() {
-                    "Result" => Some(ORPCMethodKind::Orpc { return_type: typ }),
-                    "OQueueRef" => Some(ORPCMethodKind::OQueue { return_type: typ }),
-                    _ => None,
-                };
-            }
+        if let syn::ReturnType::Type(_, typ) = ret
+            && let syn::Type::Path(syn::TypePath { qself: None, path }) = typ.as_ref()
+        {
+            let path_segment = &path.segments.last()?;
+            let name = path_segment.ident.to_string();
+            return match name.as_str() {
+                "Result" => Some(ORPCMethodKind::Orpc { return_type: typ }),
+                "OQueueRef" => Some(ORPCMethodKind::OQueue { return_type: typ }),
+                _ => None,
+            };
         }
         None
     }

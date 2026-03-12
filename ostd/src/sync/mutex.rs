@@ -107,7 +107,7 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// This method runs in a block way until the mutex can be acquired.
     #[track_caller]
-    pub fn lock(&self) -> MutexGuard<T> {
+    pub fn lock(&self) -> MutexGuard<'_, T> {
         #[cfg(feature = "track_mutex")]
         if let Some(r) = self.try_lock() {
             return r;
@@ -136,7 +136,7 @@ impl<T: ?Sized> Mutex<T> {
 
     /// Tries Acquire the mutex immedidately.
     #[track_caller]
-    pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         // Cannot be reduced to `then_some`, or the possible dropping of the temporary
         // guard will cause an unexpected unlock.
         // SAFETY: The lock is successfully acquired when creating the guard.

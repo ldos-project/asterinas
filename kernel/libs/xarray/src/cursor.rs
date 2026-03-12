@@ -26,21 +26,17 @@ use crate::{
 /// A cursor never ends up on an interior node. In other words, when methods
 /// of `Cursor` or `CursorMut` finish, the cursor will either not positioned on any node
 /// or positioned on some leaf node.
+#[derive(Default)]
 enum CursorState<'a, P>
 where
     P: NonNullPtr + Send + Sync,
 {
+    #[default]
     Inactive,
     AtNode {
         node: NodeEntryRef<'a, P>,
         operation_offset: u8,
     },
-}
-
-impl<P: NonNullPtr + Send + Sync> Default for CursorState<'_, P> {
-    fn default() -> Self {
-        Self::Inactive
-    }
 }
 
 impl<'a, P: NonNullPtr + Send + Sync> CursorState<'a, P> {
@@ -271,7 +267,7 @@ impl<'a, P: NonNullPtr + Send + Sync, M> CursorMut<'a, P, M> {
     }
 
     /// Returns an `XLockGuard` that marks the `XArray` is locked.
-    fn lock_guard(&self) -> XLockGuard {
+    fn lock_guard(&self) -> XLockGuard<'_> {
         // Having a `CursorMut` means that the `XArray` is locked.
         XLockGuard(self.guard)
     }

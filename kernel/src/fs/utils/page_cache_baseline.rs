@@ -85,7 +85,7 @@ impl PageCache {
         // first zero the gap between the new size and the
         // next page boundary (or the old size), if such a gap exists.
         let old_size = self.pages.size();
-        if old_size > new_size && new_size % PAGE_SIZE != 0 {
+        if old_size > new_size && !new_size.is_multiple_of(PAGE_SIZE) {
             let gap_size = old_size.min(new_size.align_up(PAGE_SIZE)) - new_size;
             if gap_size > 0 {
                 self.fill_zeros(new_size..new_size + gap_size)?;
@@ -370,11 +370,12 @@ impl PageCacheManager {
         let backend = self.backend();
         let backend_npages = backend.npages();
         for idx in page_idx_range.start..page_idx_range.end {
-            if let Some(page) = pages.peek(&idx) {
-                if page.load_state() == PageState::Dirty && idx < backend_npages {
-                    let waiter = backend.write_page_async(idx, page)?;
-                    bio_waiter.concat(waiter);
-                }
+            if let Some(page) = pages.peek(&idx)
+                && page.load_state() == PageState::Dirty
+                && idx < backend_npages
+            {
+                let waiter = backend.write_page_async(idx, page)?;
+                bio_waiter.concat(waiter);
             }
         }
 
@@ -466,14 +467,14 @@ impl Pager for PageCacheManager {
 
     fn decommit_page(&self, idx: usize) -> Result<()> {
         let page_result = self.pages.lock().pop(&idx);
-        if let Some(page) = page_result {
-            if let PageState::Dirty = page.load_state() {
-                let Some(backend) = self.backend.upgrade() else {
-                    return Ok(());
-                };
-                if idx < backend.npages() {
-                    backend.write_page(idx, &page)?;
-                }
+        if let Some(page) = page_result
+            && let PageState::Dirty = page.load_state()
+        {
+            let Some(backend) = self.backend.upgrade() else {
+                return Ok(());
+            };
+            if idx < backend.npages() {
+                backend.write_page(idx, &page)?;
             }
         }
 

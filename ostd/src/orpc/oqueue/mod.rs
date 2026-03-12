@@ -811,7 +811,11 @@ mod test {
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new_filter(|m: &Message| {
-                if m.id % 2 == 0 { Some(m.id) } else { None }
+                if m.id.is_multiple_of(2) {
+                    Some(m.id)
+                } else {
+                    None
+                }
             }))
             .unwrap();
 
@@ -841,11 +845,13 @@ mod test {
         let observer = queue
             .attach_weak_observer(
                 2,
-                ObservationQuery::new_filter(
-                    |m: &Message| {
-                        if m.id % 2 == 0 { Some(m.id) } else { None }
-                    },
-                ),
+                ObservationQuery::new_filter(|m: &Message| {
+                    if m.id.is_multiple_of(2) {
+                        Some(m.id)
+                    } else {
+                        None
+                    }
+                }),
             )
             .unwrap();
         (producer, observer)

@@ -61,7 +61,7 @@ pub(super) unsafe fn init() {
     // entry point and flags to clear are also correctly set, so enabling the `syscall` and
     // `sysret` instructions is safe.
     unsafe {
-        LStar::write(VirtAddr::new(syscall_entry as usize as u64));
+        LStar::write(VirtAddr::new(syscall_entry as *const () as usize as u64));
         SFMask::write(RFlags::from_bits(RFLAGS_MASK).unwrap());
 
         // Enable the `syscall` and `sysret` instructions.

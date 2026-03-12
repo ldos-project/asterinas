@@ -112,10 +112,10 @@ impl FileTable {
     ) -> Option<Arc<dyn FileLike>> {
         let entry = FileTableEntry::new(item, flags);
         let entry = self.table.put_at(fd as usize, entry);
-        if entry.is_some() {
+        if let Some(entry) = &entry {
             let events = FdEvents::Close(fd);
             self.notify_fd_events(&events);
-            entry.as_ref().unwrap().notify_fd_events(&events);
+            entry.notify_fd_events(&events);
         }
         entry.map(|e| e.file)
     }

@@ -97,7 +97,7 @@ impl FrameBuffer {
     }
 
     /// Calculates the offset of a pixel at the specified position.
-    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset {
+    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
         PixelOffset {
             fb: self,
             offset: ((y * self.width + x) * self.pixel_format.nbytes()) as isize,

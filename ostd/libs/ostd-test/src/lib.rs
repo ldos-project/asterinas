@@ -112,11 +112,18 @@ pub struct KtestItemInfo {
     pub col: usize,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct KtestItem {
     fn_: fn() -> (),
     should_panic: (bool, Option<&'static str>),
     info: KtestItemInfo,
+}
+
+impl PartialEq for KtestItem {
+    #[expect(unpredictable_function_pointer_comparisons)]
+    fn eq(&self, other: &Self) -> bool {
+        self.fn_ == other.fn_ && self.should_panic == other.should_panic && self.info == other.info
+    }
 }
 
 type CatchUnwindImpl = fn(f: fn() -> ()) -> Result<(), Box<dyn core::any::Any + Send>>;
@@ -186,7 +193,8 @@ macro_rules! ktest_array {
             fn __ktest_array_end();
         }
         let item_size = core::mem::size_of::<KtestItem>();
-        let l = (__ktest_array_end as usize - __ktest_array as usize) / item_size;
+        let l = (__ktest_array_end as *const () as usize - __ktest_array as *const () as usize)
+            / item_size;
         // SAFETY: __ktest_array is a static section consisting of KtestItem.
         unsafe { core::slice::from_raw_parts(__ktest_array as *const KtestItem, l) }
     }};

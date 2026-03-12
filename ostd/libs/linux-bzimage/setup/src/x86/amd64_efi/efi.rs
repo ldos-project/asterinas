@@ -63,22 +63,24 @@ fn efi_phase_boot(boot_params: &mut BootParams) {
     );
 
     // Load the command line if it is not loaded.
-    if boot_params.hdr.cmd_line_ptr == 0 && boot_params.ext_cmd_line_ptr == 0 {
-        if let Some(cmdline) = load_cmdline() {
-            boot_params.hdr.cmd_line_ptr = cmdline.as_ptr().addr().try_into().unwrap();
-            boot_params.ext_cmd_line_ptr = 0;
-            boot_params.hdr.cmdline_size = (cmdline.count_bytes() + 1).try_into().unwrap();
-        }
+    if boot_params.hdr.cmd_line_ptr == 0
+        && boot_params.ext_cmd_line_ptr == 0
+        && let Some(cmdline) = load_cmdline()
+    {
+        boot_params.hdr.cmd_line_ptr = cmdline.as_ptr().addr().try_into().unwrap();
+        boot_params.ext_cmd_line_ptr = 0;
+        boot_params.hdr.cmdline_size = (cmdline.count_bytes() + 1).try_into().unwrap();
     }
 
     // Load the init ramdisk if it is not loaded.
-    if boot_params.hdr.ramdisk_image == 0 && boot_params.ext_ramdisk_image == 0 {
-        if let Some(initrd) = load_initrd() {
-            boot_params.hdr.ramdisk_image = initrd.as_ptr().addr().try_into().unwrap();
-            boot_params.ext_ramdisk_image = 0;
-            boot_params.hdr.ramdisk_size = initrd.len().try_into().unwrap();
-            boot_params.ext_ramdisk_size = 0;
-        }
+    if boot_params.hdr.ramdisk_image == 0
+        && boot_params.ext_ramdisk_image == 0
+        && let Some(initrd) = load_initrd()
+    {
+        boot_params.hdr.ramdisk_image = initrd.as_ptr().addr().try_into().unwrap();
+        boot_params.ext_ramdisk_image = 0;
+        boot_params.hdr.ramdisk_size = initrd.len().try_into().unwrap();
+        boot_params.ext_ramdisk_size = 0;
     }
 
     // Fill the boot params with the RSDP address if it is not provided.

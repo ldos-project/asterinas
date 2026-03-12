@@ -1172,7 +1172,7 @@ impl DirentVisitor for EmptyVisitor {
     }
 }
 fn is_block_aligned(off: usize) -> bool {
-    off % PAGE_SIZE == 0
+    off.is_multiple_of(PAGE_SIZE)
 }
 
 fn check_corner_cases_for_rename(
@@ -1589,7 +1589,7 @@ impl Inode for ExfatInode {
             }
 
             // Skip . and ..
-            let dir_to_skip = if dir_cnt >= 2 { dir_cnt - 2 } else { 0 };
+            let dir_to_skip = dir_cnt.saturating_sub(2);
 
             // Skip previous directories.
             let (off, _) = inner.visit_sub_inodes(0, dir_to_skip, &mut empty_visitor, &fs_guard)?;

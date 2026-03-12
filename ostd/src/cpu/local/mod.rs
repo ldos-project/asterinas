@@ -227,8 +227,8 @@ pub(crate) unsafe fn copy_bsp_for_ap(num_cpus: usize) {
         unsafe { core::slice::from_raw_parts_mut(ptr, num_aps) }
     };
 
-    let bsp_base_va = __cpu_local_start as usize;
-    let bsp_end_va = __cpu_local_end as usize;
+    let bsp_base_va = __cpu_local_start as *const () as usize;
+    let bsp_end_va = __cpu_local_end as *const () as usize;
 
     // Allocate the CPU-local storage segments for APs.
     for res_addr_mut in res.iter_mut() {

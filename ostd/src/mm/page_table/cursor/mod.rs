@@ -125,7 +125,8 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         if !is_valid_range::<C>(va) || va.is_empty() {
             return Err(PageTableError::InvalidVaddrRange(va.start, va.end));
         }
-        if va.start % C::BASE_PAGE_SIZE != 0 || va.end % C::BASE_PAGE_SIZE != 0 {
+        if !va.start.is_multiple_of(C::BASE_PAGE_SIZE) || !va.end.is_multiple_of(C::BASE_PAGE_SIZE)
+        {
             return Err(PageTableError::UnalignedVaddr);
         }
 
@@ -193,10 +194,10 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         // TODO(aneesh): handle levels larger than two.
         let rcu_guard = self.rcu_guard;
         let mut cur_entry = self.cur_entry();
-        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref() {
-            if let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard) {
-                self.push_level(split_child);
-            }
+        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref()
+            && let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard)
+        {
+            self.push_level(split_child);
         }
         self.jump(va).unwrap();
     }
@@ -299,7 +300,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     ///
     /// This method panics if the address has bad alignment.
     pub fn jump(&mut self, va: Vaddr) -> Result<(), PageTableError> {
-        assert!(va % C::BASE_PAGE_SIZE == 0);
+        assert!(va.is_multiple_of(C::BASE_PAGE_SIZE));
         if !self.barrier_va.contains(&va) {
             return Err(PageTableError::InvalidVaddr(va));
         }

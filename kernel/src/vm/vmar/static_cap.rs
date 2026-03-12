@@ -67,7 +67,7 @@ impl<R: TRights> Vmar<TRightSet<R>> {
         &self,
         size: usize,
         perms: VmPerms,
-    ) -> Result<VmarMapOptions<TRightSet<R>, Rights>> {
+    ) -> Result<VmarMapOptions<'_, TRightSet<R>, Rights>> {
         Ok(VmarMapOptions::new(self, size, perms))
     }
 

@@ -382,20 +382,15 @@ pub enum FsState {
 }
 
 #[repr(u16)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromInt)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromInt, Default)]
 pub enum ErrorsBehaviour {
     /// Continue execution
+    #[default]
     Continue = 1,
     // Remount fs read-only
     RemountReadonly = 2,
     // Should panic
     Panic = 3,
-}
-
-impl Default for ErrorsBehaviour {
-    fn default() -> Self {
-        Self::Continue
-    }
 }
 
 #[repr(u32)]

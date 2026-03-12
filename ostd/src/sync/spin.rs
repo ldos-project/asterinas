@@ -74,7 +74,7 @@ impl<T: ?Sized> SpinLock<T, PreemptDisabled> {
 
 impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
     /// Acquires the spin lock.
-    pub fn lock(&self) -> SpinLockGuard<T, G> {
+    pub fn lock(&self) -> SpinLockGuard<'_, T, G> {
         // Notice the guard must be created before acquiring the lock.
         let inner_guard = G::guard();
         self.acquire_lock();
@@ -100,7 +100,7 @@ impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
     }
 
     /// Tries acquiring the spin lock immedidately.
-    pub fn try_lock(&self) -> Option<SpinLockGuard<T, G>> {
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T, G>> {
         let inner_guard = G::guard();
         if self.try_acquire_lock() {
             let lock_guard = SpinLockGuard_ {
