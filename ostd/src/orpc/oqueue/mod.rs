@@ -291,11 +291,18 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
     /// consumers.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
-        };
+        let ret = Self::new_anonymous(len);
         registry::register(&path, ret.as_any_oqueue());
         ret
+    }
+
+    /// Create a new anonymous OQueue with the specified buffer length and support for produce by
+    /// value and consumers. This should only be used when the OQueue should never be discovered for
+    /// observation such as for ephemeral queues.
+    pub fn new_anonymous(len: usize) -> Self {
+        Self {
+            inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
+        }
     }
 }
 
@@ -314,11 +321,17 @@ clone_without_t!(OQueueRef, : ?Sized + 'static);
 impl<T: ?Sized + Send + 'static> OQueueRef<T> {
     /// Create a new observation OQueue with the specified buffer length.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
-        };
+        let ret = Self::new_anonymous(len);
         registry::register(&path, ret.as_any_oqueue());
         ret
+    }
+
+    /// Create a new observation OQueue with the specified buffer length. This should only be used
+    /// when the OQueue should never be discovered for observation such as for ephemeral queues.
+    pub fn new_anonymous(len: usize) -> Self {
+        Self {
+            inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
+        }
     }
 }
 
