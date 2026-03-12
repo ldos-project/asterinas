@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use core::fmt::Debug;
 
 use aster_block::BlockDevice;
+#[cfg(not(baseline_asterinas))]
 pub use aster_virtio::device::block::server_traits::BlockIOObservable;
 use ostd::{Error, orpc::orpc_trait};
 
@@ -12,10 +13,12 @@ use ostd::{Error, orpc::orpc_trait};
 /// This trait combines `BlockDevice` (basic block I/O operations) with
 /// `BlockIOObservable` (I/O performance trace queues), enabling policies
 /// like `LinnOSPolicy` to observe completion traces for intelligent device selection.
+#[cfg(not(baseline_asterinas))]
 pub trait ObservableBlockDevice: BlockDevice + BlockIOObservable + Debug {}
 
 /// Blanket implementation: any type implementing both traits automatically
 /// implements `ObservableBlockDevice`.
+#[cfg(not(baseline_asterinas))]
 impl<T: BlockDevice + BlockIOObservable + Debug> ObservableBlockDevice for T {}
 
 #[orpc_trait]

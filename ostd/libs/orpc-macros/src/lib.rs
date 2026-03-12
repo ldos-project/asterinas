@@ -217,3 +217,11 @@ pub fn select(input: TokenStream) -> TokenStream {
     let output = select::select_macro_impl(input);
     output.into()
 }
+
+/// A no-op stub used in non-ORPC mode to allow servers to be used at normal structs, traits, and
+/// impls. This is exported as [`ostd::orpc::orpc_server`], [`ostd::orpc::orpc_trait`], and
+/// [`ostd::orpc::orpc_impl`] in non-orpc mode.
+#[proc_macro_attribute]
+pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}

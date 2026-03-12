@@ -29,9 +29,9 @@ pub use self::{
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
 pub(crate) use crate::arch::task::{TaskContext, context_switch};
-use crate::{
-    cpu::context::UserContext, orpc::framework::Server, prelude::*, trap::in_interrupt_context,
-};
+#[cfg(not(baseline_asterinas))]
+use crate::orpc::framework::Server;
+use crate::{cpu::context::UserContext, prelude::*, trap::in_interrupt_context};
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
@@ -70,6 +70,7 @@ pub struct Task {
 
     schedule_info: TaskScheduleInfo,
 
+    #[cfg(not(baseline_asterinas))]
     server: ForceSync<RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>>>,
 }
 
@@ -94,6 +95,7 @@ impl core::fmt::Debug for Task {
             .field("ctx", &self.ctx)
             .field("kstack", &self.kstack)
             .field("switched_to_cpu", &self.switched_to_cpu)
+            .field("id", &self.id)
             .field("schedule_info", &self.schedule_info)
             // server's implementation might not be Debug, so omit it for now
             .finish()
@@ -116,6 +118,7 @@ impl Task {
     /// # SAFETY
     ///
     /// This is only safe if it is NOT done concurrently
+    #[cfg(not(baseline_asterinas))]
     pub unsafe fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
         unsafe { self.server.get() }
     }
@@ -316,6 +319,7 @@ impl TaskOptions {
             },
             switched_to_cpu: AtomicBool::new(false),
             id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
+            #[cfg(not(baseline_asterinas))]
             server: ForceSync::new(RefCell::new(None)),
         };
 
@@ -384,6 +388,7 @@ impl CurrentTask {
     }
 
     /// Get a reference to the current server managing this task.
+    #[cfg(not(baseline_asterinas))]
     pub fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
         // SAFETY: This is the current task, so we have safe access to mutate the server attached to
         // the task. See [`CurrentTask::new`].

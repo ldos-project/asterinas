@@ -5,6 +5,7 @@ pub mod net;
 pub mod per_cpu_counter;
 pub mod random;
 pub mod ring_buffer;
+#[cfg(not(baseline_asterinas))]
 pub mod timer;
 
 pub use iovec::{MultiRead, MultiWrite, VmReaderArray, VmWriterArray};

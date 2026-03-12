@@ -19,7 +19,7 @@ use crate::{
 };
 
 mod io {
-    use core::assert_matches::assert_matches;
+    use core::assert_matches;
 
     use super::*;
 

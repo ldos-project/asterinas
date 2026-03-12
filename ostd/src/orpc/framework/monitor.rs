@@ -33,7 +33,7 @@ mod tests {
     use crate::{
         assert_eq_eventually,
         orpc::{
-            framework::errors::RPCError,
+            errors::RPCError,
             oqueue::{
                 ConsumableOQueue, ConsumableOQueueRef, OQueue, OQueueBase, OQueueRef,
                 ObservationQuery,

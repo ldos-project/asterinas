@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use int_to_c_enum::TryFromInt;
-use ostd::orpc::{framework::errors::RPCError, legacy_oqueue::OQueueAttachError};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::{errors::RPCError, legacy_oqueue::OQueueAttachError};
 
 use crate::queue::QueueError;
 
@@ -49,8 +50,10 @@ pub enum VirtioDeviceError {
     /// The input virtio capability list contains invalid element
     CapabilityListError,
     /// The ORPC Errors
+    #[cfg(not(baseline_asterinas))]
     RPCError(RPCError),
     /// The OQueue attachment errors
+    #[cfg(not(baseline_asterinas))]
     OQueueAttachError(OQueueAttachError),
 }
 

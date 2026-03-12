@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
+#![cfg(not(baseline_asterinas))]
+
 use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ostd::{
+    new_server,
     orpc::{
+        errors::RPCError,
         framework::{
-            errors::RPCError,
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },
@@ -50,10 +53,7 @@ impl TimerServer {
 
     /// Create a TimerServer with the specified frequency.
     pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            freq,
-        });
+        let server = new_server!(|_| Self { freq });
         Ok(server)
     }
 

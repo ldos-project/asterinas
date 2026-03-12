@@ -12,7 +12,6 @@
 //!
 //! IRQs are disabled while printing. So do not print long log messages.
 #![no_std]
-#![feature(format_args_nl)]
 #![deny(unsafe_code)]
 
 extern crate alloc;

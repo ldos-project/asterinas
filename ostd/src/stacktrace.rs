@@ -110,4 +110,12 @@ impl CapturedStackTrace {
             Default::default()
         }
     }
+
+    /// Create a zero length stack trace.
+    pub const fn empty() -> Self {
+        Self {
+            #[cfg(feature = "capture_stacks")]
+            frames: tinyvec::ArrayVec::from_array_empty([0; STACK_DEPTH]),
+        }
+    }
 }

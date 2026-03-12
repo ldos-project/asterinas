@@ -66,7 +66,7 @@ git clone https://github.com/ldos-project/asterinas
 2. Run a Docker container as the development environment.
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.15.2-20250613-tdx
+docker run -it --privileged --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.15.2-20250613-tdx
 ```
 
 3. Inside the container,

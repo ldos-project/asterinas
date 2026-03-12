@@ -5,7 +5,7 @@
 #[cfg(ktest)]
 mod test {
     use core::{
-        assert_matches::assert_matches,
+        assert_matches,
         cell::Cell,
         panic::{RefUnwindSafe, UnwindSafe},
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -19,9 +19,9 @@ mod test {
     use crate::{
         assert_eq_eventually, assert_eventually, assert_matches_eventually,
         orpc::{
+            errors::RPCError,
             framework::{
                 CurrentServer,
-                errors::RPCError,
                 shutdown::{Shutdown, ShutdownState},
                 spawn_thread,
             },

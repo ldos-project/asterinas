@@ -46,14 +46,14 @@ macro_rules! print {
     }};
 }
 
-/// Copied from Rust std: <https://github.com/rust-lang/rust/blob/master/library/std/src/macros.rs>
+/// The same as [`print!`], but adds a trailing new-line.
 #[macro_export]
 macro_rules! println {
     () => {
         $crate::print!("\n")
     };
     ($($arg:tt)*) => {{
-        $crate::_print(format_args_nl!($($arg)*));
+        $crate::_print(format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 

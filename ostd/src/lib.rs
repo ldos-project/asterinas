@@ -1,26 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The standard library for Asterinas and other Rust OSes.
-#![cfg_attr(ktest, feature(assert_matches))]
 #![feature(alloc_error_handler)]
 #![feature(allocator_api)]
 #![feature(btree_cursors)]
-#![feature(const_ptr_sub_ptr)]
 #![feature(const_trait_impl)]
 #![feature(core_intrinsics)]
 #![feature(coroutines)]
 #![feature(fn_traits)]
 #![feature(iter_advance_by)]
 #![feature(iter_from_coroutine)]
-#![feature(let_chains)]
 #![feature(linkage)]
 #![feature(min_specialization)]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
-#![feature(ptr_sub_ptr)]
 #![feature(sync_unsafe_cell)]
-#![feature(trait_upcasting)]
-#![feature(unbounded_shifts)]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
@@ -46,7 +40,12 @@ pub mod error;
 pub mod io;
 pub mod logger;
 pub mod mm;
+#[cfg(not(baseline_asterinas))]
 pub mod orpc;
+#[cfg(baseline_asterinas)]
+#[path = "orpc_stub.rs"]
+pub mod orpc;
+mod orpc_common;
 pub mod panic;
 pub mod prelude;
 pub mod smp;
@@ -144,6 +143,15 @@ unsafe fn init() {
     invoke_ffi_init_funcs();
 
     IN_BOOTSTRAP_CONTEXT.store(false, Ordering::Relaxed);
+
+    early_println!(
+        "[ostd] Running in {} mode.",
+        if cfg!(not(baseline_asterinas)) {
+            "ORPC/LDOS"
+        } else {
+            "non-ORPC/baseline"
+        }
+    );
 }
 
 /// Indicates whether the kernel is in bootstrap context.

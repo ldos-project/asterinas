@@ -15,4 +15,4 @@ else
     IMAGE_NAME="ldosproject/asterinas:${VERSION}"
 fi
 
-docker run -it --privileged --network=host --device=/dev/kvm --device=/dev/vhost-net -v ${ASTER_SRC_DIR}:/root/asterinas ${IMAGE_NAME}
+docker run -it --privileged --device=/dev/kvm --device=/dev/vhost-net -v ${ASTER_SRC_DIR}:/root/asterinas ${IMAGE_NAME}

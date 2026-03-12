@@ -26,7 +26,9 @@ mod pager;
 mod static_cap;
 
 pub use options::VmoOptions;
-pub use pager::{Pager, PagerOQueues};
+pub use pager::Pager;
+#[cfg(not(baseline_asterinas))]
+pub use pager::PagerOQueues;
 
 /// Virtual Memory Objects (VMOs) are a type of capability that represents a
 /// range of memory pages.

@@ -20,28 +20,40 @@ use aster_block::{
 };
 use id_alloc::IdAlloc;
 use log::{debug, info};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::framework::spawn_thread;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::{OQueueRef, Producer};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::{orpc_impl, orpc_server};
 use ostd::{
     Pod, ignore_err,
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
-    orpc::{
-        framework::spawn_thread,
-        legacy_oqueue::{OQueueRef, Producer},
-        orpc_impl, orpc_server,
-    },
     sync::SpinLock,
     trap::TrapFrame,
 };
 
 use super::{BlockFeatures, VirtioBlockConfig, VirtioBlockFeature};
+#[cfg(not(baseline_asterinas))]
+use crate::device::block::{server_traits, server_traits::BlockIOObservable as _};
 use crate::{
     device::{
         VirtioDeviceError,
-        block::{ReqType, RespStatus, server_traits, server_traits::BlockIOObservable},
+        block::{ReqType, RespStatus},
     },
     queue::VirtQueue,
     transport::{ConfigManager, VirtioTransport},
 };
 
+#[cfg(baseline_asterinas)]
+#[derive(Debug)]
+pub struct BlockDevice {
+    device: Arc<DeviceInner>,
+    /// The software staging queue.
+    queue: BioRequestSingleQueue,
+}
+
+#[cfg(not(baseline_asterinas))]
 #[derive(Debug)]
 #[orpc_server(server_traits::BlockIOObservable)]
 pub struct BlockDevice {
@@ -50,6 +62,7 @@ pub struct BlockDevice {
     queue: Arc<BioRequestSingleQueue>,
 }
 
+#[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
     fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio>;
@@ -68,36 +81,48 @@ impl BlockDevice {
             device.request_device_id()
         };
 
-        // let oqueue_consumer = self.bio_submission_oqueue().attach_consumer()?;
+        // Each bio request includes an additional 1 request and 1 response descriptor,
+        // therefore this upper bound is set to (QUEUE_SIZE - 2).
 
-        let block_device_server = Self::new_with(|orpc_internal, _weak_self| BlockDevice {
-            orpc_internal,
-            device,
-            // Each bio request includes an additional 1 request and 1 response descriptor,
-            // therefore this upper bound is set to (QUEUE_SIZE - 2).
-            queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
-                (DeviceInner::QUEUE_SIZE - 2) as usize,
-            )),
-            // oqueue_consumer,
-        });
+        #[cfg(baseline_asterinas)]
+        {
+            let block_device = Arc::new(BlockDevice {
+                device,
+                queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
+                    (DeviceInner::QUEUE_SIZE - 2) as usize,
+                ),
+            });
+            aster_block::register_device(device_id, block_device);
+        }
 
-        // Thread 2: Handle requests from the OQueue and enqueue them
-        spawn_thread(block_device_server.clone(), {
-            let block_device_server = block_device_server.clone();
-            let consumer = block_device_server
-                .bio_submission_oqueue()
-                .attach_consumer()?;
-            move || {
-                // Attach consumer ONCE outside the loop to avoid race condition
-                // where items could be skipped between consumer drop and re-attach
-                loop {
-                    let request = consumer.consume();
-                    block_device_server.queue.enqueue(request)?;
+        #[cfg(not(baseline_asterinas))]
+        {
+            let block_device_server = Self::new_with(|orpc_internal, _weak_self| BlockDevice {
+                orpc_internal,
+                device,
+                queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
+                    (DeviceInner::QUEUE_SIZE - 2) as usize,
+                )),
+            });
+
+            // Thread 2: Handle requests from the OQueue and enqueue them
+            spawn_thread(block_device_server.clone(), {
+                let block_device_server = block_device_server.clone();
+                let consumer = block_device_server
+                    .bio_submission_oqueue()
+                    .attach_consumer()?;
+                move || {
+                    // Attach consumer ONCE outside the loop to avoid race condition
+                    // where items could be skipped between consumer drop and re-attach
+                    loop {
+                        let request = consumer.consume();
+                        block_device_server.queue.enqueue(request)?;
+                    }
                 }
-            }
-        });
+            });
 
-        aster_block::register_device(device_id, block_device_server);
+            aster_block::register_device(device_id, block_device_server);
+        }
 
         bio_segment_pool_init();
         Ok(())
@@ -128,6 +153,21 @@ impl BlockDevice {
     }
 }
 
+#[cfg(baseline_asterinas)]
+impl aster_block::BlockDevice for BlockDevice {
+    fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
+        self.queue.enqueue(bio)
+    }
+
+    fn metadata(&self) -> BlockDeviceMeta {
+        BlockDeviceMeta {
+            max_nr_segments_per_bio: self.queue.max_nr_segments_per_bio(),
+            nr_sectors: self.device.config_manager.capacity_sectors(),
+        }
+    }
+}
+
+#[cfg(not(baseline_asterinas))]
 impl aster_block::BlockDevice for BlockDevice {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         let reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>> =
@@ -275,6 +315,7 @@ impl DeviceInner {
             // Completes the bio request
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
+                #[cfg(not(baseline_asterinas))]
                 bio.report_statistics();
             });
         }

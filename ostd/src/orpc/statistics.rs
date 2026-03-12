@@ -9,8 +9,8 @@ use alloc::sync::Arc;
 use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
 
 use super::{
+    errors::RPCError,
     framework::{
-        errors::RPCError,
         shutdown::{self, ShutdownState},
         spawn_thread,
     },

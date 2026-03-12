@@ -82,3 +82,7 @@ we will explain why the high-level design is sound
 in the soundness analysis and rely on the many 
 eyes of the community to catch any potential flaws 
 in the implementation.
+
+## Debugging OSTD Kernels
+
+OSTD provides several debugging features documented in [the OSTD debugging section](debugging.md).

@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Weak};
 use core::{fmt::Display, time::Duration};
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::{OQueueAttachError, Producer};
 use ostd::{
     Error,
     mm::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
-    orpc::legacy_oqueue::{OQueueAttachError, Producer},
     sync::{SpinLock, WaitQueue},
 };
 use spin::{Mutex, Once};
@@ -142,8 +143,10 @@ impl Bio {
         // A SubmittedBio is created here from a Bio, and then pass down to the lower layers.
         if let Err(e) = block_device.enqueue(SubmittedBio {
             bio_inner: self.0.clone(),
+            #[cfg(not(baseline_asterinas))]
             reply_handle: None,
             submission_time: None,
+            #[cfg(not(baseline_asterinas))]
             bio_request_single_queue: None,
         }) {
             // Fail to submit, revert the status.
@@ -198,9 +201,11 @@ pub enum BioEnqueueError {
     /// Too big bio
     TooBig,
     /// OQueue attachment failures
+    #[cfg(not(baseline_asterinas))]
     OQueueAttachError(OQueueAttachError),
 }
 
+#[cfg(not(baseline_asterinas))]
 impl From<OQueueAttachError> for BioEnqueueError {
     fn from(err: OQueueAttachError) -> Self {
         Self::OQueueAttachError(err)
@@ -314,23 +319,28 @@ impl Default for BioWaiter {
 pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
+    #[cfg(not(baseline_asterinas))]
     reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
+
     submission_time: Option<Duration>,
 
-    bio_request_single_queue: Option<Arc<BioRequestSingleQueue>>,
+    #[cfg(not(baseline_asterinas))]
+    bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SubmittedBio")
-            .field("bio_inner", &self.bio_inner)
+        let mut d = f.debug_struct("SubmittedBio");
+        let d = d.field("bio_inner", &self.bio_inner);
+        #[cfg(not(baseline_asterinas))]
+        let d = d
+            .field("submission_time", &self.submission_time)
+            .field("bio_request_single_queue", &self.bio_request_single_queue)
             .field(
                 "reply_handle",
                 &self.reply_handle.as_ref().map(|_| "<Producer>"),
-            )
-            .field("submission_time", &self.submission_time)
-            .field("bio_request_single_queue", &self.bio_request_single_queue)
-            .finish()
+            );
+        d.finish()
     }
 }
 
@@ -380,30 +390,33 @@ impl SubmittedBio {
         self.submission_time
     }
 
-    pub fn num_outstanding_requests(&self) -> usize {
+    #[cfg(not(baseline_asterinas))]
+    pub fn num_outstanding_requests(&self) -> Option<usize> {
         self.bio_request_single_queue
             .as_ref()
-            .unwrap()
-            .num_requests()
+            .and_then(|w| w.upgrade())
+            .map(|q| q.num_requests())
     }
 
+    #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>>,
         bio_request_single_queue: Arc<BioRequestSingleQueue>,
     ) {
         self.reply_handle = Some(reply_handle);
-        self.bio_request_single_queue = Some(bio_request_single_queue);
+        self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time = Some(read_monotonic_time());
     }
 
+    #[cfg(not(baseline_asterinas))]
     pub fn report_statistics(&self) {
         self.reply_handle
             .as_ref()
             .unwrap()
             .produce(BlockDeviceCompletionStats {
                 latency: read_monotonic_time() - self.submission_time.unwrap(),
-                outstanding_requests: self.num_outstanding_requests(),
+                outstanding_requests: self.num_outstanding_requests().unwrap_or(0),
             });
     }
 }

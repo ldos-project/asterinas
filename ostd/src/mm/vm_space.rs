@@ -24,7 +24,7 @@ use crate::{
         page_table::{self, PageTable, PageTableConfig, PageTableFrag},
         tlb::{TlbFlushOp, TlbFlusher},
     },
-    orpc::{framework::errors::RPCError, orpc_impl, orpc_server, orpc_trait},
+    orpc::{errors::RPCError, orpc_impl, orpc_server, orpc_trait},
     prelude::*,
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
@@ -39,7 +39,7 @@ pub struct VmMappingRequest {
 /// value returned by [`VmMappingPolicy::get_page_level`] is 1, a base page is mapped, and for
 /// larger level the corresponding level page is mapped.
 #[orpc_trait]
-pub trait VmMappingPolicy {
+pub trait VmMappingPolicy: Sync + Send {
     /// Get the level of page that should be mapped in request to a fault at
     /// `req.page_aligned_addr`.
     fn get_page_level(&self, req: &VmMappingRequest)
@@ -114,7 +114,8 @@ impl core::fmt::Debug for VmSpace {
 impl VmSpace {
     /// Creates a new VM address space.
     pub fn new() -> Self {
-        Self {
+        #[cfg(not(baseline_asterinas))]
+        let ret = Self {
             pt: KERNEL_PAGE_TABLE.get().unwrap().create_user_page_table(),
             cpus: AtomicCpuSet::new(CpuSet::new_empty()),
             // Set the default policy to be base pages only. This can updated by calling
@@ -122,7 +123,16 @@ impl VmSpace {
             vm_mapping_policy: VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
                 VmMappingPolicyBasePagesOnly { orpc_internal }
             }),
-        }
+        };
+        #[cfg(baseline_asterinas)]
+        let ret = Self {
+            pt: KERNEL_PAGE_TABLE.get().unwrap().create_user_page_table(),
+            cpus: AtomicCpuSet::new(CpuSet::new_empty()),
+            // Set the default policy to be base pages only. This can updated by calling
+            // with_mapping_policy.
+            vm_mapping_policy: Arc::new(VmMappingPolicyBasePagesOnly {}),
+        };
+        ret
     }
 
     /// Get an opaque identity that uniquely refers to a particular VmSpace instance.

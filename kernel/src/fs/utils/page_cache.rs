@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// There is a baseline version of this file: `page_cache_baseline.rs`.
+
 #![expect(dead_code)]
 
 use core::{
