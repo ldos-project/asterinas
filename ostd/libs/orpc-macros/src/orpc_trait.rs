@@ -2,7 +2,10 @@
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{FnArg, ItemTrait, LitStr, Receiver, spanned::Spanned};
 
-use crate::{orpc_impl::generate_orpc_method_body, parsing_utils::ORPCMethodKind};
+use crate::{
+    orpc_impl::generate_orpc_method_body,
+    parsing_utils::{ORPCMethodKind, generics_to_phantom},
+};
 
 /// The implementation of the `orpc_trait` attr macro.
 pub fn orpc_trait_macro_impl(
@@ -100,19 +103,24 @@ pub fn orpc_trait_macro_impl(
         input.span(),
     );
 
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let phantom = generics_to_phantom(&input.generics);
+
     let output = quote! {
         #trait_decl
 
         #[doc(hidden)]
         #[doc = #oqueue_struct_docs]
-        #vis struct #oqueues_struct_ident {
-            #(#oqueue_declarations),*
+        #vis struct #oqueues_struct_ident #impl_generics #where_clause {
+            #(#oqueue_declarations,)*
+            _phantom: #phantom
         }
 
-        impl ::core::default::Default for #oqueues_struct_ident {
+        impl #impl_generics ::core::default::Default for #oqueues_struct_ident #type_generics #where_clause {
             fn default() -> Self {
                 Self {
-                    #(#oqueue_initializers),*
+                    #(#oqueue_initializers,)*
+                    _phantom: ::core::marker::PhantomData,
                 }
             }
         }
