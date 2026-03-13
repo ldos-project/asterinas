@@ -187,8 +187,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     /// Splits all huge pages locked by the cursor into base pages.
     pub fn split_if_mapped_huge_all(&mut self) {
         let va = self.virt_addr();
-        let start_level = self.level;
-        let rcu_guard = self.rcu_guard;
+        let end = self.barrier_va.end;
         // TODO(aneesh): We need to ensure that we don't jump all the way to the end of the addr
         // space, which find_next_impl will do if we don't have the -1 below. In theory it shouldn't
         // matter, and the jump below should reset the state, but if it jumps all the way to the end
@@ -196,10 +195,9 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         // will try to decrement the level because it thinks it's in the next "node". The cursor API
         // is a bit messy around how it handles levels - move_forward is right to not bump the
         // level, but it's hard for jump to tell if it should change the level or not.
-        let get_remaining_len =
-            || (self.barrier_va.end - self.virt_addr() - 1).align_down(page_size::<C>(1));
+        let get_remaining_len = |va: Vaddr| (end - va - 1).align_down(page_size::<C>(1));
         while self
-            .find_next_impl(get_remaining_len(), false, true)
+            .find_next_impl(get_remaining_len(self.virt_addr()), false, true)
             .is_some()
         {
             // Jump to the end of this page so we can find the next entry.
