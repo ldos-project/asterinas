@@ -47,30 +47,33 @@ prepare_fs() {
 }
 
 JDK_URL="https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.tar.gz"
-JDK_PATH="jdk-25.0.2"
-MVN_URL="https://dlcdn.apache.org/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz"
-export MVN_DIR=$(realpath "apache-maven-3.9.12")
-export YCSB_PATH=$(realpath "ycsb")
-export JAVA_HOME=$(realpath $JDK_PATH)
+MVN_URL="https://archive.apache.org/dist/maven/maven-3/3.9.12/binaries/apache-maven-3.9.12-bin.tar.gz"
+export MVN_DIR=$(realpath ".cache/apache-maven-3.9.12")
+export YCSB_PATH=$(realpath ".cache/ycsb")
+export JDK_PATH=$(realpath ".cache/jdk-25.0.2")
+export JAVA_HOME=$JDK_PATH
 
 prepare_ycsb() {
-  if [ ! -d "$JDK_PATH" ]; then
-    wget "$JDK_URL" -O jdk.tar.gz
-    tar -xvf ./jdk.tar.gz
-  fi
+  mkdir -p .cache
+  pushd .cache && {
+    if [ ! -d "$JDK_PATH" ]; then
+      wget "$JDK_URL" -O jdk.tar.gz
+      tar -xvf ./jdk.tar.gz
+    fi
 
-  if [ ! -d "$MVN_DIR" ]; then
-    tar -xvf ./apache-maven-3.9.12-bin.tar.gz
-  fi
+    if [ ! -d "$MVN_DIR" ]; then
+      wget $MVN_URL
+      tar -xvf ./apache-maven-3.9.12-bin.tar.gz
+    fi
 
-  if [ ! -d "$YCSB_PATH" ]; then
-    wget $MVN_URL
-    git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
+    if [ ! -d "$YCSB_PATH" ]; then
+      git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
 
-    # Build
-    pushd $YCSB_PATH
-    $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
-    $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
-    popd
-  fi
+      # Build
+      pushd $YCSB_PATH
+      $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
+      $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
+      popd
+    fi
+  }; popd
 }
