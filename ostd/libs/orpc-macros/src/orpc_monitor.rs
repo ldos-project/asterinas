@@ -5,6 +5,8 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Error, Ident, ItemImpl, Type, Visibility, parse_quote, spanned::Spanned as _};
 
+use crate::parsing_utils::generics_to_phantom;
+
 /// The kind of attachment which a method should support.
 #[derive(PartialEq)]
 enum MethodAttachmentType {
@@ -56,6 +58,9 @@ impl MethodDefinition {
 }
 
 pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> TokenStream {
+    let (impl_generics, type_generics, where_clause) = input_impl.generics.split_for_impl();
+    let phantom_type = generics_to_phantom(&input_impl.generics);
+
     // A set of errors encountered.
     let mut errors = Vec::new();
 
@@ -130,13 +135,22 @@ pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> Token
 
     // The name of the state type
     let state_name = match input_impl.self_ty.as_ref() {
-        Type::Path(syn::TypePath { qself: None, path }) if path.get_ident().is_some() => {
-            path.get_ident().unwrap().clone()
+        Type::Path(syn::TypePath { qself: None, path }) => {
+            if path.leading_colon.is_none() && path.segments.len() == 1 {
+                path.segments[0].ident.clone()
+            } else {
+                errors.push(Error::new(
+                    input_impl.self_ty.span(),
+                    "impl'd type must be referenced by a simple identifier, not a path",
+                ));
+                format_ident!("__BAD_PATH__")
+            }
         }
-        _ => {
+        v => {
+            println!("v {:?}", v);
             errors.push(Error::new(
                 input_impl.self_ty.span(),
-                "impl'd type must be referenced by a simple identifier",
+                "impl'd type must be a struct",
             ));
             format_ident!("__ERROR__")
         }
@@ -261,6 +275,7 @@ The documentation for [`Self::{method_name}`] is:\n\n",
         state_name,
         &command_enum_name,
         &attachment_struct_name,
+        &type_generics,
     ));
 
     let compiler_errors = {
@@ -280,7 +295,7 @@ The documentation for [`Self::{method_name}`] is:\n\n",
                 .iter()
                 .map(|d| d.definition.clone().into())
                 .collect(),
-            ..input_impl
+            ..input_impl.clone()
         }
     };
 
@@ -289,29 +304,30 @@ The documentation for [`Self::{method_name}`] is:\n\n",
 
         #[doc(hidden)]
         #[derive(Default)]
-        struct #attachment_struct_name {
+        struct #attachment_struct_name #impl_generics #where_clause {
             #(#attachment_fields,)*
+            _phantom: #phantom_type,
         }
 
         #[doc(hidden)]
-        enum #command_enum_name {
+        enum #command_enum_name #impl_generics #where_clause {
             #(#command_variants)*
         }
 
-        impl ::core::fmt::Debug for #command_enum_name {
-            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-                match self {
-                    #(#command_debug_match_arms)*
-                }
-            }
+        // impl #impl_generics ::core::fmt::Debug for #command_enum_name #type_generics #where_clause {
+        //     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        //         match self {
+        //             #(#command_debug_match_arms)*
+        //         }
+        //     }
+        // }
+
+        #monitor_vis struct #monitor_name #impl_generics #where_clause {
+            command_oqueue: ::ostd::orpc::oqueue::ConsumableOQueueRef<#command_enum_name #type_generics>,
+            command_producer: ::ostd::orpc::oqueue::ValueProducer<#command_enum_name #type_generics>,
         }
 
-        #monitor_vis struct #monitor_name {
-            command_oqueue: ::ostd::orpc::oqueue::ConsumableOQueueRef<#command_enum_name>,
-            command_producer: ::ostd::orpc::oqueue::ValueProducer<#command_enum_name>,
-        }
-
-        impl #monitor_name {
+        impl #impl_generics #monitor_name #type_generics #where_clause {
             #(#monitor_methods)*
 
             #monitor_vis fn new(path: ::ostd::orpc::path::Path) -> Self {
@@ -342,6 +358,7 @@ fn generate_start_fn(
     state_name: Ident,
     command_enum_name: &Ident,
     attachment_struct_name: &Ident,
+    type_generics: &syn::TypeGenerics<'_>,
 ) -> TokenStream {
     // The attachment blockers used for blocking the event loop.
     let mut attachment_blockers = Vec::new();
@@ -439,8 +456,10 @@ fn generate_start_fn(
         quote! { &[&command_consumer, #(#attachment_blockers),*] }
     };
 
+    let type_generics = type_generics.as_turbofish();
+
     quote! {
-        fn start(&self, server: ::alloc::sync::Arc<dyn ::ostd::orpc::framework::Server>, state: #state_name) {
+        fn start(&self, server: ::alloc::sync::Arc<dyn ::ostd::orpc::framework::Server>, state: #state_name #type_generics) {
             ::ostd::orpc::framework::spawn_thread(server, {
                 use ::ostd::orpc::oqueue::ConsumableOQueue;
                 let command_consumer = self
@@ -449,7 +468,7 @@ fn generate_start_fn(
                     .expect("single purpose OQueue failed.");
                 move || {
                     let mut state = state;
-                    let mut attachments = #attachment_struct_name::default();
+                    let mut attachments = #attachment_struct_name #type_generics::default();
                     loop {
                         if let Some(c) = ::ostd::task::Task::current() {
                             c.block_on(#all_blockers);
