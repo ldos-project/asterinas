@@ -198,8 +198,13 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         // level, but it's hard for jump to tell if it should change the level or not.
         let get_remaining_len =
             || (self.barrier_va.end - self.virt_addr() - 1).align_down(page_size::<C>(1));
-        while let Some(mapped_va) = self.find_next_impl(get_remaining_len(), false, true) {
+        while self
+            .find_next_impl(get_remaining_len(), false, true)
+            .is_some()
+        {
+            // Jump to the end of this page so we can find the next entry.
             if self.jump(self.virt_addr() + page_size::<C>(1)).is_err() {
+                // We have jumped past the end of this range, time to stop iteration.
                 break;
             }
         }
