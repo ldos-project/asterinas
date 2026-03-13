@@ -189,17 +189,11 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         let va = self.virt_addr();
         let rcu_guard = self.rcu_guard;
         // TODO(aneesh): handle levels larger than two.
-        while let Some(mapped_va) = self.find_next(self.barrier_va.end - self.virt_addr()) {
-            let mut cur_entry = self.cur_entry();
-            if let ChildRef::Frame(_, lvl, _) = cur_entry.to_ref() {
-                cur_entry.split_if_mapped_huge_all(rcu_guard);
-                // We might be trying to unmap only part of a huge page, so it's not guaranteed that
-                // we can jump to the end of the current entry with the current lock.
-                let end = mapped_va + page_size::<C>(lvl);
-                if end >= self.barrier_va.end {
-                    break;
-                }
-                self.jump(end).unwrap();
+        while let Some(mapped_va) =
+            self.find_next_impl(self.barrier_va.end - self.virt_addr(), false, true)
+        {
+            if self.jump(self.virt_addr() + page_size::<C>(1)).is_err() {
+                break;
             }
         }
         self.jump(va).unwrap();
