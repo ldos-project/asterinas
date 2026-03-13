@@ -1,0 +1,18 @@
+[package]
+name = "mariposa_data_capture"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+component = { path = "../../libs/comp-sys/component" }
+aster-logger = { path = "../logger" }
+aster-block = { path = "../block" }
+ostd = { path = "../../../ostd" }
+binary_serde = "1.0.25"
+log = "0.4"
+snafu = { workspace = true }
+
+[lints]
+workspace = true

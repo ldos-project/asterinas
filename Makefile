@@ -240,6 +240,7 @@ OSDK_CRATES := \
 	kernel/comps/softirq \
 	kernel/comps/systree \
 	kernel/comps/logger \
+	kernel/comps/mariposa_data_capture \
 	kernel/comps/mlsdisk \
 	kernel/comps/time \
 	kernel/comps/virtio \

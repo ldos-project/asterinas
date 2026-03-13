@@ -10,6 +10,7 @@ logger = { name = "aster-logger" }
 time = { name = "aster-time" }
 framebuffer = { name = "aster-framebuffer" }
 network = { name = "aster-network" }
+data_capture = { name = "mariposa_data_capture" }
 mlsdisk = { name = "aster-mlsdisk" }
 systree = { name = "aster-systree" }
 keyboard = { name = "aster-keyboard" }
