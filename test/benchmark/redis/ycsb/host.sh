@@ -20,7 +20,9 @@ export PATH=$PATH:$(realpath .cache/apache-maven-3.9.12/bin/)
 # Run YCSB + redis bench
 echo "Running YCSB bench connected to $GUEST_SERVER_IP_ADDRESS"
 export JAVA_HOME=$(realpath ".cache/jdk-25.0.2")
-$YCSB_PATH/bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P $YCSB_DIR/workloads/workloada
-$YCSB_PATH/bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P $YCSB_DIR/workloads/workloada
+
+cd $YCSB_PATH/
+./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada
+./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada
 
 # The trap will automatically stop the guest VM when the script exits

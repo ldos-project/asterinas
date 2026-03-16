@@ -67,7 +67,7 @@ prepare_ycsb() {
     fi
 
     if [ ! -d "$YCSB_PATH" ]; then
-      git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
+      git clone https://github.com/brianfrankcooper/YCSB --depth=1 $YCSB_PATH
 
       # Build
       pushd $YCSB_PATH
