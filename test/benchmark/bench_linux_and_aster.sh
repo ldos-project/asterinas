@@ -87,6 +87,7 @@ run_benchmark() {
 
     echo "Preparing libraries..."
     prepare_libs
+    prepare_ycsb
 
     # Default values
     local smp_val=1
