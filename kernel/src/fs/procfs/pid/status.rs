@@ -103,8 +103,10 @@ impl FileOps for StatusFileOps {
             let anon = vmar_ref.get_rss_counter(RssType::RSS_ANONPAGES) * (PAGE_SIZE / 1024);
             let file = vmar_ref.get_rss_counter(RssType::RSS_FILEPAGES) * (PAGE_SIZE / 1024);
             let rss = anon + file;
-            let anon_hwm = vmar_ref.get_rss_hwm_counter(RssType::RSS_ANONPAGES) * (PAGE_SIZE / 1024);
-            let file_hwm = vmar_ref.get_rss_hwm_counter(RssType::RSS_FILEPAGES) * (PAGE_SIZE / 1024);
+            let anon_hwm =
+                vmar_ref.get_rss_hwm_counter(RssType::RSS_ANONPAGES) * (PAGE_SIZE / 1024);
+            let file_hwm =
+                vmar_ref.get_rss_hwm_counter(RssType::RSS_FILEPAGES) * (PAGE_SIZE / 1024);
             let rss_hwm = anon_hwm + file_hwm;
             writeln!(
                 status_output,
