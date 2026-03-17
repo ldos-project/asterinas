@@ -201,6 +201,17 @@ fn init_thread() {
         vm::hugepaged::HugepagedServer::spawn(initproc.clone());
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[cfg(not(baseline_asterinas))]
+    if karg
+        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
+        .unwrap_or(false)
+    {
+        let pmu = arch::pmu::PMUServer::spawn();
+        pmu.reset();
+        pmu.start();
+    }
+
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
