@@ -54,12 +54,17 @@ mod tests {
 
     #[orpc_monitor(pub)]
     impl TestState {
+        /// A method which can be attached to an OQueue as an observer so it is called everytime
+        /// something is produced. This attachment is done with a generated method called
+        /// `attach_update`.
         #[strong_observer]
         pub fn update(&mut self, x: i32) -> Result<(), RPCError> {
             self.x = (self.x + x * 3) / 4;
             Ok(())
         }
 
+        /// A method which can be attached as a consumer. This is analogous to the observer
+        /// capabilities of `update`.
         #[consumer]
         pub fn next(&mut self, _: ()) -> Result<(), RPCError> {
             self.x += 1;
