@@ -26,7 +26,7 @@ impl PerCpuCounter {
         }
     }
 
-    /// Adds `increment` to the counter on the given CPU.
+    /// Adds `increment` to the counter on the given CPU and returns the current value.
     pub fn add(&self, on_cpu: CpuId, increment: isize) -> isize {
         self.per_cpu_counter
             .get_on_cpu(on_cpu)
