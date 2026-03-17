@@ -12,6 +12,7 @@ use core::{
     num::NonZeroUsize,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering},
+    time::Duration,
 };
 
 use align_ext::AlignExt;
@@ -43,6 +44,7 @@ use crate::{
     prelude::*,
     process::{Process, ResourceType},
     thread::exception::PageFaultInfo,
+    time,
     util::per_cpu_counter::PerCpuCounter,
     vm::{
         perms::VmPerms,
@@ -196,12 +198,13 @@ pub struct PageFaultOQueueMessage {
     pub vm_space_id: u64,
     /// The fault information provided to the page fault handler
     pub fault_info: PageFaultInfo,
+    pub timestamp: Duration,
 }
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
     use alloc::sync::Arc;
-    use core::sync::atomic::AtomicUsize;
+    use core::{sync::atomic::AtomicUsize, time::Duration};
 
     use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
     use spin::Once;
@@ -213,9 +216,9 @@ pub mod oqueues {
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<isize>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<(isize, Duration)>>> = Once::new();
 
-    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<isize>> {
+    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<(isize, Duration)>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
@@ -228,8 +231,8 @@ pub fn init() {
     #[cfg(not(baseline_asterinas))]
     {
         // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::<PageFaultOQueueMessage>::new(64, 1));
-        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::<isize>::new(64, 1));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
+        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
     }
 }
 
@@ -646,6 +649,7 @@ impl Vmar_ {
                     .produce(PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
+                        timestamp: time::clocks::RealTimeClock::get().read_time(),
                     })?;
             }
             return res;
@@ -1333,7 +1337,9 @@ impl<'a> RssDelta<'a> {
             } else {
                 oqueues::GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed);
             }
-            let _ = oqueues::RSS_DELTA_OQUEUE.wait().produce(increment);
+            let _ = oqueues::RSS_DELTA_OQUEUE
+                .wait()
+                .produce((increment, time::clocks::RealTimeClock::get().read_time()));
         }
 
         self.delta[rss_type as usize] += increment;
