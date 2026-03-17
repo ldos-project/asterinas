@@ -24,10 +24,7 @@ pub use self::{
         aux_vec::{AuxKey, AuxVec},
     },
 };
-use crate::{
-    prelude::*,
-    vm::vmar::{RssType, Vmar},
-};
+use crate::{prelude::*, vm::vmar::Vmar};
 
 /*
  * The user's virtual memory space layout looks like below.

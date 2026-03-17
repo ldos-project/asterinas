@@ -110,7 +110,7 @@ impl FileOps for StatusFileOps {
             let rss_hwm = anon_hwm + file_hwm;
             writeln!(
                 status_output,
-                "VmHWMRss:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
+                "VmHWM:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
                 rss_hwm, rss, anon, file
             )
             .unwrap();
