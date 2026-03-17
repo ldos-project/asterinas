@@ -75,7 +75,7 @@ if [ "$1" = "tdx" ]; then
 fi
 
 COMMON_QEMU_ARGS="\
-    -cpu Icelake-Server,+x2apic \
+    -cpu Icelake-Server,+x2apic,pmu=on \
     -smp ${SMP:-1} \
     -m ${MEM:-8G} \
     --no-reboot \
