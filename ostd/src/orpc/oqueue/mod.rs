@@ -66,13 +66,18 @@ mod implementation;
 pub mod query;
 pub mod registry;
 mod single_thread_ring_buffer;
+mod utils;
 
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
+pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
-use crate::{orpc::path::Path, sync::SpinLock};
+use crate::{
+    orpc::{path::Path, sync::Blocker},
+    sync::{SpinLock, WakerKey},
+};
 
 #[cfg(ktest)]
 pub(crate) mod generic_test;
@@ -286,11 +291,18 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
     /// consumers.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
-        };
+        let ret = Self::new_anonymous(len);
         registry::register(&path, ret.as_any_oqueue());
         ret
+    }
+
+    /// Create a new anonymous OQueue with the specified buffer length and support for produce by
+    /// value and consumers. This should only be used when the OQueue should never be discovered for
+    /// observation such as for ephemeral queues.
+    pub fn new_anonymous(len: usize) -> Self {
+        Self {
+            inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
+        }
     }
 }
 
@@ -309,11 +321,17 @@ clone_without_t!(OQueueRef, : ?Sized + 'static);
 impl<T: ?Sized + Send + 'static> OQueueRef<T> {
     /// Create a new observation OQueue with the specified buffer length.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
-        };
+        let ret = Self::new_anonymous(len);
         registry::register(&path, ret.as_any_oqueue());
         ret
+    }
+
+    /// Create a new observation OQueue with the specified buffer length. This should only be used
+    /// when the OQueue should never be discovered for observation such as for ephemeral queues.
+    pub fn new_anonymous(len: usize) -> Self {
+        Self {
+            inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
+        }
     }
 }
 
@@ -345,7 +363,6 @@ impl<T: ?Sized + 'static> WeakAnyOQueueRef<T> {
 /// the consumer without copying or cloning.
 pub struct ValueProducer<T> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + 'static> ValueProducer<T> {
@@ -365,7 +382,6 @@ impl<T: Send + 'static> ValueProducer<T> {
 /// There can be no consumers since the message is not moved into the OQueue.
 pub struct RefProducer<T: ?Sized> {
     oqueue: Arc<implementation::OQueueImplementation<T>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
 impl<T: Send + ?Sized + 'static> RefProducer<T> {
@@ -392,6 +408,20 @@ pub struct Consumer<T: 'static> {
 impl<T> Drop for Consumer<T> {
     fn drop(&mut self) {
         self.oqueue.detach_consumer();
+    }
+}
+
+impl<T: Send + 'static> Blocker for Consumer<T> {
+    fn should_try(&self) -> bool {
+        self.oqueue.can_consume()
+    }
+
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.oqueue.read_wait_queue.enqueue(waker.clone())
+    }
+
+    fn remove(&self, key: WakerKey) {
+        self.oqueue.read_wait_queue.remove(key);
     }
 }
 
@@ -454,16 +484,30 @@ type ConvertToInlineFn<U> = fn(
 ) -> Result<InlineObserverKey, AttachmentError>;
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
-pub struct StrongObserver<U: Copy + Send> {
+pub struct StrongObserver<U> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
     observer_id: ObserverKey,
     convert_to_inline: ConvertToInlineFn<U>,
     _phantom: PhantomData<core::cell::Cell<U>>,
 }
 
-impl<U: Copy + Send> Drop for StrongObserver<U> {
+impl<U> Drop for StrongObserver<U> {
     fn drop(&mut self) {
         self.oqueue.detach_strong_observer(self.observer_id);
+    }
+}
+
+impl<U> Blocker for StrongObserver<U> {
+    fn should_try(&self) -> bool {
+        self.oqueue.can_strong_observe(self.observer_id)
+    }
+
+    fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.oqueue.enqueue_read_waker(waker)
+    }
+
+    fn remove(&self, key: WakerKey) {
+        self.oqueue.remove_read_waker(key)
     }
 }
 

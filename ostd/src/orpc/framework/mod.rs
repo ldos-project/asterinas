@@ -22,12 +22,14 @@
 // starts (this is true even for components initialized after the scheduler).
 
 mod integration_test;
+pub mod monitor;
 pub mod notifier;
 pub mod shutdown;
 pub mod threads;
 
 use alloc::{sync::Weak, vec::Vec};
 use core::{
+    any::Any,
     fmt::Display,
     num::NonZeroUsize,
     ops::DerefMut,
@@ -45,7 +47,7 @@ use crate::{
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
-pub trait Server: Sync + Send + 'static {
+pub trait Server: Any + Sync + Send + 'static {
     /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
     /// use it.
     ///
@@ -288,7 +290,7 @@ mod test {
     use super::*;
     use crate::{
         orpc::{errors, legacy_oqueue::generic_test, sync::Blocker},
-        sync::Waker,
+        sync::{Waker, WakerKey},
     };
 
     struct InfiniteBlocker;
@@ -298,7 +300,11 @@ mod test {
             false
         }
 
-        fn prepare_to_wait(&self, _waker: &Arc<Waker>) {}
+        fn enqueue(&self, _task: &Arc<Waker>) -> WakerKey {
+            WakerKey::default()
+        }
+
+        fn remove(&self, _key: WakerKey) {}
     }
 
     struct TestServer<F: Fn()> {
