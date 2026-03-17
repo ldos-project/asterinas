@@ -55,7 +55,8 @@ export JAVA_HOME=$JDK_PATH
 
 prepare_ycsb() {
   mkdir -p .cache
-  pushd .cache && {
+  (
+    cd .cache
     if [ ! -d "$JDK_PATH" ]; then
       wget "$JDK_URL" -O jdk.tar.gz
       tar -xvf ./jdk.tar.gz
@@ -75,5 +76,5 @@ prepare_ycsb() {
       $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
       popd
     fi
-  }; popd
+  )
 }
