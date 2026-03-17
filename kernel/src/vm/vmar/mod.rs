@@ -11,17 +11,18 @@ use core::{
     array,
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, Ordering},
 };
 
 use align_ext::AlignExt;
 use aster_rights::Rights;
+use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
 use ostd::mm::vm_space::VmMappingPolicyOQueues;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue};
 use ostd::{
-    cpu::CpuId,
+    cpu::{CpuId, all_cpus},
     mm::{
         MAX_USERSPACE_VADDR, PageFlags, PageProperty, PagingConsts, PagingLevel, VmSpace,
         page_size,
@@ -243,6 +244,7 @@ pub(super) struct Vmar_ {
     vm_space: Arc<VmSpace>,
     /// The RSS counters.
     rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
+    rss_hwm_counters: [CpuLocalBox<AtomicIsize>; NUM_RSS_COUNTERS],
 
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
@@ -541,6 +543,7 @@ impl Vmar_ {
         base: usize,
         size: usize,
         rss_counters: [PerCpuCounter; NUM_RSS_COUNTERS],
+        rss_hwm_counters: [CpuLocalBox<AtomicIsize>; NUM_RSS_COUNTERS],
     ) -> Arc<Self> {
         Arc::new(Vmar_ {
             inner: RwMutex::new(inner),
@@ -548,6 +551,7 @@ impl Vmar_ {
             size,
             vm_space,
             rss_counters,
+            rss_hwm_counters,
             #[cfg(not(baseline_asterinas))]
             page_fault_oqueue_producer: oqueues::PAGE_FAULT_OQUEUE.wait().clone(),
         })
@@ -566,6 +570,7 @@ impl Vmar_ {
             0,
             ROOT_VMAR_CAP_ADDR,
             array::from_fn(|_| PerCpuCounter::new()),
+            array::from_fn(|_| alloc_cpu_local(|_| AtomicIsize::new(0)).unwrap()),
         )
     }
 
@@ -836,6 +841,7 @@ impl Vmar_ {
                 self.base,
                 self.size,
                 array::from_fn(|_| PerCpuCounter::new()),
+                array::from_fn(|_| alloc_cpu_local(|_| AtomicIsize::new(0)).unwrap()),
             )
         };
 
@@ -881,10 +887,31 @@ impl Vmar_ {
         self.rss_counters[rss_type as usize].get()
     }
 
+    pub fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
+        let mut total: isize = 0;
+        for cpu in all_cpus() {
+            total = total.wrapping_add(
+                self.rss_hwm_counters[rss_type as usize]
+                    .get_on_cpu(cpu)
+                    .load(Ordering::Relaxed),
+            );
+        }
+        if total < 0 {
+            // The counter is unsigned. But an observer may see a negative
+            // value due to race conditions. We return zero if it happens.
+            0
+        } else {
+            total as usize
+        }
+    }
+
     fn add_rss_counter(&self, rss_type: RssType, val: isize) {
         // There are races but updating a remote counter won't cause any problems.
         let cpu_id = CpuId::current_racy();
-        self.rss_counters[rss_type as usize].add(cpu_id, val);
+        let rss = self.rss_counters[rss_type as usize].add(cpu_id, val);
+        self.rss_hwm_counters[rss_type as usize]
+            .get_on_cpu(cpu_id)
+            .fetch_max(rss, Ordering::Relaxed);
     }
 }
 
@@ -942,6 +969,10 @@ impl<R> Vmar<R> {
     /// Returns the current RSS count for the given RSS type.
     pub fn get_rss_counter(&self, rss_type: RssType) -> usize {
         self.0.get_rss_counter(rss_type)
+    }
+
+    pub fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
+        self.0.get_rss_hwm_counter(rss_type)
     }
 }
 
