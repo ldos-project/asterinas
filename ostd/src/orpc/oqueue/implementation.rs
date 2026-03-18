@@ -28,8 +28,8 @@ use crate::{
         errors::RPCError,
         framework::CurrentServer,
         oqueue::{
-            AttachmentError, Cursor, InlineStrongObserver, ObservationError, ObservationQuery,
-            ResourceUnavailableSnafu, single_thread_ring_buffer::RingBuffer,
+            Cursor, InlineStrongObserver, OQueueError, ObservationQuery, ResourceUnavailableSnafu,
+            single_thread_ring_buffer::RingBuffer,
         },
     },
     sync::{SpinLock, WaitQueue, WakerKey},
@@ -109,7 +109,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         query: ObservationQuery<T, U>,
         len: usize,
         is_strong: bool,
-    ) -> Result<ObserverKey, super::AttachmentError>
+    ) -> Result<ObserverKey, super::OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -131,7 +131,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     pub(super) fn attach_strong_observer<U>(
         self: &Arc<Self>,
         query: super::ObservationQuery<T, U>,
-    ) -> Result<super::StrongObserver<U>, super::AttachmentError>
+    ) -> Result<super::StrongObserver<U>, super::OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -153,7 +153,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     pub(super) fn attach_inline_strong_observer(
         self: &Arc<Self>,
         f: impl Fn(&T) + Send + 'static,
-    ) -> Result<InlineStrongObserver, super::AttachmentError> {
+    ) -> Result<InlineStrongObserver, super::OQueueError> {
         let mut inner = self.inner.lock();
         let key = inner.inline_strong_observers.insert(wrap_closure_ref(f));
         Ok(super::InlineStrongObserver {
@@ -177,7 +177,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         this: &dyn UntypedOQueueImplementation,
         observer_id: ObserverKey,
         f: Box<dyn Fn(&U) + Send + 'static>,
-    ) -> Result<InlineObserverKey, super::AttachmentError> {
+    ) -> Result<InlineObserverKey, super::OQueueError> {
         let this: &Self = (this as &dyn Any).downcast_ref().unwrap();
         let mut inner = this.inner.lock();
 
@@ -217,7 +217,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         self: &Arc<Self>,
         history_len: usize,
         query: super::ObservationQuery<T, U>,
-    ) -> Result<super::WeakObserver<U>, super::AttachmentError>
+    ) -> Result<super::WeakObserver<U>, super::OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -303,7 +303,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// Attach an producer expecting references to the OQueue if it has no consumers.
     pub(super) fn attach_ref_producer(
         self: &Arc<Self>,
-    ) -> Result<super::RefProducer<T>, super::AttachmentError> {
+    ) -> Result<super::RefProducer<T>, super::OQueueError> {
         if self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -395,7 +395,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
     /// Attach a by-value producer to the OQueue if this supports consumers.
     pub(super) fn attach_value_producer(
         self: &Arc<Self>,
-    ) -> Result<super::ValueProducer<T>, super::AttachmentError> {
+    ) -> Result<super::ValueProducer<T>, super::OQueueError> {
         if !self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -407,7 +407,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
     /// Attach a consumer to the OQueue if this does not support consumers.
     pub(super) fn attach_consumer(
         self: &Arc<Self>,
-    ) -> Result<super::Consumer<T>, super::AttachmentError> {
+    ) -> Result<super::Consumer<T>, super::OQueueError> {
         if !self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -430,7 +430,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
     pub(super) fn attach_inline_consumer(
         self: &Arc<Self>,
         f: impl Fn(T) + Send + 'static,
-    ) -> Result<(), AttachmentError> {
+    ) -> Result<(), OQueueError> {
         let mut inner = self.inner.lock();
         ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
         inner.inline_consumer = Some(Box::new(f));
@@ -617,7 +617,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
         observer_id: ObserverKey,
         type_id: TypeId,
         dest: *mut (),
-    ) -> Result<bool, ObservationError>;
+    ) -> Result<bool, OQueueError>;
 
     /// A blocking version of [`UntypedOQueueInner::try_strong_observe_into`]. All the safety
     /// requirements on that apply here, except that this will never return `Ok` without filling
@@ -627,7 +627,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
         observer_id: ObserverKey,
         type_id: TypeId,
         dest: *mut (),
-    ) -> Result<(), ObservationError>;
+    ) -> Result<(), OQueueError>;
 
     /// Copy the value at index `cursor` into `dest` if it is available. This returns `Ok(true)` if
     /// the value was copied, `Ok(false)` if there was not value available, and an error if some
@@ -652,7 +652,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
         type_id: TypeId,
         cursor: Cursor,
         dest: *mut (),
-    ) -> Result<bool, ObservationError>;
+    ) -> Result<bool, OQueueError>;
 
     /// Wait until new values are available for the specific observer.
     fn wait(&self, observer_id: ObserverKey, cursor: Cursor);
@@ -682,7 +682,7 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         observer_id: ObserverKey,
         _type_id: TypeId,
         dest: *mut (),
-    ) -> Result<bool, ObservationError> {
+    ) -> Result<bool, OQueueError> {
         let mut inner = self.inner.lock();
         let ObservationRingBuffer {
             try_strong_observe_into,
@@ -707,7 +707,7 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         observer_id: ObserverKey,
         _type_id: TypeId,
         dest: *mut (),
-    ) -> Result<(), ObservationError> {
+    ) -> Result<(), OQueueError> {
         self.read_wait_queue.wait_until(|| {
             // SAFETY: The requirements of try_strong_observe_into are the same as this function.
             let r = unsafe { self.try_strong_observe_into(observer_id, _type_id, dest) };
@@ -722,7 +722,7 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         _type_id: TypeId,
         cursor: Cursor,
         dest: *mut (),
-    ) -> Result<bool, ObservationError> {
+    ) -> Result<bool, OQueueError> {
         let mut inner = self.inner.lock();
         let ObservationRingBuffer {
             weak_observe_into,

@@ -147,7 +147,7 @@ mod test {
                 n: 1,
                 trigger_panic: false,
             }),
-            Err(RPCError::ServerMissing)
+            Err(RPCError::ServerMissing { .. })
         );
 
         assert_matches!(
@@ -155,7 +155,7 @@ mod test {
                 n: 1,
                 trigger_panic: true,
             }),
-            Err(RPCError::ServerMissing)
+            Err(RPCError::ServerMissing { .. })
         );
     }
 
@@ -201,7 +201,7 @@ mod test {
                 n: 1,
                 trigger_panic: false,
             }),
-            Err(RPCError::ServerMissing)
+            Err(RPCError::ServerMissing { .. })
         );
     }
 
@@ -348,7 +348,7 @@ mod test {
             server_ref.thread_exited.load(Ordering::SeqCst),
             timeout = Duration::from_secs(1)
         );
-        assert_matches!(server_ref.ping(), Err(RPCError::ServerMissing));
+        assert_matches!(server_ref.ping(), Err(RPCError::ServerMissing { .. }));
 
         drop(server_ref);
         assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
@@ -453,7 +453,10 @@ mod test {
         assert_eq_eventually!(server1.get_processed_count().unwrap(), 1);
 
         let _ = server1.shutdown();
-        assert_matches_eventually!(server1.get_processed_count(), Err(RPCError::ServerMissing));
+        assert_matches_eventually!(
+            server1.get_processed_count(),
+            Err(RPCError::ServerMissing { .. })
+        );
 
         drop(server1);
         assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);
@@ -548,7 +551,10 @@ mod test {
         assert_eq_eventually!(server1.get_processed_count().unwrap(), 1);
 
         let _ = server1.shutdown();
-        assert_matches_eventually!(server1.get_processed_count(), Err(RPCError::ServerMissing));
+        assert_matches_eventually!(
+            server1.get_processed_count(),
+            Err(RPCError::ServerMissing { .. })
+        );
 
         drop(server1);
         assert_eq_eventually!(SERVER_DROPS.load(Ordering::SeqCst), 1);

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::format;
+use alloc::{boxed::Box, format};
 
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueAttachError;
-use ostd::{orpc::errors::RPCError, ostd_error};
+use ostd::orpc::{legacy_oqueue::OQueueAttachError, oqueue::OQueueError};
+use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
 use snafu::Snafu;
 
 /// Error number.
@@ -335,6 +335,24 @@ impl Error {
         .build()
     }
 
+    #[track_caller]
+    pub fn from_ostd_error(errno: Errno, msg: &'static str, error: impl ostd::OstdError) -> Self {
+        // TODO: Use `error.to_string()` instead of `msg` to avoid losing information, but this
+        // requires support for String in Error.
+        Error {
+            errno,
+            msg: Some(msg),
+            // Avoiding this clone would be nice, but not required. Fixing it would require a way to
+            // move the stack info out of an OstdError.
+            context: Box::new(
+                error
+                    .stack_info()
+                    .cloned()
+                    .unwrap_or_else(|| StackInfo::new(2)),
+            ),
+        }
+    }
+
     pub const fn error(&self) -> Errno {
         self.errno
     }
@@ -344,11 +362,11 @@ impl From<RPCError> for Error {
     #[track_caller]
     fn from(value: RPCError) -> Self {
         match value {
-            RPCError::Panic { message: _ } => {
-                Self::with_message(Errno::ECONNABORTED, "ORPC server panicked")
+            RPCError::Panic { .. } => {
+                Self::from_ostd_error(Errno::ECONNABORTED, "Server panic", value)
             }
-            RPCError::ServerMissing => {
-                Self::with_message(Errno::ECONNREFUSED, "ORPC server missing")
+            RPCError::ServerMissing { .. } => {
+                Self::from_ostd_error(Errno::ECONNREFUSED, "Server missing", value)
             }
         }
     }
@@ -365,6 +383,25 @@ impl From<OQueueAttachError> for Error {
             OQueueAttachError::AllocationFailed { .. } => {
                 Self::with_message(Errno::ECONNREFUSED, "OQueue attachment allocation failed")
             }
+        }
+    }
+}
+
+#[cfg(not(baseline_asterinas))]
+impl From<OQueueError> for Error {
+    #[track_caller]
+    fn from(value: OQueueError) -> Self {
+        match value {
+            OQueueError::Unsupported { .. } => {
+                Self::from_ostd_error(Errno::ECONNREFUSED, "OQueue operation unsupported", value)
+            }
+            OQueueError::ResourceUnavailable { .. } => {
+                Self::from_ostd_error(Errno::ECONNREFUSED, "OQueue resource not available", value)
+            }
+            OQueueError::Detached { .. } => {
+                Self::from_ostd_error(Errno::ECANCELED, "OQueue observer detached", value)
+            }
+            _ => UNREACHABLE_SNAFU.build(),
         }
     }
 }
@@ -431,6 +468,9 @@ impl From<ostd::Error> for Error {
                 msg: None,
                 context,
             },
+            ostd::Error::RPCError { source } => source.into(),
+            #[cfg(not(baseline_asterinas))]
+            ostd::Error::OQueueError { source } => source.into(),
         }
     }
 }
@@ -622,7 +662,7 @@ macro_rules! return_errno_with_message {
 mod test {
     use alloc::borrow::ToOwned;
 
-    use ostd::prelude::ktest;
+    use ostd::{orpc::errors::ServerMissingSnafu, prelude::ktest};
 
     use super::*;
 
@@ -642,7 +682,7 @@ mod test {
     #[ktest]
     fn convert_errors_orpc() {
         fn orpc() -> Result<(), Error> {
-            Err(RPCError::ServerMissing)?;
+            Err(ServerMissingSnafu.build())?;
             Ok(())
         }
 

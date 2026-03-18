@@ -82,24 +82,17 @@ use crate::{
 #[cfg(ktest)]
 pub(crate) mod generic_test;
 
-/// Errors which can occur while observing an OQueue.
+/// Errors for OQueue operations.
 #[non_exhaustive]
 #[ostd_error]
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
-pub enum ObservationError {
+pub enum OQueueError {
     /// The handle has been detached. Once this is returned, all future operations will return
     /// it. This can happen because access has been revoked (for instance, due to the observer
     /// being too slow), or the OQueue has been deleted.
     Detached,
-}
 
-/// Error which can occur when attaching to an OQueue.
-#[non_exhaustive]
-#[ostd_error]
-#[derive(Debug, Snafu)]
-#[snafu(visibility(pub(super)))]
-pub enum AttachmentError {
     /// The operation is supported by this OQueue but the required resources are missing (e.g.,
     /// observer slots or memory).
     ResourceUnavailable,
@@ -119,7 +112,7 @@ pub trait OQueueBase<T: ?Sized> {
     fn attach_strong_observer<U>(
         &self,
         query: ObservationQuery<T, U>,
-    ) -> Result<StrongObserver<U>, AttachmentError>
+    ) -> Result<StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
 
@@ -131,7 +124,7 @@ pub trait OQueueBase<T: ?Sized> {
     fn attach_inline_strong_observer(
         &self,
         f: impl Fn(&T) + Send + 'static,
-    ) -> Result<InlineStrongObserver, AttachmentError>;
+    ) -> Result<InlineStrongObserver, OQueueError>;
 
     /// Attach a weak observer which will observer values of type `U` which are extracted from
     /// the messages using the query. The history length specifies how many previous values the
@@ -140,7 +133,7 @@ pub trait OQueueBase<T: ?Sized> {
         &self,
         history_len: usize,
         query: ObservationQuery<T, U>,
-    ) -> Result<WeakObserver<U>, AttachmentError>
+    ) -> Result<WeakObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
 
@@ -156,18 +149,18 @@ where
 {
     /// Attach a producer to the queue which will use it for communication by moving messaged
     /// into the OQueue.
-    fn attach_value_producer(&self) -> Result<ValueProducer<T>, AttachmentError>;
+    fn attach_value_producer(&self) -> Result<ValueProducer<T>, OQueueError>;
 
     /// Attach a consumer to the queue which will receive ownership of each message that is
     /// produced.
-    fn attach_consumer(&self) -> Result<Consumer<T>, AttachmentError>;
+    fn attach_consumer(&self) -> Result<Consumer<T>, OQueueError>;
 }
 
 /// An OQueue for observation which support producing by reference and does not allow consumers.
 pub trait OQueue<T: ?Sized>: OQueueBase<T> {
     /// Attach a producer to the queue which will be used to observe state, instead of communicate.
     /// OQueues used this way cannot have consumers.
-    fn attach_ref_producer(&self) -> Result<RefProducer<T>, AttachmentError>;
+    fn attach_ref_producer(&self) -> Result<RefProducer<T>, OQueueError>;
 }
 
 /// Generate an impl which forwards the OQueueBase trait to a member.
@@ -177,7 +170,7 @@ macro_rules! impl_oqueue_base_forward {
             fn attach_strong_observer<U>(
                 &self,
                 query: ObservationQuery<T, U>,
-            ) -> Result<StrongObserver<U>, AttachmentError>
+            ) -> Result<StrongObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
             {
@@ -188,7 +181,7 @@ macro_rules! impl_oqueue_base_forward {
                 &self,
                 history_len: usize,
                 query: ObservationQuery<T, U>,
-            ) -> Result<WeakObserver<U>, AttachmentError>
+            ) -> Result<WeakObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
             {
@@ -198,7 +191,7 @@ macro_rules! impl_oqueue_base_forward {
             fn attach_inline_strong_observer(
                 &self,
                 f: impl Fn(&T) + Send + 'static,
-            ) -> Result<InlineStrongObserver, AttachmentError>
+            ) -> Result<InlineStrongObserver, OQueueError>
             {
                 self.$member.attach_inline_strong_observer(f)
             }
@@ -214,11 +207,11 @@ macro_rules! impl_oqueue_base_forward {
 macro_rules! impl_consumable_oqueue_forward {
     ($type_name:ident, $member:ident) => {
         impl<T: Send + 'static> ConsumableOQueue<T> for $type_name<T> {
-            fn attach_value_producer(&self) -> Result<ValueProducer<T>, AttachmentError> {
+            fn attach_value_producer(&self) -> Result<ValueProducer<T>, OQueueError> {
                 self.$member.attach_value_producer()
             }
 
-            fn attach_consumer(&self) -> Result<Consumer<T>, AttachmentError> {
+            fn attach_consumer(&self) -> Result<Consumer<T>, OQueueError> {
                 self.$member.attach_consumer()
             }
         }
@@ -231,7 +224,7 @@ macro_rules! impl_oqueue_forward {
         impl<T: Send + 'static $($added_bounds)*> OQueue<T> for $type_name<T> {
             fn attach_ref_producer(
                 &self,
-            ) -> Result<RefProducer<T>, AttachmentError> {
+            ) -> Result<RefProducer<T>, OQueueError> {
                 self.$member.attach_ref_producer()
             }
         }
@@ -448,7 +441,7 @@ impl<T: Send + 'static> Consumer<T> {
     pub fn consume_inline(
         self,
         f: impl Fn(T) + Send + 'static,
-    ) -> Result<InlineConsumer<T>, AttachmentError> {
+    ) -> Result<InlineConsumer<T>, OQueueError> {
         self.oqueue.attach_inline_consumer(f)?;
         Ok(InlineConsumer {
             oqueue: self.oqueue.clone(),
@@ -481,7 +474,7 @@ type ConvertToInlineFn<U> = fn(
     &(dyn implementation::UntypedOQueueImplementation + 'static),
     ObserverKey,
     Box<dyn Fn(&U) + Send + 'static>,
-) -> Result<InlineObserverKey, AttachmentError>;
+) -> Result<InlineObserverKey, OQueueError>;
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
 pub struct StrongObserver<U> {
@@ -514,7 +507,7 @@ impl<U> Blocker for StrongObserver<U> {
 impl<U: Copy + Send + 'static> StrongObserver<U> {
     /// Observe a value from the queue. This value will have been extracted from the message by the
     /// query provided on attachment.
-    pub fn strong_observe(&self) -> Result<U, ObservationError> {
+    pub fn strong_observe(&self) -> Result<U, OQueueError> {
         let mut ret = MaybeUninit::uninit();
 
         // SAFETY: U matches the call to `attach_strong_observer` which created self and
@@ -532,7 +525,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
     }
 
     /// Try to observe a value without blocking. Returns `None` if no value is available.
-    pub fn try_strong_observe(&self) -> Result<Option<U>, ObservationError> {
+    pub fn try_strong_observe(&self) -> Result<Option<U>, OQueueError> {
         let mut ret = MaybeUninit::uninit();
 
         // SAFETY: U matches the call to `attach_strong_observer` which created self and
@@ -563,7 +556,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
     pub fn strong_observe_inline(
         self,
         f: impl Fn(&U) + Send + 'static,
-    ) -> Result<InlineStrongObserver, AttachmentError> {
+    ) -> Result<InlineStrongObserver, OQueueError> {
         let inline_observer_id =
             (self.convert_to_inline)(self.oqueue.as_ref(), self.observer_id, Box::new(f))?;
         Ok(InlineStrongObserver {
@@ -639,7 +632,7 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
 
     /// Get the value at a specific cursor if it is still available. It will always return the value
     /// requested or `None`.
-    pub fn weak_observe(&self, i: Cursor) -> Result<Option<U>, ObservationError> {
+    pub fn weak_observe(&self, i: Cursor) -> Result<Option<U>, OQueueError> {
         self.last_observed.set(self.last_observed.get().max(i));
         let mut ret = MaybeUninit::uninit();
 
@@ -664,7 +657,7 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     /// Observe the most recent `n` values. Any values that cannot be accessed (due to the history
     /// being too short or them being concurrently overwritten) will be replaced by `None`. The
     /// returned `Vec` always has length `n`.
-    pub fn weak_observe_recent(&self, n: usize) -> Result<Vec<Option<U>>, ObservationError> {
+    pub fn weak_observe_recent(&self, n: usize) -> Result<Vec<Option<U>>, OQueueError> {
         let mut ret: Vec<_> = vec![None; n];
         self.weak_observe_recent_into(&mut ret)?;
         Ok(ret)
@@ -672,7 +665,7 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
 
     /// Observe the most recent `buf.len()` values. Any values that cannot be accessed (due to the
     /// history being too short or them being concurrently overwritten) will be replaced by `None`.
-    pub fn weak_observe_recent_into(&self, buf: &mut [Option<U>]) -> Result<(), ObservationError> {
+    pub fn weak_observe_recent_into(&self, buf: &mut [Option<U>]) -> Result<(), OQueueError> {
         let recent = self.newest_cursor();
         for i in 0..buf.len() {
             buf[i] = self.weak_observe(recent - (buf.len() - i - 1))?;
@@ -845,7 +838,7 @@ mod test {
         let queue = OQueueRef::<u32>::new(4, Path::test());
         assert_matches!(
             queue.as_any_oqueue().attach_consumer().err().unwrap(),
-            AttachmentError::Unsupported { .. }
+            OQueueError::Unsupported { .. }
         );
     }
 

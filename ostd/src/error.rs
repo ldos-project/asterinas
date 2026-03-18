@@ -5,7 +5,9 @@
 use ostd_macros::ostd_error;
 use snafu::Snafu;
 
-use crate::{mm::page_table::PageTableError, stack_info::StackInfo};
+#[cfg(not(baseline_asterinas))]
+use crate::orpc::oqueue::OQueueError;
+use crate::{mm::page_table::PageTableError, orpc::errors::RPCError, stack_info::StackInfo};
 
 /// The trait of all errors carrying OSTD metadata.
 ///
@@ -18,7 +20,7 @@ pub trait OstdError: snafu::Error {
 
 /// The error type which is returned from the APIs of this crate.
 #[ostd_error]
-#[derive(Snafu, Clone, Debug)]
+#[derive(Snafu, Debug)]
 #[snafu(visibility(pub))]
 pub enum Error {
     /// Invalid arguments provided.
@@ -39,6 +41,21 @@ pub enum Error {
     MapAlreadyMappedVaddr,
     /// Error when allocating kernel virtual memory.
     KVirtAreaAllocError,
+    /// A ORPC error
+    #[snafu(transparent)]
+    #[ostd(context(source))]
+    RPCError {
+        /// Source ORPC error
+        source: RPCError,
+    },
+    /// An OQueue error
+    #[snafu(transparent)]
+    #[ostd(context(source))]
+    #[cfg(not(baseline_asterinas))]
+    OQueueError {
+        /// Source OQueue error
+        source: OQueueError,
+    },
 }
 
 impl From<PageTableError> for Error {
