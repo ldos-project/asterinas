@@ -169,9 +169,9 @@ pub fn orpc_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// impl TestStateMonitor {
-///     pub fn attach_update(&self, attachment: StrongObserver<i32>) -> Result<(), AttachmentError>;
+///     pub fn attach_update(&self, attachment: StrongObserver<i32>) -> Result<(), OQueueError>;
 ///     pub fn update(&self, arg: i32) -> Result<(), RPCError>;
-///     pub fn attach_next(&self, attachment: Consumer<()>) -> Result<(), AttachmentError>;
+///     pub fn attach_next(&self, attachment: Consumer<()>) -> Result<(), OQueueError>;
 ///     pub fn next(&self, arg: ()) -> Result<(), RPCError>;
 ///     pub fn get(&self) -> Result<i32, RPCError>;
 ///     fn start(&self, server: Arc<dyn Server>, state: TestState);

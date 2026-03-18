@@ -4,6 +4,7 @@
 use alloc::string::{String, ToString};
 use core::any::Any;
 
+use ostd_macros::ostd_error;
 use snafu::Snafu;
 
 use crate::prelude::Box;
@@ -14,7 +15,9 @@ use crate::prelude::Box;
 /// (An easy way to do this us to use `Snafu` and have a [transparent
 /// variant](https://docs.rs/snafu/latest/snafu/derive.Snafu.html#delegating-to-the-underlying-error) for
 /// `orpc::errors::RPCError`.)
-#[derive(Snafu, Debug)]
+#[ostd_error]
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
 pub enum RPCError {
     /// A panic occurred in the server during the call. The panic payload will be converted to a string, if possible. If
     /// it cannot be, then the string will be a generic error message.
@@ -47,10 +50,11 @@ impl RPCError {
     pub fn from_panic(payload: Box<dyn Any>) -> Self {
         // TODO(#72): The `to_string` call could potentially allocate which could be an issue on the panic path. A better way
         // to do this may be needed.
-        Self::Panic {
+        PanicSnafu {
             message: payload_as_str(payload.as_ref())
                 .unwrap_or("Non-string panic payload")
                 .to_string(),
         }
+        .build()
     }
 }

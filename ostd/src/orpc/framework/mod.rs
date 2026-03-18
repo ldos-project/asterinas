@@ -40,7 +40,7 @@ pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
-    orpc::errors::RPCError,
+    orpc::errors::{RPCError, ServerMissingSnafu},
     prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
@@ -145,7 +145,7 @@ impl ServerBase {
         RPCError: Into<E>,
     {
         if self.is_aborted() {
-            return Result::Err(RPCError::ServerMissing.into());
+            return Err(ServerMissingSnafu.build().into());
         }
         match ostd::panic::catch_unwind(|| {
             let _server_context = CurrentServer::enter_server_context(self);

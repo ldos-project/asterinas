@@ -188,7 +188,7 @@ pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> Token
                 command_variants.push(quote! {
                     #attachment_message_name (
                         #attachment_type<#param_type>,
-                        ::ostd::orpc::oqueue::ValueProducer<::core::result::Result<(), ::ostd::orpc::oqueue::AttachmentError>>,
+                        ::ostd::orpc::oqueue::ValueProducer<::core::result::Result<(), ::ostd::orpc::oqueue::OQueueError>>,
                     ),
                 });
                 command_debug_match_arms.push(quote! {
@@ -236,7 +236,7 @@ The documentation for [`Self::{method_name}`] is:\n\n",
                         #[allow(clippy::allow_attributes)]
                         #[allow(unused)]
                         #method_vis fn #attachment_method_name(&self, attachment: #attachment_type)
-                            -> ::core::result::Result<(), ::ostd::orpc::oqueue::AttachmentError>
+                            -> ::core::result::Result<(), ::ostd::orpc::oqueue::OQueueError>
                         {
                             ::ostd::orpc::framework::monitor::synchronous_request(
                                 &self.command_producer,

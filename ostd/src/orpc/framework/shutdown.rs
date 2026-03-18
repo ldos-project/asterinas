@@ -8,7 +8,7 @@ use log::error;
 use orpc_macros::orpc_trait;
 
 use crate::orpc::{
-    errors::RPCError,
+    errors::{RPCError, ServerMissingSnafu},
     framework::CurrentServer,
     legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
 };
@@ -86,7 +86,7 @@ impl ShutdownState {
         if !self.is_shutdown.load(core::sync::atomic::Ordering::Acquire) {
             Ok(())
         } else {
-            Err(RPCError::ServerMissing)
+            ServerMissingSnafu.fail()
         }
     }
 }
