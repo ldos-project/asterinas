@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub mod cpu;
-pub mod signal;
+#[cfg(not(baseline_asterinas))]
 pub mod pmu;
+pub mod signal;
