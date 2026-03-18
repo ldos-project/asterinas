@@ -7,10 +7,14 @@ use core::sync::atomic::AtomicBool;
 use log::error;
 use orpc_macros::orpc_trait;
 
-use crate::orpc::{
-    errors::{RPCError, ServerMissingSnafu},
-    framework::CurrentServer,
-    legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
+use crate::{
+    orpc::{
+        errors::{RPCError, ServerMissingSnafu},
+        framework::CurrentServer,
+        oqueue::{OQueue, OQueueRef},
+        path::Path,
+    },
+    path,
 };
 
 /// Trait that allows a server to be shut down gracefully.
@@ -42,7 +46,7 @@ pub trait Shutdown {
 ///
 /// fn main() {
 ///     let server = Arc::new(Server {
-///         state: ShutdownState::new(),
+///         state: ShutdownState::new(path),
 ///     });
 ///
 ///     // Simulate shutting down the server
@@ -58,11 +62,12 @@ pub struct ShutdownState {
     pub shutdown_oqueue: OQueueRef<()>,
 }
 
-impl Default for ShutdownState {
-    fn default() -> Self {
+impl ShutdownState {
+    /// A new shutdown handler with it's OQueue under a given path.
+    pub fn new(path: Path) -> Self {
         Self {
             is_shutdown: Default::default(),
-            shutdown_oqueue: ObservableLockingQueue::new(2, 4),
+            shutdown_oqueue: OQueueRef::new(2, path.append(&path!(shutdown))),
         }
     }
 }
@@ -72,8 +77,14 @@ impl ShutdownState {
     pub fn shutdown(&self) {
         self.is_shutdown
             .store(true, core::sync::atomic::Ordering::Release);
-        if let Err(e) = self.shutdown_oqueue.produce(()) {
-            error!("Failed to send shutdown notification: {e}");
+
+        match self.shutdown_oqueue.attach_ref_producer() {
+            Ok(p) => {
+                p.produce_ref(&());
+            }
+            Err(e) => {
+                error!("Failed to send shutdown notification: {e}");
+            }
         }
     }
 

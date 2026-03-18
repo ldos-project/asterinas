@@ -2,12 +2,12 @@
 
 use id_alloc::IdAlloc;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     const_assert,
     mm::UntypedMem,
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server},
 };
 
 use super::{
@@ -351,15 +351,17 @@ impl PageStore for BlockGroupImpl {
             BioDirection::FromDevice,
         );
 
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
-        self.page_reads_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
 
         self.fs
             .upgrade()
             .unwrap()
             .read_blocks_async_with_closure(bid, bio_segment, move |_| {
                 // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce(req.handle.idx);
+                reply_producer.produce_ref(&req.handle.idx);
                 req.reply_handle.produce(req.handle);
             })?;
 
@@ -374,22 +376,21 @@ impl PageStore for BlockGroupImpl {
             .writer()
             .unwrap()
             .write_fallible(&mut req.handle.frame.reader().to_fallible())?;
-
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
         self.fs.upgrade().unwrap().write_blocks_async_with_closure(
             bid,
             bio_segment,
             move |_| {
                 // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce(req.handle.idx);
+                reply_producer.produce_ref(&req.handle.idx);
                 if let Some(reply_handle) = req.reply_handle {
                     reply_handle.produce(req.handle);
                 }
             },
         )?;
-
         Ok(())
     }
 

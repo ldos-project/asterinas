@@ -14,17 +14,23 @@ use super::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
-    sync::select_legacy,
+    sync::select,
 };
-use crate::orpc::legacy_oqueue::OQueueAttachError;
+use crate::{
+    new_server,
+    orpc::{
+        oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery, StrongObserver},
+        path::Path,
+    },
+    path,
+};
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
 pub trait Outstanding {
     /// The OQueue that publishes the number of outstanding requests (requests - replies).
     fn outstanding_oqueue(&self) -> OQueueRef<isize> {
-        ObservableLockingQueue::new(4, 8)
+        OQueueRef::new(8, path!(outstanding[unique]))
     }
 }
 
@@ -45,37 +51,35 @@ impl shutdown::Shutdown for OutstandingCounter {
 impl OutstandingCounter {
     /// Spawn a new `OutstandingCounter` server which observes `request_oqueue` and
     /// `reply_oqueue`.
-    pub fn spawn<T: 'static, U: 'static>(
-        request_oqueue: OQueueRef<T>,
-        reply_oqueue: OQueueRef<U>,
-    ) -> Result<Arc<Self>, OQueueAttachError> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            shutdown_state: Default::default(),
+    pub fn spawn(
+        request_observer: StrongObserver<()>,
+        reply_observer: StrongObserver<()>,
+        path: Path,
+    ) -> Result<Arc<Self>, crate::Error> {
+        let server = new_server!(|_| Self {
+            shutdown_state: ShutdownState::new(path),
         });
 
         spawn_thread(server.clone(), {
-            let request_observer = request_oqueue.attach_strong_observer()?;
-            let reply_observer = reply_oqueue.attach_strong_observer()?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
-                .attach_strong_observer()?;
-            let outstanding_oqueue_producer = server.outstanding_oqueue().attach_producer()?;
+                .attach_strong_observer(ObservationQuery::identity())?;
+            let outstanding_oqueue_producer = server.outstanding_oqueue().attach_ref_producer()?;
             let server = server.clone();
 
             move || {
                 let mut outstanding: isize = 0;
                 loop {
                     server.shutdown_state.check()?;
-                    select_legacy!(
+                    select!(
                         if let _ = request_observer.try_strong_observe() {
                             outstanding += 1;
-                            outstanding_oqueue_producer.produce(outstanding);
+                            outstanding_oqueue_producer.produce_ref(&outstanding);
                         },
                         if let _ = reply_observer.try_strong_observe() {
                             outstanding -= 1;
-                            outstanding_oqueue_producer.produce(outstanding);
+                            outstanding_oqueue_producer.produce_ref(&outstanding);
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
                     );

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use core::marker::Copy;
 
-use ostd::orpc::{
-    legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
-    orpc_trait,
+use ostd::{
+    orpc::{
+        oqueue::{ConsumableOQueue as _, OQueueRef, ValueProducer, reply::ReplyQueue},
+        orpc_trait,
+    },
+    path,
 };
 
 use crate::{Result, fs::utils::CachePage};
@@ -23,13 +26,13 @@ pub struct PageHandle {
 pub struct AsyncReadRequest {
     pub handle: PageHandle,
     /// A producer handle into an OQueue to send the reply to.
-    pub reply_handle: Box<dyn Producer<PageHandle>>,
+    pub reply_handle: ValueProducer<PageHandle>,
 }
 
 pub struct AsyncWriteRequest {
     pub handle: PageHandle,
     /// A producer handle into an OQueue to send the reply to. If this is [`None`] no reply is sent.
-    pub reply_handle: Option<Box<dyn Producer<PageHandle>>>,
+    pub reply_handle: Option<ValueProducer<PageHandle>>,
 }
 
 impl From<PageHandle> for AsyncWriteRequest {
@@ -41,25 +44,13 @@ impl From<PageHandle> for AsyncWriteRequest {
     }
 }
 
-// Constructor for a new OQueue for the prefetcher. This is to make testing easier to switch between
-// oqueue implementations.
-fn new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
-    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(8, 8)
-}
-
-// Constructor for a new OQueue for the prefetcher which needs a specific length. This is needed for
-// cases where a long queue is required to avoid deadlocks.
-fn new_oqueue_with_len<T: Copy + Send + 'static>(len: usize) -> OQueueRef<T> {
-    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(len, 8)
-}
-
 #[orpc_trait]
 pub trait PageIOObservable {
     /// The OQueue containing every read request. This includes both sync and async reads on this
     /// trait and any other read operations on other traits (for instance,
     /// [`crate::vm::vmo::Pager::commit_page`]).
     fn page_reads_oqueue(&self) -> OQueueRef<usize> {
-        new_oqueue()
+        OQueueRef::new(4, path!(page_io_observable[unique].page_reads))
     }
 
     /// The OQueue containing every reply for read requests.
@@ -67,19 +58,19 @@ pub trait PageIOObservable {
         // TODO: This must be longer than the largest number of IO that can be outstanding in the
         // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
         // the kernel.
-        new_oqueue_with_len(32)
+        OQueueRef::new(64, path!(page_io_observable[unique].page_reads_reply))
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
-        new_oqueue()
+        OQueueRef::new(4, path!(page_io_observable[unique].page_writes))
     }
 
     /// The OQueue containing every reply for write requests.
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: as page_reads_reply_oqueue
-        new_oqueue_with_len(32)
+        OQueueRef::new(64, path!(page_io_observable[unique].page_writes_reply))
     }
 }
 
@@ -110,11 +101,11 @@ pub trait PageStore: PageIOObservable {
 
     /// Reads a page synchronously.
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2, 0);
+        let reply_oqueue = ReplyQueue::new_anonymous(2);
         let consumer = reply_oqueue.attach_consumer()?;
         self.read_page_async(AsyncReadRequest {
             handle,
-            reply_handle: reply_oqueue.attach_producer()?,
+            reply_handle: reply_oqueue.attach_value_producer()?,
         })?;
         consumer.consume();
         Ok(())
@@ -122,11 +113,11 @@ pub trait PageStore: PageIOObservable {
 
     /// Writes a page synchronously.
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2, 0);
+        let reply_oqueue = ReplyQueue::new_anonymous(2);
         let consumer = reply_oqueue.attach_consumer()?;
         self.write_page_async(AsyncWriteRequest {
             handle,
-            reply_handle: Some(reply_oqueue.attach_producer()?),
+            reply_handle: Some(reply_oqueue.attach_value_producer()?),
         })?;
         consumer.consume();
         Ok(())
@@ -160,15 +151,13 @@ pub struct PageCacheReadInfo {
 pub trait PageCache {
     /// Request that the cache prefetch a page. This is asynchronous and advisory, so the page may
     /// appear in the cache at a later time or never.
-    fn prefetch_oqueue(&self) -> OQueueRef<usize> {
-        new_oqueue()
-    }
+    fn prefetch(&self, page: usize) -> Result<()>;
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 
     /// The OQueue containing every reply for write requests.
     fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo> {
-        new_oqueue_with_len(32)
+        OQueueRef::new(64, path!(PageCache[unique].page_cache_read_info))
     }
 }
 

@@ -12,11 +12,11 @@ use aster_rights::Full;
 use aster_util::slot_vec::SlotVec;
 use hashbrown::HashMap;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     mm::{UntypedMem, VmIo},
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
@@ -652,7 +652,9 @@ impl PageIOObservable for RamInode {
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        self.page_reads_oqueue().produce(req.handle.idx)?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
         // Initially, any block/page in a RamFs inode contains all zeros
         req.handle
             .frame
@@ -660,21 +662,25 @@ impl PageStore for RamInode {
             .to_fallible()
             .fill_zeros(req.handle.frame.size())
             .unwrap();
-        self.page_reads_reply_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
+        reply_producer.produce_ref(&req.handle.idx);
         req.reply_handle.produce(req.handle);
         Ok(())
     }
 
     fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()> {
         // TODO:OPTIMIZATION: Avoid the clone.
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        self.page_writes_reply_oqueue().produce(req.handle.idx)?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        self.page_writes_reply_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
         if let Some(reply_handle) = req.reply_handle {
             reply_handle.produce(req.handle);
         }
         Ok(())
     }
-
     fn npages(&self) -> Result<usize> {
         Ok(self.metadata.lock().blocks)
     }

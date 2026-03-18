@@ -5,8 +5,14 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use aster_block::BlockDevice;
-use ostd::{Error, orpc::orpc_server};
+use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
+use ostd::{
+    Error,
+    orpc::{
+        oqueue::{OQueueBase as _, ObservationQuery},
+        orpc_server,
+    },
+};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
@@ -70,7 +76,7 @@ impl SelectionPolicy for LinnOSPolicy {
             .map(|device| {
                 device
                     .bio_completion_oqueue()
-                    .attach_weak_observer()
+                    .attach_weak_observer(4, ObservationQuery::identity())
                     .expect("Failed to attach weak observer to bio_completion_oqueue")
             })
             .collect();
@@ -78,7 +84,11 @@ impl SelectionPolicy for LinnOSPolicy {
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
             let observer = &trace_observers[idx % trace_observers.len()];
-            let completion_trace = observer.weak_observe_recent(4);
+            let completion_trace: Vec<BlockDeviceCompletionStats> = observer
+                .weak_observe_recent(4)?
+                .iter()
+                .map(|v| v.unwrap_or_default())
+                .collect();
 
             // Inference using the ML model
             let x = self.model[0] * completion_trace[0].latency.as_nanos() as f32
