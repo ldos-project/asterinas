@@ -20,7 +20,7 @@ use ostd::orpc::{
     legacy_oqueue::{StrongObserver, WeakObserver},
     orpc_impl, orpc_server,
     statistics::{Outstanding, OutstandingCounter},
-    sync::select,
+    sync::select_legacy,
 };
 
 use crate::{
@@ -107,7 +107,7 @@ impl ReadaheadPrefetcher {
                 fn run(&mut self) -> Result<()> {
                     loop {
                         self.server.shutdown_state.check()?;
-                        select! {
+                        select_legacy! {
                             if let idx = self.read_observer.try_strong_observe() {
                                 self.maybe_prefetch(idx)?;
                             },
@@ -209,7 +209,7 @@ impl StridedPrefetcher {
             move || {
                 loop {
                     server.shutdown_state.check()?;
-                    select!(
+                    select_legacy!(
                         if let idx = read_observer.try_strong_observe() {
                             let recent = read_weak_observer.recent_cursor();
                             let history = read_weak_observer.weak_observe_range(recent - 1, recent);
