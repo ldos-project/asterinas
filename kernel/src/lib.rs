@@ -157,6 +157,12 @@ fn init_thread() {
         .unwrap_or(false);
     set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
 
+    println!("huge_mapping_enabled={}", huge_mapping_enabled);
+    println!(
+        "huge_mapping_preserve_on_dontneed={}",
+        huge_mapping_preserve_on_dontneed
+    );
+
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
     fs::lazy_init();
