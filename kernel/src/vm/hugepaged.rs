@@ -49,7 +49,7 @@ impl HugepagedServer {
             loop {
                 select!(
                     if let msg = pagefault_observer.try_strong_observe() {
-                        value = Some(msg);
+                        value = Some(msg.event);
                         break;
                     },
                     if let _ = notify_observer.try_strong_observe() {
