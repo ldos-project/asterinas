@@ -276,8 +276,9 @@ impl VmMapping {
                     } else {
                         let new_frame = duplicate_frame(&frame)?;
                         prop.flags |= new_flags;
+                        let n_pages = (new_frame.size() / PAGE_SIZE) as isize;
                         cursor.map(new_frame.into(), prop);
-                        rss_delta.add(self.rss_type(), 1);
+                        rss_delta.add(self.rss_type(), n_pages);
                     }
                     cursor.flusher().sync_tlb_flush();
                 }
@@ -313,8 +314,9 @@ impl VmMapping {
                     }
                     let map_prop = PageProperty::new_user(page_flags, CachePolicy::Writeback);
 
+                    let n_pages = (frame.size() / PAGE_SIZE) as isize;
                     cursor.map(frame, map_prop);
-                    rss_delta.add(self.rss_type(), 1);
+                    rss_delta.add(self.rss_type(), n_pages);
                 }
             }
             break 'retry;
