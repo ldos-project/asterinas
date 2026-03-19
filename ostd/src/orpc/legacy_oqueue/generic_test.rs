@@ -9,7 +9,7 @@ use core::{
     time::Duration,
 };
 
-use super::{super::sync::select, *};
+use super::{super::sync::select_legacy, *};
 use crate::{
     arch::timer::TIMER_FREQ,
     orpc::legacy_oqueue::locking::LockingQueue,
@@ -263,7 +263,7 @@ pub(crate) fn test_send_multi_receive_blocker<T: OQueue<TestMessage>>(
             let mut consumer2_counter = 0;
 
             while consumer1_counter < n_messages || consumer2_counter < n_messages {
-                select!(
+                select_legacy!(
                     if let TestMessage { x } = consumer1.try_consume() {
                         assert_eq!(x, consumer1_counter);
                         consumer1_counter += 1;

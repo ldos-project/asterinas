@@ -12,7 +12,7 @@ mod test {
         time::Duration,
     };
 
-    use orpc_macros::{orpc_impl, orpc_server, orpc_trait, select};
+    use orpc_macros::{orpc_impl, orpc_server, orpc_trait, select_legacy};
     use ostd_macros::ktest;
     use snafu::{ResultExt as _, Whatever};
 
@@ -423,7 +423,7 @@ mod test {
                     move || {
                         loop {
                             server.shutdown_state.check()?;
-                            select!(
+                            select_legacy!(
                                 if let _ = consumer.try_consume() {
                                     server.processed_count.fetch_add(1, Ordering::Relaxed);
                                 },
@@ -522,7 +522,7 @@ mod test {
                     move || {
                         loop {
                             server.shutdown_state.check()?;
-                            select!(
+                            select_legacy!(
                                 if let _ = observer.try_strong_observe() {
                                     server.processed_count.fetch_add(1, Ordering::SeqCst);
                                 },

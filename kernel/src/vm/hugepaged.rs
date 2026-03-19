@@ -7,7 +7,7 @@ use ostd::orpc::{
     framework::{notifier::Notifier, spawn_thread},
     legacy_oqueue::OQueue,
     orpc_server, orpc_trait,
-    sync::select,
+    sync::select_legacy,
 };
 use snafu::Whatever;
 
@@ -47,7 +47,7 @@ impl HugepagedServer {
         loop {
             let mut value: Option<PageFaultOQueueMessage> = None;
             loop {
-                select!(
+                select_legacy!(
                     if let msg = pagefault_observer.try_strong_observe() {
                         value = Some(msg.event);
                         break;
