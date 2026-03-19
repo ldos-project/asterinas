@@ -12,7 +12,6 @@ use core::{
     num::NonZeroUsize,
     ops::Range,
     sync::atomic::{AtomicBool, AtomicIsize, Ordering},
-    time::Duration,
 };
 
 use align_ext::AlignExt;
@@ -44,7 +43,6 @@ use crate::{
     prelude::*,
     process::{Process, ResourceType},
     thread::exception::PageFaultInfo,
-    time,
     util::per_cpu_counter::PerCpuCounter,
     vm::{
         perms::VmPerms,
@@ -198,7 +196,6 @@ pub struct PageFaultOQueueMessage {
     pub vm_space_id: u64,
     /// The fault information provided to the page fault handler
     pub fault_info: PageFaultInfo,
-    pub timestamp: Duration,
 }
 
 #[cfg(not(baseline_asterinas))]
@@ -210,19 +207,37 @@ pub mod oqueues {
     use spin::Once;
 
     use super::PageFaultOQueueMessage;
+    use crate::{Clock, time::clocks::MonotonicRawClock};
 
-    pub(super) static PAGE_FAULT_OQUEUE: Once<Arc<MPMCOQueue<PageFaultOQueueMessage>>> =
-        Once::new();
+    // TODO(aneesh): Move this somewhere more generic
+    #[derive(Clone, Copy)]
+    pub struct ObservableEvent<T> {
+        pub event: T,
+        pub timestamp: Duration,
+    }
+
+    impl<T> ObservableEvent<T> {
+        pub fn new(event: T) -> Self {
+            Self {
+                event,
+                timestamp: MonotonicRawClock::get().read_time(),
+            }
+        }
+    }
+
+    pub(super) static PAGE_FAULT_OQUEUE: Once<
+        Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>>,
+    > = Once::new();
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<(isize, Duration)>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<isize>>>> = Once::new();
 
-    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<(isize, Duration)>> {
+    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<isize>>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
-    pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<PageFaultOQueueMessage>> {
+    pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>> {
         PAGE_FAULT_OQUEUE.wait().clone()
     }
 }
@@ -251,7 +266,7 @@ pub(super) struct Vmar_ {
 
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<PageFaultOQueueMessage>,
+    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
 }
 
 struct VmarInner {
@@ -646,11 +661,10 @@ impl Vmar_ {
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
                 self.page_fault_oqueue_producer
-                    .produce(PageFaultOQueueMessage {
+                    .produce(oqueues::ObservableEvent::new(PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
-                        timestamp: time::clocks::MonotonicRawClock::get().read_time(),
-                    })?;
+                    }))?;
             }
             return res;
         }
@@ -1339,7 +1353,7 @@ impl<'a> RssDelta<'a> {
             }
             let _ = oqueues::RSS_DELTA_OQUEUE
                 .wait()
-                .produce((increment, time::clocks::MonotonicRawClock::get().read_time()));
+                .produce(oqueues::ObservableEvent::new(increment));
         }
 
         self.delta[rss_type as usize] += increment;
