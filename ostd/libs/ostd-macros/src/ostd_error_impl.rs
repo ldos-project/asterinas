@@ -266,7 +266,16 @@ fn stack_info_extractor_arm_for_variant(
     variant: &Variant,
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let variant_ident = &variant.ident;
-    let (context_handling, _attrs) = process_attrs(variant.attrs.clone())?;
+    let (context_handling, attrs) = process_attrs(variant.attrs.clone())?;
+    let cfg_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| match &a.meta {
+            syn::Meta::Path(path) => path.is_ident("cfg"),
+            syn::Meta::List(meta_list) => meta_list.path.is_ident("cfg"),
+            syn::Meta::NameValue(_) => false,
+        })
+        .collect();
+
     match &variant.fields {
         Fields::Unnamed(_) => Ok(quote! {
             compile_error!("Unnamed fields not supported")
@@ -276,6 +285,7 @@ fn stack_info_extractor_arm_for_variant(
                 let pat = quote_spanned! { variant.fields.span() => { context, .. } };
                 let body = quote_spanned! { variant.fields.span() => context };
                 Ok(quote! {
+                    #(#cfg_attrs)*
                     Self::#variant_ident #pat => Some(#body)
                 })
             }
@@ -283,12 +293,14 @@ fn stack_info_extractor_arm_for_variant(
                 let pat = quote_spanned! { variant.fields.span() => { source, .. } };
                 let body = quote_spanned! { variant.fields.span() => ::ostd::error::OstdError::stack_info(source) };
                 Ok(quote! {
+                    #(#cfg_attrs)*
                     Self::#variant_ident #pat => #body
                 })
             }
             VariantContextHandling::None => {
                 let pat = quote_spanned! { variant.fields.span() => { .. } };
                 Ok(quote! {
+                    #(#cfg_attrs)*
                     Self::#variant_ident #pat => None
                 })
             }
