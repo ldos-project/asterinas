@@ -649,7 +649,7 @@ impl Vmar_ {
                     .produce(PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
-                        timestamp: time::clocks::RealTimeClock::get().read_time(),
+                        timestamp: time::clocks::MonotonicRawClock::get().read_time(),
                     })?;
             }
             return res;
@@ -1339,7 +1339,7 @@ impl<'a> RssDelta<'a> {
             }
             let _ = oqueues::RSS_DELTA_OQUEUE
                 .wait()
-                .produce((increment, time::clocks::RealTimeClock::get().read_time()));
+                .produce((increment, time::clocks::MonotonicRawClock::get().read_time()));
         }
 
         self.delta[rss_type as usize] += increment;
