@@ -205,6 +205,8 @@ mod test {
     #[ktest]
     fn huge_mappings_are_split() {
         set_huge_mapping_enabled(true);
+        component::init_all(component::parse_metadata!()).unwrap();
+        crate::time::init();
         crate::vm::vmar::init();
         let vmar = Vmar::<Full>::new_root();
 
@@ -219,7 +221,11 @@ mod test {
     fn huge_mappings_are_not_split() {
         set_huge_mapping_enabled(true);
         set_huge_mapping_preserve_on_dontneed(true);
-        crate::vm::vmar::init();
+        // TODO(aneesh) - there needs to be an initialize phase that's run exactly ONCE for all
+        // test, otherwise init_all will fail.
+        // component::init_all(component::parse_metadata!()).unwrap();
+        // crate::time::init();
+        // crate::vm::vmar::init();
         let vmar = Vmar::<Full>::new_root();
 
         let start = map_huge_page(&vmar);
