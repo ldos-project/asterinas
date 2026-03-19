@@ -351,8 +351,8 @@ impl<'a> CursorMut<'a> {
     }
 
     /// If the current virtual address is mapped as a huge page, split it into base pages.
-    pub fn split_if_mapped_huge(&mut self) {
-        self.pt_cursor.split_if_mapped_huge();
+    pub fn split_if_mapped_huge_all(&mut self) {
+        self.pt_cursor.split_if_mapped_huge_all();
     }
 
     /// Jump to the virtual address.
@@ -564,7 +564,7 @@ unsafe impl PageTableConfig for UserPtConfig {
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
         // SAFETY: The caller ensures safety.
         let frame = unsafe { Frame::<dyn AnyUFrameMeta>::from_raw(paddr) };
-        // TODO(aneesh): this should really only be done during split_if_mapped_huge
+        // TODO(aneesh): this should really only be done during split_if_mapped_huge_all
         frame.set_map_level(level);
         debug_assert_eq!(frame.map_level(), level);
         (frame, prop)

@@ -169,7 +169,7 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
     ///
     /// If the entry does not map to a untracked huge page, the method returns
     /// `None`.
-    pub(in crate::mm::page_table) fn split_if_mapped_huge(
+    pub(in crate::mm::page_table) fn split_if_mapped_huge_all(
         &mut self,
         guard: &'rcu dyn InAtomicMode,
     ) -> Option<PageTableGuard<'rcu, C>> {

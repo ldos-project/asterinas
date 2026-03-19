@@ -184,18 +184,26 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         }
     }
 
-    /// Splits the huge page under the cursor into base pages.
-    ///
-    /// If the cursor is pointing to a valid virtual address that is locked and mapped as a huge
-    /// page, it will split the mapping into base pages.
-    pub fn split_if_mapped_huge(&mut self) {
+    /// Splits all huge pages locked by the cursor into base pages.
+    pub fn split_if_mapped_huge_all(&mut self) {
         let va = self.virt_addr();
-        // TODO(aneesh): handle levels larger than two.
-        let rcu_guard = self.rcu_guard;
-        let mut cur_entry = self.cur_entry();
-        if let ChildRef::Frame(_, _, _) = cur_entry.to_ref() {
-            if let Some(split_child) = cur_entry.split_if_mapped_huge(rcu_guard) {
-                self.push_level(split_child);
+        let end = self.barrier_va.end;
+        // TODO(aneesh): We need to ensure that we don't jump all the way to the end of the addr
+        // space, which find_next_impl will do if we don't have the -1 below. In theory it shouldn't
+        // matter, and the jump below should reset the state, but if it jumps all the way to the end
+        // of addr space move_forward (called by find_next_impl) will not bump the level, and jump
+        // will try to decrement the level because it thinks it's in the next "node". The cursor API
+        // is a bit messy around how it handles levels - move_forward is right to not bump the
+        // level, but it's hard for jump to tell if it should change the level or not.
+        let get_remaining_len = |va: Vaddr| (end - va - 1).align_down(page_size::<C>(1));
+        while self
+            .find_next_impl(get_remaining_len(self.virt_addr()), false, true)
+            .is_some()
+        {
+            // Jump to the end of this page so we can find the next entry.
+            if self.jump(self.virt_addr() + page_size::<C>(1)).is_err() {
+                // We have jumped past the end of this range, time to stop iteration.
+                break;
             }
         }
         self.jump(va).unwrap();
@@ -281,7 +289,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
                     }
 
                     let split_child = cur_entry
-                        .split_if_mapped_huge(rcu_guard)
+                        .split_if_mapped_huge_all(rcu_guard)
                         .expect("The entry must be a huge page");
                     self.push_level(split_child);
                     continue;
@@ -417,9 +425,9 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
 
     /// If the current virtual address is mapped as a huge page, split it into base pages.
     ///
-    /// This is the same as [`Cursor::split_if_mapped_huge`]
-    pub fn split_if_mapped_huge(&mut self) {
-        self.0.split_if_mapped_huge();
+    /// This is the same as [`Cursor::split_if_mapped_huge_all`]
+    pub fn split_if_mapped_huge_all(&mut self) {
+        self.0.split_if_mapped_huge_all();
     }
 
     /// Jumps to the given virtual address.
@@ -499,7 +507,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
                     self.0.push_level(child_guard);
                 }
                 ChildRef::Frame(_, _, _) => {
-                    let split_child = cur_entry.split_if_mapped_huge(rcu_guard).unwrap();
+                    let split_child = cur_entry.split_if_mapped_huge_all(rcu_guard).unwrap();
                     self.0.push_level(split_child);
                 }
             }

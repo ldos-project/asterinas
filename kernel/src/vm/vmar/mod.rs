@@ -797,13 +797,13 @@ impl Vmar_ {
             let Some(mapped_va) = cursor.find_next(old_size - current_offset) else {
                 break;
             };
-            cursor.split_if_mapped_huge();
+            cursor.split_if_mapped_huge_all();
 
             let (va, Some((frame, prop))) = cursor.query().unwrap() else {
                 panic!("Found mapped page but query failed");
             };
 
-            // This should always be 1 since we call split_if_mapped_huge above.
+            // This should always be 1 since we call split_if_mapped_huge_all above.
             assert_eq!(frame.map_level(), 1);
             debug_assert_eq!(mapped_va, va.start);
             // TODO(aneesh): this might need to be updated to support remaping huge pages
