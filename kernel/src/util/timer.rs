@@ -15,6 +15,7 @@ use ostd::{
         oqueue::{OQueue as _, OQueueRef},
         orpc_impl, orpc_server,
     },
+    path,
     sync::WaitQueue,
 };
 use snafu::Whatever;
@@ -53,7 +54,7 @@ impl TimerServer {
 
     /// Create a TimerServer with the specified frequency.
     pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self { freq });
+        let server = new_server!(path!(timer[unique]), |_| Self { freq });
         Ok(server)
     }
 

@@ -3,6 +3,7 @@
 #![expect(dead_code)]
 
 use aster_block::bio::SubmittedBio;
+use ostd::{orpc::path::Path, path};
 
 use super::{
     block_group::{BlockGroup, RawGroupDescriptor},
@@ -98,6 +99,7 @@ impl Ext2 {
             super_block: RwMutex::new(Dirty::new(super_block)),
             group_descriptors_segment,
             self_ref: weak_ref.clone(),
+            path: block_device.path().append(&path!(ext2)),
         });
         Ok(ext2)
     }

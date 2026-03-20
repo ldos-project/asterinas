@@ -131,6 +131,7 @@ mod test {
     };
     use ostd::{
         mm::{FrameAllocOptions, Segment, VmIo},
+        path,
         prelude::*,
     };
 
@@ -184,6 +185,10 @@ mod test {
                 max_nr_segments_per_bio: usize::MAX,
                 nr_sectors: self.blocks.size() / SECTOR_SIZE,
             }
+        }
+
+        fn path(&self) -> ostd::orpc::path::Path {
+            path!(memory_disk)
         }
     }
 

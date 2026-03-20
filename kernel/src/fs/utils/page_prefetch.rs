@@ -58,22 +58,22 @@ impl ReadaheadPrefetcher {
         cache: Arc<impl PageCache + PageIOObservable>,
         max_window_size: usize,
         initial_window_size: usize,
-        path: Path,
     ) -> Result<Arc<Self>> {
-        let server = new_server!(|_| Self {
+        let path = cache.path().append(&path!(readahead_prefetcher));
+        let server = new_server!(path.clone(), |_| Self {
             shutdown_state: ShutdownState::new(path.clone()),
         });
 
         let underlying_page_store = cache.underlying_page_store()?;
         // TODO: Tie this to the lifetime of `server`.
         let outstanding_counter = OutstandingCounter::spawn(
+            path.append(&path!(outstanding_counter)),
             underlying_page_store
                 .page_reads_oqueue()
                 .attach_strong_observer(ObservationQuery::unit())?,
             underlying_page_store
                 .page_reads_reply_oqueue()
                 .attach_strong_observer(ObservationQuery::unit())?,
-            path.append(&path!(outstanding_counter)),
         )?;
 
         spawn_thread(server.clone(), {
@@ -212,7 +212,7 @@ impl StridedPrefetcher {
         cache: Arc<impl PageCache + PageIOObservable>,
         n_steps_ahead: usize,
     ) -> Result<Arc<Self>> {
-        let server = new_server!(|_| Self {
+        let server = new_server!(cache.path().append(&path!(strided_prefetcher)), |_| Self {
             shutdown_state: ShutdownState::new(path!(strided_prefetcher[unique])),
         });
 

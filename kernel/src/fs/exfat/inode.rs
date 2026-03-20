@@ -20,7 +20,7 @@ use ostd::orpc::oqueue::{OQueue, OQueueRef};
 use ostd::{
     mm::{Segment, VmIo},
     new_server,
-    orpc::{orpc_impl, orpc_server, path::Path},
+    orpc::{framework::Server, orpc_impl, orpc_server, path::Path}, path,
 };
 
 use super::{
@@ -861,29 +861,31 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = new_server!(fs.path().append(&path!(dentry[unique])), |weak_self| ExfatInode {
-            inner: RwMutex::new(ExfatInodeInner {
-                ino,
-                dentry_set_position,
-                dentry_set_size,
-                dentry_entry,
-                inode_type,
-                attr,
-                start_chain,
-                size,
-                size_allocated,
-                atime,
-                mtime,
-                ctime,
-                num_sub_inodes: 0,
-                num_sub_dirs: 0,
-                name,
-                is_deleted: false,
-                parent_hash,
-                fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
-            }),
-            extension: Extension::new(),
+        let inode = new_server!(fs.path().append(&path!(dentry[unique])), |weak_self| {
+            ExfatInode {
+                inner: RwMutex::new(ExfatInodeInner {
+                    ino,
+                    dentry_set_position,
+                    dentry_set_size,
+                    dentry_entry,
+                    inode_type,
+                    attr,
+                    start_chain,
+                    size,
+                    size_allocated,
+                    atime,
+                    mtime,
+                    ctime,
+                    num_sub_inodes: 0,
+                    num_sub_dirs: 0,
+                    name,
+                    is_deleted: false,
+                    parent_hash,
+                    fs: fs_weak,
+                    page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                }),
+                extension: Extension::new(),
+            }
         });
 
         #[cfg(not(baseline_asterinas))]

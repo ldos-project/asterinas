@@ -1218,7 +1218,7 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = new_server!(|_| InodeBlockManager {
+        let block_manager = new_server!(path, |_| InodeBlockManager {
             nblocks: AtomicUsize::new(desc.blocks_count() as _),
             block_ptrs: RwMutex::new(desc.block_ptrs),
             indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),

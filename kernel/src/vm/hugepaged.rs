@@ -11,6 +11,7 @@ use ostd::{
         orpc_server, orpc_trait,
         sync::select,
     },
+    path,
 };
 use snafu::Whatever;
 
@@ -35,7 +36,7 @@ impl HugepagedServer {
         hugepaged
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self {});
+        let server = new_server!(path!(hugepaged[unique]), |_| Self {});
         Ok(server)
     }
 

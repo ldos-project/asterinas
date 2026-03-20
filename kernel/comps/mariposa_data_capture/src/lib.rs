@@ -58,7 +58,10 @@ mod tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::{oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery}, path::Path},
+        orpc::{
+            oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery},
+            path::Path,
+        },
         path,
         prelude::*,
     };

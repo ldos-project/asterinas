@@ -16,7 +16,7 @@ use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     mm::{UntypedMem, VmIo},
     new_server,
-    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server},
+    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server, path::Path},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
@@ -54,11 +54,15 @@ pub struct RamFS {
     root: Arc<RamInode>,
     /// An inode allocator
     inode_allocator: AtomicU64,
+    // The path of this filesystem.
+    path: Path,
 }
 
 impl RamFS {
     #[cfg(not(baseline_asterinas))]
     pub fn new() -> Arc<Self> {
+        use ostd::path;
+
         Arc::new_cyclic(|weak_fs| Self {
             sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX),
             root: RamInode::new_inode_with(
@@ -73,6 +77,7 @@ impl RamFS {
                 ROOT_INO,
             ),
             inode_allocator: AtomicU64::new(ROOT_INO + 1),
+            path: path!(ramfs[unique]),
         })
     }
 
@@ -427,16 +432,19 @@ impl RamInode {
         typ: InodeType,
         ino: u64,
     ) -> Arc<RamInode> {
-        new_server!(|weak_self| RamInode {
-            inner: inner(weak_self),
-            metadata: SpinLock::new(meta),
-            ino,
-            typ,
-            this: weak_self.clone(),
-            fs,
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        new_server!(
+            fs.upgrade().unwrap().path.append(&path!(inode[{ ino }])),
+            |weak_self| RamInode {
+                inner: inner(weak_self),
+                metadata: SpinLock::new(meta),
+                ino,
+                typ,
+                this: weak_self.clone(),
+                fs,
+                extension: Extension::new(),
+                xattr: RamXattr::new(),
+            }
+        )
     }
 
     fn new_inode(

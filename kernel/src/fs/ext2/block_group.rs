@@ -8,6 +8,7 @@ use ostd::{
     mm::UntypedMem,
     new_server,
     orpc::{oqueue::OQueue as _, orpc_impl, orpc_server},
+    path,
 };
 
 use super::{
@@ -86,15 +87,18 @@ impl BlockGroup {
                 }
             };
 
-            new_server!(|_| BlockGroupImpl {
-                inode_table_bid: metadata.descriptor.inode_table_bid,
-                raw_inodes_size,
-                inner: RwMutex::new(Inner {
-                    metadata: Dirty::new(metadata),
-                    inode_cache: BTreeMap::new(),
-                }),
-                fs,
-            })
+            new_server!(
+                block_device.path().append(&path!(ext2.block_group[{ idx }])),
+                |_| BlockGroupImpl {
+                    inode_table_bid: metadata.descriptor.inode_table_bid,
+                    raw_inodes_size,
+                    inner: RwMutex::new(Inner {
+                        metadata: Dirty::new(metadata),
+                        inode_cache: BTreeMap::new(),
+                    }),
+                    fs,
+                }
+            )
         };
 
         let raw_inodes_cache =

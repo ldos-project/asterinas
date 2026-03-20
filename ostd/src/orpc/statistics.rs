@@ -20,7 +20,7 @@ use crate::{
     new_server,
     orpc::{
         oqueue::{
-            OQueue as _, OQueueBase as _, OQueueError, OQueueRef, ObservationQuery, StrongObserver
+            OQueue as _, OQueueBase as _, OQueueError, OQueueRef, ObservationQuery, StrongObserver,
         },
         path::Path,
     },
@@ -52,7 +52,7 @@ impl shutdown::Shutdown for OutstandingCounter {
 impl OutstandingCounter {
     /// Spawn a new `OutstandingCounter` server which observes `request_oqueue` and
     /// `reply_oqueue`.
-    pub fn spawn<T: 'static, U: 'static>(
+    pub fn spawn(
         path: Path,
         request_observer: StrongObserver<()>,
         reply_observer: StrongObserver<()>,

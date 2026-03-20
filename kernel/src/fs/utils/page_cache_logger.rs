@@ -35,7 +35,7 @@ impl PageCacheLogger {
     pub fn spawn(
         page_cache_read_info_oqueue: OQueueRef<PageCacheReadInfo>,
     ) -> Result<Arc<Self>, OQueueError> {
-        let server = new_server!(|_| Self {
+        let server = new_server!(path!(page_cache_logger[unique]), |_| Self {
             shutdown_state: shutdown::ShutdownState::new(path!(page_cache_logger[unique]),),
         });
 

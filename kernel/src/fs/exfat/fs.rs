@@ -20,7 +20,7 @@ use ostd::orpc::{oqueue::OQueue, orpc_impl};
 use ostd::{
     mm::Segment,
     new_server,
-    orpc::{oqueue::OQueueRef, orpc_server},
+    orpc::{oqueue::OQueueRef, orpc_server}, path,
 };
 
 use super::{
@@ -81,7 +81,8 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = new_server!(path!(fs.exfat[unique]), |weak_self| ExfatFS {
+        let path = block_device.path().append(&path!(exfat));
+        let exfat_fs = new_server!(path.clone(), |weak_self| ExfatFS {
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),
@@ -110,7 +111,7 @@ impl ExfatFS {
             FatChainFlags::ALLOC_POSSIBLE,
         )?;
 
-        let root = ExfatInode::build_root_inode(path, weak_fs.clone(), root_chain.clone())?;
+        let root = ExfatInode::build_root_inode(&path, weak_fs.clone(), root_chain.clone())?;
 
         let upcase_table = ExfatUpcaseTable::load(
             weak_fs.clone(),

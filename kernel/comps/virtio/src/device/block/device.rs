@@ -21,8 +21,6 @@ use aster_block::{
 use id_alloc::IdAlloc;
 use log::{debug, info};
 #[cfg(not(baseline_asterinas))]
-use ostd::new_server;
-#[cfg(not(baseline_asterinas))]
 use ostd::orpc::framework::spawn_thread;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, ValueProducer};
@@ -35,6 +33,8 @@ use ostd::{
     sync::SpinLock,
     trap::TrapFrame,
 };
+#[cfg(not(baseline_asterinas))]
+use ostd::{new_server, orpc::framework::Server};
 
 use super::{BlockFeatures, VirtioBlockConfig, VirtioBlockFeature};
 #[cfg(not(baseline_asterinas))]
@@ -100,12 +100,15 @@ impl BlockDevice {
 
         #[cfg(not(baseline_asterinas))]
         {
-            let block_device_server = new_server!(path!(block.virtio.{device_id.clone()}), |_weak_self| BlockDevice {
-                device,
-                queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
-                    (DeviceInner::QUEUE_SIZE - 2) as usize,
-                )),
-            });
+            let block_device_server =
+                new_server!(path!(block_device.virtio.{device_id}), |_weak_self| {
+                    BlockDevice {
+                        device,
+                        queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
+                            (DeviceInner::QUEUE_SIZE - 2) as usize,
+                        )),
+                    }
+                });
 
             // Thread 2: Handle requests from the OQueue and enqueue them
             spawn_thread(block_device_server.clone(), {
@@ -188,6 +191,10 @@ impl aster_block::BlockDevice for BlockDevice {
             max_nr_segments_per_bio: self.queue.as_ref().max_nr_segments_per_bio(),
             nr_sectors: self.device.config_manager.capacity_sectors(),
         }
+    }
+
+    fn path(&self) -> ostd::orpc::path::Path {
+        Server::path(self).clone()
     }
 }
 

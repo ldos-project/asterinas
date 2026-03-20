@@ -17,6 +17,7 @@ use lru::LruCache;
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
+    new_server,
     orpc::{
         oqueue::{Consumer, OQueue, OQueueRef, RefProducer, reply::ReplyQueue},
         orpc_impl, orpc_server,
@@ -99,7 +100,7 @@ impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
     #[track_caller]
     pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
-        backend.upgrade().unwrap().path().append(path!(page_cache));
+        backend.upgrade().unwrap().path().append(&path!(page_cache));
         let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)
@@ -524,7 +525,7 @@ impl PageCacheManager {
             policy
         };
 
-        let server = Self::new_with(|orpc_internal, weak_this| Self {
+        let server = new_server!(backend.upgrade().unwrap().path().clone(), |weak_this| Self {
             backend,
             inner: Mutex::new(PageCacheManagerInner {
                 // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
@@ -538,7 +539,6 @@ impl PageCacheManager {
                 page_cache_read_info_producer: None,
             }),
             weak_this: weak_this.clone(),
-            orpc_internal,
         });
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.

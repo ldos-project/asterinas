@@ -581,8 +581,10 @@ impl Vmar_ {
         let vmar_inner = VmarInner::new();
         let mut vm_space = VmSpace::new();
         if huge_mapping_enabled() {
-            vm_space =
-                vm_space.with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}));
+            vm_space = vm_space
+                .with_mapping_policy(new_server!(path!(vmar.root.mapping_policy[unique]), |_| {
+                    VmMappingPolicyGreedyHugeMapping {}
+                }));
         }
         Vmar_::new(
             vmar_inner,
@@ -852,8 +854,10 @@ impl Vmar_ {
             let vmar_inner = VmarInner::new();
             let mut new_space = VmSpace::new();
             if huge_mapping_enabled() {
-                new_space = new_space
-                    .with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}))
+                new_space = new_space.with_mapping_policy(new_server!(
+                    path!(vmar.fork.mapping_policy[unique]),
+                    |_| VmMappingPolicyGreedyHugeMapping {}
+                ))
             }
             Vmar_::new(
                 vmar_inner,

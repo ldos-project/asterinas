@@ -31,14 +31,16 @@ mod tests {
     use orpc_macros::{orpc_monitor, orpc_server};
 
     use crate::{
-        assert_eq_eventually, new_server, orpc::{
+        assert_eq_eventually, new_server,
+        orpc::{
             errors::RPCError,
             oqueue::{
                 ConsumableOQueue, ConsumableOQueueRef, OQueue, OQueueBase, OQueueRef,
                 ObservationQuery,
             },
             path::Path,
-        }, prelude::{Arc, ktest}
+        },
+        prelude::{Arc, ktest},
     };
 
     #[orpc_server()]

@@ -50,7 +50,7 @@ pub trait PageIOObservable {
     /// trait and any other read operations on other traits (for instance,
     /// [`crate::vm::vmo::Pager::commit_page`]).
     fn page_reads_oqueue(&self) -> OQueueRef<usize> {
-        OQueueRef::new(4, server_pth.append(&path!(page_reads)))
+        OQueueRef::new(4, oqueue_path)
     }
 
     /// The OQueue containing every reply for read requests.
@@ -58,19 +58,19 @@ pub trait PageIOObservable {
         // TODO: This must be longer than the largest number of IO that can be outstanding in the
         // system. Otherwise a produce into this OQueue in the interrupt handler will block panicing
         // the kernel.
-        OQueueRef::new(64, path!(page_io_observable[unique].page_reads_reply))
+        OQueueRef::new(64, oqueue_path)
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
     fn page_writes_oqueue(&self) -> OQueueRef<usize> {
-        OQueueRef::new(4, path!(page_io_observable[unique].page_writes))
+        OQueueRef::new(4, oqueue_path)
     }
 
     /// The OQueue containing every reply for write requests.
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: as page_reads_reply_oqueue
-        OQueueRef::new(64, path!(page_io_observable[unique].page_writes_reply))
+        OQueueRef::new(64, oqueue_path)
     }
 }
 

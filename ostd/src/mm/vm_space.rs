@@ -11,8 +11,6 @@
 
 use core::{mem::ManuallyDrop, ops::Range, sync::atomic::Ordering};
 
-#[cfg(not(baseline_asterinas))]
-use crate::{new_server, path};
 use crate::{
     arch::mm::{PageTableEntry, PagingConsts, current_page_table_paddr},
     cpu::{AtomicCpuSet, CpuSet, PinCurrentCpu},
@@ -30,6 +28,8 @@ use crate::{
     prelude::*,
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
+#[cfg(not(baseline_asterinas))]
+use crate::{new_server, path};
 
 /// Request for [`VmMappingPolicy`].
 pub struct VmMappingRequest {
