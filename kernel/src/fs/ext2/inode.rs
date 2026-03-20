@@ -13,7 +13,8 @@ use ostd::{
     const_assert,
     mm::UntypedMem,
     new_server,
-    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server},
+    orpc::{framework::Server as _, oqueue::OQueue as _, orpc_impl, orpc_server},
+    path,
     util::callback_counter::CallbackCounter,
 };
 
@@ -974,6 +975,7 @@ impl InodeInner {
         Self {
             page_cache: {
                 let cache = PageCache::with_capacity(
+                    inode_impl.block_manager.path().clone(),
                     num_page_bytes,
                     Arc::downgrade(&inode_impl.block_manager) as _,
                 )
@@ -1218,12 +1220,18 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = new_server!(path, |_| InodeBlockManager {
-            nblocks: AtomicUsize::new(desc.blocks_count() as _),
-            block_ptrs: RwMutex::new(desc.block_ptrs),
-            indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
-            fs,
-        });
+        let block_manager = new_server!(
+            fs.upgrade()
+                .unwrap()
+                .path()
+                .append(&path!(inode_block_manager[unique])),
+            |_| InodeBlockManager {
+                nblocks: AtomicUsize::new(desc.blocks_count() as _),
+                block_ptrs: RwMutex::new(desc.block_ptrs),
+                indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
+                fs,
+            }
+        );
         Self {
             desc,
             block_manager,

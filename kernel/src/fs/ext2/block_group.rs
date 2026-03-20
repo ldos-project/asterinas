@@ -49,6 +49,7 @@ impl BlockGroup {
         fs: Weak<Ext2>,
     ) -> Result<Self> {
         let raw_inodes_size = (super_block.inodes_per_group() as usize) * super_block.inode_size();
+        let block_device_path = block_device.path();
 
         let bg_impl = {
             let metadata = {
@@ -88,7 +89,7 @@ impl BlockGroup {
             };
 
             new_server!(
-                block_device.path().append(&path!(ext2.block_group[{ idx }])),
+                block_device_path.append(&path!(ext2.block_group[{ idx }])),
                 |_| BlockGroupImpl {
                     inode_table_bid: metadata.descriptor.inode_table_bid,
                     raw_inodes_size,
@@ -101,8 +102,11 @@ impl BlockGroup {
             )
         };
 
-        let raw_inodes_cache =
-            PageCache::with_capacity(raw_inodes_size, Arc::downgrade(&bg_impl) as _)?;
+        let raw_inodes_cache = PageCache::with_capacity(
+            block_device_path.append(&path!(ext2.raw_inodes_cache)),
+            raw_inodes_size,
+            Arc::downgrade(&bg_impl) as _,
+        )?;
 
         Ok(Self {
             idx,

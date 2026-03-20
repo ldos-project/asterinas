@@ -21,7 +21,6 @@ use ostd::{
         },
         oqueue::{OQueueBase as _, ObservationQuery, StrongObserver, WeakObserver},
         orpc_impl, orpc_server,
-        path::Path,
         statistics::{Outstanding, OutstandingCounter},
         sync::select,
     },

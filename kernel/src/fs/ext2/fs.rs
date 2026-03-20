@@ -84,6 +84,7 @@ impl Ext2 {
             Ok(block_groups)
         };
 
+        let ext2_path = block_device.path().append(&path!(ext2));
         let ext2 = Arc::new_cyclic(|weak_ref| Self {
             inodes_per_group: super_block.inodes_per_group(),
             blocks_per_group: super_block.blocks_per_group(),
@@ -99,7 +100,7 @@ impl Ext2 {
             super_block: RwMutex::new(Dirty::new(super_block)),
             group_descriptors_segment,
             self_ref: weak_ref.clone(),
-            path: block_device.path().append(&path!(ext2)),
+            path: ext2_path,
         });
         Ok(ext2)
     }
@@ -107,6 +108,11 @@ impl Ext2 {
     /// Returns the block device.
     pub fn block_device(&self) -> &dyn BlockDevice {
         self.block_device.as_ref()
+    }
+
+    /// Returns the path of this filesystem.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Returns the size of block.

@@ -20,7 +20,8 @@ use ostd::orpc::{oqueue::OQueue, orpc_impl};
 use ostd::{
     mm::Segment,
     new_server,
-    orpc::{oqueue::OQueueRef, orpc_server}, path,
+    orpc::{oqueue::OQueueRef, orpc_server},
+    path,
 };
 
 use super::{
@@ -93,7 +94,7 @@ impl ExfatFS {
             fat_cache: RwLock::new(LruCache::<ClusterID, ClusterID>::new(
                 NonZeroUsize::new(FAT_LRU_CACHE_SIZE).unwrap(),
             )),
-            meta_cache: PageCache::with_capacity(fs_size, weak_self.clone() as _).unwrap(),
+            meta_cache: PageCache::with_capacity(path.append(&path!(page_cache)), fs_size, weak_self.clone() as _).unwrap(),
             mutex: Mutex::new(()),
         });
 

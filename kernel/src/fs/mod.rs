@@ -27,6 +27,8 @@ use aster_block::BlockDevice;
 use aster_raid::selection_policies::RoundRobinPolicy;
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
+#[cfg(not(baseline_asterinas))]
+use ostd::path;
 
 use crate::{
     fs::{ext2::Ext2, fs_resolver::FsPath},
@@ -122,7 +124,11 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
     #[cfg(not(baseline_asterinas))]
-    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+    let selection_policy = RoundRobinPolicy::new(
+        path!(block.raid1.{raid_device_name}.selection_policy),
+        members.clone(),
+    )
+    .unwrap();
     #[cfg(not(baseline_asterinas))]
     let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
     #[cfg(baseline_asterinas)]

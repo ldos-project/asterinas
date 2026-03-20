@@ -21,6 +21,7 @@ use ostd::{
     orpc::{
         oqueue::{Consumer, OQueue, OQueueRef, RefProducer, reply::ReplyQueue},
         orpc_impl, orpc_server,
+        path::Path,
     },
     path,
     task::Task,
@@ -98,10 +99,8 @@ fn get_log_hits_misses() -> bool {
 
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
-    #[track_caller]
-    pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
-        backend.upgrade().unwrap().path().append(&path!(page_cache));
-        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
+    pub fn new(path: Path, backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(path, backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -113,9 +112,8 @@ impl PageCache {
     ///
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
-    #[track_caller]
-    pub fn with_capacity(capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
-        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
+    pub fn with_capacity(path: Path, capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(path, backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -128,12 +126,7 @@ impl PageCache {
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
         match policy {
             PrefetchPolicy::Readahead => {
-                ReadaheadPrefetcher::spawn(
-                    self.manager.clone(),
-                    16,
-                    4,
-                    path!(prefetch_policy[unique]),
-                )?;
+                ReadaheadPrefetcher::spawn(self.manager.clone(), 16, 4)?;
             }
             PrefetchPolicy::Strided => {
                 StridedPrefetcher::spawn(self.manager.clone(), 4)?;
@@ -518,27 +511,29 @@ impl PageCacheManagerInner {
 
 impl PageCacheManager {
     #[track_caller]
-    pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
+    pub fn spawn(path: Path, backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
         let policy = if Task::current().is_none() {
             PrefetchPolicy::None
         } else {
             policy
         };
 
-        let server = new_server!(backend.upgrade().unwrap().path().clone(), |weak_this| Self {
-            backend,
-            inner: Mutex::new(PageCacheManagerInner {
-                // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
-                pages: LruCache::unbounded(),
-                builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
-                    Some(BuiltinPrefetchPolicy::new())
-                } else {
-                    None
-                },
-                outstanding_requests: Default::default(),
-                page_cache_read_info_producer: None,
-            }),
-            weak_this: weak_this.clone(),
+        let server = new_server!(path, |weak_this| {
+            Self {
+                backend,
+                inner: Mutex::new(PageCacheManagerInner {
+                    // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
+                    pages: LruCache::unbounded(),
+                    builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
+                        Some(BuiltinPrefetchPolicy::new())
+                    } else {
+                        None
+                    },
+                    outstanding_requests: Default::default(),
+                    page_cache_read_info_producer: None,
+                }),
+                weak_this: weak_this.clone(),
+            }
         });
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.

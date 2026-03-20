@@ -20,7 +20,8 @@ use ostd::orpc::oqueue::{OQueue, OQueueRef};
 use ostd::{
     mm::{Segment, VmIo},
     new_server,
-    orpc::{framework::Server, orpc_impl, orpc_server, path::Path}, path,
+    orpc::{framework::Server, orpc_impl, orpc_server, path::Path},
+    path,
 };
 
 use super::{
@@ -765,7 +766,12 @@ impl ExfatInode {
                 is_deleted: false,
                 parent_hash: 0,
                 fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                page_cache: PageCache::with_capacity(
+                    fs_path.append(&path!(root.page_cache)),
+                    size,
+                    weak_self.clone() as _
+                )
+                .unwrap(),
             }),
             extension: Extension::new(),
         });
@@ -861,7 +867,8 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = new_server!(fs.path().append(&path!(dentry[unique])), |weak_self| {
+        let path = fs.path().append(&path!(dentry[unique]));
+        let inode = new_server!(path.clone(), |weak_self| {
             ExfatInode {
                 inner: RwMutex::new(ExfatInodeInner {
                     ino,
@@ -882,7 +889,12 @@ impl ExfatInode {
                     is_deleted: false,
                     parent_hash,
                     fs: fs_weak,
-                    page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                    page_cache: PageCache::with_capacity(
+                        path.append(&path!(page_cache)),
+                        size,
+                        weak_self.clone() as _,
+                    )
+                    .unwrap(),
                 }),
                 extension: Extension::new(),
             }
