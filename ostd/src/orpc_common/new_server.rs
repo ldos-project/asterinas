@@ -28,11 +28,15 @@ macro_rules! new_server {
 #[macro_export]
 #[cfg(not(baseline_asterinas))]
 macro_rules! __new_server {
-    // Pattern for structs with orpc_internal field
+    (
+        $path:expr, |$weak_self:tt| { $($body:tt)* }
+    ) => {
+        $crate::__new_server!($path, |$weak_self| $($body)*)
+    };
     (
         $path:expr, |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
     ) => {
-        $struct_name::new_with(path, |orpc_internal, $weak_self| $struct_name {
+        $struct_name::new_with($path, |orpc_internal, $weak_self| $struct_name {
             orpc_internal,
             $($field $(:$value)?),*
         })
@@ -44,7 +48,11 @@ macro_rules! __new_server {
 #[macro_export]
 #[cfg(baseline_asterinas)]
 macro_rules! __new_server {
-    // Pattern for structs with orpc_internal field
+    (
+        $path:expr, |$weak_self:tt| { $($body:tt)* }
+    ) => {
+        $crate::__new_server!($path, |$weak_self| $($body)*)
+    };
     (
         $path:expr, |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
     ) => {
