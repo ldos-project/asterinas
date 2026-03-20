@@ -16,14 +16,7 @@ use super::{
     },
     sync::select,
 };
-use crate::{
-    new_server,
-    orpc::{
-        oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery, StrongObserver},
-        path::Path,
-    },
-    path,
-};
+use crate::orpc::legacy_oqueue::OQueueAttachError;
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
@@ -51,13 +44,14 @@ impl shutdown::Shutdown for OutstandingCounter {
 impl OutstandingCounter {
     /// Spawn a new `OutstandingCounter` server which observes `request_oqueue` and
     /// `reply_oqueue`.
-    pub fn spawn(
-        request_observer: StrongObserver<()>,
-        reply_observer: StrongObserver<()>,
+    pub fn spawn<T: 'static, U: 'static>(
         path: Path,
-    ) -> Result<Arc<Self>, crate::Error> {
-        let server = new_server!(|_| Self {
-            shutdown_state: ShutdownState::new(path),
+        request_oqueue: OQueueRef<T>,
+        reply_oqueue: OQueueRef<U>,
+    ) -> Result<Arc<Self>, OQueueAttachError> {
+        let server = Self::new_with(path, |orpc_internal, _| Self {
+            orpc_internal,
+            shutdown_state: Default::default(),
         });
 
         spawn_thread(server.clone(), {

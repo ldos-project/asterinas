@@ -30,9 +30,9 @@ macro_rules! new_server {
 macro_rules! __new_server {
     // Pattern for structs with orpc_internal field
     (
-        |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
+        $path:expr, |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
     ) => {
-        $struct_name::new_with(|orpc_internal, $weak_self| $struct_name {
+        $struct_name::new_with(path, |orpc_internal, $weak_self| $struct_name {
             orpc_internal,
             $($field $(:$value)?),*
         })
@@ -46,7 +46,7 @@ macro_rules! __new_server {
 macro_rules! __new_server {
     // Pattern for structs with orpc_internal field
     (
-        |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
+        $path:expr, |$weak_self:tt| $struct_name:ident { $($field:ident $(:$value:expr)?),* $(,)? }
     ) => {
         Arc::new_cyclic(|$weak_self| $struct_name {
             $($field $(:$value)?),*
