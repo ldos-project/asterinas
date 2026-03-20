@@ -56,8 +56,8 @@ pub struct DataCaptureDeviceServer {
 }
 
 impl DataCaptureDeviceServer {
-    pub fn new(block_device: Arc<dyn BlockDevice>) -> Arc<DataCaptureDeviceServer> {
-        new_server!(|_| DataCaptureDeviceServer {
+    pub fn new(path: Path, block_device: Arc<dyn BlockDevice>) -> Arc<DataCaptureDeviceServer> {
+        new_server!(path, |_| DataCaptureDeviceServer {
             block_device,
             next_block_offset: AtomicUsize::new(0),
         })

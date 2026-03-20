@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ostd::{ignore_err, mm::VmIo};
+use ostd::{ignore_err, mm::VmIo, orpc::path::Path};
 use ostd_pod::Pod;
 
 use super::{
@@ -65,6 +65,8 @@ struct DiskInner<D: BlockSet> {
     root_key: Key,
     /// Whether `MlsDisk` is dropped.
     is_dropped: AtomicBool,
+    /// The path of this device.
+    path: Path,
     /// Scope lock for control write and sync operation.
     write_sync_region: RwLock<()>,
 }
@@ -162,6 +164,10 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             max_nr_segments_per_bio: usize::MAX,
             nr_sectors: (BLOCK_SIZE / SECTOR_SIZE) * self.total_blocks(),
         }
+    }
+    
+    fn path(&self) -> ostd::orpc::path::Path {
+        self.inner.path.clone()
     }
 }
 

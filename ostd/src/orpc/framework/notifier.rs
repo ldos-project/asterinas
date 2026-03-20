@@ -3,10 +3,7 @@
 //! Arbitrary notifications via ORPC
 use orpc_macros::orpc_trait;
 
-use crate::{
-    orpc::{errors::RPCError, oqueue::OQueueRef},
-    path,
-};
+use crate::orpc::{errors::RPCError, oqueue::OQueueRef};
 
 /// ORPC trait for a simple notifier
 #[orpc_trait]
@@ -16,6 +13,6 @@ pub trait Notifier {
 
     /// OQueue for listening to notifications.
     fn notification_oqueue(&self) -> OQueueRef<()> {
-        OQueueRef::new(1, path!(notification_oqueue[unique]))
+        OQueueRef::new(1, oqueue_path)
     }
 }

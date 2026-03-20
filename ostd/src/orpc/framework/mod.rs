@@ -175,6 +175,7 @@ impl ServerBase {
         self.id
     }
 
+    /// Get the path of the server assigned when it was created.
     pub fn path(&self) -> &Path {
         &self.path
     }

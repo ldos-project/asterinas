@@ -17,11 +17,13 @@ use super::{
     sync::select,
 };
 use crate::{
-    new_server, orpc::{
-        legacy_oqueue::OQueueAttachError,
-        oqueue::{OQueue as _, OQueueBase as _, OQueueError, OQueueRef, ObservationQuery, StrongObserver},
+    new_server,
+    orpc::{
+        oqueue::{
+            OQueue as _, OQueueBase as _, OQueueError, OQueueRef, ObservationQuery, StrongObserver
+        },
         path::Path,
-    }, path
+    },
 };
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
@@ -29,7 +31,7 @@ use crate::{
 pub trait Outstanding {
     /// The OQueue that publishes the number of outstanding requests (requests - replies).
     fn outstanding_oqueue(&self) -> OQueueRef<isize> {
-        OQueueRef::new(8, path!(outstanding[unique]))
+        OQueueRef::new(8, oqueue_path)
     }
 }
 

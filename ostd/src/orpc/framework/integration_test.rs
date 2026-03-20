@@ -46,7 +46,7 @@ mod test {
     trait Counter {
         fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError>;
         fn incr_oqueue(&self) -> ConsumableOQueueRef<AdditionalAmount> {
-            ConsumableOQueueRef::new(8, path!(incr_oqueue[unique]))
+            ConsumableOQueueRef::new(8, oqueue_path)
         }
     }
 

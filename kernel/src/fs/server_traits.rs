@@ -50,7 +50,7 @@ pub trait PageIOObservable {
     /// trait and any other read operations on other traits (for instance,
     /// [`crate::vm::vmo::Pager::commit_page`]).
     fn page_reads_oqueue(&self) -> OQueueRef<usize> {
-        OQueueRef::new(4, path!(page_io_observable[unique].page_reads))
+        OQueueRef::new(4, server_pth.append(&path!(page_reads)))
     }
 
     /// The OQueue containing every reply for read requests.

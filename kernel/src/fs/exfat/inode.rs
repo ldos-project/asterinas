@@ -20,7 +20,7 @@ use ostd::orpc::oqueue::{OQueue, OQueueRef};
 use ostd::{
     mm::{Segment, VmIo},
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{orpc_impl, orpc_server, path::Path},
 };
 
 use super::{
@@ -725,6 +725,7 @@ impl ExfatInode {
     }
 
     pub(super) fn build_root_inode(
+        fs_path: &Path,
         fs_weak: Weak<ExfatFS>,
         root_chain: ExfatChain,
     ) -> Result<Arc<ExfatInode>> {
@@ -744,7 +745,7 @@ impl ExfatInode {
 
         let name = ExfatName::new();
 
-        let inode = new_server!(|weak_self| ExfatInode {
+        let inode = new_server!(fs_path.append(&path!(root)), |weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino: EXFAT_ROOT_INO,
                 dentry_set_position: ExfatChainPosition::default(),
@@ -860,7 +861,7 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = new_server!(|weak_self| ExfatInode {
+        let inode = new_server!(fs.path().append(&path!(dentry[unique])), |weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino,
                 dentry_set_position,

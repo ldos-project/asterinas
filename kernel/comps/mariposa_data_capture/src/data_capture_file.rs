@@ -204,7 +204,7 @@ impl DataCaptureFileBuilder {
             .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
                 let command_oqueue =
                     ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));
-                let server = new_server!(|_| DataCaptureFileServer {
+                let server = new_server!(self.path, |_| DataCaptureFileServer {
                     command_producer: command_oqueue
                         .attach_value_producer()
                         .expect("single purpose OQueue failed."),

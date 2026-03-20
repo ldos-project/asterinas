@@ -8,11 +8,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
-    orpc::{{
+    orpc::{
         oqueue::{OQueueBase as _, ObservationQuery},
         orpc_server,
+        path::Path,
     },
-, path::Path}, path};
+};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
@@ -25,8 +26,7 @@ pub struct RoundRobinPolicy {
 
 impl RoundRobinPolicy {
     pub fn new(path: Path, members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(path,
-            |orpc_internal, _| Self {
+        let server = Self::new_with(path, |orpc_internal, _| Self {
             orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
@@ -56,7 +56,10 @@ pub struct LinnOSPolicy {
 }
 
 impl LinnOSPolicy {
-    pub fn new(path: Path, members: Vec<Arc<dyn ObservableBlockDevice>>) -> Result<Arc<Self>, Error> {
+    pub fn new(
+        path: Path,
+        members: Vec<Arc<dyn ObservableBlockDevice>>,
+    ) -> Result<Arc<Self>, Error> {
         let server = Self::new_with(path, |orpc_internal, _| Self {
             orpc_internal,
             read_cursor: AtomicUsize::new(0),

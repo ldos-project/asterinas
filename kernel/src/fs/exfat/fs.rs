@@ -110,7 +110,7 @@ impl ExfatFS {
             FatChainFlags::ALLOC_POSSIBLE,
         )?;
 
-        let root = ExfatInode::build_root_inode(weak_fs.clone(), root_chain.clone())?;
+        let root = ExfatInode::build_root_inode(path, weak_fs.clone(), root_chain.clone())?;
 
         let upcase_table = ExfatUpcaseTable::load(
             weak_fs.clone(),

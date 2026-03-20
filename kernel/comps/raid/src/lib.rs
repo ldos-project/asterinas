@@ -112,6 +112,8 @@ impl Raid1Device {
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<(), Raid1DeviceError> {
+        use ostd::new_server;
+
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -121,16 +123,15 @@ impl Raid1Device {
         // Initialize the admission queue using the strictest segment limit.
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
-
-        let device = Self::new_with(
-            path!(block.raid1.{name.to_owned()}),
-            |orpc_internal, _weak_self| Raid1Device {
-                orpc_internal,
+            
+        let device = new_server!(
+            path!(block.raid1.{name}),
+            |_| Raid1Device {
                 members,
                 queue,
                 metadata,
                 selection_policy,
-            },
+            }
         );
 
         aster_block::register_device(name.to_owned(), device.clone());

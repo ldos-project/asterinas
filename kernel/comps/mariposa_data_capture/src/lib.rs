@@ -58,7 +58,7 @@ mod tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery},
+        orpc::{oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery}, path::Path},
         path,
         prelude::*,
     };
@@ -71,7 +71,7 @@ mod tests {
     fn test_capture_server() {
         // Create memory disk with space for 4 blocks
         let block_device = Arc::new(MemoryDisk::new(4096 * 4));
-        let device = DataCaptureDeviceServer::new(block_device.clone());
+        let device = DataCaptureDeviceServer::new(Path::test(), block_device.clone());
 
         let path = path!(test_capture);
         let builder = device
