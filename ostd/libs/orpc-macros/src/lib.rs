@@ -11,8 +11,8 @@ mod select;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
-    punctuated::Punctuated,
+    Expr, ExprMethodCall, ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility,
+    parse_macro_input, punctuated::Punctuated,
 };
 
 /// Declare a trait as an ORPC trait that can be implemented by ORPC server.
@@ -215,7 +215,11 @@ pub fn orpc_monitor(arg: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn select_legacy(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as select::SelectInput);
-    let output = select::select_macro_impl(input, |e| quote! { #e }, |b| quote! { ::core::convert::AsRef::as_ref(&#b) });
+    let output = select::select_macro_impl(
+        input,
+        |e| quote! { #e },
+        |b| quote! { ::core::convert::AsRef::as_ref(&#b) },
+    );
     output.into()
 }
 
@@ -245,7 +249,19 @@ pub fn select_legacy(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as select::SelectInput);
-    let output = select::select_macro_impl(input, |e| quote! { #e ? }, |b| quote! { &#b });
+    let output = select::select_macro_impl(
+        input,
+        |e| {
+            match e {
+                // Special case consume since it cannot return an error.
+                Expr::MethodCall(ExprMethodCall { method, .. }) if method == "try_consume" => {
+                    quote! { #e }
+                }
+                _ => quote! { #e ? },
+            }
+        },
+        |b| quote! { &#b },
+    );
     output.into()
 }
 
