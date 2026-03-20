@@ -1118,6 +1118,13 @@ mod test {
     }
 
     #[ktest]
+    fn send_multi_receive_blocker_observable() {
+        let oqueue1 = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
+        let oqueue2 = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
+        generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
+    }
+
+    #[ktest]
     fn generic_produce_strong_observe_only() {
         generic_test::test_produce_strong_observe_only(ConsumableOQueueRef::<
             generic_test::TestMessage,
