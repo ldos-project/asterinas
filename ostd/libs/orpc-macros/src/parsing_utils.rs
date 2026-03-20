@@ -86,3 +86,13 @@ pub(crate) fn generics_to_phantom(generics: &Generics) -> Type {
 
     parse_quote!(::core::marker::PhantomData<fn(#(&#lifetimes ()),*) -> (#types)>)
 }
+
+/// Converts a path into turbofish form, i.e. `Foo<T>` becomes `Foo::<T>`.
+pub(crate) fn path_to_turbofish(mut path: Path) -> Path {
+    for segment in path.segments.iter_mut() {
+        if let syn::PathArguments::AngleBracketed(ref mut args) = segment.arguments {
+            args.colon2_token = Some(Default::default());
+        }
+    }
+    path
+}

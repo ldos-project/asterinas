@@ -2,7 +2,7 @@
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::{FieldsNamed, ItemStruct, LitStr, Path, Token, spanned::Spanned};
 
-use crate::parsing_utils::{generics_to_phantom, make_oqueues_field_name};
+use crate::parsing_utils::{generics_to_phantom, make_oqueues_field_name, path_to_turbofish};
 
 /// The implementations of the `orpc_server` attr macro.
 pub fn orpc_server_macro_impl(
@@ -29,28 +29,22 @@ pub fn orpc_server_macro_impl(
         .iter()
         .map(|trait_ident| {
             let oqueue_field_ident = make_oqueues_field_name(&mut errors, trait_ident);
-            let trait_ident = {
-                let mut trait_ident = trait_ident.clone();
-                if let Some(last_type_segment) = trait_ident.segments.last_mut() {
-                    last_type_segment.ident = format_ident!(
-                        "{}OQueues",
-                        last_type_segment.ident,
-                        span = last_type_segment.ident.span()
-                    );
-                }
-                trait_ident
-            };
+            let struct_ident = make_oqueues_struct_path(trait_ident);
             quote! {
                 #[allow(unused)]
-                #oqueue_field_ident: #trait_ident
+                #oqueue_field_ident: #struct_ident
             }
         })
         .collect();
 
     // The names of the OQueue fields.
-    let oqueue_field_names: Vec<_> = traits
+    let oqueue_field_initializers: Vec<_> = traits
         .iter()
-        .map(|i| make_oqueues_field_name(&mut errors, i))
+        .map(|i| {
+            let field_name = make_oqueues_field_name(&mut errors, i);
+            let struct_name = make_oqueues_struct_path(i);
+            quote! { #field_name: #struct_name::new(path.clone()), }
+        })
         .collect();
 
     let orpc_internal_struct_doc = LitStr::new(
@@ -59,6 +53,16 @@ pub fn orpc_server_macro_impl(
     );
 
     let orpc_internal_struct_ident = format_ident!("{}ORPCInternal", ident.to_string());
+
+    // The initializer for the ORPC internals struct for this server type
+    let internal_init = quote! {
+        #orpc_internal_struct_ident {
+            #(#oqueue_field_initializers)*
+            base: ::ostd::orpc::framework::ServerBase::new(path, weak_this.clone()),
+            _phantom: ::core::marker::PhantomData,
+        }
+    };
+
     // All the fields of the user declared server struct with the added orpc_internal field.
     let fields = match fields {
         syn::Fields::Named(FieldsNamed { named, .. }) => {
@@ -77,15 +81,6 @@ pub fn orpc_server_macro_impl(
                 compile_error!("servers must have named fields")
             });
             fs.to_token_stream()
-        }
-    };
-
-    // The initializer for the ORPC internals struct for this server type
-    let internal_init = quote! {
-        #orpc_internal_struct_ident {
-            base: ::ostd::orpc::framework::ServerBase::new(path, weak_this.clone()),
-            #(#oqueue_field_names: ::core::default::Default::default(),)*
-            _phantom: ::core::marker::PhantomData,
         }
     };
 
@@ -110,7 +105,7 @@ let server = Self::new_with(|orpc_internal, weak_this| Self {
                 f: impl ::core::ops::FnOnce(#orpc_internal_struct_ident #type_generics, &::alloc::sync::Weak<Self>) -> Self,
             ) -> ::alloc::sync::Arc::<Self> {
                 let server = ::alloc::sync::Arc::<Self>::new_cyclic(
-                    |weak_this| {
+                    move |weak_this| {
                         let orpc_internal = #internal_init;
                         f(orpc_internal, weak_this)
                     });
@@ -153,4 +148,16 @@ let server = Self::new_with(|orpc_internal, weak_this| Self {
     };
 
     output
+}
+
+fn make_oqueues_struct_path(trait_ident: &Path) -> Path {
+    let mut trait_ident = trait_ident.clone();
+    if let Some(last_type_segment) = trait_ident.segments.last_mut() {
+        last_type_segment.ident = format_ident!(
+            "{}OQueues",
+            last_type_segment.ident,
+            span = last_type_segment.ident.span()
+        );
+    }
+    path_to_turbofish(trait_ident)
 }
