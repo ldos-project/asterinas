@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -26,7 +28,8 @@ int main()
 	}
 
 	// Create the file and write the pattern to it
-	fd = open(RAID1_TEST_FILENAME, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+	fd = open(RAID1_TEST_FILENAME, O_DIRECT | O_CREAT | O_WRONLY | O_TRUNC,
+		  0666);
 	if (fd < 0) {
 		fprintf(stderr, "[raid-test] Failed to create file '%s': %s\n",
 			RAID1_TEST_FILENAME, strerror(errno));
@@ -43,7 +46,7 @@ int main()
 	close(fd);
 
 	// Reopen the file for reading
-	fd = open(RAID1_TEST_FILENAME, O_RDONLY);
+	fd = open(RAID1_TEST_FILENAME, O_DIRECT | O_RDONLY);
 	if (fd < 0) {
 		fprintf(stderr,
 			"[raid-test] Failed to open file for reading: %s\n",
