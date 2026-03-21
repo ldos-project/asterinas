@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use core::fmt::Debug;
 
 use aster_block::BlockDevice;
+use aster_block::bio::SubmittedBio;
 #[cfg(not(baseline_asterinas))]
 pub use aster_virtio::device::block::server_traits::BlockIOObservable;
 use ostd::{Error, orpc::orpc_trait};
@@ -26,5 +27,5 @@ pub trait SelectionPolicy: Debug {
     /// Get the block device to read from. The policy cannot decide, for whatever reason, this should
     /// return an error. The caller will use some fallback. If the returned block device does not
     /// exist, then the caller will also fallback.
-    fn select_block_device(&self) -> Result<Arc<dyn BlockDevice>, Error>;
+    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error>;
 }
