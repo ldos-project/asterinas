@@ -197,7 +197,7 @@ impl Raid1Device {
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
-            let member = self.members[0].clone();
+            let member = self.selection_policy.select_block_device().unwrap();
             let child = Bio::new(
                 BioType::Read,
                 parent.sid_range().start,
