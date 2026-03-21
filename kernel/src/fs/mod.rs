@@ -24,7 +24,7 @@ pub mod utils;
 
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
-use aster_raid::selection_policies::RoundRobinPolicy;
+use aster_raid::selection_policies::{RoundRobinPolicy, Dummy0Policy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
@@ -75,6 +75,18 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
+    // single disk benchmark
+    // let nvme_device_name = "raid0";
+    // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
+    //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
+    //     let target_path = FsPath::try_from("/raid1").unwrap();
+    //     self::rootfs::mount_fs_at(nvme_fs, &target_path).unwrap();
+    //     info!("[kernel] Mounted NVMe fs at {:?} ", target_path);
+    // } else {
+    //     error!("[kernel] Failed to start NVMe block device '{}'", nvme_device_name);
+    // }
+    // return;
+
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
@@ -122,6 +134,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
             }
         }
     }
+
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
     #[cfg(not(baseline_asterinas))]
@@ -131,31 +144,6 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(baseline_asterinas)]
     let raid1device = Raid1Device::init(raid_device_name, members);
     raid1device.map_err(|err| match err {
-        Raid1DeviceError::NotEnoughMembers => {
-            Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
-        }
-    })?;
-    info!("[raid] RAID-1 device created");
-
-    let worker = aster_block::get_device(raid_device_name).unwrap();
-    // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
-    // iteration to call the RAID-specific helper without needing ownership of `Raid1Device`.
-    // TODO(Yingqi): Merge the starting of the RAID-1 thread inside block device server.
-    let task_fn = move || {
-        info!("spawn the RAID-1 device thread");
-        let raid = worker.downcast_ref::<Raid1Device>().unwrap();
-        loop {
-            raid.handle_requests();
-        }
-    };
-
-    // early stop for testing
-    // Ok(());
-
-    info!("[raid] creating selection policy");
-    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
-
-    Raid1Device::init(raid_device_name, members, selection_policy).map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }

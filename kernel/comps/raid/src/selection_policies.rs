@@ -12,6 +12,29 @@ use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
 #[derive(Debug)]
 #[orpc_server]
+pub struct Dummy0Policy {
+    members: Vec<Arc<dyn BlockDevice>>,
+}
+
+impl Dummy0Policy {
+    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            members,
+        });
+        Ok(server)
+    }
+}
+
+impl SelectionPolicy for Dummy0Policy {
+    fn select_block_device(&self) -> Result<Arc<dyn BlockDevice>, Error> {
+        Ok(self.members[0].clone())
+    }
+}
+
+
+#[derive(Debug)]
+#[orpc_server]
 pub struct RoundRobinPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
