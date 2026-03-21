@@ -3,8 +3,7 @@
 use alloc::sync::Arc;
 use core::fmt::Debug;
 
-use aster_block::BlockDevice;
-use aster_block::bio::SubmittedBio;
+use aster_block::{BlockDevice, bio::SubmittedBio};
 #[cfg(not(baseline_asterinas))]
 pub use aster_virtio::device::block::server_traits::BlockIOObservable;
 use ostd::{Error, orpc::orpc_trait};

@@ -5,11 +5,15 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use aster_block::BlockDevice;
-use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
-use ostd::orpc::legacy_oqueue::WeakObserver;
-use ostd::sync::Mutex;
-use ostd::{Error, orpc::orpc_server};
+use aster_block::{
+    BlockDevice,
+    bio::{BlockDeviceCompletionStats, SubmittedBio},
+};
+use ostd::{
+    Error,
+    orpc::{legacy_oqueue::WeakObserver, orpc_server},
+    sync::Mutex,
+};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
@@ -90,7 +94,10 @@ impl core::fmt::Debug for LinnOSPolicy {
         f.debug_struct("LinnOSPolicy")
             .field("read_cursor", &self.read_cursor)
             .field("members", &self.members)
-            .field("observers", &format_args!("[{} observers]", self.observers.len()))
+            .field(
+                "observers",
+                &format_args!("[{} observers]", self.observers.len()),
+            )
             .finish()
     }
 }
@@ -102,12 +109,10 @@ impl LinnOSPolicy {
         let num_devices = members.len();
 
         // Copy hardcoded weights into Vecs, one entry per device
-        let hidden_layers: Vec<[[f32; 256]; 31]> = (0..num_devices)
-            .map(|i| *HIDDEN_WEIGHTS[i])
-            .collect();
-        let output_layers: Vec<[[f32; 2]; 256]> = (0..num_devices)
-            .map(|i| *OUTPUT_WEIGHTS[i])
-            .collect();
+        let hidden_layers: Vec<[[f32; 256]; 31]> =
+            (0..num_devices).map(|i| *HIDDEN_WEIGHTS[i]).collect();
+        let output_layers: Vec<[[f32; 2]; 256]> =
+            (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
 
         // Attach one weak observer per device, each peeking 4 steps in the history.
         // Wrapped in Mutex because WeakObserver is Send but not Sync.
@@ -136,9 +141,7 @@ impl LinnOSPolicy {
     }
 }
 
-
 impl SelectionPolicy for LinnOSPolicy {
-    // FIXME: Need a holder for the most recent request. 
     fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
         let num_devices = self.members.len();
         let mut fail_cnt = 0;
@@ -161,7 +164,7 @@ impl SelectionPolicy for LinnOSPolicy {
             input[0] = ((current_outstanding / 100) % 10) as f32;
             input[1] = ((current_outstanding / 10) % 10) as f32;
             input[2] = (current_outstanding % 10) as f32;
-            
+
             // Feature Engineering in LinnOS: Decompose numbers into digits.
             // Historical features: 4 steps, each with 3 digits outstanding + 4 digits latency
             for i in 0..4 {

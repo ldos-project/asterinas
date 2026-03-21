@@ -7,9 +7,9 @@
 //
 // These weights will be filled in by a Python script with trained values.
 // For now, all weights are initialized to 0.0 as placeholders.
-// 
+//
 // The actual weights numbers are expected to be filled with the jinja2
-// templates by the Python scripts that trains the model. 
+// templates by the Python scripts that trains the model.
 
 /// Number of devices with hardcoded weights.
 pub const NUM_DEVICES: usize = 3;
@@ -33,15 +33,9 @@ pub static OUTPUT_WEIGHTS_1: [[f32; 2]; 256] = [[0.0; 2]; 256];
 pub static OUTPUT_WEIGHTS_2: [[f32; 2]; 256] = [[0.0; 2]; 256];
 
 /// All hidden layer weights indexed by device.
-pub static HIDDEN_WEIGHTS: [&[[f32; 256]; 31]; NUM_DEVICES] = [
-    &HIDDEN_WEIGHTS_0,
-    &HIDDEN_WEIGHTS_1,
-    &HIDDEN_WEIGHTS_2,
-];
+pub static HIDDEN_WEIGHTS: [&[[f32; 256]; 31]; NUM_DEVICES] =
+    [&HIDDEN_WEIGHTS_0, &HIDDEN_WEIGHTS_1, &HIDDEN_WEIGHTS_2];
 
 /// All output layer weights indexed by device.
-pub static OUTPUT_WEIGHTS: [&[[f32; 2]; 256]; NUM_DEVICES] = [
-    &OUTPUT_WEIGHTS_0,
-    &OUTPUT_WEIGHTS_1,
-    &OUTPUT_WEIGHTS_2,
-];
+pub static OUTPUT_WEIGHTS: [&[[f32; 2]; 256]; NUM_DEVICES] =
+    [&OUTPUT_WEIGHTS_0, &OUTPUT_WEIGHTS_1, &OUTPUT_WEIGHTS_2];
