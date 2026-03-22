@@ -40,6 +40,30 @@ use ostd::orpc::orpc_server;
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
 
+/// Ensures a parent [`SubmittedBio`] is always completed — either explicitly
+/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
+///
+/// This is used by the non-blocking read path: the guard is moved into the
+/// child BIO's completion callback. If the child completes normally, the
+/// callback calls [`complete`](Self::complete). If submission fails and the
+/// child is dropped, the guard's [`Drop`] impl completes the parent with an
+/// error so the filesystem thread is never left waiting.
+struct ParentGuard(Option<SubmittedBio>);
+impl ParentGuard {
+    fn complete(mut self, status: BioStatus) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(status);
+        }
+    }
+}
+impl Drop for ParentGuard {
+    fn drop(&mut self) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(BioStatus::IoError);
+        }
+    }
+}
+
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[cfg(baseline_asterinas)]
 #[derive(Debug)]
@@ -162,11 +186,12 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
+    /// Processes read requests synchronously.
+    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0. 
     ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member (round-robin) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to device 0
+    /// and submitted with `Bio::submit`. Completion of the parent is reported 
+    /// after the child finishes.
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
@@ -190,14 +215,14 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
-    ///
+    /// Processes read requests synchronously.
+    /// ORPC Version, i.e., do actual device selection
+    /// 
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
-    #[cfg(not(baseline_asterinas))]
+    #[cfg(sbaseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
-        // TODO(yingqi): Implement asynchronous read with policy selector.
         // Submit all children first to overlap device I/O.
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
@@ -226,6 +251,56 @@ impl Raid1Device {
             };
             // Report the completion status to the upper layer.
             parent.complete(status);
+        }
+    }
+
+    /// Processes read requests asynchronously.
+    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0. 
+    ///
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
+    /// member device 0 and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.
+    #[cfg(baseline_asterinas)]
+    fn process_read_async(&self, request: BioRequest) {
+        for parent in request.into_bios() {;
+            let member = self.devices[0].clone();
+            let start_sid = parent.sid_range().start;
+            let segments = parent.segments().to_vec();
+            let guard = ParentGuard(Some(parent));
+            let child = Bio::new_with_closure(
+                BioType::Read,
+                start_sid,
+                segments,
+                move |child_bio: &SubmittedBio| {
+                    guard.complete(child_bio.status());
+                },
+            );
+            let _ = child.submit(&*member);
+        }
+    }
+
+    /// Processes read requests asynchronously. 
+    /// ORPC Version, i.e., do actual device selection
+    /// 
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
+    /// member by the selection policy and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.
+    #[cfg(not(baseline_asterinas))]
+    fn process_read_async(&self, request: BioRequest) {
+        for parent in request.into_bios() {;
+            let member = self.selection_policy.select_block_device().unwrap();
+            let start_sid = parent.sid_range().start;
+            let segments = parent.segments().to_vec();
+            let guard = ParentGuard(Some(parent));
+            let child = Bio::new_with_closure(
+                BioType::Read,
+                start_sid,
+                segments,
+                move |child_bio: &SubmittedBio| {
+                    guard.complete(child_bio.status());
+                },
+            );
+            let _ = child.submit(&*member);
         }
     }
 
