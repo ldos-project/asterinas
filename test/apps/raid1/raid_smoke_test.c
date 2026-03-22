@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 // Define the file size for the test (e.g., one block = 4096 bytes)
 #define RAID1_TEST_BLOCK_SIZE 8192

@@ -169,7 +169,7 @@ impl Raid1Device {
     /// any `BlockDevice` and applies RAID semantics underneath.
     fn process_request(&self, request: BioRequest) {
         match request.type_() {
-            BioType::Read => self.process_read(request),
+            BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
             BioType::Discard => self.process_discard(request),
@@ -221,7 +221,7 @@ impl Raid1Device {
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
-    #[cfg(sbaseline_asterinas)]
+    #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
         // Submit all children first to overlap device I/O.
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
