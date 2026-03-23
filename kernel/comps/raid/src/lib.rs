@@ -262,7 +262,7 @@ impl Raid1Device {
     /// I/O. Completion of the parent is reported after the child finishes.
     #[cfg(baseline_asterinas)]
     fn process_read_async(&self, request: BioRequest) {
-        for parent in request.into_bios() {;
+        for parent in request.into_bios() {
             let member = self.devices[0].clone();
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
