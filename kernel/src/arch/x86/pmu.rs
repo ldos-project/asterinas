@@ -18,6 +18,7 @@ use crate::util::timer::TimerServer;
 #[orpc_trait]
 pub(crate) trait PMUD {}
 
+/// Data TLB Misses instance struct
 #[derive(Debug, Clone, Copy)]
 #[expect(dead_code)]
 struct DtlbMisses {
@@ -26,8 +27,10 @@ struct DtlbMisses {
     miss_all_tlb: u64,
 }
 
-// TODO(tewaro) actually support interesting options
-// TODO(tewaro) actually support multi-process
+/// PMU daemon that periodically read values and outputs to oq
+/// Currently only supports dTLB misses on Icelake-Server
+// TODO(tewaro, after SOSP) actually support interesting option
+// TODO(tewaro, after SOSP) actually support multi-process
 
 /// PMU daemon that periodically reads hw counters
 #[orpc_server(PMUD)]
