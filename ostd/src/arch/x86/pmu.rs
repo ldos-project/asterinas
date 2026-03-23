@@ -2,8 +2,8 @@
 
 //! PMU (Performance Monitoring Unit) hardware access.
 //!
-// TODO(after SOSP) make generic for counters
-// TODO(after SOSP) support machines other than Broadwell
+// TODO(tewaro) make generic for counters
+// TODO(tewaro) support machines other than Broadwell
 
 use x86::msr::{rdmsr, wrmsr};
 
@@ -17,8 +17,10 @@ const IA32_PERF_GLOBAL_CTRL: u32 = 0x38F;
 // Icelake-Server event configurations
 // EN=1 (bit 22), OS=1 (bit 17), USR=1 (bit 16), CMASK=0
 // Event 0x08 = DTLB_LOAD_MISSES
-const STLB_HIT_CONFIG: u64 = 0x00432008; // Umask 0x20: Miss L1 DTLB, Hit STLB
-const STLB_MISS_CONFIG: u64 = 0x00430E08; // Umask 0x0E: Miss all TLBs, page walk completed
+/// Umask 0x20: Miss L1 DTLB, Hit STLB
+const STLB_HIT_CONFIG: u64 = 0x00432008;
+/// Umask 0x0E: Miss all TLBs, page walk completed
+const STLB_MISS_CONFIG: u64 = 0x00430E08;
 
 /// Disables all PMU counters globally and programs the dTLB event selectors.
 pub fn pmu_reset() {

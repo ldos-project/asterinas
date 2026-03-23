@@ -26,11 +26,10 @@ struct DtlbMisses {
     miss_all_tlb: u64,
 }
 
-/// PMU daemon that periodically read values and outputs to oq
-/// Currently only supports dTLB misses on zerberus
-// TODO(after SOSP) actually support interesting option
-// TODO(after SOSP) actually support multi-process
+// TODO(tewaro) actually support interesting options
+// TODO(tewaro) actually support multi-process
 
+/// PMU daemon that periodically reads hw counters
 #[orpc_server(PMUD)]
 pub struct PMUServer {
     dtlb_miss_count_oq: OQueueRef<DtlbMisses>,
@@ -40,7 +39,7 @@ impl PMUServer {
     /// Create and spawn a new HugepagedServer.
     pub fn spawn() -> Arc<Self> {
         let pmud = Self::new().unwrap();
-        // TODO(after SOSP) needs to run inline with jiffies and defer push to oqueue
+        // TODO(tewaro) needs to run inline with jiffies and defer push to oqueue
         spawn_thread(pmud.clone(), {
             let pmud = pmud.clone();
             move || pmud.main()
