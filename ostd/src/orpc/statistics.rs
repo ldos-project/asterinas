@@ -15,7 +15,7 @@ use super::{
         spawn_thread,
     },
     legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
-    sync::select,
+    sync::select_legacy,
 };
 use crate::orpc::legacy_oqueue::OQueueAttachError;
 
@@ -68,7 +68,7 @@ impl OutstandingCounter {
                 let mut outstanding: isize = 0;
                 loop {
                     server.shutdown_state.check()?;
-                    select!(
+                    select_legacy!(
                         if let _ = request_observer.try_strong_observe() {
                             outstanding += 1;
                             outstanding_oqueue_producer.produce(outstanding);

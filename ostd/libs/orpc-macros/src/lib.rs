@@ -9,9 +9,10 @@ mod parsing_utils;
 mod select;
 
 use proc_macro::TokenStream;
+use quote::quote;
 use syn::{
-    ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
-    punctuated::Punctuated,
+    Expr, ExprMethodCall, ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility,
+    parse_macro_input, punctuated::Punctuated,
 };
 
 /// Declare a trait as an ORPC trait that can be implemented by ORPC server.
@@ -197,7 +198,41 @@ pub fn orpc_monitor(arg: TokenStream, input: TokenStream) -> TokenStream {
 /// For example:
 ///
 /// ```ignore
-/// orpc_macros::select!(
+/// orpc_macros::select_legacy!(
+///     if let msg = receiver1.try_produce() {
+///         assert_eq!(msg.x, receiver1_counter);
+///         receiver1_counter += 1;
+///     },
+///     if let TestMessage { x } = receiver2.try_produce() {
+///         assert_eq!(x, receiver2_counter);
+///         receiver2_counter += 1;
+///     }
+/// )
+/// ```
+///
+/// NOTE: Keep the code inside the macro short and call into separate functions if possible. Inside macros IDE
+/// assistance does not always work correctly and those tools are worth having for as much code as possible.
+#[proc_macro]
+pub fn select_legacy(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as select::SelectInput);
+    let output = select::select_macro_impl(
+        input,
+        |e| quote! { #e },
+        |b| quote! { ::core::convert::AsRef::as_ref(&#b) },
+    );
+    output.into()
+}
+
+/// Wait for one of multiple conditions to become true and execute the appropriate block.
+///
+/// The syntax is a series of if-let statements (separated by commas for technical reasons) where the RHS of each
+/// binding is in the form `[blocker].fields_and_methods`. `select` will block waiting for any of the blockers and then
+/// run all the if statements. The pattern must be irrefutable.
+///
+/// For example:
+///
+/// ```ignore
+/// orpc_macros::select_legacy!(
 ///     if let msg = receiver1.try_produce() {
 ///         assert_eq!(msg.x, receiver1_counter);
 ///         receiver1_counter += 1;
@@ -214,7 +249,19 @@ pub fn orpc_monitor(arg: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as select::SelectInput);
-    let output = select::select_macro_impl(input);
+    let output = select::select_macro_impl(
+        input,
+        |e| {
+            match e {
+                // Special case consume since it cannot return an error.
+                Expr::MethodCall(ExprMethodCall { method, .. }) if method == "try_consume" => {
+                    quote! { #e }
+                }
+                _ => quote! { #e ? },
+            }
+        },
+        |b| quote! { &#b },
+    );
     output.into()
 }
 

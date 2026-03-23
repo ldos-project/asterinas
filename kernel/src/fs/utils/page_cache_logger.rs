@@ -8,7 +8,7 @@ use ostd::orpc::{
     framework::{shutdown, spawn_thread},
     legacy_oqueue::{OQueueAttachError, OQueueRef},
     orpc_impl, orpc_server,
-    sync::select,
+    sync::select_legacy,
 };
 
 use crate::fs::server_traits::PageCacheReadInfo;
@@ -47,7 +47,7 @@ impl PageCacheLogger {
             move || {
                 loop {
                     server.shutdown_state.check()?;
-                    select!(
+                    select_legacy!(
                         if let info = read_obs.try_strong_observe() {
                             println!("{:?}", info);
                         },
