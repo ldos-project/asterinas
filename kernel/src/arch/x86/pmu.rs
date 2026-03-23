@@ -42,7 +42,7 @@ impl PMUServer {
     /// Create and spawn a new HugepagedServer.
     pub fn spawn() -> Arc<Self> {
         let pmud = Self::new().unwrap();
-        // TODO(tewaro) needs to run inline with jiffies and defer push to oqueue
+        // TODO(tewaro, after SOSP) needs to run inline with jiffies and defer push to oqueue
         spawn_thread(pmud.clone(), {
             let pmud = pmud.clone();
             move || pmud.main()

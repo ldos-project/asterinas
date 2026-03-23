@@ -2,8 +2,8 @@
 
 //! PMU (Performance Monitoring Unit) hardware access.
 //!
-// TODO(tewaro) make generic for counters
-// TODO(tewaro) support machines other than Broadwell
+// TODO(tewaro, after SOSP) make generic for counters
+// TODO(tewaro, after SOSP) support machines other than Broadwell
 
 use x86::msr::{rdmsr, wrmsr};
 
