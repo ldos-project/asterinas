@@ -65,6 +65,7 @@ use core::{
 mod implementation;
 pub mod query;
 pub mod registry;
+pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
