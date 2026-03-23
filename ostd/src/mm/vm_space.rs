@@ -28,6 +28,8 @@ use crate::{
     prelude::*,
     task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
 };
+#[cfg(not(baseline_asterinas))]
+use crate::{new_server, path};
 
 /// Request for [`VmMappingPolicy`].
 pub struct VmMappingRequest {
@@ -120,8 +122,8 @@ impl VmSpace {
             cpus: AtomicCpuSet::new(CpuSet::new_empty()),
             // Set the default policy to be base pages only. This can updated by calling
             // with_mapping_policy.
-            vm_mapping_policy: VmMappingPolicyBasePagesOnly::new_with(|orpc_internal, _| {
-                VmMappingPolicyBasePagesOnly { orpc_internal }
+            vm_mapping_policy: new_server!(path!(vmspace[unique]), |_| {
+                VmMappingPolicyBasePagesOnly {}
             }),
         };
         #[cfg(baseline_asterinas)]

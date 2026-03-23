@@ -40,7 +40,10 @@ pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
-    orpc::errors::{RPCError, ServerMissingSnafu},
+    orpc::{
+        errors::{RPCError, ServerMissingSnafu},
+        path::Path,
+    },
     prelude::Arc,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
@@ -55,6 +58,11 @@ pub trait Server: Any + Sync + Send + 'static {
     /// class pointer of this server.
     #[doc(hidden)]
     fn orpc_server_base(&self) -> &ServerBase;
+
+    /// Get the path of this server.
+    fn path(&self) -> &Path {
+        self.orpc_server_base().path()
+    }
 }
 
 static NEXT_SERVER_ID: AtomicUsize = AtomicUsize::new(1);
@@ -74,6 +82,8 @@ pub struct ServerBase {
     /// An opaque ID for the server. This is non-zero to allow compact representations of
     /// `Option<id>` in errors.
     id: NonZeroUsize,
+    /// The path of the server.
+    path: Path,
 }
 
 impl ServerBase {
@@ -82,12 +92,13 @@ impl ServerBase {
     ///
     /// Create a new `ServerBase` with a cyclical reference to the server containing it.
     #[doc(hidden)]
-    pub fn new(weak_this: Weak<dyn Server + Send + Sync + 'static>) -> Self {
+    pub fn new(path: Path, weak_this: Weak<dyn Server + Send + Sync + 'static>) -> Self {
         Self {
             aborted: Default::default(),
             server_threads: Mutex::new(Default::default()),
             weak_this,
             id: NonZeroUsize::new(NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
+            path,
         }
     }
 
@@ -166,6 +177,11 @@ impl ServerBase {
     pub fn id(&self) -> NonZeroUsize {
         self.id
     }
+
+    /// Get the path of the server assigned when it was created.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Methods to access the current server.
@@ -174,20 +190,30 @@ pub struct CurrentServer {
 }
 
 impl CurrentServer {
+    /// Call `f` with a reference to the current server.
+    pub fn with_server<T>(f: impl Fn(Option<&Arc<dyn Server + Send + Sync + 'static>>) -> T) -> T {
+        f(Task::current().unwrap().server().borrow().as_ref())
+    }
+
     /// Get a new Arc reference to the current server.
     pub fn current_cloned() -> Option<Arc<dyn Server + Send + Sync + 'static>> {
-        Task::current().unwrap().server().borrow().clone()
+        Self::with_server(|s| s.cloned())
     }
 
     /// Check if the current server has aborted
     pub fn is_aborted() -> bool {
-        Task::current()
-            .unwrap()
-            .server()
-            .borrow()
-            .as_ref()
-            .map(|s| s.orpc_server_base().is_aborted())
-            .unwrap_or(false)
+        Self::with_server(|s| {
+            s.map(|s| s.orpc_server_base().is_aborted())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Get the path of the current server.
+    pub fn path() -> Path {
+        Self::with_server(|s| {
+            s.map(|s| s.orpc_server_base().path().clone())
+                .unwrap_or_default()
+        })
     }
 
     /// Check the if the current server has aborted and panic if it has. This should be called periodically from all
@@ -358,7 +384,7 @@ mod test {
         fn spawn(f: F) -> Result<Arc<Self>, Whatever> {
             let server = Arc::<Self>::new_cyclic(|weak_this| Self {
                 f,
-                base: ServerBase::new(weak_this.clone()),
+                base: ServerBase::new(Path::test(), weak_this.clone()),
                 thread_exited: AtomicBool::new(false),
             });
             Self::orpc_start_threads(&server)?;
@@ -418,8 +444,8 @@ mod test {
         }
 
         assert_ne!(
-            ServerBase::new(Weak::<TestServer>::new()).id(),
-            ServerBase::new(Weak::<TestServer>::new()).id()
+            ServerBase::new(Path::test(), Weak::<TestServer>::new()).id(),
+            ServerBase::new(Path::test(), Weak::<TestServer>::new()).id()
         );
     }
 }

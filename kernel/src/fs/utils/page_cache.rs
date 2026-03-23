@@ -17,11 +17,13 @@ use lru::LruCache;
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
+    new_server,
     orpc::{
-        framework::spawn_thread,
-        legacy_oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
+        oqueue::{Consumer, OQueue, OQueueRef, RefProducer, reply::ReplyQueue},
         orpc_impl, orpc_server,
+        path::Path,
     },
+    path,
     task::Task,
 };
 use snafu::OptionExt;
@@ -97,9 +99,8 @@ fn get_log_hits_misses() -> bool {
 
 impl PageCache {
     /// Creates an empty size page cache associated with a new backend.
-    #[track_caller]
-    pub fn new(backend: Weak<dyn PageStore>) -> Result<Self> {
-        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
+    pub fn new(path: Path, backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(path, backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(0)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -111,9 +112,8 @@ impl PageCache {
     ///
     /// The `capacity` is the initial cache size required by the backend.
     /// This size usually corresponds to the size of the backend.
-    #[track_caller]
-    pub fn with_capacity(capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
-        let manager = PageCacheManager::spawn(backend, get_prefetch_policy())?;
+    pub fn with_capacity(path: Path, capacity: usize, backend: Weak<dyn PageStore>) -> Result<Self> {
+        let manager = PageCacheManager::spawn(path, backend, get_prefetch_policy())?;
         let pages = VmoOptions::<Full>::new(capacity)
             .flags(VmoFlags::RESIZABLE)
             .pager(manager.clone())
@@ -348,7 +348,7 @@ impl BuiltinPrefetchPolicy {
 struct OutstandingRequests {
     /// Outstanding requests in the form of the consumers that receive the reply. Each one is
     /// expected to receive exactly one reply.
-    outstanding: Vec<Box<dyn Consumer<PageHandle>>>,
+    outstanding: Vec<Consumer<PageHandle>>,
 }
 
 impl Debug for OutstandingRequests {
@@ -377,7 +377,7 @@ impl OutstandingRequests {
     /// Handle any response for a request and return true iff it has been fully processed.
     fn check_single_request(
         pages: &mut LruCache<usize, Frame<CachePageMeta>>,
-        c: &mut Box<dyn Consumer<PageHandle>>,
+        c: &mut Consumer<PageHandle>,
     ) -> bool {
         if let Some(PageHandle { idx, frame }) = c.try_consume() {
             Self::store_uptodate(pages, idx, frame);
@@ -454,7 +454,7 @@ struct PageCacheManagerInner {
     pages: LruCache<usize, CachePage>,
     builtin_prefetch_policy: Option<BuiltinPrefetchPolicy>,
     outstanding_requests: OutstandingRequests,
-    page_cache_read_info_producer: Option<Box<dyn Producer<PageCacheReadInfo>>>,
+    page_cache_read_info_producer: Option<RefProducer<PageCacheReadInfo>>,
 }
 
 impl PageCacheManagerInner {
@@ -511,55 +511,28 @@ impl PageCacheManagerInner {
 
 impl PageCacheManager {
     #[track_caller]
-    pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
+    pub fn spawn(path: Path, backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
         let policy = if Task::current().is_none() {
             PrefetchPolicy::None
         } else {
             policy
         };
 
-        let server = Self::new_with(|orpc_internal, weak_this| Self {
-            backend,
-            inner: Mutex::new(PageCacheManagerInner {
-                // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
-                pages: LruCache::unbounded(),
-                builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
-                    Some(BuiltinPrefetchPolicy::new())
-                } else {
-                    None
-                },
-                outstanding_requests: Default::default(),
-                page_cache_read_info_producer: None,
-            }),
-            weak_this: weak_this.clone(),
-            orpc_internal,
-        });
-
-        spawn_thread(server.clone(), {
-            let server = server.clone();
-            let prefetch_consumer = server.prefetch_oqueue().attach_consumer()?;
-            move || {
-                loop {
-                    ostd::orpc::framework::CurrentServer::abort_point();
-                    let idx = prefetch_consumer.consume();
-                    let size = server.backend()?.npages()?;
-                    if idx >= size {
-                        continue;
-                    }
-
-                    let mut inner = server.inner.lock();
-                    let inner = inner.deref_mut();
-
-                    // If the page is not in the cache, issue a request.
-                    if inner.pages.get(&idx).is_none() {
-                        inner.outstanding_requests.request_async(
-                            &mut inner.pages,
-                            &server.backend()?,
-                            idx,
-                            server.as_ref(),
-                        )?;
-                    }
-                }
+        let server = new_server!(path, |weak_this| {
+            Self {
+                backend,
+                inner: Mutex::new(PageCacheManagerInner {
+                    // Using a bounded LRU cache would cause data loss because automatic evictions are not caught and written back.
+                    pages: LruCache::unbounded(),
+                    builtin_prefetch_policy: if policy == PrefetchPolicy::Builtin {
+                        Some(BuiltinPrefetchPolicy::new())
+                    } else {
+                        None
+                    },
+                    outstanding_requests: Default::default(),
+                    page_cache_read_info_producer: None,
+                }),
+                weak_this: weak_this.clone(),
             }
         });
 
@@ -629,7 +602,9 @@ impl PageCacheManager {
     /// this call. If the built-in prefetch policy is enabled, this will trigger readaheads as
     /// needed.
     fn read_page(&self, idx: usize) -> Result<UFrame> {
-        self.page_reads_oqueue().produce(idx)?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&idx);
 
         let frame = {
             let backend = self.backend()?;
@@ -639,7 +614,7 @@ impl PageCacheManager {
             // Lazily initialize page_cache_read_info_producer
             if inner.page_cache_read_info_producer.is_none() {
                 inner.page_cache_read_info_producer =
-                    Some(self.page_cache_read_info_oqueue().attach_producer()?);
+                    Some(self.page_cache_read_info_oqueue().attach_ref_producer()?);
             }
 
             let page_cache_read_info_producer =
@@ -657,7 +632,7 @@ impl PageCacheManager {
                 if let PageState::Uninit = page.load_state() {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
+                    page_cache_read_info_producer.produce_ref(&PageCacheReadInfo {
                         idx,
                         cache_state: CacheState::Pending,
                     });
@@ -668,7 +643,7 @@ impl PageCacheManager {
                     inner.pages.get(&idx).context(UNREACHABLE_SNAFU)?.clone()
                 } else {
                     // Cond 1.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
+                    page_cache_read_info_producer.produce_ref(&PageCacheReadInfo {
                         idx,
                         cache_state: CacheState::Hit,
                     });
@@ -676,7 +651,7 @@ impl PageCacheManager {
                 }
             } else {
                 // Cond 3.
-                page_cache_read_info_producer.produce(PageCacheReadInfo {
+                page_cache_read_info_producer.produce_ref(&PageCacheReadInfo {
                     idx,
                     cache_state: CacheState::Miss,
                 });
@@ -703,7 +678,9 @@ impl PageCacheManager {
             frame
         };
 
-        self.page_reads_reply_oqueue().produce(idx)?;
+        self.page_reads_reply_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&idx);
 
         Ok(frame.into())
     }
@@ -724,8 +701,8 @@ impl Debug for PageCacheManager {
 #[orpc_impl]
 impl PageIOObservable for PageCacheManager {
     fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
     fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
     fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
@@ -742,8 +719,12 @@ impl Pager for PageCacheManager {
         if let Some(page) = pages.get_mut(&idx) {
             page.store_state(PageState::Dirty);
             drop(inner);
-            self.page_writes_oqueue().produce(idx)?;
-            self.page_writes_reply_oqueue().produce(idx)?;
+            self.page_writes_oqueue()
+                .attach_ref_producer()?
+                .produce_ref(&idx);
+            self.page_writes_reply_oqueue()
+                .attach_ref_producer()?
+                .produce_ref(&idx);
         } else {
             warn!("The page {} is not in page cache", idx);
         }
@@ -785,13 +766,32 @@ impl Pager for PageCacheManager {
 
 #[orpc_impl]
 impl server_traits::PageCache for PageCacheManager {
-    fn prefetch_oqueue(&self) -> OQueueRef<usize>;
-
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
         self.backend()
     }
 
     fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo>;
+
+    fn prefetch(&self, idx: usize) -> Result<()> {
+        let size = self.backend()?.npages()?;
+        if idx >= size {
+            return Ok(());
+        }
+
+        let mut inner = self.inner.lock();
+        let inner = inner.deref_mut();
+
+        // If the page is not in the cache, issue a request.
+        if inner.pages.get(&idx).is_none() {
+            inner.outstanding_requests.request_async(
+                &mut inner.pages,
+                &self.backend()?,
+                idx,
+                self,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// A page in the page cache.

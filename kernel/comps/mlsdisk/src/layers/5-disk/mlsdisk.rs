@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ostd::{ignore_err, mm::VmIo};
+use ostd::{ignore_err, mm::VmIo, orpc::path::Path, path};
 use ostd_pod::Pod;
 
 use super::{
@@ -65,6 +65,8 @@ struct DiskInner<D: BlockSet> {
     root_key: Key,
     /// Whether `MlsDisk` is dropped.
     is_dropped: AtomicBool,
+    /// The path of this device.
+    path: Path,
     /// Scope lock for control write and sync operation.
     write_sync_region: RwLock<()>,
 }
@@ -163,6 +165,10 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             nr_sectors: (BLOCK_SIZE / SECTOR_SIZE) * self.total_blocks(),
         }
     }
+
+    fn path(&self) -> ostd::orpc::path::Path {
+        self.inner.path.clone()
+    }
 }
 
 impl<D: BlockSet + 'static> MlsDisk<D> {
@@ -211,6 +217,9 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
         self.inner.user_data_disk.nblocks()
     }
 
+    // TODO(arthurp): The paths of the disks are not based on the underlying block devices like they
+    // should be.
+
     /// Creates a new `MlsDisk` on the given disk, with the root encryption key.
     pub fn create(
         disk: D,
@@ -254,6 +263,7 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
                 root_key,
                 is_dropped: AtomicBool::new(false),
                 write_sync_region: RwLock::new(()),
+                path: path!(block_device.create_mls[unique]),
             }),
         };
 
@@ -306,6 +316,7 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
                 root_key,
                 is_dropped: AtomicBool::new(false),
                 write_sync_region: RwLock::new(()),
+                path: path!(block_device.open_mls[unique]),
             }),
         };
 

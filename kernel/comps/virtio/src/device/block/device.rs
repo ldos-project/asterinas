@@ -23,15 +23,18 @@ use log::{debug, info};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::framework::spawn_thread;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueueRef, Producer};
+use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, ValueProducer};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{orpc_impl, orpc_server};
 use ostd::{
     Pod, ignore_err,
     mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmIo},
+    path,
     sync::SpinLock,
     trap::TrapFrame,
 };
+#[cfg(not(baseline_asterinas))]
+use ostd::{new_server, orpc::framework::Server};
 
 use super::{BlockFeatures, VirtioBlockConfig, VirtioBlockFeature};
 #[cfg(not(baseline_asterinas))]
@@ -65,8 +68,8 @@ pub struct BlockDevice {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
-    fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio>;
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
+    fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio>;
+    fn bio_completion_oqueue(&self) -> ConsumableOQueueRef<BlockDeviceCompletionStats>;
 }
 
 impl BlockDevice {
@@ -97,13 +100,15 @@ impl BlockDevice {
 
         #[cfg(not(baseline_asterinas))]
         {
-            let block_device_server = Self::new_with(|orpc_internal, _weak_self| BlockDevice {
-                orpc_internal,
-                device,
-                queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
-                    (DeviceInner::QUEUE_SIZE - 2) as usize,
-                )),
-            });
+            let block_device_server =
+                new_server!(path!(block_device.virtio.{device_id}), |_weak_self| {
+                    BlockDevice {
+                        device,
+                        queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
+                            (DeviceInner::QUEUE_SIZE - 2) as usize,
+                        )),
+                    }
+                });
 
             // Thread 2: Handle requests from the OQueue and enqueue them
             spawn_thread(block_device_server.clone(), {
@@ -170,12 +175,14 @@ impl aster_block::BlockDevice for BlockDevice {
 #[cfg(not(baseline_asterinas))]
 impl aster_block::BlockDevice for BlockDevice {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
-        let reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>> =
-            self.bio_completion_oqueue().attach_producer()?;
+        let reply_handle: ValueProducer<BlockDeviceCompletionStats> =
+            self.bio_completion_oqueue().attach_value_producer()?;
 
         let mut bio = bio;
         bio.prepare_enqueue(reply_handle, self.queue.clone());
-        self.bio_submission_oqueue().produce(bio)?;
+        self.bio_submission_oqueue()
+            .attach_value_producer()?
+            .produce(bio);
         Ok(())
     }
 
@@ -184,6 +191,10 @@ impl aster_block::BlockDevice for BlockDevice {
             max_nr_segments_per_bio: self.queue.as_ref().max_nr_segments_per_bio(),
             nr_sectors: self.device.config_manager.capacity_sectors(),
         }
+    }
+
+    fn path(&self) -> ostd::orpc::path::Path {
+        Server::path(self).clone()
     }
 }
 

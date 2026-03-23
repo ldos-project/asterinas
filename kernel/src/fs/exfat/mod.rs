@@ -106,6 +106,10 @@ mod test {
                 nr_sectors: self.sectors_count(),
             }
         }
+
+        fn path(&self) -> ostd::orpc::path::Path {
+            ostd::orpc::path::Path::test()
+        }
     }
     /// Exfat disk image
     static EXFAT_IMAGE: &[u8] = include_bytes!("../../../../test/build/exfat.img");

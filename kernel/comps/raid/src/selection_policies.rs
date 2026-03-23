@@ -5,8 +5,15 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use aster_block::BlockDevice;
-use ostd::{Error, orpc::orpc_server};
+use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
+use ostd::{
+    Error,
+    orpc::{
+        oqueue::{OQueueBase as _, ObservationQuery},
+        orpc_server,
+        path::Path,
+    },
+};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
 
@@ -18,8 +25,8 @@ pub struct RoundRobinPolicy {
 }
 
 impl RoundRobinPolicy {
-    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
+    pub fn new(path: Path, members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
+        let server = Self::new_with(path, |orpc_internal, _| Self {
             orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
@@ -49,8 +56,11 @@ pub struct LinnOSPolicy {
 }
 
 impl LinnOSPolicy {
-    pub fn new(members: Vec<Arc<dyn ObservableBlockDevice>>) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
+    pub fn new(
+        path: Path,
+        members: Vec<Arc<dyn ObservableBlockDevice>>,
+    ) -> Result<Arc<Self>, Error> {
+        let server = Self::new_with(path, |orpc_internal, _| Self {
             orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
@@ -70,7 +80,7 @@ impl SelectionPolicy for LinnOSPolicy {
             .map(|device| {
                 device
                     .bio_completion_oqueue()
-                    .attach_weak_observer()
+                    .attach_weak_observer(4, ObservationQuery::identity())
                     .expect("Failed to attach weak observer to bio_completion_oqueue")
             })
             .collect();
@@ -78,7 +88,11 @@ impl SelectionPolicy for LinnOSPolicy {
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
             let observer = &trace_observers[idx % trace_observers.len()];
-            let completion_trace = observer.weak_observe_recent(4);
+            let completion_trace: Vec<BlockDeviceCompletionStats> = observer
+                .weak_observe_recent(4)?
+                .iter()
+                .map(|v| v.unwrap_or_default())
+                .collect();
 
             // Inference using the ML model
             let x = self.model[0] * completion_trace[0].latency.as_nanos() as f32

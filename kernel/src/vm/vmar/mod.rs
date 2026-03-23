@@ -20,7 +20,9 @@ use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
 use ostd::mm::vm_space::VmMappingPolicyOQueues;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue};
+use ostd::orpc::oqueue::{OQueue as _, OQueueRef, RefProducer};
+#[cfg(not(baseline_asterinas))]
+use ostd::path;
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::{
@@ -200,10 +202,9 @@ pub struct PageFaultOQueueMessage {
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
-    use alloc::sync::Arc;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
-    use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use ostd::orpc::oqueue::OQueueRef;
     use spin::Once;
 
     use super::PageFaultOQueueMessage;
@@ -225,19 +226,18 @@ pub mod oqueues {
         }
     }
 
-    pub(super) static PAGE_FAULT_OQUEUE: Once<
-        Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>>,
-    > = Once::new();
+    pub(super) static PAGE_FAULT_OQUEUE: Once<OQueueRef<ObservableEvent<PageFaultOQueueMessage>>> =
+        Once::new();
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<isize>>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<OQueueRef<ObservableEvent<isize>>> = Once::new();
 
-    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<isize>>> {
+    pub fn get_rss_delta_oqueue() -> OQueueRef<ObservableEvent<isize>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
-    pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>> {
+    pub fn get_page_fault_oqueue() -> OQueueRef<ObservableEvent<PageFaultOQueueMessage>> {
         PAGE_FAULT_OQUEUE.wait().clone()
     }
 }
@@ -245,9 +245,8 @@ pub mod oqueues {
 pub fn init() {
     #[cfg(not(baseline_asterinas))]
     {
-        // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
-        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| OQueueRef::new(64, path!(vmar.page_fault)));
+        oqueues::RSS_DELTA_OQUEUE.call_once(|| OQueueRef::new(64, path!(vmar.rss_delta)));
     }
 }
 
@@ -266,7 +265,7 @@ pub(super) struct Vmar_ {
 
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
+    page_fault_oqueue_producer: RefProducer<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
 }
 
 struct VmarInner {
@@ -571,7 +570,10 @@ impl Vmar_ {
             rss_counters,
             rss_hwm_counters,
             #[cfg(not(baseline_asterinas))]
-            page_fault_oqueue_producer: oqueues::PAGE_FAULT_OQUEUE.wait().clone(),
+            page_fault_oqueue_producer: oqueues::PAGE_FAULT_OQUEUE
+                .wait()
+                .attach_ref_producer()
+                .expect("Failed to attach page fault oqueue producer"),
         })
     }
 
@@ -579,8 +581,10 @@ impl Vmar_ {
         let vmar_inner = VmarInner::new();
         let mut vm_space = VmSpace::new();
         if huge_mapping_enabled() {
-            vm_space =
-                vm_space.with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}));
+            vm_space = vm_space
+                .with_mapping_policy(new_server!(path!(vmar.root.mapping_policy[unique]), |_| {
+                    VmMappingPolicyGreedyHugeMapping {}
+                }));
         }
         Vmar_::new(
             vmar_inner,
@@ -661,10 +665,10 @@ impl Vmar_ {
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
                 self.page_fault_oqueue_producer
-                    .produce(oqueues::ObservableEvent::new(PageFaultOQueueMessage {
+                    .produce_ref(&oqueues::ObservableEvent::new(PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
-                    }))?;
+                    }));
             }
             return res;
         }
@@ -850,8 +854,10 @@ impl Vmar_ {
             let vmar_inner = VmarInner::new();
             let mut new_space = VmSpace::new();
             if huge_mapping_enabled() {
-                new_space = new_space
-                    .with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}))
+                new_space = new_space.with_mapping_policy(new_server!(
+                    path!(vmar.fork.mapping_policy[unique]),
+                    |_| VmMappingPolicyGreedyHugeMapping {}
+                ))
             }
             Vmar_::new(
                 vmar_inner,
@@ -1351,9 +1357,11 @@ impl<'a> RssDelta<'a> {
             } else {
                 oqueues::GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed);
             }
-            let _ = oqueues::RSS_DELTA_OQUEUE
+            oqueues::RSS_DELTA_OQUEUE
                 .wait()
-                .produce(oqueues::ObservableEvent::new(increment));
+                .attach_ref_producer()
+                .expect("Failed to attach RSS delta oqueue producer")
+                .try_produce_ref(&oqueues::ObservableEvent::new(increment));
         }
 
         self.delta[rss_type as usize] += increment;

@@ -8,12 +8,13 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use inherit_methods_macro::inherit_methods;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     const_assert,
     mm::UntypedMem,
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{framework::Server as _, oqueue::OQueue as _, orpc_impl, orpc_server},
+    path,
     util::callback_counter::CallbackCounter,
 };
 
@@ -974,6 +975,7 @@ impl InodeInner {
         Self {
             page_cache: {
                 let cache = PageCache::with_capacity(
+                    inode_impl.block_manager.path().clone(),
                     num_page_bytes,
                     Arc::downgrade(&inode_impl.block_manager) as _,
                 )
@@ -1218,12 +1220,18 @@ struct InodeImpl {
 
 impl InodeImpl {
     pub fn new(desc: Dirty<InodeDesc>, weak_self: Weak<Inode>, fs: Weak<Ext2>) -> Self {
-        let block_manager = new_server!(|_| InodeBlockManager {
-            nblocks: AtomicUsize::new(desc.blocks_count() as _),
-            block_ptrs: RwMutex::new(desc.block_ptrs),
-            indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
-            fs,
-        });
+        let block_manager = new_server!(
+            fs.upgrade()
+                .unwrap()
+                .path()
+                .append(&path!(inode_block_manager[unique])),
+            |_| InodeBlockManager {
+                nblocks: AtomicUsize::new(desc.blocks_count() as _),
+                block_ptrs: RwMutex::new(desc.block_ptrs),
+                indirect_blocks: RwMutex::new(IndirectBlockCache::new(fs.clone())),
+                fs,
+            }
+        );
         Self {
             desc,
             block_manager,
@@ -2037,22 +2045,26 @@ impl server_traits::PageIOObservable for InodeBlockManager {
 impl server_traits::PageStore for InodeBlockManager {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_reads_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
         self.read_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
             // TODO(arthurp, #120): This can crash if produce blocks.
-            reply_producer.produce(req.handle.idx);
+            reply_producer.produce_ref(&req.handle.idx);
             req.reply_handle.produce(req.handle);
         })
     }
 
     fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
         self.write_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
             // TODO(arthurp, #120): This can crash if produce blocks.
-            reply_producer.produce(req.handle.idx);
+            reply_producer.produce_ref(&req.handle.idx);
             if let Some(reply_handle) = req.reply_handle {
                 reply_handle.produce(req.handle);
             }

@@ -16,8 +16,13 @@ use hashbrown::HashMap;
 use lru::LruCache;
 pub(super) use ostd::mm::VmIo;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
-use ostd::{mm::Segment, new_server, orpc::orpc_server};
+use ostd::orpc::{oqueue::OQueue, orpc_impl};
+use ostd::{
+    mm::Segment,
+    new_server,
+    orpc::{oqueue::OQueueRef, orpc_server},
+    path,
+};
 
 use super::{
     bitmap::ExfatBitmap,
@@ -77,7 +82,8 @@ impl ExfatFS {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = new_server!(|weak_self| ExfatFS {
+        let path = block_device.path().append(&path!(exfat));
+        let exfat_fs = new_server!(path.clone(), |weak_self| ExfatFS {
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),
@@ -88,7 +94,7 @@ impl ExfatFS {
             fat_cache: RwLock::new(LruCache::<ClusterID, ClusterID>::new(
                 NonZeroUsize::new(FAT_LRU_CACHE_SIZE).unwrap(),
             )),
-            meta_cache: PageCache::with_capacity(fs_size, weak_self.clone() as _).unwrap(),
+            meta_cache: PageCache::with_capacity(path.append(&path!(page_cache)), fs_size, weak_self.clone() as _).unwrap(),
             mutex: Mutex::new(()),
         });
 
@@ -106,7 +112,7 @@ impl ExfatFS {
             FatChainFlags::ALLOC_POSSIBLE,
         )?;
 
-        let root = ExfatInode::build_root_inode(weak_fs.clone(), root_chain.clone())?;
+        let root = ExfatInode::build_root_inode(&path, weak_fs.clone(), root_chain.clone())?;
 
         let upcase_table = ExfatUpcaseTable::load(
             weak_fs.clone(),
@@ -400,15 +406,17 @@ impl PageStore for ExfatFS {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
 
         self.block_device.read_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
             bio_segment,
             move |b| {
                 // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce(req.handle.idx);
+                reply_producer.produce_ref(&req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
         )?;
@@ -426,8 +434,10 @@ impl PageStore for ExfatFS {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
 
         self.block_device.write_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
@@ -435,7 +445,7 @@ impl PageStore for ExfatFS {
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
                     // TODO(arthurp, #120): This can crash if produce blocks.
-                    reply_producer.produce(req.handle.idx);
+                    reply_producer.produce_ref(&req.handle.idx);
                     reply_handle.produce(req.handle);
                 }
             },

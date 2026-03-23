@@ -35,7 +35,10 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::orpc_server;
+use ostd::{
+    orpc::{orpc_server, path::Path},
+    path,
+};
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
@@ -62,6 +65,8 @@ pub struct Raid1Device {
 
     /// Basic capacity limits for the logical device (min across members).
     metadata: BlockDeviceMeta,
+
+    path: Path,
 
     /// The policy to select the read member.
     selection_policy: Arc<dyn SelectionPolicy>,
@@ -112,6 +117,8 @@ impl Raid1Device {
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<(), Raid1DeviceError> {
+        use ostd::new_server;
+
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -122,12 +129,12 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
-        let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
-            orpc_internal,
+        let device = new_server!(path!(block.raid1.{name}), |_| Raid1Device {
             members,
             queue,
             metadata,
             selection_policy,
+            path: path!(block_device.raid1.{name})
         });
 
         aster_block::register_device(name.to_owned(), device.clone());
@@ -364,5 +371,9 @@ impl BlockDevice for Raid1Device {
     /// Returns the logical device metadata.
     fn metadata(&self) -> BlockDeviceMeta {
         self.metadata
+    }
+
+    fn path(&self) -> ostd::orpc::path::Path {
+        self.path.clone()
     }
 }

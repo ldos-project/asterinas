@@ -60,6 +60,14 @@ impl<T: Copy> ObservationQuery<T, T> {
     }
 }
 
+impl<T: ?Sized> ObservationQuery<T, ()> {
+    /// A query which only observes that a message was sent without capturing any information.
+    pub fn unit() -> Self {
+        Self {
+            extractor: Box::new(|_| Some(())),
+        }
+    }
+}
 #[cfg(ktest)]
 mod test {
     use super::*;

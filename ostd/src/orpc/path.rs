@@ -276,6 +276,8 @@ macro_rules! path {
         #[allow(clippy::allow_attributes, unused)]
         use ::core::sync::atomic::{AtomicUsize, Ordering};
         use ::alloc::vec;
+        #[allow(clippy::allow_attributes, unused)]
+        use ::alloc::string::ToString;
 
         let components = $crate::__path_parse!([] @ {$($part)*});
         Path::new(components)

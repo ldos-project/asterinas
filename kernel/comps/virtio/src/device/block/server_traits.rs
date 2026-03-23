@@ -1,41 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
-use ostd::orpc::{
-    errors::RPCError,
-    legacy_oqueue::{
-        OQueueAttachError, OQueueRef,
-        locking::{LockingQueue, ObservableLockingQueue},
-    },
-    orpc_trait,
+use ostd::{
+    orpc::{oqueue::ConsumableOQueueRef, orpc_trait},
+    path,
 };
-
-use crate::device::VirtioDeviceError;
-
-impl From<RPCError> for VirtioDeviceError {
-    fn from(value: RPCError) -> Self {
-        VirtioDeviceError::RPCError(value)
-    }
-}
-
-impl From<OQueueAttachError> for VirtioDeviceError {
-    fn from(value: OQueueAttachError) -> Self {
-        VirtioDeviceError::OQueueAttachError(value)
-    }
-}
 
 #[orpc_trait]
 pub trait BlockIOObservable {
     /// The OQueue containing every bio submission request.
     /// The submission queue doesn't needed to be observable.
-    fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio> {
-        LockingQueue::new(32)
+    fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio> {
+        ConsumableOQueueRef::new(32, path!(bio_submission_oqueue[unique]))
     }
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats> {
-        ObservableLockingQueue::new(32, 1)
+    fn bio_completion_oqueue(&self) -> ConsumableOQueueRef<BlockDeviceCompletionStats> {
+        ConsumableOQueueRef::new(32, path!(bio_completion_oqueue[unique]))
     }
 }
 

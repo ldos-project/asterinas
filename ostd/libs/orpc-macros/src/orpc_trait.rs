@@ -116,8 +116,8 @@ pub fn orpc_trait_macro_impl(
             _phantom: #phantom
         }
 
-        impl #impl_generics ::core::default::Default for #oqueues_struct_ident #type_generics #where_clause {
-            fn default() -> Self {
+        impl #impl_generics #oqueues_struct_ident #type_generics #where_clause {
+            #vis fn new(server_path: ::ostd::orpc::path::Path) -> Self {
                 Self {
                     #(#oqueue_initializers,)*
                     _phantom: ::core::marker::PhantomData,
@@ -226,6 +226,12 @@ fn process_oqueue_method(
         .collect();
     // Create the initializer for the field. In the error case, just use `todo!` and generate an error separately.
     if let Some(constr) = &trait_item_method.default {
+        let constr = quote! {
+            {
+                let oqueue_path = server_path.append(&::ostd::path!(#ident));
+                #constr
+            }
+        };
         oqueue_initializers.push(quote! {
                 #ident: #constr
         });

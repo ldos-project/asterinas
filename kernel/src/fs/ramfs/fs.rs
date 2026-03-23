@@ -12,11 +12,12 @@ use aster_rights::Full;
 use aster_util::slot_vec::SlotVec;
 use hashbrown::HashMap;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     mm::{UntypedMem, VmIo},
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{oqueue::OQueue as _, orpc_impl, orpc_server, path::Path},
+    path,
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
@@ -54,15 +55,21 @@ pub struct RamFS {
     root: Arc<RamInode>,
     /// An inode allocator
     inode_allocator: AtomicU64,
+    // The path of this filesystem.
+    path: Path,
 }
 
 impl RamFS {
     #[cfg(not(baseline_asterinas))]
     pub fn new() -> Arc<Self> {
+        use ostd::path;
+
+        let fs_path = path!(ramfs[unique]);
         Arc::new_cyclic(|weak_fs| Self {
             sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX),
             root: RamInode::new_inode_with(
-                |this| Inner::new_dir(this.clone(), this.clone()),
+                fs_path.append(&path!(inode[{ ROOT_INO as usize }])),
+                |_path, this| Inner::new_dir(this.clone(), this.clone()),
                 InodeMeta::new_dir(
                     InodeMode::from_bits_truncate(0o755),
                     Uid::new_root(),
@@ -73,6 +80,7 @@ impl RamFS {
                 ROOT_INO,
             ),
             inode_allocator: AtomicU64::new(ROOT_INO + 1),
+            path: fs_path,
         })
     }
 
@@ -158,8 +166,8 @@ impl Inner {
         Self::Dir(RwLock::new(DirEntry::new(this, parent)))
     }
 
-    pub fn new_file(this: Weak<RamInode>) -> Self {
-        Self::File(crate::fs::utils::PageCache::new(this).unwrap())
+    pub fn new_file(path: Path, this: Weak<RamInode>) -> Self {
+        Self::File(crate::fs::utils::PageCache::new(path, this).unwrap())
     }
 
     pub fn new_symlink() -> Self {
@@ -421,31 +429,37 @@ impl DirEntry {
 #[cfg(not(baseline_asterinas))]
 impl RamInode {
     fn new_inode_with(
-        inner: impl FnOnce(&Weak<RamInode>) -> Inner,
+        path: Path,
+        inner: impl FnOnce(&Path, &Weak<RamInode>) -> Inner,
         meta: InodeMeta,
         fs: Weak<RamFS>,
         typ: InodeType,
         ino: u64,
     ) -> Arc<RamInode> {
-        new_server!(|weak_self| RamInode {
-            inner: inner(weak_self),
-            metadata: SpinLock::new(meta),
-            ino,
-            typ,
-            this: weak_self.clone(),
-            fs,
-            extension: Extension::new(),
-            xattr: RamXattr::new(),
-        })
+        new_server!(
+            path.clone(),
+            |weak_self| RamInode {
+                inner: inner(&path, weak_self),
+                metadata: SpinLock::new(meta),
+                ino,
+                typ,
+                this: weak_self.clone(),
+                fs,
+                extension: Extension::new(),
+                xattr: RamXattr::new(),
+            }
+        )
     }
 
     fn new_inode(
-        inner: impl FnOnce(&Weak<RamInode>) -> Inner,
+        inner: impl FnOnce(&Path, &Weak<RamInode>) -> Inner,
         meta: InodeMeta,
         fs: &Arc<RamFS>,
         typ: InodeType,
     ) -> Arc<Self> {
-        Self::new_inode_with(inner, meta, Arc::downgrade(fs), typ, fs.alloc_id())
+        let ino = fs.alloc_id();
+        let path = fs.path.append(&path!(inode[{ ino as usize }]));
+        Self::new_inode_with(path, inner, meta, Arc::downgrade(fs), typ, ino)
     }
 
     fn new_dir(
@@ -456,7 +470,7 @@ impl RamInode {
         parent: &Weak<RamInode>,
     ) -> Arc<Self> {
         Self::new_inode(
-            |this| Inner::new_dir(this.clone(), parent.clone()),
+            |_path, this| Inner::new_dir(this.clone(), parent.clone()),
             InodeMeta::new_dir(mode, uid, gid),
             fs,
             InodeType::Dir,
@@ -465,7 +479,7 @@ impl RamInode {
 
     fn new_file(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
         Self::new_inode(
-            |this| Inner::new_file(this.clone()),
+            |path, this| Inner::new_file(path.clone(), this.clone()),
             InodeMeta::new(mode, uid, gid),
             fs,
             InodeType::File,
@@ -474,7 +488,7 @@ impl RamInode {
 
     fn new_symlink(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
         Self::new_inode(
-            |_| Inner::new_symlink(),
+            |_, _| Inner::new_symlink(),
             InodeMeta::new(mode, uid, gid),
             fs,
             InodeType::SymLink,
@@ -490,7 +504,7 @@ impl RamInode {
     ) -> Arc<Self> {
         let inode_type = InodeType::from(device.type_());
         Self::new_inode(
-            |_| Inner::new_device(device),
+            |_, _| Inner::new_device(device),
             InodeMeta::new(mode, uid, gid),
             fs,
             inode_type,
@@ -499,7 +513,7 @@ impl RamInode {
 
     fn new_socket(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
         Self::new_inode(
-            |_| Inner::new_socket(),
+            |_, _| Inner::new_socket(),
             InodeMeta::new(mode, uid, gid),
             fs,
             InodeType::Socket,
@@ -508,7 +522,7 @@ impl RamInode {
 
     fn new_named_pipe(fs: &Arc<RamFS>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
         Self::new_inode(
-            |_| Inner::new_named_pipe(),
+            |_, _| Inner::new_named_pipe(),
             InodeMeta::new(mode, uid, gid),
             fs,
             InodeType::NamedPipe,
@@ -652,7 +666,9 @@ impl PageIOObservable for RamInode {
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        self.page_reads_oqueue().produce(req.handle.idx)?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
         // Initially, any block/page in a RamFs inode contains all zeros
         req.handle
             .frame
@@ -660,21 +676,25 @@ impl PageStore for RamInode {
             .to_fallible()
             .fill_zeros(req.handle.frame.size())
             .unwrap();
-        self.page_reads_reply_oqueue().produce(req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
+        reply_producer.produce_ref(&req.handle.idx);
         req.reply_handle.produce(req.handle);
         Ok(())
     }
 
     fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()> {
         // TODO:OPTIMIZATION: Avoid the clone.
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        self.page_writes_reply_oqueue().produce(req.handle.idx)?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        self.page_writes_reply_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
         if let Some(reply_handle) = req.reply_handle {
             reply_handle.produce(req.handle);
         }
         Ok(())
     }
-
     fn npages(&self) -> Result<usize> {
         Ok(self.metadata.lock().blocks)
     }

@@ -12,9 +12,10 @@ use ostd::{
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },
-        legacy_oqueue::OQueueRef,
+        oqueue::{OQueue as _, OQueueRef},
         orpc_impl, orpc_server,
     },
+    path,
     sync::WaitQueue,
 };
 use snafu::Whatever;
@@ -30,11 +31,11 @@ pub struct TimerServer {
 #[orpc_impl]
 impl Notifier for TimerServer {
     fn notify(&self) -> Result<(), RPCError> {
-        if self.notification_oqueue().produce(()).is_err() {
-            panic!("Could not produce into notification_oqueue")
-        } else {
-            Ok(())
-        }
+        self.notification_oqueue()
+            .attach_ref_producer()
+            .expect("Could not attach producer to notification_oqueue")
+            .produce_ref(&());
+        Ok(())
     }
 
     fn notification_oqueue(&self) -> OQueueRef<()>;
@@ -53,7 +54,7 @@ impl TimerServer {
 
     /// Create a TimerServer with the specified frequency.
     pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self { freq });
+        let server = new_server!(path!(timer[unique]), |_| Self { freq });
         Ok(server)
     }
 

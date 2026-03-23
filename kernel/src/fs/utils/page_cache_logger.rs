@@ -3,12 +3,16 @@
 use alloc::sync::Arc;
 
 use aster_logger::println;
-use ostd::orpc::{
-    errors::RPCError,
-    framework::{shutdown, spawn_thread},
-    legacy_oqueue::{OQueueAttachError, OQueueRef},
-    orpc_impl, orpc_server,
-    sync::select_legacy,
+use ostd::{
+    new_server,
+    orpc::{
+        errors::RPCError,
+        framework::{shutdown, spawn_thread},
+        oqueue::{OQueueBase as _, OQueueError, OQueueRef, ObservationQuery},
+        orpc_impl, orpc_server,
+        sync::select,
+    },
+    path,
 };
 
 use crate::fs::server_traits::PageCacheReadInfo;
@@ -30,24 +34,24 @@ impl shutdown::Shutdown for PageCacheLogger {
 impl PageCacheLogger {
     pub fn spawn(
         page_cache_read_info_oqueue: OQueueRef<PageCacheReadInfo>,
-    ) -> Result<Arc<Self>, OQueueAttachError> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            shutdown_state: Default::default(),
+    ) -> Result<Arc<Self>, OQueueError> {
+        let server = new_server!(path!(page_cache_logger[unique]), |_| Self {
+            shutdown_state: shutdown::ShutdownState::new(path!(page_cache_logger[unique]),),
         });
 
         spawn_thread(server.clone(), {
-            let read_obs = page_cache_read_info_oqueue.attach_strong_observer()?;
+            let read_obs =
+                page_cache_read_info_oqueue.attach_strong_observer(ObservationQuery::identity())?;
             let shutdown_obs = server
                 .shutdown_state
                 .shutdown_oqueue
-                .attach_strong_observer()?;
+                .attach_strong_observer(ObservationQuery::unit())?;
             let server = server.clone();
 
             move || {
                 loop {
                     server.shutdown_state.check()?;
-                    select_legacy!(
+                    select!(
                         if let info = read_obs.try_strong_observe() {
                             println!("{:?}", info);
                         },

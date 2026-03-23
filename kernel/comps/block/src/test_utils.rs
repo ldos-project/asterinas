@@ -4,7 +4,7 @@
 
 use alloc::{boxed::Box, vec};
 
-use ostd::{mm::UntypedMem, sync::Mutex};
+use ostd::{mm::UntypedMem, orpc::path::Path, path, sync::Mutex};
 
 use crate::{
     BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
@@ -23,6 +23,10 @@ impl BlockDevice for FakeBlockDevice {
 
     fn metadata(&self) -> crate::BlockDeviceMeta {
         todo!()
+    }
+
+    fn path(&self) -> Path {
+        Path::test()
     }
 }
 
@@ -76,5 +80,9 @@ impl BlockDevice for MemoryDisk {
             max_nr_segments_per_bio: usize::MAX,
             nr_sectors: self.data.lock().len() / SECTOR_SIZE,
         }
+    }
+
+    fn path(&self) -> Path {
+        path!(memory_disk)
     }
 }

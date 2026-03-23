@@ -8,7 +8,7 @@ use aster_time::read_monotonic_time;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueueAttachError, Producer};
+use ostd::orpc::oqueue::{OQueueError, ValueProducer};
 use ostd::{
     Error,
     mm::{
@@ -25,7 +25,7 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone)]
+#[derive(Clone, Copy, Default)]
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request (time from submission to completion).
     pub latency: Duration,
@@ -202,13 +202,13 @@ pub enum BioEnqueueError {
     TooBig,
     /// OQueue attachment failures
     #[cfg(not(baseline_asterinas))]
-    OQueueAttachError(OQueueAttachError),
+    OQueueError(OQueueError),
 }
 
 #[cfg(not(baseline_asterinas))]
-impl From<OQueueAttachError> for BioEnqueueError {
-    fn from(err: OQueueAttachError) -> Self {
-        Self::OQueueAttachError(err)
+impl From<OQueueError> for BioEnqueueError {
+    fn from(err: OQueueError) -> Self {
+        Self::OQueueError(err)
     }
 }
 
@@ -325,7 +325,7 @@ pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
     #[cfg(not(baseline_asterinas))]
-    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
+    reply_handle: Option<ValueProducer<BlockDeviceCompletionStats>>,
 
     submission_time: Option<Duration>,
 
@@ -406,7 +406,7 @@ impl SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
-        reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>>,
+        reply_handle: ValueProducer<BlockDeviceCompletionStats>,
         bio_request_single_queue: Arc<BioRequestSingleQueue>,
     ) {
         self.reply_handle = Some(reply_handle);

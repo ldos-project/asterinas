@@ -16,11 +16,12 @@ use aster_block::{
 };
 use aster_rights::Full;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::{OQueue, OQueueRef};
 use ostd::{
     mm::{Segment, VmIo},
     new_server,
-    orpc::{orpc_impl, orpc_server},
+    orpc::{framework::Server, orpc_impl, orpc_server, path::Path},
+    path,
 };
 
 use super::{
@@ -172,14 +173,16 @@ impl server_traits::PageStore for ExfatInode {
             BioDirection::FromDevice,
         );
         // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
+        self.page_reads_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
         inner.fs().block_device().read_blocks_async_with_closure(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
             move |b| {
                 // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce(req.handle.idx);
+                reply_producer.produce_ref(&req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
         )?;
@@ -199,15 +202,17 @@ impl server_traits::PageStore for ExfatInode {
             BioDirection::ToDevice,
         );
         // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
+        self.page_writes_oqueue()
+            .attach_ref_producer()?
+            .produce_ref(&req.handle.idx);
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
         inner.fs().block_device().write_blocks_async_with_closure(
             BlockId::from_offset(sector_id * inner.fs().sector_size()),
             bio_segment,
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
                     // TODO(arthurp, #120): This can crash if produce blocks.
-                    reply_producer.produce(req.handle.idx);
+                    reply_producer.produce_ref(&req.handle.idx);
                     reply_handle.produce(req.handle);
                 }
             },
@@ -721,6 +726,7 @@ impl ExfatInode {
     }
 
     pub(super) fn build_root_inode(
+        fs_path: &Path,
         fs_weak: Weak<ExfatFS>,
         root_chain: ExfatChain,
     ) -> Result<Arc<ExfatInode>> {
@@ -740,7 +746,7 @@ impl ExfatInode {
 
         let name = ExfatName::new();
 
-        let inode = new_server!(|weak_self| ExfatInode {
+        let inode = new_server!(fs_path.append(&path!(root)), |weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino: EXFAT_ROOT_INO,
                 dentry_set_position: ExfatChainPosition::default(),
@@ -760,7 +766,12 @@ impl ExfatInode {
                 is_deleted: false,
                 parent_hash: 0,
                 fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
+                page_cache: PageCache::with_capacity(
+                    fs_path.append(&path!(root.page_cache)),
+                    size,
+                    weak_self.clone() as _
+                )
+                .unwrap(),
             }),
             extension: Extension::new(),
         });
@@ -856,29 +867,37 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = new_server!(|weak_self| ExfatInode {
-            inner: RwMutex::new(ExfatInodeInner {
-                ino,
-                dentry_set_position,
-                dentry_set_size,
-                dentry_entry,
-                inode_type,
-                attr,
-                start_chain,
-                size,
-                size_allocated,
-                atime,
-                mtime,
-                ctime,
-                num_sub_inodes: 0,
-                num_sub_dirs: 0,
-                name,
-                is_deleted: false,
-                parent_hash,
-                fs: fs_weak,
-                page_cache: PageCache::with_capacity(size, weak_self.clone() as _).unwrap(),
-            }),
-            extension: Extension::new(),
+        let path = fs.path().append(&path!(dentry[unique]));
+        let inode = new_server!(path.clone(), |weak_self| {
+            ExfatInode {
+                inner: RwMutex::new(ExfatInodeInner {
+                    ino,
+                    dentry_set_position,
+                    dentry_set_size,
+                    dentry_entry,
+                    inode_type,
+                    attr,
+                    start_chain,
+                    size,
+                    size_allocated,
+                    atime,
+                    mtime,
+                    ctime,
+                    num_sub_inodes: 0,
+                    num_sub_dirs: 0,
+                    name,
+                    is_deleted: false,
+                    parent_hash,
+                    fs: fs_weak,
+                    page_cache: PageCache::with_capacity(
+                        path.append(&path!(page_cache)),
+                        size,
+                        weak_self.clone() as _,
+                    )
+                    .unwrap(),
+                }),
+                extension: Extension::new(),
+            }
         });
 
         #[cfg(not(baseline_asterinas))]
