@@ -81,6 +81,7 @@ impl Qemu {
         apply_kv_array(&mut joined, args, " ", MULTI_VALUE_KEYS);
 
         self.args = joined.join(" ");
+        eprintln!("????? qemu={:?}", self.args);
     }
 }
 

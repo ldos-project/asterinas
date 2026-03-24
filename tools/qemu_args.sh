@@ -116,6 +116,7 @@ QEMU_ARGS="\
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
     -device virtconsole,chardev=mux \
+    -drive if=none,id=datadisk,file=./datacapture.img,format=raw -device virtio-blk,drive=datadisk,serial=data0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     $IOMMU_EXTRA_ARGS \
 "
 

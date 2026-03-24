@@ -24,6 +24,7 @@
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
+use mariposa_data_capture::DataCaptureDeviceServer;
 use kcmdline::KCmdlineArg;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
@@ -213,9 +214,22 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
+        println!("starting pmu server");
         let pmu = arch::pmu::PMUServer::spawn();
+        println!("pmu.reset");
         pmu.reset();
+        println!("pmu.start");
         pmu.start();
+
+        match fs::start_block_device("data0") {
+            Ok(device) => {
+                println!("[datadisk] online");
+                let dcdserver = DataCaptureDeviceServer::new(device.clone());
+            }
+            Err(err) => {
+                error!("[datadisk] failed to start");
+            }
+        }
     }
 
     // Wait till initproc become zombie.
