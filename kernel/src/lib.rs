@@ -214,11 +214,8 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
-        println!("starting pmu server");
         let pmu = arch::pmu::PMUServer::spawn();
-        println!("pmu.reset");
         pmu.reset();
-        println!("pmu.start");
         pmu.start();
 
         match fs::start_block_device("data0") {
