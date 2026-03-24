@@ -28,11 +28,15 @@ use kcmdline::KCmdlineArg;
 use mariposa_data_capture::{
     DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor, ObserverRegistration,
 };
+use mariposa_data_capture::legacy::{
+    DataCaptureDevice as LegacyDataCaptureDevice, DataCaptureDeviceServer as LegacyDataCaptureDeviceServer, FileDescriptor as LegacyFileDescriptor, ObserverRegistration as LegacyObserverRegistration,
+};
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
     orpc::oqueue::{OQueueBase, ObservationQuery},
+    orpc::legacy_oqueue::OQueue,
     path,
 };
 use process::{Process, spawn_init_process};
@@ -253,19 +257,16 @@ fn init_thread() {
         let pagefault_oq = vm::vmar::oqueues::get_page_fault_oqueue();
         let device = fs::start_block_device("data1").unwrap();
         println!("[datadisk] 1 online");
-        let dcdserver = DataCaptureDeviceServer::new(device.clone());
-        let path = path!(test_capture);
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
         let builder = dcdserver
-            .new_file(FileDescriptor {
+            .new_file(LegacyFileDescriptor {
                 length: 1024 * 1024 * 1024,
-                path: path.clone(),
             })
             .unwrap();
         let server = builder.build();
-        let attachment = ObserverRegistration {
-            path,
+        let attachment = LegacyObserverRegistration {
             observer: pagefault_oq
-                .attach_strong_observer(ObservationQuery::new(|x| *x))
+                .attach_strong_observer()
                 .unwrap(),
         };
         server.register_observer(attachment).unwrap();
@@ -278,19 +279,16 @@ fn init_thread() {
         let rss_oq = vm::vmar::oqueues::get_rss_delta_oqueue();
         let device = fs::start_block_device("data2").unwrap();
         println!("[datadisk] 2 online");
-        let dcdserver = DataCaptureDeviceServer::new(device.clone());
-        let path = path!(test_capture);
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
         let builder = dcdserver
-            .new_file(FileDescriptor {
+            .new_file(LegacyFileDescriptor {
                 length: 1024 * 1024 * 1024,
-                path: path.clone(),
             })
             .unwrap();
         let server = builder.build();
-        let attachment = ObserverRegistration {
-            path,
+        let attachment = LegacyObserverRegistration {
             observer: rss_oq
-                .attach_strong_observer(ObservationQuery::new(|x| *x))
+                .attach_strong_observer()
                 .unwrap(),
         };
         server.register_observer(attachment).unwrap();

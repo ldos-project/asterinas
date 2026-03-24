@@ -16,6 +16,7 @@ use core::{
 
 use align_ext::AlignExt;
 use aster_rights::Rights;
+use binary_serde::BinarySerde;
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
 use ostd::mm::vm_space::VmMappingPolicyOQueues;
@@ -190,7 +191,7 @@ impl<R> Vmar<R> {
 
 // TODO(aneesh) can this just be PageFaultInfo directly?
 /// Notification message to inform policies about a page fault
-#[derive(Clone, Copy)]
+#[derive(BinarySerde, Clone, Copy)]
 pub struct PageFaultOQueueMessage {
     /// Opaque identifier for which vm_space the fault corresponds to
     pub vm_space_id: u64,
@@ -201,6 +202,7 @@ pub struct PageFaultOQueueMessage {
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
     use alloc::sync::Arc;
+    use binary_serde::BinarySerde;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
     use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
@@ -210,8 +212,8 @@ pub mod oqueues {
     use crate::{Clock, time::clocks::MonotonicRawClock};
 
     // TODO(aneesh): Move this somewhere more generic
-    #[derive(Clone, Copy)]
-    pub struct ObservableEvent<T> {
+    #[derive(BinarySerde, Clone, Copy)]
+    pub struct ObservableEvent<T: BinarySerde> {
         pub event: T,
         pub timestamp: Duration,
     }
@@ -231,7 +233,7 @@ pub mod oqueues {
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<isize>>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<i64>>>> = Once::new();
 
     pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<isize>>> {
         RSS_DELTA_OQUEUE.wait().clone()
@@ -1353,7 +1355,7 @@ impl<'a> RssDelta<'a> {
             }
             let _ = oqueues::RSS_DELTA_OQUEUE
                 .wait()
-                .produce(oqueues::ObservableEvent::new(increment));
+                .produce(oqueues::ObservableEvent::new(increment as i64));
         }
 
         self.delta[rss_type as usize] += increment;
