@@ -9,7 +9,6 @@ use ostd::orpc::{
     oqueue::{OQueue, OQueueRef},
     orpc_server, orpc_trait,
     path::{Path, PathComponent::Name},
-    sync::select,
 };
 use snafu::Whatever;
 
@@ -82,9 +81,9 @@ impl PMUServer {
             .attach_strong_observer()?;
         loop {
             loop {
-                select!(if let _ = notify_observer.try_strong_observe() {
+                if notify_observer.try_strong_observe().is_some() {
                     break;
-                });
+                }
                 ostd::task::Task::yield_now();
             }
 
