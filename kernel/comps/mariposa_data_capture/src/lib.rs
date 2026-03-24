@@ -35,6 +35,8 @@ mod data_buffering;
 mod data_capture_device;
 #[cfg(not(baseline_asterinas))]
 mod data_capture_file;
+#[cfg(not(baseline_asterinas))]
+pub mod legacy;
 
 #[cfg(not(baseline_asterinas))]
 pub use data_capture_device::{DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor};
