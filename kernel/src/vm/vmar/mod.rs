@@ -215,14 +215,14 @@ pub mod oqueues {
     #[derive(BinarySerde, Clone, Copy)]
     pub struct ObservableEvent<T: BinarySerde> {
         pub event: T,
-        pub timestamp: Duration,
+        pub timestamp: u128,
     }
 
-    impl<T> ObservableEvent<T> {
+    impl<T: BinarySerde> ObservableEvent<T> {
         pub fn new(event: T) -> Self {
             Self {
                 event,
-                timestamp: MonotonicRawClock::get().read_time(),
+                timestamp: MonotonicRawClock::get().read_time().as_nanos(),
             }
         }
     }
@@ -235,7 +235,7 @@ pub mod oqueues {
 
     pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<i64>>>> = Once::new();
 
-    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<isize>>> {
+    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<i64>>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
