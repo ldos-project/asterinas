@@ -126,6 +126,12 @@ add_datadisk() {
   local DISK_PATH=$(realpath $1)
   local DATA_ID=datadisk$N_DATADISKS
   local DATA_NAME=data$N_DATADISKS
+
+  # Create a blank 1G file
+  rm -r $DISK_PATH
+  touch $DISK_PATH
+  truncate -s 1G -c $DISK_PATH
+
   QEMU_ARGS="$QEMU_ARGS\
       -drive if=none,id=$DATA_ID,file=$DISK_PATH,format=raw -device virtio-blk,drive=$DATA_ID,serial=$DATA_NAME,$COMMON_DISK_ARGS \
   "
