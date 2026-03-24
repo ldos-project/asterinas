@@ -28,27 +28,32 @@ pub struct PageFaultInfo {
     pub required_perms: VmPerms,
 }
 
-impl BinarySerde for PageFaultInfo {
-    const SERIALIZED_SIZE: usize = u64::SERIALIZED_SIZE + VmPerms::SERIALIZED_SIZE;
+#[derive(BinarySerde)]
+struct PageFaultInfoSerde {
+    pub address: u64,
+    pub required_perms: u32,
+}
 
-    type RecursiveArray =
-        recursive_array::RecursiveArrayArrayWrapper<{ Self::SERIALIZED_SIZE }, u8>;
+impl BinarySerde for PageFaultInfo {
+    const SERIALIZED_SIZE: usize = PageFaultInfoSerde::SERIALIZED_SIZE;
+
+    type RecursiveArray = PageFaultInfoSerde::RecursiveArray;
 
     fn binary_serialize(&self, buf: &mut [u8], endianness: binary_serde::Endianness) {
-        (self.address as u64).binary_serialize(buf, endianness);
-        self.required_perms
-            .binary_serialize(&mut buf[u64::SERIALIZED_SIZE..], endianness);
+        PageFaultInfoSerde {
+            address: self.address as u64,
+            required_perms: self.required_perms.bits(),
+        }
+        .binary_serialize(buf, endianness);
     }
 
     fn binary_deserialize(
         buf: &[u8],
         endianness: binary_serde::Endianness,
     ) -> core::result::Result<Self, binary_serde::DeserializeError> {
-        let address = u64::binary_deserialize(buf, endianness).map(|x| x as Vaddr)?;
-        let required_perms = VmPerms::binary_deserialize(&buf[u64::SERIALIZED_SIZE..], endianness)?;
-        Ok(Self {
-            address,
-            required_perms,
+        PageFaultInfoSerde::binary_deserialize(buf, endianness).map(|x| Self {
+            address: x.address as Vaddr,
+            required_perms: VmPerms::from_bits_truncate(x.required_perms),
         })
     }
 }
