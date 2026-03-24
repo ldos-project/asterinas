@@ -24,14 +24,16 @@
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-use mariposa_data_capture::{ObserverRegistration, DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor};
 use kcmdline::KCmdlineArg;
+use mariposa_data_capture::{
+    DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor, ObserverRegistration,
+};
 use ostd::{
-    path,
-    orpc::oqueue::{OQueueBase, ObservationQuery},
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    orpc::oqueue::{OQueueBase, ObservationQuery},
+    path,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -210,9 +212,11 @@ fn init_thread() {
         vm::hugepaged::HugepagedServer::spawn(initproc.clone());
     }
 
+    let mut finalizers: Vec<Box<dyn Fn() -> ()>> = vec![];
+
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(baseline_asterinas))]
-    let pmu_capture = if karg
+    if karg
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
@@ -221,39 +225,88 @@ fn init_thread() {
         pmu.start();
 
         let device = fs::start_block_device("data0").unwrap();
-        println!("[datadisk] online");
+        println!("[datadisk] 0 online");
         let dcdserver = DataCaptureDeviceServer::new(device.clone());
         let path = path!(test_capture);
         let builder = dcdserver
             .new_file(FileDescriptor {
-                length: 4096 * 2,
+                length: 1024 * 1024 * 1024,
                 path: path.clone(),
             })
             .unwrap();
         let server = builder.build();
         let attachment = ObserverRegistration {
             path,
-            observer: pmu.dtlb_miss_count_oq
-                .attach_strong_observer(ObservationQuery::new(|x| {
-                    println!("observing {:?}", x);
-                    *x
-                }))
+            observer: pmu
+                .dtlb_miss_count_oq
+                .attach_strong_observer(ObservationQuery::new(|x| *x))
                 .unwrap(),
         };
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
-        Some(server)
-    } else {
-        None
-    };
+        finalizers.push(Box::new(move || {
+            server.flush().unwrap();
+        }));
+    }
+
+    {
+        let pagefault_oq = vm::vmar::oqueues::get_page_fault_oqueue();
+        let device = fs::start_block_device("data1").unwrap();
+        println!("[datadisk] 1 online");
+        let dcdserver = DataCaptureDeviceServer::new(device.clone());
+        let path = path!(test_capture);
+        let builder = dcdserver
+            .new_file(FileDescriptor {
+                length: 1024 * 1024 * 1024,
+                path: path.clone(),
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = ObserverRegistration {
+            path,
+            observer: pagefault_oq
+                .attach_strong_observer(ObservationQuery::new(|x| *x))
+                .unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.set_capturing(true).unwrap();
+        finalizers.push(Box::new(move || {
+            server.flush().unwrap();
+        }));
+    }
+    {
+        let rss_oq = vm::vmar::oqueues::get_rss_delta_oqueue();
+        let device = fs::start_block_device("data2").unwrap();
+        println!("[datadisk] 2 online");
+        let dcdserver = DataCaptureDeviceServer::new(device.clone());
+        let path = path!(test_capture);
+        let builder = dcdserver
+            .new_file(FileDescriptor {
+                length: 1024 * 1024 * 1024,
+                path: path.clone(),
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = ObserverRegistration {
+            path,
+            observer: rss_oq
+                .attach_strong_observer(ObservationQuery::new(|x| *x))
+                .unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.set_capturing(true).unwrap();
+        finalizers.push(Box::new(move || {
+            server.flush().unwrap();
+        }));
+    }
 
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
     }
 
-    if let Some(s) = pmu_capture {
-        s.flush().unwrap();
+    for f in finalizers {
+        f();
     }
 
     // TODO: exit via qemu isa debug device should not be the only way.

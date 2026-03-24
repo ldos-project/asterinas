@@ -119,6 +119,22 @@ QEMU_ARGS="\
     $IOMMU_EXTRA_ARGS \
 "
 
+# DataCapture disks
+COMMON_DISK_ARGS="disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA"
+N_DATADISKS=0
+add_datadisk() {
+  local DISK_PATH=$(realpath $1)
+  local DATA_ID=datadisk$N_DATADISKS
+  local DATA_NAME=data$N_DATADISKS
+  QEMU_ARGS="$QEMU_ARGS\
+      -drive if=none,id=$DATA_ID,file=$DISK_PATH,format=raw -device virtio-blk,drive=$DATA_ID,serial=$DATA_NAME,$COMMON_DISK_ARGS \
+  "
+  N_DATADISKS=$((N_DATADISKS + 1))
+}
+add_datadisk ./pmu_datacapture.img
+add_datadisk ./pagefault_datacapture.img
+add_datadisk ./rss_datacapture.img
+
 MICROVM_QEMU_ARGS="\
     $COMMON_QEMU_ARGS \
     -machine microvm,rtc=on \
