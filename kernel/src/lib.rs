@@ -24,9 +24,11 @@
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-use mariposa_data_capture::DataCaptureDeviceServer;
+use mariposa_data_capture::{ObserverRegistration, DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor};
 use kcmdline::KCmdlineArg;
 use ostd::{
+    path,
+    orpc::oqueue::{OQueueBase, ObservationQuery},
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
@@ -210,7 +212,7 @@ fn init_thread() {
 
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(baseline_asterinas))]
-    if karg
+    let pmu_capture = if karg
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
@@ -218,20 +220,40 @@ fn init_thread() {
         pmu.reset();
         pmu.start();
 
-        match fs::start_block_device("data0") {
-            Ok(device) => {
-                println!("[datadisk] online");
-                let dcdserver = DataCaptureDeviceServer::new(device.clone());
-            }
-            Err(err) => {
-                error!("[datadisk] failed to start");
-            }
-        }
-    }
+        let device = fs::start_block_device("data0").unwrap();
+        println!("[datadisk] online");
+        let dcdserver = DataCaptureDeviceServer::new(device.clone());
+        let path = path!(test_capture);
+        let builder = dcdserver
+            .new_file(FileDescriptor {
+                length: 4096 * 2,
+                path: path.clone(),
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = ObserverRegistration {
+            path,
+            observer: pmu.dtlb_miss_count_oq
+                .attach_strong_observer(ObservationQuery::new(|x| {
+                    println!("observing {:?}", x);
+                    *x
+                }))
+                .unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.set_capturing(true).unwrap();
+        Some(server)
+    } else {
+        None
+    };
 
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
+    }
+
+    if let Some(s) = pmu_capture {
+        s.flush().unwrap();
     }
 
     // TODO: exit via qemu isa debug device should not be the only way.
