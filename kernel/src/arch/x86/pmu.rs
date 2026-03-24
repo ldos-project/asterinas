@@ -13,15 +13,16 @@ use ostd::{
     },
     path,
 };
+use binary_serde::BinarySerde;
 use snafu::Whatever;
 
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy)]
+#[derive(BinarySerde, Debug, Clone, Copy)]
 #[expect(dead_code)]
-struct DtlbMisses {
-    timestamp: Instant,
+pub struct DtlbMisses {
+    timestamp: u128,
     miss_l1_tlb: u64,
     miss_all_tlb: u64,
 }
@@ -78,7 +79,7 @@ impl PmuServer {
             notify_observer.strong_observe();
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();
             let misses = DtlbMisses {
-                timestamp: aster_time::read_monotonic_time().into(),
+                timestamp: aster_time::read_monotonic_time().as_nanos(),
                 miss_l1_tlb,
                 miss_all_tlb,
             };
