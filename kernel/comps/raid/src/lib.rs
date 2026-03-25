@@ -254,41 +254,19 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
-    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0. 
-    ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member device 0 and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
-    #[cfg(baseline_asterinas)]
-    fn process_read_async(&self, request: BioRequest) {
-        for parent in request.into_bios() {
-            let member = self.members[0].clone();
-            let start_sid = parent.sid_range().start;
-            let segments = parent.segments().to_vec();
-            let guard = ParentGuard(Some(parent));
-            let child = Bio::new_with_closure(
-                BioType::Read,
-                start_sid,
-                segments,
-                move |child_bio: &SubmittedBio| {
-                    guard.complete(child_bio.status());
-                },
-            );
-            let _ = child.submit(&*member);
-        }
-    }
-
     /// Processes read requests asynchronously. 
-    /// ORPC Version, i.e., do actual device selection
     /// 
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member by the selection policy and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
-    #[cfg(not(baseline_asterinas))]
+    /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.    
     fn process_read_async(&self, request: BioRequest) {
         for parent in request.into_bios() {;
+            #[cfg(not(baseline_asterinas))]
             let member = self.selection_policy.select_block_device().unwrap();
+            
+            #[cfg(baseline_asterinas)]
+            let member = self.members[0].clone();
+            
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
             let guard = ParentGuard(Some(parent));
