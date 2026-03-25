@@ -248,8 +248,8 @@ pub fn init() {
     #[cfg(not(baseline_asterinas))]
     {
         // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
-        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }
 }
 
