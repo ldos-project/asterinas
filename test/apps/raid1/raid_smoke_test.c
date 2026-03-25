@@ -20,8 +20,8 @@ int main()
 	int fd;
 	ssize_t n;
 	unsigned char *pattern, *read_back;
-	posix_memalign((void**)&pattern, 4096, RAID1_TEST_BLOCK_SIZE);
-	posix_memalign((void**)&read_back, 4096, RAID1_TEST_BLOCK_SIZE);
+	posix_memalign((void **)&pattern, 4096, RAID1_TEST_BLOCK_SIZE);
+	posix_memalign((void **)&read_back, 4096, RAID1_TEST_BLOCK_SIZE);
 	int i, ret = 0;
 
 	// Fill pattern buffer with known values
@@ -73,8 +73,8 @@ int main()
 
 	// Print the read content
 	printf("first 8 bytes read: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-    read_back[0], read_back[1], read_back[2], read_back[3],
-    read_back[4], read_back[5], read_back[6], read_back[7]);
+	       read_back[0], read_back[1], read_back[2], read_back[3],
+	       read_back[4], read_back[5], read_back[6], read_back[7]);
 	printf("expected:           00 01 02 03 04 05 06 07\n");
 
 	// Compare written and read data

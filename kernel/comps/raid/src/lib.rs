@@ -165,10 +165,10 @@ impl Raid1Device {
     }
 
     /// Processes read requests synchronously.
-    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0. 
+    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0.
     ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to device 0
-    /// and submitted with `Bio::submit`. Completion of the parent is reported 
+    /// and submitted with `Bio::submit`. Completion of the parent is reported
     /// after the child finishes.
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
@@ -195,7 +195,7 @@ impl Raid1Device {
 
     /// Processes read requests synchronously.
     /// ORPC Version, i.e., do actual device selection
-    /// 
+    ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
@@ -232,19 +232,19 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously. 
-    /// 
+    /// Processes read requests asynchronously.
+    ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.    
     fn process_read_async(&self, request: BioRequest) {
-        for parent in request.into_bios() {;
+        for parent in request.into_bios() {
             #[cfg(not(baseline_asterinas))]
             let member = self.selection_policy.select_block_device().unwrap();
-            
+
             #[cfg(baseline_asterinas)]
             let member = self.members[0].clone();
-            
+
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
             let guard = ParentGuard::new(parent);
