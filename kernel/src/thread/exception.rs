@@ -29,7 +29,7 @@ pub struct PageFaultInfo {
 }
 
 #[derive(BinarySerde)]
-struct PageFaultInfoSerde {
+pub struct PageFaultInfoSerde {
     pub address: u64,
     pub required_perms: u32,
 }
@@ -37,7 +37,7 @@ struct PageFaultInfoSerde {
 impl BinarySerde for PageFaultInfo {
     const SERIALIZED_SIZE: usize = PageFaultInfoSerde::SERIALIZED_SIZE;
 
-    type RecursiveArray = PageFaultInfoSerde::RecursiveArray;
+    type RecursiveArray = <PageFaultInfoSerde as BinarySerde>::RecursiveArray;
 
     fn binary_serialize(&self, buf: &mut [u8], endianness: binary_serde::Endianness) {
         PageFaultInfoSerde {
