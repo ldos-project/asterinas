@@ -64,27 +64,23 @@ impl SelectionPolicy for RoundRobinPolicy {
     }
 }
 
+
+/// hidden_layers and output_layers: machine learning model weights.
+/// There is one model per device. Each model contains three layers, an input layer,
+/// a hidden layer with 256 neurons, and an output layer with 2 neurons for the binary
+/// classification (fast/slow). Thus, there are two matrices per device, a 31*256 matrix
+/// for the hidden layer and a 256*2 matrix for the output layer.
+/// Each latency number is decomposed into 4 digits, and each number of outstanding
+/// request number is decomposed into 3 digits. Thus, the total number of input features
+/// is 3+4*(3+4) = 31. The number of history is R=4.
+///
+/// Number of Outstanding Requests: number of pending 4KB pages.
+/// List of observers attached to the list of member block devices. 
 #[orpc_server]
 pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
-
-    /// Member block devices that support I/O performance tracing.
     members: Vec<Arc<dyn ObservableBlockDevice>>,
-
-    // List of observers attached to the list of member block devices.
     observers: Vec<Mutex<Box<dyn WeakObserver<BlockDeviceCompletionStats>>>>,
-
-    // This is a placeholder for the machine learning model.
-    // There is one model per device. Each model contains three layers, an input layer,
-    // a hidden layer with 256 neurons, and an output layer with 2 nuerons for the binary
-    // classification (fast/slow). Thus, there are two matrices per device, a 31*256 matrix
-    // for the hidden layer and a 256*2 matrix for the output layer.
-    //
-    // Each latency number is decomposed into 4 digits, and each number of outstanding
-    // request number is decomposed to 3 digits. Thus, the total number of input features
-    // is 3+4*(3+4) = 31. The number of history is R=4.
-    //
-    // Number of Outstanding Requests: number of pending 4KB pages.
     hidden_layers: Vec<[[f32; 256]; 31]>,
     output_layers: Vec<[[f32; 2]; 256]>,
 }
