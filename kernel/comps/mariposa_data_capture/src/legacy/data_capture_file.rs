@@ -90,7 +90,7 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
             block_handler.block_on(blockers);
 
             // Handle commands from method calls.
-            if let Some(cmd) = self.command_consumer.try_consume() {
+            while let Some(cmd) = self.command_consumer.try_consume() {
                 match cmd {
                     DataCaptureFileCommand::RegisterObserver(ObserverRegistration { observer }) => {
                         observers.push(observer);
@@ -109,18 +109,18 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
             for o in &observers {
                 // We can't skip the try_strong_observe calls when not `capturing` because that
                 // would leave the values in the OQueues and block them.
-                if let Some(v) = o.try_strong_observe()
-                    && capturing
-                {
-                    if !headers_written {
-                        data_buf_handler.write_header::<T>(&[])?;
-                        headers_written = true;
-                    }
+                while let Some(v) = o.try_strong_observe() {
+                    if capturing {
+                        if !headers_written {
+                            data_buf_handler.write_header::<T>(&[])?;
+                            headers_written = true;
+                        }
 
-                    data_buf_handler.write_value(&v);
-                    data_buf_handler.flush_if_needed()?;
-                    if data_buf_handler.current_bid == self.end_bid {
-                        log::warn!("Data capture ran out of space.");
+                        data_buf_handler.write_value(&v);
+                        data_buf_handler.flush_if_needed()?;
+                        if data_buf_handler.current_bid == self.end_bid {
+                            log::warn!("Data capture ran out of space.");
+                        }
                     }
                 }
             }
