@@ -30,7 +30,9 @@ use core::{cmp, ops::Range};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
-    bio::{Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, SubmittedBio},
+    bio::{
+        Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, ParentGuard, SubmittedBio,
+    },
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
@@ -39,30 +41,6 @@ use ostd::orpc::orpc_server;
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
-
-/// Ensures a parent [`SubmittedBio`] is always completed — either explicitly
-/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
-///
-/// This is used by the non-blocking read path: the guard is moved into the
-/// child BIO's completion callback. If the child completes normally, the
-/// callback calls [`complete`](Self::complete). If submission fails and the
-/// child is dropped, the guard's [`Drop`] impl completes the parent with an
-/// error so the filesystem thread is never left waiting.
-struct ParentGuard(Option<SubmittedBio>);
-impl ParentGuard {
-    fn complete(mut self, status: BioStatus) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(status);
-        }
-    }
-}
-impl Drop for ParentGuard {
-    fn drop(&mut self) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(BioStatus::IoError);
-        }
-    }
-}
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[cfg(baseline_asterinas)]
@@ -269,7 +247,7 @@ impl Raid1Device {
             
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
-            let guard = ParentGuard(Some(parent));
+            let guard = ParentGuard::new(parent);
             let child = Bio::new_with_closure(
                 BioType::Read,
                 start_sid,

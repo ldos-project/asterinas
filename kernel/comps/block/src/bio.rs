@@ -884,6 +884,37 @@ impl From<BioDirection> for DmaDirection {
     }
 }
 
+/// Ensures a [`SubmittedBio`] is always completed — either explicitly
+/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
+///
+/// This is useful for non-blocking I/O paths where a parent BIO's completion
+/// must be guaranteed even if the child submission fails and is dropped.
+pub struct ParentGuard(Option<SubmittedBio>);
+
+impl ParentGuard {
+    /// Creates a new guard that will complete the given `SubmittedBio` with
+    /// [`BioStatus::IoError`] if not explicitly completed before being dropped.
+    pub fn new(parent: SubmittedBio) -> Self {
+        Self(Some(parent))
+    }
+
+    /// Completes the guarded `SubmittedBio` with the given status, consuming
+    /// the guard so the [`Drop`] impl becomes a no-op.
+    pub fn complete(mut self, status: BioStatus) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(status);
+        }
+    }
+}
+
+impl Drop for ParentGuard {
+    fn drop(&mut self) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(BioStatus::IoError);
+        }
+    }
+}
+
 /// Checks if the given offset is aligned to sector.
 pub fn is_sector_aligned(offset: usize) -> bool {
     offset % SECTOR_SIZE == 0
