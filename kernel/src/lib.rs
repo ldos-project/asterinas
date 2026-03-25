@@ -249,6 +249,7 @@ fn init_thread() {
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
         finalizers.push(Box::new(move || {
+            println!("Flushing pmu capture");
             server.flush().unwrap();
         }));
     }
