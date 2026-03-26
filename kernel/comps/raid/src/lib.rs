@@ -170,6 +170,7 @@ impl Raid1Device {
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to device 0
     /// and submitted with `Bio::submit`. Completion of the parent is reported
     /// after the child finishes.
+    #[expect(dead_code)]
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
@@ -199,6 +200,7 @@ impl Raid1Device {
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
+    #[expect(dead_code)]
     #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
         // Submit all children first to overlap device I/O.
