@@ -251,6 +251,7 @@ fn init_thread() {
         finalizers.push(Box::new(move || {
             println!("Flushing pmu capture");
             server.flush().unwrap();
+            server.sync().unwrap();
         }));
     }
 
@@ -273,7 +274,9 @@ fn init_thread() {
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
         finalizers.push(Box::new(move || {
+            println!("Flushing pagefault capture");
             server.flush().unwrap();
+            server.sync().unwrap();
         }));
     }
     {
@@ -295,7 +298,34 @@ fn init_thread() {
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
         finalizers.push(Box::new(move || {
+            println!("Flushing rss capture");
             server.flush().unwrap();
+            server.sync().unwrap();
+        }));
+    }
+    {
+        let connect_oq = syscall::get_accept_oq();
+        let device = fs::start_block_device("data3").unwrap();
+        println!("[datadisk] 3 online");
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
+        let builder = dcdserver
+            .new_file(LegacyFileDescriptor {
+                length: 1024 * 1024 * 1024,
+            })
+            .unwrap();
+        let server = builder.build();
+        server.set_flush_always(true).unwrap();
+        let attachment = LegacyObserverRegistration {
+            observer: connect_oq
+                .attach_strong_observer()
+                .unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.set_capturing(true).unwrap();
+        finalizers.push(Box::new(move || {
+            println!("Flushing connect capture");
+            server.flush().unwrap();
+            server.sync().unwrap();
         }));
     }
 
