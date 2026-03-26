@@ -1056,6 +1056,7 @@ impl InodeInner {
 
         if end_offset > file_size {
             self.inode_impl.resize(end_offset)?;
+            self.page_cache.resize(end_offset.align_up(BLOCK_SIZE))?;
         }
 
         let start_bid = Bid::from_offset(offset).to_raw() as Ext2Bid;
