@@ -234,62 +234,29 @@ impl Raid1Device {
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
-                start_sid,
-                segments,
-                move |child_bio: &SubmittedBio| {
-                guard.complete(child_bio.status());
-                },
+                parent.sid_range().start,
+                Self::clone_segments(parent),
+                None,
             );
-            // let now = read_monotonic_time();
-            // t_build_child += now - ts;
-            // ts = now;
-            let _ = child.submit(&*member);
-            // let now = read_monotonic_time();
-            // t_submit_child += now - ts;
-            // ts = now;
+            match child.submit(&*member) {
+                Ok(waiter) => pending.push((parent, waiter)),
+                // Err(_) => parent.complete(BioStatus::IoError),
+                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
+            }
         }
 
-        // let total = t_select_member
-        //   + t_extract_sid
-        //   + t_clone_segments
-        //   + t_parent_guard
-        //   + t_build_child
-        //   + t_submit_child;
-        // let total_ns = total.as_nanos();
-        // let total_us = total.as_micros();
-        // if total_ns > 0 {
-        //   let pct_x100 = |d: core::time::Duration| -> u128 { d.as_nanos() * 10_000 / total_ns };
-        //   let p_select = pct_x100(t_select_member);
-        //   let p_sid = pct_x100(t_extract_sid);
-        //   let p_segments = pct_x100(t_clone_segments);
-        //   let p_guard = pct_x100(t_parent_guard);
-        //   let p_build = pct_x100(t_build_child);
-        //   let p_submit = pct_x100(t_submit_child);
-        //   info!(
-        //     "[RAID-1 read timing] n_bios={} total={}ns({}us) select_member={}.{:02}% extract_sid={}.{:02}% clone_segments={}.{:02}% parent_guard={}.{:02}% build_child={}.{:02}% submit_child={}.{:02}%",
-        //     parent_count,
-        //     total_ns,
-        //     total_us,
-        //     p_select / 100,
-        //     p_select % 100,
-        //     p_sid / 100,
-        //     p_sid % 100,
-        //     p_segments / 100,
-        //     p_segments % 100,
-        //     p_guard / 100,
-        //     p_guard % 100,
-        //     p_build / 100,
-        //     p_build % 100,
-        //     p_submit / 100,
-        //     p_submit % 100,
-        //   );
-        // } else {
-        //   info!(
-        //     "[RAID-1 read timing] n_bios={} total=0ns(0us) total timing window is zero",
-        //     parent_count,
-        //   );
-        // }
+        // Wait for each submitted child and complete the corresponding parent.
+        for (parent, waiter) in pending.into_iter() {
+            let status = match waiter.wait() {
+                // Guaranteed to be Complete on success when Some is returned.
+                Some(s) => s,
+                None => BioStatus::IoError,
+            };
+            // Report the completion status to the upper layer.
+            parent.complete(status);
+        }
     }
+
 
     /// Processes read requests asynchronously.
     ///
