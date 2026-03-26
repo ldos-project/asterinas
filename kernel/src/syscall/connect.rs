@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::orpc::legacy_oqueue::OQueue;
+
 use super::SyscallReturn;
 use crate::{
     fs::file_table::{FileDesc, get_file_fast},
     prelude::*,
+    time::clocks::MonotonicRawClock,
     util::net::read_socket_addr_from_user,
 };
 
@@ -13,6 +16,9 @@ pub fn sys_connect(
     addr_len: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
+    #[cfg(not(baseline_asterinas))]
+    super::get_connect_oq().produce(MonotonicRawClock::get().read_time().as_nanos())?;
+
     let socket_addr = read_socket_addr_from_user(sockaddr_ptr, addr_len as _)?;
     debug!("fd = {sockfd}, socket_addr = {socket_addr:?}");
 

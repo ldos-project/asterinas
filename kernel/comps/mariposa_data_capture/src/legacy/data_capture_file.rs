@@ -42,14 +42,19 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
     /// TEMPORARY: Flush any data remaining in the output buffers to disk.
     fn flush(&self) -> Result<(), RPCError>;
+    /// TEMPORARY: Flush any data remaining in the output buffers to disk.
+    fn sync(&self) -> Result<(), RPCError>;
     /// TEMPORARY: Enable or disable capturing to this file.
     fn set_capturing(&self, capturing: bool) -> Result<(), RPCError>;
+    /// TEMPORARY: flush after every message
+    fn set_flush_always(&self, flush_always: bool) -> Result<(), RPCError>;
 }
 
 /// TEMPORARY: Command enum for [`DataCaptureFile`] operations.
 enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
+    Sync,
 }
 
 impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
@@ -57,6 +62,7 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
         match self {
             Self::RegisterObserver(reg) => f.debug_tuple("RegisterObserver").field(reg).finish(),
             Self::Flush => write!(f, "Flush"),
+            Self::Sync => write!(f, "Sync"),
         }
     }
 }
@@ -65,6 +71,7 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
 struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
     command_queue: Arc<LockingQueue<DataCaptureFileCommand<T>>>,
     capturing: AtomicBool,
+    flush_always: AtomicBool,
 }
 
 struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
@@ -97,6 +104,9 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                     }
                     DataCaptureFileCommand::Flush => {
                         data_buf_handler.flush()?;
+                    }
+                    DataCaptureFileCommand::Sync => {
+                        data_buf_handler.sync()?;
                     }
                 }
             }
@@ -140,6 +150,13 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
     fn flush(&self) -> Result<(), RPCError> {
         self.command_queue
             .produce(DataCaptureFileCommand::Flush)
+            .unwrap();
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), RPCError> {
+        self.command_queue
+            .produce(DataCaptureFileCommand::Sync)
             .unwrap();
         Ok(())
     }

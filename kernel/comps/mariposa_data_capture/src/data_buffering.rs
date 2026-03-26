@@ -118,6 +118,12 @@ impl ChunkingWriteWrapper {
         Ok(n_written)
     }
 
+
+    pub fn sync(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+        self.block_device.sync()?;
+        Ok(())
+    }
+
     /// Writes a structured header with magic number, type information, and paths.
     pub fn write_header<T>(&mut self, paths: &[Path]) -> Result<(), Box<dyn Error + 'static>> {
         // Write magic number

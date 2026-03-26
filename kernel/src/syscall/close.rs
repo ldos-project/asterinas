@@ -2,11 +2,13 @@
 
 use bitflags::bitflags;
 use ostd::sync::RwArc;
+use ostd::orpc::legacy_oqueue::OQueue;
 
 use super::SyscallReturn;
 use crate::{
     fs::file_table::{FdFlags, FileDesc},
     prelude::*,
+    time::clocks::MonotonicRawClock,
 };
 
 bitflags! {
@@ -25,6 +27,16 @@ pub fn sys_close(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
         let _ = file_table_locked.get_file(fd)?;
         file_table_locked.close_file(fd).unwrap()
     };
+
+    if file.as_socket_or_err().is_ok() {
+        #[cfg(not(baseline_asterinas))]
+        super::get_accept_oq().produce(super::AcceptMessage {
+            fd: fd,
+            is_close: 1,
+            timestamp: MonotonicRawClock::get().read_time().as_nanos(),
+        })?;
+    }
+
 
     // Cleanup work needs to be done in the `Drop` impl.
     //

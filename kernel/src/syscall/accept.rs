@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::orpc::legacy_oqueue::OQueue;
+
 use super::SyscallReturn;
 use crate::{
     fs::{
@@ -7,6 +9,7 @@ use crate::{
         utils::{CreationFlags, StatusFlags},
     },
     prelude::*,
+    time::clocks::MonotonicRawClock,
     util::net::write_socket_addr_to_user,
 };
 
@@ -19,6 +22,12 @@ pub fn sys_accept(
     debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
+    #[cfg(not(baseline_asterinas))]
+    super::get_accept_oq().produce(super::AcceptMessage{
+        fd: fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time().as_nanos(),
+    })?;
     Ok(SyscallReturn::Return(fd as _))
 }
 
@@ -37,6 +46,13 @@ pub fn sys_accept4(
     );
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
+    println!("!!!!! ACCEPT");
+    #[cfg(not(baseline_asterinas))]
+    super::get_accept_oq().produce(super::AcceptMessage{
+        fd: fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time().as_nanos(),
+    })?;
     Ok(SyscallReturn::Return(fd as _))
 }
 
