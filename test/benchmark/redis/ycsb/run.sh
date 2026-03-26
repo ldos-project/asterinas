@@ -4,13 +4,6 @@
 
 echo "Running redis server"
 /usr/local/redis/bin/redis-server /benchmark/redis/ycsb/ycsb.conf &
-PID=$!
-echo "waiting?"
-echo "PID=$PID"
-
-while true; do
-  { cat /proc/$PID/status || true; } | grep HWM
-  sleep 0.1
-done
-
-wait $PID
+echo waiting for stop message
+/bin/nc -l -s 10.0.2.15 -p 5201 -e true
+echo done
