@@ -9,7 +9,7 @@ stop_guest() {
     echo "Stopping guest VM..."
     # The message doesn't matter here, any data will make the vm exit
     echo stop | nc 10.0.2.15 5201
-    sleep 5
+    sleep 15
     # `-r` means if there's no qemu, the kill won't be executed
     pgrep qemu | xargs -r kill
 }
