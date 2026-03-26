@@ -595,24 +595,26 @@ impl PageCacheManager {
     pub fn evict_range(&self, range: Range<usize>) -> Result<()> {
         let page_idx_range = get_page_idx_range(&range);
 
-        let mut consumers = Vec::with_capacity(range.len());
+        let mut consumers = Vec::new();
         // TODO(arthurp): This locks the entire cache. That's probably a performance problem.
-        let mut inner = self.inner.lock();
-        let pages = &mut inner.pages;
-        let backend = self.backend()?;
-        let backend_npages = backend.npages()?;
-        for idx in page_idx_range.start..page_idx_range.end {
-            if let Some(page) = pages.peek(&idx) {
-                if page.load_state() == PageState::Dirty && idx < backend_npages {
-                    let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
-                    backend.write_page_async(AsyncWriteRequest {
-                        handle: PageHandle {
-                            idx,
-                            frame: page.clone(),
-                        },
-                        reply_handle: Some(reply_handle),
-                    })?;
-                    consumers.push(reply_consumer);
+        {
+            let mut inner = self.inner.lock();
+            let pages = &mut inner.pages;
+            let backend = self.backend()?;
+            let backend_npages = backend.npages()?;
+            for idx in page_idx_range.start..page_idx_range.end {
+                if let Some(page) = pages.peek(&idx) {
+                    if page.load_state() == PageState::Dirty && idx < backend_npages {
+                        let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+                        backend.write_page_async(AsyncWriteRequest {
+                            handle: PageHandle {
+                                idx,
+                                frame: page.clone(),
+                            },
+                            reply_handle: Some(reply_handle),
+                        })?;
+                        consumers.push(reply_consumer);
+                    }
                 }
             }
         }
