@@ -65,10 +65,10 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn flush(&self) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
+    /// Enable capturing to this file.
+    fn start(&self) -> Result<(), RPCError>;
     /// Stop the server
     fn stop(&self) -> Result<(), RPCError>;
-    /// Enable or disable capturing to this file.
-    fn set_capturing(&self, capturing: bool) -> Result<(), RPCError>;
 }
 
 /// Command enum for DataCaptureFile operations
@@ -94,7 +94,7 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
 struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
     command_oqueue: ConsumableOQueueRef<DataCaptureFileCommand<T>>,
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
-    capturing: AtomicBool,
+    started: AtomicBool,
     stopped: AtomicBool,
 }
 
@@ -141,22 +141,24 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                         data_buf_handler.sync()?;
                     }
                     DataCaptureFileCommand::Stop => {
-                        self.server.stopped.store(true, core::sync::atomic::Ordering::SeqCst);
+                        self.server
+                            .stopped
+                            .store(true, core::sync::atomic::Ordering::SeqCst);
                         return Ok(());
                     }
                 }
             }
 
-            let capturing = self
+            let started = self
                 .server
-                .capturing
+                .started
                 .load(core::sync::atomic::Ordering::SeqCst);
             // Observe and serialize
             for o in &observers {
                 // We can't skip the try_strong_observe calls when not `capturing` because that
                 // would leave the values in the OQueues and block them.
                 while let Ok(Some(v)) = o.try_strong_observe() {
-                    if capturing {
+                    if started {
                         if paths.is_some() {
                             data_buf_handler.write_header::<T>(paths.as_ref().unwrap())?;
                             paths = None;
@@ -200,9 +202,9 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
         Ok(())
     }
 
-    fn set_capturing(&self, capturing: bool) -> Result<(), RPCError> {
-        self.capturing
-            .store(capturing, core::sync::atomic::Ordering::SeqCst);
+    fn start(&self) -> Result<(), RPCError> {
+        self.started
+            .store(true, core::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -238,7 +240,7 @@ impl DataCaptureFileBuilder {
                         .attach_value_producer()
                         .expect("single purpose OQueue failed."),
                     command_oqueue,
-                    capturing: AtomicBool::new(false),
+                    started: AtomicBool::new(false),
                     stopped: AtomicBool::new(false),
                 });
 
