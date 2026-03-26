@@ -55,7 +55,7 @@ mod legacy_tests {
         sleep(Duration::from_millis(10));
 
         // Enable capturing
-        server.set_capturing(true).unwrap();
+        server.start().unwrap();
         producer.produce(42u8);
         producer.produce(100u8);
         producer.produce(200u8);

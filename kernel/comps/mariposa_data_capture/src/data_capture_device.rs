@@ -40,7 +40,7 @@ pub enum DataCaptureDeviceError {
 #[orpc_trait]
 pub trait DataCaptureDevice {
     /// Create a new file for capturing data, via a builder. The file will start disabled. You must
-    /// call `set_capturing(true)` to start it. This allocates `length` bytes on the device and
+    /// call `start()` to start it. This allocates `length` bytes on the device and
     /// returns an error if there is not enough space.
     fn new_file(
         &self,

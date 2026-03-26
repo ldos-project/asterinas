@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, format, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::error::Error;
 
 use aster_block::{
@@ -118,6 +118,11 @@ impl ChunkingWriteWrapper {
         Ok(n_written)
     }
 
+    pub fn sync(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+        self.block_device.sync()?;
+        Ok(())
+    }
+
     /// Writes a structured header with magic number, type information, and paths.
     pub fn write_header<T>(&mut self, paths: &[Path]) -> Result<(), Box<dyn Error + 'static>> {
         // Write magic number
@@ -150,6 +155,8 @@ impl ChunkingWriteWrapper {
 
 #[cfg(ktest)]
 mod test {
+    use alloc::vec;
+
     use aster_block::test_utils::MemoryDisk;
     use ostd::{path, prelude::*};
 

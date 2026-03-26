@@ -101,7 +101,7 @@ mod tests {
         sleep(Duration::from_millis(10));
 
         // Enable capturing
-        server.set_capturing(true).unwrap();
+        server.start().unwrap();
         producer.produce_ref(&42);
         producer.produce_ref(&100);
         producer.produce_ref(&200);

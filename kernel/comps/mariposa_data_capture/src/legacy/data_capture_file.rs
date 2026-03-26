@@ -42,14 +42,20 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
     /// TEMPORARY: Flush any data remaining in the output buffers to disk.
     fn flush(&self) -> Result<(), RPCError>;
-    /// TEMPORARY: Enable or disable capturing to this file.
-    fn set_capturing(&self, capturing: bool) -> Result<(), RPCError>;
+    /// TEMPORARY: Sync writes to disk.
+    fn sync(&self) -> Result<(), RPCError>;
+    /// TEMPORARY: Enable capturing to this file.
+    fn start(&self) -> Result<(), RPCError>;
+    /// TEMPORARY: Stop the server
+    fn stop(&self) -> Result<(), RPCError>;
 }
 
 /// TEMPORARY: Command enum for [`DataCaptureFile`] operations.
 enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
+    Sync,
+    Stop,
 }
 
 impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
@@ -57,6 +63,8 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
         match self {
             Self::RegisterObserver(reg) => f.debug_tuple("RegisterObserver").field(reg).finish(),
             Self::Flush => write!(f, "Flush"),
+            Self::Sync => write!(f, "Sync"),
+            Self::Stop => write!(f, "Stop"),
         }
     }
 }
@@ -64,7 +72,8 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
 #[orpc_server(DataCaptureFile<T>)]
 struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
     command_queue: Arc<LockingQueue<DataCaptureFileCommand<T>>>,
-    capturing: AtomicBool,
+    started: AtomicBool,
+    stopped: AtomicBool,
 }
 
 struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
@@ -98,12 +107,21 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                     DataCaptureFileCommand::Flush => {
                         data_buf_handler.flush()?;
                     }
+                    DataCaptureFileCommand::Sync => {
+                        data_buf_handler.sync()?;
+                    }
+                    DataCaptureFileCommand::Stop => {
+                        self.server
+                            .stopped
+                            .store(true, core::sync::atomic::Ordering::SeqCst);
+                        return Ok(());
+                    }
                 }
             }
 
             let capturing = self
                 .server
-                .capturing
+                .started
                 .load(core::sync::atomic::Ordering::SeqCst);
             // Observe and serialize.
             for o in &observers {
@@ -144,9 +162,27 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
         Ok(())
     }
 
-    fn set_capturing(&self, capturing: bool) -> Result<(), RPCError> {
-        self.capturing
-            .store(capturing, core::sync::atomic::Ordering::SeqCst);
+    fn sync(&self) -> Result<(), RPCError> {
+        self.command_queue
+            .produce(DataCaptureFileCommand::Sync)
+            .unwrap();
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), RPCError> {
+        self.command_queue
+            .produce(DataCaptureFileCommand::Stop)
+            .unwrap();
+
+        while !self.stopped.load(core::sync::atomic::Ordering::Relaxed) {
+            ostd::task::Task::yield_now();
+        }
+        Ok(())
+    }
+
+    fn start(&self) -> Result<(), RPCError> {
+        self.started
+            .store(true, core::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -170,7 +206,8 @@ impl DataCaptureFileBuilder {
                 let command_queue = LockingQueue::new(8);
                 let server = new_server!(|_| DataCaptureFileServer {
                     command_queue: command_queue.clone(),
-                    capturing: AtomicBool::new(false)
+                    started: AtomicBool::new(false),
+                    stopped: AtomicBool::new(false),
                 });
 
                 spawn_thread(server.clone(), {
