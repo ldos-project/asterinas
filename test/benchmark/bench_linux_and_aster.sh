@@ -87,7 +87,7 @@ run_benchmark() {
 
     echo "Preparing libraries..."
     prepare_libs
-    prepare_ycsb
+    # prepare_ycsb
 
     # Default values
     local smp_val=1
@@ -231,7 +231,7 @@ main() {
 
     # Determine the run mode (host-only or host-guest)
     local run_mode="guest_only"
-    [[ -f "${BENCHMARK_ROOT}/${benchmark}/host.sh" ]] && run_mode="host_guest"
+    # [[ -f "${BENCHMARK_ROOT}/${benchmark}/host.sh" ]] && run_mode="host_guest"
 
     local bench_result="${BENCHMARK_ROOT}/${benchmark}/bench_result.yaml"
     local runtime_configs_str=""

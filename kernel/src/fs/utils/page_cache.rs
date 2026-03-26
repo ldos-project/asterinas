@@ -621,9 +621,9 @@ impl PageCacheManager {
 
         for consumer in consumers {
             let PageHandle { idx: _, frame } = consumer.consume();
-            frame.store_state(PageState::UpToDate);
+                        frame.store_state(PageState::UpToDate);
         }
-
+        
         Ok(())
     }
 
