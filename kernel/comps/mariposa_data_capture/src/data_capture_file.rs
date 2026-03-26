@@ -63,6 +63,8 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
     /// Flush any data remaining in the output buffers to disk.
     fn flush(&self) -> Result<(), RPCError>;
+    /// Sync writes to disk.
+    fn sync(&self) -> Result<(), RPCError>;
     /// Enable or disable capturing to this file.
     fn set_capturing(&self, capturing: bool) -> Result<(), RPCError>;
 }
@@ -71,6 +73,7 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
 enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
+    Sync,
 }
 
 impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
@@ -78,6 +81,7 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
         match self {
             Self::RegisterObserver(arg0) => f.debug_tuple("AttachOqueue").field(arg0).finish(),
             Self::Flush => write!(f, "Flush"),
+            Self::Sync => write!(f, "Sync"),
         }
     }
 }
@@ -128,6 +132,9 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                     DataCaptureFileCommand::Flush => {
                         data_buf_handler.flush()?;
                     }
+                    DataCaptureFileCommand::Sync => {
+                        data_buf_handler.sync()?;
+                    }
                 }
             }
 
@@ -168,6 +175,11 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
 
     fn flush(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::Flush);
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), RPCError> {
+        self.command_producer.produce(DataCaptureFileCommand::Sync);
         Ok(())
     }
 
