@@ -323,9 +323,9 @@ fn init_thread() {
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
         finalizers.push(Box::new(move || {
-            println!("Flushing connect capture");
             server.flush().unwrap();
             server.sync().unwrap();
+            server.stop().unwrap();
         }));
     }
 
