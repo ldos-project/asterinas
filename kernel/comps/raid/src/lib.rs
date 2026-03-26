@@ -30,7 +30,9 @@ use core::{cmp, ops::Range};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
-    bio::{Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, SubmittedBio},
+    bio::{
+        Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, ParentGuard, SubmittedBio,
+    },
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
@@ -145,7 +147,7 @@ impl Raid1Device {
     /// any `BlockDevice` and applies RAID semantics underneath.
     fn process_request(&self, request: BioRequest) {
         match request.type_() {
-            BioType::Read => self.process_read(request),
+            BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
             BioType::Discard => self.process_discard(request),
@@ -162,11 +164,13 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
+    /// Processes read requests synchronously.
+    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0.
     ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member (round-robin) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to device 0
+    /// and submitted with `Bio::submit`. Completion of the parent is reported
+    /// after the child finishes.
+    #[expect(dead_code)]
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
@@ -190,14 +194,15 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests asynchronously.
+    /// Processes read requests synchronously.
+    /// ORPC Version, i.e., do actual device selection
     ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
+    #[expect(dead_code)]
     #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
-        // TODO(yingqi): Implement asynchronous read with policy selector.
         // Submit all children first to overlap device I/O.
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
@@ -226,6 +231,34 @@ impl Raid1Device {
             };
             // Report the completion status to the upper layer.
             parent.complete(status);
+        }
+    }
+
+    /// Processes read requests asynchronously.
+    ///
+    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
+    /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
+    /// I/O. Completion of the parent is reported after the child finishes.    
+    fn process_read_async(&self, request: BioRequest) {
+        for parent in request.into_bios() {
+            #[cfg(not(baseline_asterinas))]
+            let member = self.selection_policy.select_block_device().unwrap();
+
+            #[cfg(baseline_asterinas)]
+            let member = self.members[0].clone();
+
+            let start_sid = parent.sid_range().start;
+            let segments = parent.segments().to_vec();
+            let guard = ParentGuard::new(parent);
+            let child = Bio::new_with_closure(
+                BioType::Read,
+                start_sid,
+                segments,
+                move |child_bio: &SubmittedBio| {
+                    guard.complete(child_bio.status());
+                },
+            );
+            let _ = child.submit(&*member);
         }
     }
 

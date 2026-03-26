@@ -163,6 +163,11 @@ impl BioRequest {
         self.bios.iter()
     }
 
+    /// Consumes the request and returns ownership of the `SubmittedBio`s.
+    pub fn into_bios(self) -> VecDeque<SubmittedBio> {
+        self.bios
+    }
+
     /// Returns the number of sectors of this request.
     pub fn num_sectors(&self) -> usize {
         (self.sid_range.end.to_raw() - self.sid_range.start.to_raw())
