@@ -255,7 +255,7 @@ fn init_thread() {
         }));
     }
 
-    {
+    if false {
         let pagefault_oq = vm::vmar::oqueues::get_page_fault_oqueue();
         let device = fs::start_block_device("data1").unwrap();
         println!("[datadisk] 1 online");
@@ -279,7 +279,7 @@ fn init_thread() {
             server.sync().unwrap();
         }));
     }
-    {
+    if false {
         let rss_oq = vm::vmar::oqueues::get_rss_delta_oqueue();
         let device = fs::start_block_device("data2").unwrap();
         println!("[datadisk] 2 online");
