@@ -46,7 +46,6 @@ pub fn sys_accept4(
     );
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
-    println!("!!!!! ACCEPT");
     #[cfg(not(baseline_asterinas))]
     super::get_accept_oq().produce(super::AcceptMessage{
         fd: fd,
