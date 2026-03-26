@@ -252,10 +252,11 @@ fn init_thread() {
             println!("Flushing pmu capture");
             server.flush().unwrap();
             server.sync().unwrap();
+            server.stop().unwrap();
         }));
     }
 
-    if false {
+    {
         let pagefault_oq = vm::vmar::oqueues::get_page_fault_oqueue();
         let device = fs::start_block_device("data1").unwrap();
         println!("[datadisk] 1 online");
@@ -277,9 +278,10 @@ fn init_thread() {
             println!("Flushing pagefault capture");
             server.flush().unwrap();
             server.sync().unwrap();
+            server.stop().unwrap();
         }));
     }
-    if false {
+    {
         let rss_oq = vm::vmar::oqueues::get_rss_delta_oqueue();
         let device = fs::start_block_device("data2").unwrap();
         println!("[datadisk] 2 online");
@@ -301,6 +303,7 @@ fn init_thread() {
             println!("Flushing rss capture");
             server.flush().unwrap();
             server.sync().unwrap();
+            server.stop().unwrap();
         }));
     }
     {
@@ -323,6 +326,7 @@ fn init_thread() {
         server.register_observer(attachment).unwrap();
         server.set_capturing(true).unwrap();
         finalizers.push(Box::new(move || {
+            println!("Flushing connect capture");
             server.flush().unwrap();
             server.sync().unwrap();
             server.stop().unwrap();
