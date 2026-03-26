@@ -65,6 +65,8 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn flush(&self) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
+    /// Stop the server
+    fn stop(&self) -> Result<(), RPCError>;
     /// Enable or disable capturing to this file.
     fn set_capturing(&self, capturing: bool) -> Result<(), RPCError>;
 }
@@ -74,6 +76,7 @@ enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
     Sync,
+    Stop,
 }
 
 impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
@@ -82,6 +85,7 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
             Self::RegisterObserver(arg0) => f.debug_tuple("AttachOqueue").field(arg0).finish(),
             Self::Flush => write!(f, "Flush"),
             Self::Sync => write!(f, "Sync"),
+            Self::Stop => write!(f, "Stop"),
         }
     }
 }
@@ -91,6 +95,7 @@ struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
     command_oqueue: ConsumableOQueueRef<DataCaptureFileCommand<T>>,
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     capturing: AtomicBool,
+    stopped: AtomicBool,
 }
 
 pub struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
@@ -134,6 +139,10 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                     }
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
+                    }
+                    DataCaptureFileCommand::Stop => {
+                        self.server.stopped.store(true, core::sync::atomic::Ordering::SeqCst);
+                        return Ok(());
                     }
                 }
             }
@@ -183,6 +192,14 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
         Ok(())
     }
 
+    fn stop(&self) -> Result<(), RPCError> {
+        self.command_producer.produce(DataCaptureFileCommand::Stop);
+        while !self.stopped.load(core::sync::atomic::Ordering::Relaxed) {
+            ostd::task::Task::yield_now();
+        }
+        Ok(())
+    }
+
     fn set_capturing(&self, capturing: bool) -> Result<(), RPCError> {
         self.capturing
             .store(capturing, core::sync::atomic::Ordering::SeqCst);
@@ -221,7 +238,8 @@ impl DataCaptureFileBuilder {
                         .attach_value_producer()
                         .expect("single purpose OQueue failed."),
                     command_oqueue,
-                    capturing: AtomicBool::new(false)
+                    capturing: AtomicBool::new(false),
+                    stopped: AtomicBool::new(false),
                 });
 
                 spawn_thread(server.clone(), {
