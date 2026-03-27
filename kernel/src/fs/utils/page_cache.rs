@@ -14,7 +14,7 @@ use core::{
 use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
-use mariposa_data_capture::legacy::FileDescriptor;
+use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
@@ -566,14 +566,26 @@ impl PageCacheManager {
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
         if get_log_hits_misses() {
-            let file = new_data_capture_file(FileDescriptor {
-                length: 10 * 1024 * 1024, // 10MB
-            });
+            static PAGE_CACHE_LOG_FILE: SpinLock<
+                Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>,
+            > = SpinLock::new(None);
+
+            let file = {
+                let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
+                if file_guard.is_none() {
+                    *file_guard = Some(new_data_capture_file(FileDescriptor {
+                        length: 10 * 1024 * 1024, // 10MB
+                    }));
+                }
+                file_guard.as_ref().unwrap().clone()
+            };
+
             file.register_observer(mariposa_data_capture::legacy::ObserverRegistration {
                 observer: server
                     .page_cache_read_info_oqueue()
                     .attach_strong_observer()?,
             })?;
+            file.start()?;
             // PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
         }
 

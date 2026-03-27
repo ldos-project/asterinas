@@ -119,7 +119,7 @@ run_benchmark() {
      done <<< "$runtime_configs_str"
 
     # Prepare commands for Asterinas and Linux using arrays
-    local asterinas_cmd_arr=(make run "BENCHMARK=${benchmark}")
+    local asterinas_cmd_arr=(make run "BENCHMARK=${benchmark}" KCMDARGS="page_cache.prefetch_policy=none page_cache.log_hits_misses=true" )
     # Add scheme part only if it's not empty and the platform is not TDX (OSDK doesn't support multiple SCHEME)
     [[ -n "$aster_scheme_cmd_part" && "$platform" != "tdx" ]] && asterinas_cmd_arr+=("$aster_scheme_cmd_part")
     asterinas_cmd_arr+=(
@@ -170,9 +170,9 @@ run_benchmark() {
             # Execute directly from array, redirect stderr to stdout, then tee
             "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
             prepare_fs
-            echo "Running benchmark ${benchmark} on Linux..."
-            # Execute directly from array, redirect stderr to stdout, then tee
-            "${linux_cmd_arr[@]}" 2>&1 | tee "${LINUX_OUTPUT}"
+            # echo "Running benchmark ${benchmark} on Linux..."
+            # # Execute directly from array, redirect stderr to stdout, then tee
+            # "${linux_cmd_arr[@]}" 2>&1 | tee "${LINUX_OUTPUT}"
             ;;
         "host_guest")
             # Note: host_guest_bench_runner.sh expects commands as single strings.
