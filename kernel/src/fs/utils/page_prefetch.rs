@@ -12,6 +12,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
 
 use aster_logger::println;
+use hashbrown::HashSet;
 use ostd::orpc::{
     errors::RPCError,
     framework::{
@@ -197,6 +198,8 @@ impl StridedPrefetcher {
             shutdown_state: Default::default(),
         });
 
+        let n_steps_ahead = n_steps_ahead as isize;
+
         spawn_thread(server.clone(), {
             let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
             let read_weak_observer = cache.page_reads_oqueue().attach_weak_observer()?;
@@ -213,12 +216,23 @@ impl StridedPrefetcher {
                     select_legacy!(
                         if let idx = read_observer.try_strong_observe() {
                             let recent = read_weak_observer.recent_cursor();
-                            let history = read_weak_observer.weak_observe_range(recent - 1, recent);
-                            if history.len() >= 2 && history[1] > history[0] {
-                                let stride = history[1] - history[0];
-                                cache
-                                    .prefetch_oqueue()
-                                    .produce(idx + stride * n_steps_ahead)?;
+                            let history = read_weak_observer.weak_observe_range(recent - 8, recent);
+
+                            if history.len() >= 2 {
+                                // Compute all strides and deduplicate them
+                                let mut unique_strides: HashSet<_> = Default::default();
+
+                                for i in 1..history.len() {
+                                    let stride = history[i] as isize - history[i - 1] as isize;
+                                    unique_strides.insert(stride);
+                                }
+
+                                // Issue prefetches for all unique strides
+                                for &stride in &unique_strides {
+                                    cache.prefetch_oqueue().produce(
+                                        (idx as isize + stride * n_steps_ahead) as usize,
+                                    )?;
+                                }
                             }
                         },
                         if let () = shutdown_observer.try_strong_observe() {}
