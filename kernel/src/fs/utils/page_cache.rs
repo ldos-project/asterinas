@@ -17,7 +17,7 @@ use bitvec::ptr::Mut;
 use lru::LruCache;
 use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
 use ostd::{
-    impl_untyped_frame_meta_for,
+    ignore_err, impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
         framework::spawn_thread,
@@ -444,6 +444,7 @@ impl OutstandingRequests {
 struct PageCacheManager {
     backend: Weak<dyn PageStore>,
     inner: Mutex<PageCacheManagerInner>,
+    max_cache_size: usize,
     weak_this: Weak<PageCacheManager>,
 }
 
@@ -517,6 +518,8 @@ impl PageCacheManager {
             policy
         };
 
+        let max_cache_size = crate::vm::mem_total() / 16 / PAGE_SIZE;
+
         let server = Self::new_with(|orpc_internal, weak_this| Self {
             backend,
             inner: Mutex::new(PageCacheManagerInner {
@@ -530,6 +533,7 @@ impl PageCacheManager {
                 outstanding_requests: Default::default(),
                 page_cache_read_info_producer: None,
             }),
+            max_cache_size, 
             weak_this: weak_this.clone(),
             orpc_internal,
         });
@@ -616,29 +620,16 @@ impl PageCacheManager {
         let page_idx_range = get_page_idx_range(&range);
 
         let mut consumers = Vec::new();
-        // TODO(arthurp): This locks the entire cache. That's probably a performance problem.
-        {
-            let mut inner = self.inner.lock();
-            let pages = &mut inner.pages;
-            let backend = self.backend()?;
-            let backend_npages = backend.npages()?;
-            for idx in page_idx_range.start..page_idx_range.end {
-                if let Some(page) = pages.peek(&idx) {
-                    if page.load_state() == PageState::Dirty && idx < backend_npages {
-                        let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
-                        backend.write_page_async(AsyncWriteRequest {
-                            handle: PageHandle {
-                                idx,
-                                frame: page.clone(),
-                            },
-                            reply_handle: Some(reply_handle),
-                        })?;
-                        consumers.push(reply_consumer);
-                    }
-                }
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
+        let backend = self.backend()?;
+        for idx in page_idx_range.start..page_idx_range.end {
+            if let Some(reply_consumer) = flush_page(pages, &backend, idx)? {
+                consumers.push(reply_consumer);
             }
         }
 
+        // TODO(arthurp): This waits for the flush with the lock held.
         for consumer in consumers {
             let PageHandle { idx: _, frame } = consumer.consume();
             frame.store_state(PageState::UpToDate);
@@ -655,8 +646,8 @@ impl PageCacheManager {
 
         let frame = {
             let backend = self.backend()?;
-            let mut inner = self.inner.lock();
-            let inner = inner.deref_mut();
+            let mut inner_guard = self.inner.lock();
+            let inner = inner_guard.deref_mut();
 
             // Lazily initialize page_cache_read_info_producer
             if inner.page_cache_read_info_producer.is_none() {
@@ -722,12 +713,55 @@ impl PageCacheManager {
             // Invoke built-in policy.
             inner.maybe_builtin_prefetch(idx, &backend, self)?;
 
+            let cache_size = inner.pages.len();
+            if cache_size > self.max_cache_size {
+                if let Some((idx, _)) = inner.pages.peek_lru() {
+                    let idx = *idx;
+                    // println!("Evicting {idx} (from {cache_size})");
+                    let reply_consumer = flush_page(&mut inner.pages, &backend, idx)?;
+                    if let Some(consumer) = reply_consumer {
+                        // Wait for the flush to complete.
+                        // TODO(arthurp): This waits for the flush with the lock held.
+                        let PageHandle { idx: _, frame } = consumer.consume();
+                        frame.store_state(PageState::UpToDate);
+                    }
+                    inner.pages.pop(&idx);
+                }
+            }
+
             frame
         };
 
         self.page_reads_reply_oqueue().produce(idx)?;
 
         Ok(frame.into())
+    }
+}
+
+/// Start the flush of a page to storage.
+///
+/// This places the reply consumer into `consumers`. The caller should wait on it appropriately.
+fn flush_page(
+    pages: &mut LruCache<usize, Frame<CachePageMeta>>,
+    backend: &Arc<dyn PageStore>,
+    idx: usize,
+) -> Result<Option<Box<dyn Consumer<PageHandle>>>> {
+    let backend_npages = backend.npages()?;
+    if let Some(page) = pages.peek(&idx)
+        && page.load_state() == PageState::Dirty
+    {
+        assert!(idx < backend_npages);
+        let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+        backend.write_page_async(AsyncWriteRequest {
+            handle: PageHandle {
+                idx,
+                frame: page.clone(),
+            },
+            reply_handle: Some(reply_handle),
+        })?;
+        Ok(Some(reply_consumer))
+    } else {
+        Ok(None)
     }
 }
 
