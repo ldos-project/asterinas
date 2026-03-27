@@ -64,6 +64,8 @@ qemu.args = """\
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
     -drive if=none,format=raw,id=r0,file=./test/build/raid1_0.img \
     -drive if=none,format=raw,id=r1,file=./test/build/raid1_1.img \
+    -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
+    -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
     -device virtio-blk-device,drive=x0 \
     -device virtio-keyboard-device \
     -device virtio-serial-device \

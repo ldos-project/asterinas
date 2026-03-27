@@ -24,6 +24,10 @@
 #![register_tool(component_access_control)]
 
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
+#[cfg(not(baseline_asterinas))]
+mod data_capture;
+#[cfg(not(baseline_asterinas))]
+pub use data_capture::{new_data_capture_file, new_legacy_data_capture_file};
 use kcmdline::KCmdlineArg;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
@@ -159,6 +163,11 @@ fn init_thread() {
         .unwrap_or(false);
     set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
 
+    #[cfg(not(baseline_asterinas))]
+    {
+        data_capture::start_capture_devices();
+    }
+
     #[cfg(target_arch = "x86_64")]
     net::lazy_init();
     fs::lazy_init();
@@ -219,6 +228,11 @@ fn init_thread() {
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
         ostd::task::halt_cpu();
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    for f in data_capture::DATA_CAPTURE_FILE_FINALIZERS.lock().drain(..) {
+        f();
     }
 
     // TODO: exit via qemu isa debug device should not be the only way.
