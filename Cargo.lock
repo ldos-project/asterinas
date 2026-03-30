@@ -102,6 +102,7 @@ version = "0.1.0"
 dependencies = [
  "align_ext",
  "aster-time",
+ "binary_serde",
  "bitvec",
  "component",
  "int-to-c-enum",
@@ -1172,6 +1173,7 @@ version = "0.1.0"
 dependencies = [
  "aster-block",
  "aster-logger",
+ "aster-time",
  "binary_serde",
  "component",
  "log",

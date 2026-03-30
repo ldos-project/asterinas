@@ -497,7 +497,7 @@ impl From<aster_block::bio::BioEnqueueError> for Error {
                 Error::with_message(Errno::EINVAL, "Bio is too big")
             }
             #[cfg(not(baseline_asterinas))]
-            aster_block::bio::BioEnqueueError::OQueueAttachError(err) => err.into(),
+            aster_block::bio::BioEnqueueError::OQueueError(err) => err.into(),
         }
     }
 }
