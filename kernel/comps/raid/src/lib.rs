@@ -26,6 +26,7 @@ pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
+use ostd::task::scheduler::info;
 use core::{cmp, ops::Range};
 
 use aster_block::{
@@ -41,29 +42,6 @@ use ostd::orpc::orpc_server;
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
-/// Ensures a parent [`SubmittedBio`] is always completed — either explicitly
-/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
-///
-/// This is used by the non-blocking read path: the guard is moved into the
-/// child BIO's completion callback. If the child completes normally, the
-/// callback calls [`complete`](Self::complete). If submission fails and the
-/// child is dropped, the guard's [`Drop`] impl completes the parent with an
-/// error so the filesystem thread is never left waiting.
-struct ParentGuard(Option<SubmittedBio>);
-impl ParentGuard {
-    fn complete(mut self, status: BioStatus) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(status);
-        }
-    }
-}
-impl Drop for ParentGuard {
-    fn drop(&mut self) {
-        if let Some(parent) = self.0.take() {
-            parent.complete(BioStatus::IoError);
-        }
-    }
-}
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[cfg(baseline_asterinas)]
@@ -169,6 +147,7 @@ impl Raid1Device {
     /// Dispatches a request by type. The RAID-1 device accepts the same BIOs as
     /// any `BlockDevice` and applies RAID semantics underneath.
     fn process_request(&self, request: BioRequest) {
+        // log::info!("Raid1Device process request, type: {:?}", request.type_());
         match request.type_() {
             BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
@@ -302,6 +281,8 @@ impl Raid1Device {
             let status =
                 self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
             parent.complete(status);
+            // let status = BioStatus::Complete;
+            // parent.complete(status);
         }
     }
 
