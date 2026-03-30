@@ -15,7 +15,7 @@ use ostd::{
         DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, Infallible, USegment, VmIo,
         VmReader, VmWriter,
     },
-    sync::{SpinLock, WaitQueue},
+    sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
 use spin::{Mutex, Once};
 
@@ -717,7 +717,7 @@ struct BioSegmentPool {
     pool: DmaStream,
     total_blocks: usize,
     direction: BioDirection,
-    manager: SpinLock<PoolSlotManager>,
+    manager: SpinLock<PoolSlotManager, LocalIrqDisabled>,
 }
 
 /// Manages the free slots in the pool.
@@ -811,6 +811,8 @@ impl BioSegmentPool {
             .position(|i| !i)
             .map(|pos| end + pos)
             .unwrap_or(self.total_blocks);
+
+        drop(manager);
 
         let dma_slice = DmaStreamSlice::new(
             self.pool.clone(),
