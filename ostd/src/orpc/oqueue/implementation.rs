@@ -12,6 +12,12 @@
 // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/155): Add support for sharing ring
 // buffers between multiple observers.
 
+// TODO(arthurp): Inline observer and consumer functions are called with the OQueue spinlock held
+// (and interrupts disabled). This means that they are VERY limited in what they can do. Notably,
+// they cannot publish to another OQueue. This needs to be relaxed and there needs to be a way for
+// the inline handler to participate in the `try_`/`can_` machinery to enable async publications
+// while inline handlers are attached.
+
 use alloc::{alloc::AllocError, boxed::Box, sync::Arc};
 use core::{
     any::{Any, TypeId},
@@ -32,7 +38,7 @@ use crate::{
             single_thread_ring_buffer::RingBuffer,
         },
     },
-    sync::{SpinLock, WaitQueue, WakerKey},
+    sync::{LocalIrqDisabled, SpinLock, WaitQueue, WakerKey},
 };
 
 new_key_type! {
@@ -53,7 +59,9 @@ new_key_type! {
 /// hypothetical `dyn OQueueDynImplementation<T>` backend; however, `OQueueDynImplementation` would
 /// require quite a few type-erased unsafe operations.
 pub(crate) struct OQueueImplementation<T: ?Sized> {
-    inner: SpinLock<OQueueInner<T>>,
+    // TODO(arthurp): A number of methods perform allocation while this lock is held. Do we actually
+    // want to disable IRQs?
+    inner: SpinLock<OQueueInner<T>, LocalIrqDisabled>,
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
@@ -431,9 +439,10 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         self: &Arc<Self>,
         f: impl Fn(T) + Send + 'static,
     ) -> Result<(), OQueueError> {
+        let inline_consumer: Box<dyn Fn(T) + Send + 'static> = Box::new(f);
         let mut inner = self.inner.lock();
         ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
-        inner.inline_consumer = Some(Box::new(f));
+        inner.inline_consumer = Some(inline_consumer);
         Ok(())
     }
 }
