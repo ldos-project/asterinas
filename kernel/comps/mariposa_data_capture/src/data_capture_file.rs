@@ -21,6 +21,8 @@
 use alloc::{string::ToString as _, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicBool};
 
+use aster_time::read_monotonic_time;
+
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
 use ostd::{
     new_server,
@@ -118,6 +120,9 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
         // paths are no longer collected even if more OQueues are attached.
         let mut paths = Some(Vec::default());
         let mut block_handler = BlockOnMany::new();
+        // Tracks whether unflushed data exists and when the most recent value was observed.
+        let mut need_flush = false;
+        let mut latest_data_observed_us: Option<u64> = None;
 
         loop {
             let blockers = [(&self.command_consumer) as &dyn Blocker]
@@ -140,6 +145,22 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
+                    DataCaptureFileCommand::FlushAll => {
+                        data_buf_handler.flush_all()?;
+                    }
+                    DataCaptureFileCommand::TimedFlush => {
+                        if need_flush {
+                            if let Some(last_us) = latest_data_observed_us {
+                                let now_us = read_monotonic_time().as_micros() as u64;
+                                if now_us.saturating_sub(last_us) > 5000000 {
+                                    log::info!("[capture] Timed flush triggered after {} seconds of inactivity", (now_us - last_us) as f64 / 1_000_000.0);
+                                    data_buf_handler.flush_all()?;
+                                    need_flush = false;
+                                    log::info!("[capture] Timed flush completed");
+                                }
+                            }
+                        }
+                    }
                     DataCaptureFileCommand::Stop => {
                         data_buf_handler.sync()?;
                         self.server
@@ -158,7 +179,14 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
             for o in &observers {
                 // We can't skip the try_strong_observe calls when not `capturing` because that
                 // would leave the values in the OQueues and block them.
-                while let Ok(Some(v)) = o.try_strong_observe() {
+                let mut drain_count = 0usize;
+                while let Ok(Some(v)) = {
+                    // Disable IRQs while holding the OQueue's SpinLock inside
+                    // try_strong_observe to prevent deadlock with the IRQ handler
+                    // that produces to the same OQueue (bio completion stats).
+                    let _irq_guard = ostd::trap::irq::disable_local();
+                    o.try_strong_observe()
+                } {
                     if started {
                         if paths.is_some() {
                             data_buf_handler.write_header::<T>(
@@ -169,7 +197,14 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         }
 
                         data_buf_handler.write_value(&v);
-                        data_buf_handler.flush_if_needed()?;
+                        latest_data_observed_us = Some(read_monotonic_time().as_micros() as u64);
+                        need_flush = true;
+                        // data_buf_handler.flush_if_needed()?;
+                        if data_buf_handler.data_buf.len() % (32 * 1024) == 0 {  // 32 * 1024
+                            log::info!("Captured Data from OQueue to Capture Buffer, size of buffer: {}, capacity: {}",
+                                data_buf_handler.data_buf.len(),
+                                data_buf_handler.data_buf.data.capacity());
+                        }
                         if data_buf_handler.current_bid == self.end_bid {
                             log::warn!("Data capture ran out of space.");
                         }

@@ -70,7 +70,7 @@ impl DataBuf {
 
 /// Handles buffering and flushing data to a block device.
 pub(crate) struct ChunkingWriteWrapper {
-    data_buf: DataBuf,
+    pub data_buf: DataBuf,
     pub(crate) block_device: Arc<dyn aster_block::BlockDevice>,
     pub(crate) current_bid: Bid,
     end_bid: Bid,
@@ -129,6 +129,7 @@ impl ChunkingWriteWrapper {
         let _ = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
+        waiter.wait();
         Ok(n_written)
     }
 
