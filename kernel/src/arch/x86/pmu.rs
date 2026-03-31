@@ -63,9 +63,10 @@ impl PmuServer {
         ostd::arch::pmu::pmu_start();
     }
 
-    /// For now we assume one cpu, when we come back to make this multi-cpu we should also
-    /// investigate making this multi-process as it will be easier to work with
     pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
+        // TODO(tewaro, after SOSP): for now we assume one cpu, when we come back to make this
+        // multi-cpu we should also investigate making this multi-process as it will be easier to
+        // work with
         let notify_server = TimerServer::spawn(Duration::from_millis(100));
 
         let dtlb_miss_count_producer = self.dtlb_miss_count_oqueue.attach_ref_producer()?;
