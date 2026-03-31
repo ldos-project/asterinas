@@ -2,7 +2,7 @@
 
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{errors::RPCError, legacy_oqueue::OQueueAttachError};
+use ostd::orpc::{errors::RPCError, oqueue::OQueueError};
 
 use crate::queue::QueueError;
 
@@ -52,9 +52,9 @@ pub enum VirtioDeviceError {
     /// The ORPC Errors
     #[cfg(not(baseline_asterinas))]
     RPCError(RPCError),
-    /// The OQueue attachment errors
+    /// The OQueue errors
     #[cfg(not(baseline_asterinas))]
-    OQueueAttachError(OQueueAttachError),
+    OQueueError(OQueueError),
 }
 
 impl From<QueueError> for VirtioDeviceError {
