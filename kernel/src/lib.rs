@@ -207,7 +207,7 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
-        let pmu = arch::pmu::PMUServer::spawn();
+        let pmu = arch::pmu::PmuServer::spawn();
         pmu.reset();
         pmu.start();
     }

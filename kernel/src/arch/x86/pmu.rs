@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, sync::Arc, vec};
+use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use aster_time::Instant;
-use ostd::orpc::{
-    framework::{notifier::Notifier, spawn_thread},
-    oqueue::{OQueue, OQueueRef},
-    orpc_server, orpc_trait,
-    path::{Path, PathComponent::Name},
-    sync::select,
+use ostd::{
+    new_server,
+    orpc::{
+        framework::{notifier::Notifier, spawn_thread},
+        oqueue::{OQueue, OQueueRef},
+        orpc_server,
+    },
+    path,
 };
 use snafu::Whatever;
 
 use crate::util::timer::TimerServer;
-
-#[orpc_trait]
-pub(crate) trait PMUD {}
 
 /// Data TLB Misses instance struct
 #[derive(Debug, Clone, Copy)]
@@ -27,19 +26,17 @@ struct DtlbMisses {
     miss_all_tlb: u64,
 }
 
-/// PMU daemon that periodically read values and outputs to oq
-/// Currently only supports dTLB misses on Icelake-Server
+/// PMU daemon that periodically reads hw counters. Currently only supports dTLB misses on
+/// Icelake-Server
 // TODO(tewaro, after SOSP) actually support interesting option
 // TODO(tewaro, after SOSP) actually support multi-process
-
-/// PMU daemon that periodically reads hw counters
-#[orpc_server(PMUD)]
-pub struct PMUServer {
+#[orpc_server]
+pub struct PmuServer {
     dtlb_miss_count_oq: OQueueRef<DtlbMisses>,
 }
 
-impl PMUServer {
-    /// Create and spawn a new HugepagedServer.
+impl PmuServer {
+    /// Create and spawn a new PmuServer.
     pub fn spawn() -> Arc<Self> {
         let pmud = Self::new().unwrap();
         // TODO(tewaro, after SOSP) needs to run inline with jiffies and defer push to oqueue
@@ -50,12 +47,8 @@ impl PMUServer {
         pmud
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            dtlb_miss_count_oq: OQueueRef::<DtlbMisses>::new(
-                32,
-                Path::new(vec![Name("PMU"), Name("dtlb_miss_count")]),
-            ),
+        let server = new_server!(|_| Self {
+            dtlb_miss_count_oq: OQueueRef::<DtlbMisses>::new(32, path!(pmu.dtlb_miss_count)),
         });
         Ok(server)
     }
@@ -81,13 +74,7 @@ impl PMUServer {
             .notification_oqueue()
             .attach_strong_observer()?;
         loop {
-            loop {
-                select!(if let _ = notify_observer.try_strong_observe() {
-                    break;
-                });
-                ostd::task::Task::yield_now();
-            }
-
+            let _ = notify_observer.strong_observe();
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();
             let misses = DtlbMisses {
                 timestamp: aster_time::read_monotonic_time().into(),

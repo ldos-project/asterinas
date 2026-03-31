@@ -24,6 +24,8 @@ const STLB_MISS_CONFIG: u64 = 0x00430E08;
 
 /// Disables all PMU counters globally and programs the dTLB event selectors.
 pub fn pmu_reset() {
+    // TODO(tewaro, after SOSP): check cpuid at startups and error if pmu is enabled on unsupported
+    // CPUs.
     // SAFETY: Writing well-defined Intel PMU MSRs (IA32_PERF_GLOBAL_CTRL,
     // IA32_PERFEVTSEL0/1). These are valid MSRs on Icelake-Server and will not
     // cause UB — they only affect hardware performance counter state.
