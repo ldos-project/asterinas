@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Weak};
-use core::{fmt::Display, time::Duration};
+use binary_serde::BinarySerde;
+use core::fmt::Display;
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueueAttachError, Producer};
+use ostd::orpc::oqueue::{OQueueError, RefProducer};
 use ostd::{
     Error,
     mm::{
@@ -25,12 +26,15 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone)]
+#[derive(Clone, Copy, Default, BinarySerde)]
+#[repr(C)]
 pub struct BlockDeviceCompletionStats {
-    /// The latency of the I/O request (time from submission to completion).
-    pub latency: Duration,
+    /// The latency of the I/O request in microseconds.
+    pub latency_us: u64,
     /// The number of outstanding requests at completion time.
-    pub outstanding_requests: usize,
+    pub outstanding_requests: u64,
+    /// The index of the device that produced this stat.
+    pub device_index: u64,
 }
 
 /// The unit for block I/O.
@@ -145,9 +149,11 @@ impl Bio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
-            submission_time: None,
+            submission_time_us: None,
             #[cfg(not(baseline_asterinas))]
             bio_request_single_queue: None,
+            #[cfg(not(baseline_asterinas))]
+            device_index: None,
         }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
@@ -200,15 +206,15 @@ pub enum BioEnqueueError {
     Refused,
     /// Too big bio
     TooBig,
-    /// OQueue attachment failures
+    /// OQueue error
     #[cfg(not(baseline_asterinas))]
-    OQueueAttachError(OQueueAttachError),
+    OQueueError(OQueueError),
 }
 
 #[cfg(not(baseline_asterinas))]
-impl From<OQueueAttachError> for BioEnqueueError {
-    fn from(err: OQueueAttachError) -> Self {
-        Self::OQueueAttachError(err)
+impl From<OQueueError> for BioEnqueueError {
+    fn from(err: OQueueError) -> Self {
+        Self::OQueueError(err)
     }
 }
 
@@ -325,12 +331,15 @@ pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
     #[cfg(not(baseline_asterinas))]
-    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
+    reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
-    submission_time: Option<Duration>,
+    submission_time_us: Option<u64>,
 
     #[cfg(not(baseline_asterinas))]
     bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
+
+    #[cfg(not(baseline_asterinas))]
+    device_index: Option<u64>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -339,7 +348,7 @@ impl core::fmt::Debug for SubmittedBio {
         let d = d.field("bio_inner", &self.bio_inner);
         #[cfg(not(baseline_asterinas))]
         let d = d
-            .field("submission_time", &self.submission_time)
+            .field("submission_time_us", &self.submission_time_us)
             .field("bio_request_single_queue", &self.bio_request_single_queue)
             .field(
                 "reply_handle",
@@ -391,8 +400,8 @@ impl SubmittedBio {
         }
     }
 
-    pub fn submission_time(&self) -> Option<Duration> {
-        self.submission_time
+    pub fn submission_time_us(&self) -> Option<u64> {
+        self.submission_time_us
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -406,12 +415,14 @@ impl SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
-        reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>>,
+        reply_handle: RefProducer<BlockDeviceCompletionStats>,
         bio_request_single_queue: Arc<BioRequestSingleQueue>,
+        device_index: u64,
     ) {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
-        self.submission_time = Some(read_monotonic_time());
+        self.submission_time_us = Some(read_monotonic_time().as_micros() as u64);
+        self.device_index = Some(device_index);
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -419,9 +430,11 @@ impl SubmittedBio {
         self.reply_handle
             .as_ref()
             .unwrap()
-            .produce(BlockDeviceCompletionStats {
-                latency: read_monotonic_time() - self.submission_time.unwrap(),
-                outstanding_requests: self.num_outstanding_requests().unwrap_or(0),
+            .try_produce_ref(&BlockDeviceCompletionStats {
+                latency_us: read_monotonic_time().as_micros() as u64
+                    - self.submission_time_us.unwrap(),
+                outstanding_requests: self.num_outstanding_requests().unwrap_or(0) as u64,
+                device_index: self.device_index.unwrap_or(u64::MAX),
             });
     }
 }
