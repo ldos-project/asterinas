@@ -35,3 +35,6 @@ aster-nix-profile-*.svg
 
 # editor configuration
 .vscode
+
+# Python files
+__pycache__
