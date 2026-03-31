@@ -151,7 +151,7 @@ fn ap_init() {
         .spawn();
 }
 
-fn data_capture(
+fn memory_subsystem_data_capture(
     pmu_server: Option<Arc<arch::pmu::PmuServer>>,
     finalizers: &mut Vec<Box<dyn Fn() -> ()>>,
 ) {
@@ -341,8 +341,8 @@ fn init_thread() {
             None
         };
 
-        if karg.get_module_arg_by_name::<bool>("datacapture", "enabled").unwrap_or(false) {
-            data_capture(pmu_server, &mut finalizers);
+        if karg.get_module_arg_by_name::<bool>("vm", "datacapture_enabled").unwrap_or(false) {
+            memory_subsystem_data_capture(pmu_server, &mut finalizers);
         }
     }
 
