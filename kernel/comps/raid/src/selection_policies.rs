@@ -64,7 +64,6 @@ impl SelectionPolicy for RoundRobinPolicy {
     }
 }
 
-
 /// hidden_layers and output_layers: machine learning model weights.
 /// There is one model per device. Each model contains three layers, an input layer,
 /// a hidden layer with 256 neurons, and an output layer with 2 neurons for the binary
@@ -75,7 +74,7 @@ impl SelectionPolicy for RoundRobinPolicy {
 /// is 3+4*(3+4) = 31. The number of history is R=4.
 ///
 /// Number of Outstanding Requests: number of pending 4KB pages.
-/// List of observers attached to the list of member block devices. 
+/// List of observers attached to the list of member block devices.
 #[orpc_server]
 pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
