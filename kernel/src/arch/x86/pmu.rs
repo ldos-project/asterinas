@@ -74,7 +74,7 @@ impl PmuServer {
             .notification_oqueue()
             .attach_strong_observer()?;
         loop {
-            let _ = notify_observer.strong_observe();
+            notify_observer.strong_observe();
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();
             let misses = DtlbMisses {
                 timestamp: aster_time::read_monotonic_time().into(),
