@@ -27,16 +27,20 @@ use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 use kcmdline::KCmdlineArg;
 use mariposa_data_capture::{
     DataCaptureDevice, DataCaptureDeviceServer, FileDescriptor, ObserverRegistration,
-};
-use mariposa_data_capture::legacy::{
-    DataCaptureDevice as LegacyDataCaptureDevice, DataCaptureDeviceServer as LegacyDataCaptureDeviceServer, FileDescriptor as LegacyFileDescriptor, ObserverRegistration as LegacyObserverRegistration,
+    legacy::{
+        DataCaptureDevice as LegacyDataCaptureDevice,
+        DataCaptureDeviceServer as LegacyDataCaptureDeviceServer,
+        FileDescriptor as LegacyFileDescriptor, ObserverRegistration as LegacyObserverRegistration,
+    },
 };
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
-    orpc::oqueue::{OQueueBase, ObservationQuery},
-    orpc::legacy_oqueue::OQueue,
+    orpc::{
+        legacy_oqueue::OQueue,
+        oqueue::{OQueueBase, ObservationQuery},
+    },
     path,
 };
 use process::{Process, spawn_init_process};
@@ -147,6 +151,109 @@ fn ap_init() {
         .spawn();
 }
 
+fn data_capture(
+    pmu_server: Option<Arc<arch::pmu::PmuServer>>,
+    finalizers: &mut Vec<Box<dyn Fn() -> ()>>,
+) {
+    if let Some(pmu) = pmu_server {
+        let device = fs::start_block_device("data0").unwrap();
+        println!("[datadisk] 0 online");
+        let dcdserver = DataCaptureDeviceServer::new(device.clone());
+        let path = path!(test_capture);
+        let builder = dcdserver
+            .new_file(FileDescriptor {
+                length: 1024 * 1024 * 1024,
+                path: path.clone(),
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = ObserverRegistration {
+            path,
+            observer: pmu
+                .dtlb_miss_count_oqueue
+                .attach_strong_observer(ObservationQuery::new(|x| *x))
+                .unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.start().unwrap();
+        finalizers.push(Box::new(move || {
+            println!("Flushing pmu capture");
+            server.flush().unwrap();
+            server.sync().unwrap();
+            server.stop().unwrap();
+        }));
+    }
+
+    {
+        let pagefault_oqueue = vm::vmar::oqueues::get_page_fault_oqueue();
+        let device = fs::start_block_device("data1").unwrap();
+        println!("[datadisk] 1 online");
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
+        let builder = dcdserver
+            .new_file(LegacyFileDescriptor {
+                length: 1024 * 1024 * 1024,
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = LegacyObserverRegistration {
+            observer: pagefault_oqueue.attach_strong_observer().unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.start().unwrap();
+        finalizers.push(Box::new(move || {
+            println!("Flushing pagefault capture");
+            server.flush().unwrap();
+            server.sync().unwrap();
+            server.stop().unwrap();
+        }));
+    }
+    {
+        let rss_oqueue = vm::vmar::oqueues::get_rss_delta_oqueue();
+        let device = fs::start_block_device("data2").unwrap();
+        println!("[datadisk] 2 online");
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
+        let builder = dcdserver
+            .new_file(LegacyFileDescriptor {
+                length: 1024 * 1024 * 1024,
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = LegacyObserverRegistration {
+            observer: rss_oqueue.attach_strong_observer().unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.start().unwrap();
+        finalizers.push(Box::new(move || {
+            println!("Flushing rss capture");
+            server.flush().unwrap();
+            server.sync().unwrap();
+            server.stop().unwrap();
+        }));
+    }
+    {
+        let socket_oqueue = syscall::get_socket_oqueue();
+        let device = fs::start_block_device("data3").unwrap();
+        println!("[datadisk] 3 online");
+        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
+        let builder = dcdserver
+            .new_file(LegacyFileDescriptor {
+                length: 1024 * 1024 * 1024,
+            })
+            .unwrap();
+        let server = builder.build();
+        let attachment = LegacyObserverRegistration {
+            observer: socket_oqueue.attach_strong_observer().unwrap(),
+        };
+        server.register_observer(attachment).unwrap();
+        server.start().unwrap();
+        finalizers.push(Box::new(move || {
+            println!("Flushing connect capture");
+            server.flush().unwrap();
+            server.sync().unwrap();
+        }));
+    }
+}
+
 fn init_thread() {
     println!("[kernel] Spawn init thread");
     // Work queue should be initialized before interrupt is enabled,
@@ -216,119 +323,27 @@ fn init_thread() {
         vm::hugepaged::HugepagedServer::spawn(initproc.clone());
     }
 
+    // Cleanup functions that run after the init process ends
     let mut finalizers: Vec<Box<dyn Fn() -> ()>> = vec![];
 
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
-        .unwrap_or(false)
     {
-        let pmu = arch::pmu::PmuServer::spawn();
-        pmu.reset();
-        pmu.start();
+        let pmu_server = if karg
+            .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
+            .unwrap_or(false)
+        {
+            let pmu = arch::pmu::PmuServer::spawn();
+            pmu.reset();
+            pmu.start();
+            Some(pmu)
+        } else {
+            None
+        };
 
-        let device = fs::start_block_device("data0").unwrap();
-        println!("[datadisk] 0 online");
-        let dcdserver = DataCaptureDeviceServer::new(device.clone());
-        let path = path!(test_capture);
-        let builder = dcdserver
-            .new_file(FileDescriptor {
-                length: 1024 * 1024 * 1024,
-                path: path.clone(),
-            })
-            .unwrap();
-        let server = builder.build();
-        let attachment = ObserverRegistration {
-            path,
-            observer: pmu
-                .dtlb_miss_count_oq
-                .attach_strong_observer(ObservationQuery::new(|x| *x))
-                .unwrap(),
-        };
-        server.register_observer(attachment).unwrap();
-        server.set_capturing(true).unwrap();
-        finalizers.push(Box::new(move || {
-            println!("Flushing pmu capture");
-            server.flush().unwrap();
-            server.sync().unwrap();
-            server.stop().unwrap();
-        }));
-    }
-
-    {
-        let pagefault_oq = vm::vmar::oqueues::get_page_fault_oqueue();
-        let device = fs::start_block_device("data1").unwrap();
-        println!("[datadisk] 1 online");
-        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
-        let builder = dcdserver
-            .new_file(LegacyFileDescriptor {
-                length: 1024 * 1024 * 1024,
-            })
-            .unwrap();
-        let server = builder.build();
-        let attachment = LegacyObserverRegistration {
-            observer: pagefault_oq
-                .attach_strong_observer()
-                .unwrap(),
-        };
-        server.register_observer(attachment).unwrap();
-        server.set_capturing(true).unwrap();
-        finalizers.push(Box::new(move || {
-            println!("Flushing pagefault capture");
-            server.flush().unwrap();
-            server.sync().unwrap();
-            server.stop().unwrap();
-        }));
-    }
-    {
-        let rss_oq = vm::vmar::oqueues::get_rss_delta_oqueue();
-        let device = fs::start_block_device("data2").unwrap();
-        println!("[datadisk] 2 online");
-        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
-        let builder = dcdserver
-            .new_file(LegacyFileDescriptor {
-                length: 1024 * 1024 * 1024,
-            })
-            .unwrap();
-        let server = builder.build();
-        let attachment = LegacyObserverRegistration {
-            observer: rss_oq
-                .attach_strong_observer()
-                .unwrap(),
-        };
-        server.register_observer(attachment).unwrap();
-        server.set_capturing(true).unwrap();
-        finalizers.push(Box::new(move || {
-            println!("Flushing rss capture");
-            server.flush().unwrap();
-            server.sync().unwrap();
-            server.stop().unwrap();
-        }));
-    }
-    {
-        let connect_oq = syscall::get_accept_oq();
-        let device = fs::start_block_device("data3").unwrap();
-        println!("[datadisk] 3 online");
-        let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
-        let builder = dcdserver
-            .new_file(LegacyFileDescriptor {
-                length: 1024 * 1024 * 1024,
-            })
-            .unwrap();
-        let server = builder.build();
-        let attachment = LegacyObserverRegistration {
-            observer: connect_oq
-                .attach_strong_observer()
-                .unwrap(),
-        };
-        server.register_observer(attachment).unwrap();
-        server.set_capturing(true).unwrap();
-        finalizers.push(Box::new(move || {
-            println!("Flushing connect capture");
-            server.flush().unwrap();
-            server.sync().unwrap();
-        }));
+        if karg.get_module_arg_by_name::<bool>("datacapture", "enabled").unwrap_or(false) {
+            data_capture(pmu_server, &mut finalizers);
+        }
     }
 
     // Wait till initproc become zombie.

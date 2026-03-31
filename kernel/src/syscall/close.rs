@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bitflags::bitflags;
-use ostd::sync::RwArc;
-use ostd::orpc::legacy_oqueue::OQueue;
+use ostd::{orpc::legacy_oqueue::OQueue, sync::RwArc};
 
 use super::SyscallReturn;
 use crate::{
@@ -30,13 +29,12 @@ pub fn sys_close(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
 
     if file.as_socket_or_err().is_ok() {
         #[cfg(not(baseline_asterinas))]
-        super::get_accept_oq().produce(super::AcceptMessage {
+        super::get_socket_oqueue().produce(super::SocketOQueueMessage {
             fd: fd,
             is_close: 1,
             timestamp: MonotonicRawClock::get().read_time().as_nanos(),
         })?;
     }
-
 
     // Cleanup work needs to be done in the `Drop` impl.
     //

@@ -3,8 +3,8 @@
 //! System call handlers.
 
 use alloc::sync::Arc;
-use binary_serde::BinarySerde;
 
+use binary_serde::BinarySerde;
 pub use clock_gettime::ClockId;
 use ostd::{
     cpu::context::UserContext,
@@ -396,31 +396,23 @@ macro_rules! log_syscall_entry {
     };
 }
 
-static CONNECT_OQUEUE: Once<Arc<MPMCOQueue<u128>>> = Once::new();
-
-pub fn get_connect_oq() -> Arc<MPMCOQueue<u128>> {
-    CONNECT_OQUEUE.wait().clone()
-}
-
 #[derive(BinarySerde, Clone, Copy)]
-pub struct AcceptMessage {
+pub struct SocketOQueueMessage {
     fd: i32,
     is_close: u8,
     timestamp: u128,
 }
 
-static ACCEPT_OQUEUE: Once<Arc<MPMCOQueue<AcceptMessage>>> = Once::new();
+static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
 
-
-pub fn get_accept_oq() -> Arc<MPMCOQueue<AcceptMessage>> {
-    ACCEPT_OQUEUE.wait().clone()
+pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
+    SOCKET_OQUEUE.wait().clone()
 }
 
 pub(super) fn init() {
     uname::init();
     #[cfg(not(baseline_asterinas))]
     {
-        CONNECT_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
-        ACCEPT_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }
 }

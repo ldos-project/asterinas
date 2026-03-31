@@ -4,6 +4,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use aster_time::Instant;
+use binary_serde::BinarySerde;
 use ostd::{
     new_server,
     orpc::{
@@ -13,7 +14,6 @@ use ostd::{
     },
     path,
 };
-use binary_serde::BinarySerde;
 use snafu::Whatever;
 
 use crate::util::timer::TimerServer;
@@ -33,7 +33,7 @@ pub struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
+    pub dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {

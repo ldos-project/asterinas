@@ -23,7 +23,7 @@ pub fn sys_accept(
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
     #[cfg(not(baseline_asterinas))]
-    super::get_accept_oq().produce(super::AcceptMessage{
+    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
         fd: fd,
         is_close: 0,
         timestamp: MonotonicRawClock::get().read_time().as_nanos(),
@@ -47,7 +47,7 @@ pub fn sys_accept4(
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
     #[cfg(not(baseline_asterinas))]
-    super::get_accept_oq().produce(super::AcceptMessage{
+    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
         fd: fd,
         is_close: 0,
         timestamp: MonotonicRawClock::get().read_time().as_nanos(),

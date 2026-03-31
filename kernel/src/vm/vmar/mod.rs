@@ -202,9 +202,9 @@ pub struct PageFaultOQueueMessage {
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
     use alloc::sync::Arc;
-    use binary_serde::BinarySerde;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
+    use binary_serde::BinarySerde;
     use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
     use spin::Once;
 
