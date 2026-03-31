@@ -123,10 +123,6 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                 .server
                 .started
                 .load(core::sync::atomic::Ordering::SeqCst);
-            let flush_always = self
-                .server
-                .flush_always
-                .load(core::sync::atomic::Ordering::SeqCst);
             // Observe and serialize.
             for o in &observers {
                 // We can't skip the try_strong_observe calls when not `capturing` because that
@@ -187,11 +183,6 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
     fn start(&self) -> Result<(), RPCError> {
         self.started
             .store(true, core::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn set_flush_always(&self, flush_always: bool) -> Result<(), RPCError> {
-        self.flush_always.store(flush_always, core::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }

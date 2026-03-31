@@ -317,7 +317,6 @@ fn init_thread() {
             })
             .unwrap();
         let server = builder.build();
-        server.set_flush_always(true).unwrap();
         let attachment = LegacyObserverRegistration {
             observer: connect_oq
                 .attach_strong_observer()
