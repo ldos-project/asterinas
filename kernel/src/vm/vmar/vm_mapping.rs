@@ -232,7 +232,6 @@ impl VmMapping {
                         } else {
                             // Ensure that the cursor is set to the starting address before
                             // continuing.
-                            crate::prelude::println!("!!!!! ALLOC LEVEL {}", level);
                             cursor.jump(page_aligned_addr)?;
                             (cursor, level)
                         }
