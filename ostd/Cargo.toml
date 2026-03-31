@@ -43,6 +43,7 @@ bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
 crossbeam-utils = { version = "0.8.21", default-features = false }
 tinyvec = { version = "1.10"}
 static_assertions = "*"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.14.13"
