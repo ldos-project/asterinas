@@ -7,12 +7,12 @@ Usage:
 Modify load_weights() to load your actual trained model parameters.
 """
 
-import os
+from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_DIR = os.path.join(SCRIPT_DIR, "src")
-OUTPUT_PATH = os.path.join(TEMPLATE_DIR, "linnos_weights.rs")
+SCRIPT_DIR = Path(__file__).parent
+TEMPLATE_DIR = SCRIPT_DIR / "src"
+OUTPUT_PATH = TEMPLATE_DIR / "linnos_weights.rs"
 
 NUM_DEVICES = 3
 HIDDEN_INPUT = 31
