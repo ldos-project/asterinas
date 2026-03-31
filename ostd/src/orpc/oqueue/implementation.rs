@@ -774,7 +774,9 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
     }
 
     fn can_strong_observe(&self, observer_id: ObserverKey) -> bool {
-        let mut inner = self.inner.lock();
+        // Disable IRQs before acquiring the lock to prevent deadlock with IRQ handlers
+        // (e.g. handle_irq → try_produce_ref) that acquire the same lock on the same CPU.
+        let mut inner = self.inner.disable_irq().lock();
         let ObservationRingBuffer { ring_buffer, .. } = inner
             .observer_ring_buffers
             .get_mut(observer_id)
