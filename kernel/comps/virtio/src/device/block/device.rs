@@ -2,13 +2,18 @@
 
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     string::{String, ToString},
     sync::Arc,
     vec,
     vec::Vec,
 };
-use core::{fmt::Debug, hint::spin_loop, mem::size_of};
+use core::{
+    fmt::Debug,
+    hint::spin_loop,
+    mem::size_of,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use aster_block::{
     BlockDeviceMeta,
@@ -23,7 +28,7 @@ use log::{debug, info};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::framework::spawn_thread;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueueRef, Producer};
+use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{orpc_impl, orpc_server};
 use ostd::{
@@ -65,7 +70,7 @@ pub struct BlockDevice {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
-    fn bio_submission_oqueue(&self) -> OQueueRef<SubmittedBio>;
+    fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio>;
     fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
 }
 
@@ -151,6 +156,11 @@ impl BlockDevice {
     pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
         bio.submit(self)
     }
+
+    /// Sets the logical index for this device, used to tag I/O completion stats.
+    pub fn set_device_index(&self, index: u64) {
+        self.device.device_index.store(index, Ordering::Relaxed);
+    }
 }
 
 #[cfg(baseline_asterinas)]
@@ -170,12 +180,13 @@ impl aster_block::BlockDevice for BlockDevice {
 #[cfg(not(baseline_asterinas))]
 impl aster_block::BlockDevice for BlockDevice {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
-        let reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>> =
-            self.bio_completion_oqueue().attach_producer()?;
+        let reply_handle = self.bio_completion_oqueue().attach_ref_producer()?;
 
         let mut bio = bio;
-        bio.prepare_enqueue(reply_handle, self.queue.clone());
-        self.bio_submission_oqueue().produce(bio)?;
+        let device_index = self.device.device_index.load(Ordering::Relaxed);
+        bio.prepare_enqueue(reply_handle, self.queue.clone(), device_index);
+        let producer = self.bio_submission_oqueue().attach_value_producer()?;
+        producer.produce(bio);
         Ok(())
     }
 
@@ -197,6 +208,7 @@ struct DeviceInner {
     block_responses: DmaStream,
     id_allocator: SpinLock<IdAlloc>,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
+    device_index: AtomicU64,
 }
 
 impl DeviceInner {
@@ -245,6 +257,7 @@ impl DeviceInner {
             block_responses,
             id_allocator: SpinLock::new(IdAlloc::with_capacity(Self::QUEUE_SIZE as usize)),
             submitted_requests: SpinLock::new(BTreeMap::new()),
+            device_index: AtomicU64::new(u64::MAX),
         });
 
         let cloned_device = device.clone();
@@ -273,7 +286,7 @@ impl DeviceInner {
 
     /// Handles the irq issued from the device
     fn handle_irq(&self) {
-        info!("Virtio block device handle irq");
+        // info!("Virtio block device handle irq");
         // When we enter the IRQs handling function,
         // IRQs have already been disabled,
         // so there is no need to call `disable_irq`.
