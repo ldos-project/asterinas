@@ -5,11 +5,10 @@
 //! This is otherwise identical in structure and purpose to the non-legacy version. See
 //! [`crate::data_capture_file`] for full documentation.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{any::Any, error::Error, sync::atomic::AtomicBool};
+use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use core::{any::Any, sync::atomic::AtomicBool};
 
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
-use binary_serde::BinarySerde;
 use ostd::{
     new_server,
     orpc::{
@@ -17,26 +16,28 @@ use ostd::{
         framework::{Server, spawn_thread},
         legacy_oqueue::{Consumer, OQueue, StrongObserver, locking::LockingQueue},
         orpc_impl, orpc_server, orpc_trait,
+        path::Path,
         sync::{BlockOnMany, Blocker},
     },
 };
+use serde::Serialize;
 
-use crate::data_buffering::ChunkingWriteWrapper;
+use crate::{DataCaptureError, data_buffering::ChunkingWriteWrapper};
 
 /// TEMPORARY: Registration information for a legacy OQueue observer.
-pub struct ObserverRegistration<T: Copy + Send + BinarySerde> {
+pub struct ObserverRegistration<T: Copy + Send + Serialize> {
     /// TEMPORARY: A strong observer attachment on the legacy OQueue.
     pub observer: Box<dyn StrongObserver<T>>,
 }
 
-impl<T: Copy + Send + BinarySerde> core::fmt::Debug for ObserverRegistration<T> {
+impl<T: Copy + Send + Serialize> core::fmt::Debug for ObserverRegistration<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ObserverRegistration").finish()
     }
 }
 
 #[orpc_trait]
-pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
+pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// TEMPORARY: Attach a new legacy OQueue to the output. If output has already started, then the
     /// path will not appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
@@ -51,17 +52,19 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
 }
 
 /// TEMPORARY: Command enum for [`DataCaptureFile`] operations.
-enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
+enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
     Sync,
     Stop,
 }
 
-impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
+impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::RegisterObserver(reg) => f.debug_tuple("RegisterObserver").field(reg).finish(),
+            Self::RegisterObserver(reg) => {
+                f.debug_tuple("DataCaptureFileCommand").field(reg).finish()
+            }
             Self::Flush => write!(f, "Flush"),
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
@@ -70,24 +73,29 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
 }
 
 #[orpc_server(DataCaptureFile<T>)]
-struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
+struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     command_queue: Arc<LockingQueue<DataCaptureFileCommand<T>>>,
     started: AtomicBool,
     stopped: AtomicBool,
 }
 
-struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
+struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
     command_consumer: Box<dyn Consumer<DataCaptureFileCommand<T>>>,
     block_device: Arc<dyn BlockDevice>,
+    path: Path,
     start_bid: Bid,
     end_bid: Bid,
     server: Arc<DataCaptureFileServer<T>>,
 }
 
-impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
-    fn run(&self) -> Result<(), Box<dyn Error>> {
-        let mut data_buf_handler =
-            ChunkingWriteWrapper::new(BLOCK_SIZE * 2, self.block_device.clone(), self.start_bid);
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
+    fn run(&self) -> Result<(), DataCaptureError> {
+        let mut data_buf_handler = ChunkingWriteWrapper::new(
+            BLOCK_SIZE * 2,
+            self.block_device.clone(),
+            self.start_bid,
+            self.end_bid,
+        );
         let mut observers: Vec<Box<dyn StrongObserver<T>>> = Default::default();
         let mut headers_written = false;
         let mut block_handler = BlockOnMany::new();
@@ -111,6 +119,7 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                         data_buf_handler.sync()?;
                     }
                     DataCaptureFileCommand::Stop => {
+                        data_buf_handler.sync()?;
                         self.server
                             .stopped
                             .store(true, core::sync::atomic::Ordering::SeqCst);
@@ -130,7 +139,7 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                 while let Some(v) = o.try_strong_observe() {
                     if capturing {
                         if !headers_written {
-                            data_buf_handler.write_header::<T>(&[])?;
+                            data_buf_handler.write_header::<T>(&self.path.to_string(), &[])?;
                             headers_written = true;
                         }
 
@@ -147,7 +156,7 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
 }
 
 #[orpc_impl]
-impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<T> {
+impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T> {
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
         self.command_queue
             .produce(DataCaptureFileCommand::RegisterObserver(attachment))
@@ -190,6 +199,7 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
 /// TEMPORARY: A builder for a [`DataCaptureFile`] provided by a [`DataCaptureDevice`].
 pub struct DataCaptureFileBuilder {
     pub(crate) block_device: Arc<dyn BlockDevice>,
+    pub(crate) path: Path,
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) server: Arc<dyn Server>,
@@ -199,7 +209,7 @@ impl DataCaptureFileBuilder {
     /// TEMPORARY: Construct the [`DataCaptureFile`] for a specific type of data.
     pub fn build<T>(self) -> Arc<dyn DataCaptureFile<T>>
     where
-        T: Copy + Send + BinarySerde + 'static,
+        T: Copy + Send + Serialize + 'static,
     {
         Server::orpc_server_base(self.server.as_ref())
             .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
@@ -216,11 +226,12 @@ impl DataCaptureFileBuilder {
                             .attach_consumer()
                             .expect("single purpose OQueue failed."),
                         block_device: self.block_device,
-                        start_bid: Bid::new(self.start as u64),
-                        end_bid: Bid::new(self.end as u64),
+                        path: self.path,
+                        start_bid: Bid::from_offset(self.start),
+                        end_bid: Bid::from_offset(self.end),
                         server: server.clone(),
                     };
-                    move || thread.run()
+                    move || Ok(thread.run()?)
                 });
 
                 Ok(server)
