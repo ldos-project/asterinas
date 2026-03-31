@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     prelude::{Arc, Box, Vec},
-    sync::{SpinLock, WaitQueue, Waker, WakerKey},
+    sync::{LocalIrqDisabled, SpinLock, WaitQueue, Waker, WakerKey},
     task::Task,
 };
 
@@ -23,7 +23,7 @@ use crate::{
 /// OQueue.
 pub struct LockingQueue<T> {
     this: Weak<LockingQueue<T>>,
-    inner: SpinLock<LockingOQueueInner<T>>,
+    inner: SpinLock<LockingOQueueInner<T>, LocalIrqDisabled>,
     buffer_size: usize,
     put_wait_queue: WaitQueue,
     read_wait_queue: WaitQueue,
@@ -251,15 +251,14 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
     ) -> Result<Box<dyn super::StrongObserver<T>>, super::OQueueAttachError> {
         let index = {
             let mut inner = self.inner.inner.lock();
-            let index = inner.free_strong_observer_heads.pop().ok_or_else(|| {
-                OQueueAttachError::AllocationFailed {
+            let Some(index) = inner.free_strong_observer_heads.pop() else {
+                let heads = inner.strong_observer_heads.len();
+                drop(inner);
+                return Err(OQueueAttachError::AllocationFailed {
                     table_type: type_name::<Self>().to_owned(),
-                    message: format!(
-                        "only {} strong observers supported",
-                        inner.strong_observer_heads.len()
-                    ),
-                }
-            })?;
+                    message: format!("only {} strong observers supported", heads),
+                });
+            };
             // Start the observer at the current position of the producer.
             inner.strong_observer_heads[index] = inner.tail_index;
             index
@@ -436,6 +435,7 @@ impl<T: Send + Clone> Consumer<T> for CloningLockingConsumer<T> {
     }
 
     fn try_consume(&self) -> Option<T> {
+        // NOTE: This assumes that T::clone() is safe to call with IRQs disabled.
         let res = self.oqueue().inner.lock().try_consume_clone();
         // If a value was taken, wake up a consumer.
         if res.is_some() {
@@ -493,6 +493,7 @@ impl<T> Drop for LockingStrongObserver<T> {
         // Free the observer head so that it is available again and ignored.
         let mut inner = self.oqueue().inner.lock();
         inner.strong_observer_heads[self.index] = usize::MAX;
+        // NOTE: free_strong_observer_heads is preallocated, so this can never allocate.
         inner.free_strong_observer_heads.push(self.index);
     }
 }
