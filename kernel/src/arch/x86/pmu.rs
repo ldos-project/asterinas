@@ -32,7 +32,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    dtlb_miss_count_oq: OQueueRef<DtlbMisses>,
+    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {
@@ -48,7 +48,7 @@ impl PmuServer {
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
         let server = new_server!(|_| Self {
-            dtlb_miss_count_oq: OQueueRef::<DtlbMisses>::new(32, path!(pmu.dtlb_miss_count)),
+            dtlb_miss_count_oqueue: OQueueRef::<DtlbMisses>::new(32, path!(pmu.dtlb_miss_count)),
         });
         Ok(server)
     }
@@ -68,7 +68,7 @@ impl PmuServer {
     pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
         let notify_server = TimerServer::spawn(Duration::from_millis(100));
 
-        let dtlb_miss_count_producer = self.dtlb_miss_count_oq.attach_ref_producer()?;
+        let dtlb_miss_count_producer = self.dtlb_miss_count_oqueue.attach_ref_producer()?;
 
         let notify_observer = notify_server
             .notification_oqueue()
