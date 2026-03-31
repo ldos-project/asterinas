@@ -157,7 +157,6 @@ fn memory_subsystem_data_capture(
 ) {
     if let Some(pmu) = pmu_server {
         let device = fs::start_block_device("data0").unwrap();
-        println!("[datadisk] 0 online");
         let dcdserver = DataCaptureDeviceServer::new(device.clone());
         let path = path!(test_capture);
         let builder = dcdserver
@@ -187,7 +186,6 @@ fn memory_subsystem_data_capture(
     {
         let pagefault_oqueue = vm::vmar::oqueues::get_page_fault_oqueue();
         let device = fs::start_block_device("data1").unwrap();
-        println!("[datadisk] 1 online");
         let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
         let builder = dcdserver
             .new_file(LegacyFileDescriptor {
@@ -210,7 +208,6 @@ fn memory_subsystem_data_capture(
     {
         let rss_oqueue = vm::vmar::oqueues::get_rss_delta_oqueue();
         let device = fs::start_block_device("data2").unwrap();
-        println!("[datadisk] 2 online");
         let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
         let builder = dcdserver
             .new_file(LegacyFileDescriptor {
@@ -233,7 +230,6 @@ fn memory_subsystem_data_capture(
     {
         let socket_oqueue = syscall::get_socket_oqueue();
         let device = fs::start_block_device("data3").unwrap();
-        println!("[datadisk] 3 online");
         let dcdserver = LegacyDataCaptureDeviceServer::new(device.clone());
         let builder = dcdserver
             .new_file(LegacyFileDescriptor {
