@@ -2,7 +2,7 @@
 
 #![cfg(not(baseline_asterinas))]
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::{
@@ -11,7 +11,10 @@ use aster_block::{
 };
 use ostd::{
     Error,
-    orpc::{legacy_oqueue::WeakObserver, orpc_server},
+    orpc::{
+        oqueue::{OQueueBase, ObservationQuery},
+        orpc_server,
+    },
     sync::Mutex,
 };
 
@@ -85,7 +88,7 @@ impl SelectionPolicy for RoundRobinPolicy {
 pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn ObservableBlockDevice>>,
-    observers: Vec<Mutex<Box<dyn WeakObserver<BlockDeviceCompletionStats>>>>,
+    observers: Vec<Mutex<ostd::orpc::oqueue::WeakObserver<BlockDeviceCompletionStats>>>,
     hidden_layers: Vec<[[f32; 256]; 31]>,
     output_layers: Vec<[[f32; 2]; 256]>,
 }
@@ -123,7 +126,7 @@ impl LinnOSPolicy {
                 Mutex::new(
                     device
                         .bio_completion_oqueue()
-                        .attach_weak_observer()
+                        .attach_weak_observer(4, ObservationQuery::identity())
                         .expect("Failed to attach weak observer to bio_completion_oqueue"),
                 )
             })
@@ -151,7 +154,9 @@ impl SelectionPolicy for LinnOSPolicy {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
             let device_idx = idx % num_devices;
             let observer = self.observers[device_idx].lock();
-            let completion_trace = observer.weak_observe_recent(4); // observe 4 steps in the history
+            let completion_trace = observer
+                .weak_observe_recent(4)
+                .expect("Failed to observe completion trace");
 
             // Build the 31-element input feature vector:
             //   [0..3]:  current outstanding requests (3 digits, from most recent trace)
@@ -169,8 +174,11 @@ impl SelectionPolicy for LinnOSPolicy {
             // Feature Engineering in LinnOS: Decompose numbers into digits.
             // Historical features: 4 steps, each with 3 digits outstanding + 4 digits latency
             for (i, trace_entry) in completion_trace.iter().enumerate().take(4) {
-                let outstanding = trace_entry.outstanding_requests;
-                let latency_us = trace_entry.latency.as_micros() as usize;
+                let Some(trace_entry) = trace_entry else {
+                    continue;
+                };
+                let outstanding = trace_entry.outstanding_requests as usize;
+                let latency_us = trace_entry.latency_us as usize;
                 let base = 3 + i * 7;
 
                 // Outstanding requests -> 3 digits (hundreds, tens, ones)
