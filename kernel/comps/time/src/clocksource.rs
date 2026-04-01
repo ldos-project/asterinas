@@ -11,6 +11,7 @@
 //! or used standalone for time tracking and elapsed time measurements.
 
 use alloc::sync::Arc;
+use serde::Serialize;
 use core::{cmp::max, ops::Add, time::Duration};
 
 use aster_util::coeff::Coeff;
@@ -172,7 +173,7 @@ impl ClockSource {
 /// elapsed since a reference point (typically the system boot time).
 /// The [`Instant`] is expressed in seconds and the fractional part is
 /// expressed in nanoseconds.
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Serialize)]
 pub struct Instant {
     secs: u64,
     nanos: u32,

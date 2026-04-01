@@ -220,9 +220,29 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
         .unwrap_or(false)
     {
+        use mariposa_data_capture::ObserverRegistration;
+        use ostd::{
+            ignore_err, orpc::oqueue::{OQueueBase, ObservationQuery, registry::lookup_by_path}, path
+        };
+
+        use crate::arch::pmu::DtlbMisses;
+
         let pmu = arch::pmu::PmuServer::spawn();
         pmu.reset();
         pmu.start();
+
+        let capture_file =
+            new_data_capture_file::<DtlbMisses>(mariposa_data_capture::FileDescriptor {
+                path: path!(pmu.dtlb_miss_count),
+                length: 100 * 1024 * 1024,
+            });
+
+        ignore_err!(capture_file.register_observer(ObserverRegistration {
+            path: path!(pmu.dtlb_miss_count),
+            observer: lookup_by_path(&path!(pmu.dtlb_miss_count))
+                .unwrap()
+                .attach_strong_observer(ObservationQuery::identity()).unwrap(),
+        }));
     }
 
     // Wait till initproc become zombie.

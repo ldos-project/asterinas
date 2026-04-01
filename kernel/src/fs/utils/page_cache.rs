@@ -13,6 +13,7 @@ use core::{
 
 use align_ext::AlignExt;
 use aster_rights::Full;
+use bitvec::ptr::Mut;
 use lru::LruCache;
 use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
 use ostd::{
@@ -509,7 +510,6 @@ impl PageCacheManagerInner {
 }
 
 impl PageCacheManager {
-    #[track_caller]
     pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
         let policy = if Task::current().is_none() {
             PrefetchPolicy::None
@@ -564,9 +564,9 @@ impl PageCacheManager {
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
         if get_log_hits_misses() {
-            static PAGE_CACHE_LOG_FILE: SpinLock<
+            static PAGE_CACHE_LOG_FILE: Mutex<
                 Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>,
-            > = SpinLock::new(None);
+            > = Mutex::new(None);
 
             let file = {
                 let mut file_guard = PAGE_CACHE_LOG_FILE.lock();

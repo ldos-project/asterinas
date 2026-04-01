@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
+use serde::Serialize;
 use core::time::Duration;
 
 use aster_time::Instant;
@@ -18,9 +19,9 @@ use snafu::Whatever;
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[expect(dead_code)]
-struct DtlbMisses {
+pub struct DtlbMisses {
     timestamp: Instant,
     miss_l1_tlb: u64,
     miss_all_tlb: u64,

@@ -213,7 +213,7 @@ impl StridedPrefetcher {
                         if let idx = read_observer.try_strong_observe() {
                             let recent = read_weak_observer.recent_cursor();
                             let history = read_weak_observer.weak_observe_range(recent - 1, recent);
-                            if history.len() >= 2 {
+                            if history.len() >= 2 && history[1] > history[0] {
                                 let stride = history[1] - history[0];
                                 cache
                                     .prefetch_oqueue()
