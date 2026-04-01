@@ -41,8 +41,6 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// TEMPORARY: Attach a new legacy OQueue to the output. If output has already started, then the
     /// path will not appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
-    /// TEMPORARY: Flush any data remaining in the output buffers to disk.
-    fn flush(&self) -> Result<(), RPCError>;
     /// TEMPORARY: Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
     /// TEMPORARY: Enable capturing to this file.
@@ -54,7 +52,6 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
 /// TEMPORARY: Command enum for [`DataCaptureFile`] operations.
 enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
-    Flush,
     Sync,
     Stop,
 }
@@ -65,7 +62,6 @@ impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileC
             Self::RegisterObserver(reg) => {
                 f.debug_tuple("DataCaptureFileCommand").field(reg).finish()
             }
-            Self::Flush => write!(f, "Flush"),
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
         }
@@ -112,9 +108,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                     DataCaptureFileCommand::RegisterObserver(ObserverRegistration { observer }) => {
                         observers.push(observer);
                     }
-                    DataCaptureFileCommand::Flush => {
-                        data_buf_handler.flush()?;
-                    }
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
@@ -160,13 +153,6 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
         self.command_queue
             .produce(DataCaptureFileCommand::RegisterObserver(attachment))
-            .unwrap();
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), RPCError> {
-        self.command_queue
-            .produce(DataCaptureFileCommand::Flush)
             .unwrap();
         Ok(())
     }

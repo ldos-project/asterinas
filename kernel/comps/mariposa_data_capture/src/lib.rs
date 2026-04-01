@@ -123,7 +123,7 @@ mod tests {
         sleep(Duration::from_millis(10));
 
         // Flush and give time for capture to complete
-        server.flush().unwrap();
+        server.sync().unwrap();
 
         sleep(Duration::from_millis(10));
 
