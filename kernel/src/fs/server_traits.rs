@@ -3,6 +3,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::marker::Copy;
 
+use binary_serde::BinarySerde;
 use ostd::orpc::{
     legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
     orpc_trait,
@@ -137,7 +138,8 @@ pub trait PageStore: PageIOObservable {
 }
 
 /// The state of a page in the cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinarySerde)]
+#[repr(u8)]
 pub enum CacheState {
     /// The page was in the cache.
     Hit,
@@ -148,10 +150,10 @@ pub enum CacheState {
 }
 
 /// Information about a read request on the page cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BinarySerde)]
 pub struct PageCacheReadInfo {
     /// The index of the page.
-    pub idx: usize,
+    pub idx: u64,
     /// The state of the cached page when the request was made.
     pub cache_state: CacheState,
 }

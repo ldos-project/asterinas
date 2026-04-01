@@ -14,6 +14,7 @@ use core::{
 use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
+use mariposa_data_capture::legacy::FileDescriptor;
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
@@ -38,7 +39,7 @@ use crate::{
             page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
         },
     },
-    kcmdline,
+    kcmdline, new_data_capture_file,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -565,7 +566,15 @@ impl PageCacheManager {
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
         if get_log_hits_misses() {
-            PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
+            let file = new_data_capture_file(FileDescriptor {
+                length: 10 * 1024 * 1024, // 10MB
+            });
+            file.register_observer(mariposa_data_capture::legacy::ObserverRegistration {
+                observer: server
+                    .page_cache_read_info_oqueue()
+                    .attach_strong_observer()?,
+            })?;
+            // PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
         }
 
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
@@ -621,9 +630,9 @@ impl PageCacheManager {
 
         for consumer in consumers {
             let PageHandle { idx: _, frame } = consumer.consume();
-                        frame.store_state(PageState::UpToDate);
+            frame.store_state(PageState::UpToDate);
         }
-        
+
         Ok(())
     }
 
@@ -660,7 +669,7 @@ impl PageCacheManager {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
                     page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx,
+                        idx: idx as u64,
                         cache_state: CacheState::Pending,
                     });
                     assert!(inner.outstanding_requests.has_requests());
@@ -671,7 +680,7 @@ impl PageCacheManager {
                 } else {
                     // Cond 1.
                     page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx,
+                        idx: idx as u64,
                         cache_state: CacheState::Hit,
                     });
                     page.clone()
@@ -679,7 +688,7 @@ impl PageCacheManager {
             } else {
                 // Cond 3.
                 page_cache_read_info_producer.produce(PageCacheReadInfo {
-                    idx,
+                    idx: idx as u64,
                     cache_state: CacheState::Miss,
                 });
                 // Conducts the sync read operation.
