@@ -209,7 +209,7 @@ impl Raid1Device {
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
         for parent in request.bios() {
-            let member = self.selection_policy.select_block_device(&parent).unwrap();
+            let member = self.selection_policy.select_block_device(parent).unwrap();
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,

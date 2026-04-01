@@ -34,7 +34,7 @@ impl Dummy0Policy {
 }
 
 impl SelectionPolicy for Dummy0Policy {
-    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(&self, _submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
         Ok(self.members[0].clone())
     }
 }
@@ -58,7 +58,7 @@ impl RoundRobinPolicy {
 }
 
 impl SelectionPolicy for RoundRobinPolicy {
-    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(&self, _submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
         Ok(self.members[idx % self.members.len()].clone())
     }
@@ -162,9 +162,9 @@ impl SelectionPolicy for LinnOSPolicy {
 
             // Feature Engineering in LinnOS: Decompose numbers into digits.
             // Historical features: 4 steps, each with 3 digits outstanding + 4 digits latency
-            for i in 0..4 {
-                let outstanding = completion_trace[i].outstanding_requests;
-                let latency_us = completion_trace[i].latency.as_micros() as usize;
+            for (i, trace_entry) in completion_trace.iter().enumerate().take(4) {
+                let outstanding = trace_entry.outstanding_requests;
+                let latency_us = trace_entry.latency.as_micros() as usize;
                 let base = 3 + i * 7;
 
                 // Outstanding requests -> 3 digits (hundreds, tens, ones)
