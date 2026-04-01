@@ -2,13 +2,45 @@
 
 #![cfg(not(baseline_asterinas))]
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use aster_block::BlockDevice;
-use ostd::{Error, orpc::orpc_server};
+use aster_block::{
+    BlockDevice,
+    bio::{BlockDeviceCompletionStats, SubmittedBio},
+};
+use ostd::{
+    Error,
+    orpc::{legacy_oqueue::WeakObserver, orpc_server},
+    sync::Mutex,
+};
 
 use crate::server_traits::{ObservableBlockDevice, SelectionPolicy};
+
+#[derive(Debug)]
+#[orpc_server]
+pub struct Dummy0Policy {
+    members: Vec<Arc<dyn BlockDevice>>,
+}
+
+impl Dummy0Policy {
+    pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            members,
+        });
+        Ok(server)
+    }
+}
+
+impl SelectionPolicy for Dummy0Policy {
+    fn select_block_device(
+        &self,
+        _submitted: &SubmittedBio,
+    ) -> Result<Arc<dyn BlockDevice>, Error> {
+        Ok(self.members[0].clone())
+    }
+}
 
 #[derive(Debug)]
 #[orpc_server]
@@ -29,32 +61,81 @@ impl RoundRobinPolicy {
 }
 
 impl SelectionPolicy for RoundRobinPolicy {
-    fn select_block_device(&self) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(
+        &self,
+        _submitted: &SubmittedBio,
+    ) -> Result<Arc<dyn BlockDevice>, Error> {
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
         Ok(self.members[idx % self.members.len()].clone())
     }
 }
 
-#[derive(Debug)]
+/// hidden_layers and output_layers: machine learning model weights.
+/// There is one model per device. Each model contains three layers, an input layer,
+/// a hidden layer with 256 neurons, and an output layer with 2 neurons for the binary
+/// classification (fast/slow). Thus, there are two matrices per device, a 31*256 matrix
+/// for the hidden layer and a 256*2 matrix for the output layer.
+/// Each latency number is decomposed into 4 digits, and each number of outstanding
+/// request number is decomposed into 3 digits. Thus, the total number of input features
+/// is 3+4*(3+4) = 31. The number of history is R=4.
+///
+/// Number of Outstanding Requests: number of pending 4KB pages.
+/// List of observers attached to the list of member block devices.
 #[orpc_server]
 pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
-
-    /// Member block devices that support I/O performance tracing.
     members: Vec<Arc<dyn ObservableBlockDevice>>,
+    observers: Vec<Mutex<Box<dyn WeakObserver<BlockDeviceCompletionStats>>>>,
+    hidden_layers: Vec<[[f32; 256]; 31]>,
+    output_layers: Vec<[[f32; 2]; 256]>,
+}
 
-    // TODO(yingqi): this is a placeholder for the machine learning model.
-    // The model is now a fixed-size array of 8 f32s for 8 features, with 2 per trace data (latency and outstanding requests)
-    model: [f32; 8],
+impl core::fmt::Debug for LinnOSPolicy {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LinnOSPolicy")
+            .field("read_cursor", &self.read_cursor)
+            .field("members", &self.members)
+            .field(
+                "observers",
+                &format_args!("[{} observers]", self.observers.len()),
+            )
+            .finish()
+    }
 }
 
 impl LinnOSPolicy {
     pub fn new(members: Vec<Arc<dyn ObservableBlockDevice>>) -> Result<Arc<Self>, Error> {
+        use crate::linnos_weights::{HIDDEN_WEIGHTS, OUTPUT_WEIGHTS};
+
+        let num_devices = members.len();
+
+        // Copy hardcoded weights into Vecs, one entry per device
+        let hidden_layers: Vec<[[f32; 256]; 31]> =
+            (0..num_devices).map(|i| *HIDDEN_WEIGHTS[i]).collect();
+        let output_layers: Vec<[[f32; 2]; 256]> =
+            (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
+
+        // Attach one weak observer per device, each peeking 4 steps in the history.
+        // Wrapped in Mutex because WeakObserver is Send but not Sync.
+        let observers: Vec<_> = members
+            .iter()
+            .map(|device| {
+                Mutex::new(
+                    device
+                        .bio_completion_oqueue()
+                        .attach_weak_observer()
+                        .expect("Failed to attach weak observer to bio_completion_oqueue"),
+                )
+            })
+            .collect();
+
         let server = Self::new_with(|orpc_internal, _| Self {
             orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
-            model: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1], // TODO(yingqi): get the actual model weights and hard code it here.
+            observers,
+            hidden_layers,
+            output_layers,
         });
 
         Ok(server)
@@ -62,41 +143,79 @@ impl LinnOSPolicy {
 }
 
 impl SelectionPolicy for LinnOSPolicy {
-    fn select_block_device(&self) -> Result<Arc<dyn BlockDevice>, Error> {
-        // Attach weak observers to each member's completion queue
-        let trace_observers: Vec<_> = self
-            .members
-            .iter()
-            .map(|device| {
-                device
-                    .bio_completion_oqueue()
-                    .attach_weak_observer()
-                    .expect("Failed to attach weak observer to bio_completion_oqueue")
-            })
-            .collect();
+    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+        let num_devices = self.members.len();
+        let mut fail_cnt = 0;
 
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-            let observer = &trace_observers[idx % trace_observers.len()];
-            let completion_trace = observer.weak_observe_recent(4);
+            let device_idx = idx % num_devices;
+            let observer = self.observers[device_idx].lock();
+            let completion_trace = observer.weak_observe_recent(4); // observe 4 steps in the history
 
-            // Inference using the ML model
-            let x = self.model[0] * completion_trace[0].latency.as_nanos() as f32
-                + self.model[1] * completion_trace[0].outstanding_requests as f32
-                + self.model[2] * completion_trace[1].latency.as_nanos() as f32
-                + self.model[3] * completion_trace[1].outstanding_requests as f32
-                + self.model[4] * completion_trace[2].latency.as_nanos() as f32
-                + self.model[5] * completion_trace[2].outstanding_requests as f32
-                + self.model[6] * completion_trace[3].latency.as_nanos() as f32
-                + self.model[7] * completion_trace[3].outstanding_requests as f32;
+            // Build the 31-element input feature vector:
+            //   [0..3]:  current outstanding requests (3 digits, from most recent trace)
+            //   For each history step i (0..4):
+            //     [3+i*7 .. 3+i*7+3]: outstanding requests (3 digits)
+            //     [3+i*7+3 .. 3+i*7+7]: latency in microseconds (4 digits)
+            let mut input = [0.0f32; 31];
 
-            // FIXME: There isn't a math library in Asterinas yet, so we cannot use sigmoid.
-            // let e: f32 = 2.71828;
-            // let prob = 1.0 / (1.0 + e.powf(-x));
+            // Current outstanding requests: use most recent trace entry, decompose into 3 digits
+            let current_outstanding = submitted.num_outstanding_requests().unwrap_or(0);
+            input[0] = ((current_outstanding / 100) % 10) as f32;
+            input[1] = ((current_outstanding / 10) % 10) as f32;
+            input[2] = (current_outstanding % 10) as f32;
 
-            // FIXME: Temporariliy use a threshold to determine the selection.
-            if x > 2.0 {
-                return Ok(self.members[idx % self.members.len()].clone());
+            // Feature Engineering in LinnOS: Decompose numbers into digits.
+            // Historical features: 4 steps, each with 3 digits outstanding + 4 digits latency
+            for (i, trace_entry) in completion_trace.iter().enumerate().take(4) {
+                let outstanding = trace_entry.outstanding_requests;
+                let latency_us = trace_entry.latency.as_micros() as usize;
+                let base = 3 + i * 7;
+
+                // Outstanding requests -> 3 digits (hundreds, tens, ones)
+                input[base] = ((outstanding / 100) % 10) as f32;
+                input[base + 1] = ((outstanding / 10) % 10) as f32;
+                input[base + 2] = (outstanding % 10) as f32;
+
+                // Latency in microseconds -> 4 digits (thousands, hundreds, tens, ones)
+                input[base + 3] = ((latency_us / 1000) % 10) as f32;
+                input[base + 4] = ((latency_us / 100) % 10) as f32;
+                input[base + 5] = ((latency_us / 10) % 10) as f32;
+                input[base + 6] = (latency_us % 10) as f32;
+            }
+
+            // Hidden layer: input (31) x hidden_weights (31x256) -> hidden_out (256)
+            let hidden_weights = &self.hidden_layers[device_idx];
+            let mut hidden_out = [0.0f32; 256];
+            for j in 0..256 {
+                let mut sum = 0.0f32;
+                for i in 0..31 {
+                    sum += input[i] * hidden_weights[i][j];
+                }
+                // ReLU activation
+                hidden_out[j] = if sum > 0.0 { sum } else { 0.0 };
+            }
+
+            // Output layer: hidden_out (256) x output_weights (256x2) -> output (2)
+            let output_weights = &self.output_layers[device_idx];
+            let mut output = [0.0f32; 2];
+            for k in 0..2 {
+                for j in 0..256 {
+                    output[k] += hidden_out[j] * output_weights[j][k];
+                }
+            }
+
+            // Argmax: output[0] > output[1] means fast, otherwise slow
+            if output[0] > output[1] {
+                return Ok(self.members[device_idx].clone());
+            }
+
+            fail_cnt += 1;
+            // All devices predicted slow -- fall back to round-robin
+            if fail_cnt >= num_devices {
+                let fallback_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_devices;
+                return Ok(self.members[fallback_idx].clone());
             }
         }
     }

@@ -21,6 +21,8 @@
 extern crate alloc;
 
 #[cfg(not(baseline_asterinas))]
+pub mod linnos_weights;
+#[cfg(not(baseline_asterinas))]
 pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
 pub mod server_traits;
@@ -207,7 +209,7 @@ impl Raid1Device {
         let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
         for parent in request.bios() {
-            let member = self.selection_policy.select_block_device().unwrap();
+            let member = self.selection_policy.select_block_device(parent).unwrap();
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
@@ -242,7 +244,7 @@ impl Raid1Device {
     fn process_read_async(&self, request: BioRequest) {
         for parent in request.into_bios() {
             #[cfg(not(baseline_asterinas))]
-            let member = self.selection_policy.select_block_device().unwrap();
+            let member = self.selection_policy.select_block_device(&parent).unwrap();
 
             #[cfg(baseline_asterinas)]
             let member = self.members[0].clone();

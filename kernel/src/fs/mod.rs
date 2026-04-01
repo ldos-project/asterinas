@@ -24,7 +24,8 @@ pub mod utils;
 
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
-use aster_raid::selection_policies::RoundRobinPolicy;
+#[expect(unused_imports)]
+use aster_raid::selection_policies::{Dummy0Policy, LinnOSPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
