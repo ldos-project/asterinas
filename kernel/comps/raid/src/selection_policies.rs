@@ -34,7 +34,10 @@ impl Dummy0Policy {
 }
 
 impl SelectionPolicy for Dummy0Policy {
-    fn select_block_device(&self, _submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(
+        &self,
+        _submitted: &SubmittedBio,
+    ) -> Result<Arc<dyn BlockDevice>, Error> {
         Ok(self.members[0].clone())
     }
 }
@@ -58,7 +61,10 @@ impl RoundRobinPolicy {
 }
 
 impl SelectionPolicy for RoundRobinPolicy {
-    fn select_block_device(&self, _submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(
+        &self,
+        _submitted: &SubmittedBio,
+    ) -> Result<Arc<dyn BlockDevice>, Error> {
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
         Ok(self.members[idx % self.members.len()].clone())
     }
