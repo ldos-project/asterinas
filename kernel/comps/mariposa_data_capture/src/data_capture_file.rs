@@ -61,8 +61,6 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// Attach a new OQueue to the output. If output has already started, then the path will not
     /// appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
-    /// Flush any data remaining in the output buffers to disk.
-    fn flush(&self) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
     /// Enable capturing to this file.
@@ -74,7 +72,6 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
 /// Command enum for DataCaptureFile operations
 enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
-    Flush,
     Sync,
     Stop,
 }
@@ -85,7 +82,6 @@ impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileC
             Self::RegisterObserver(arg0) => {
                 f.debug_tuple("DataCaptureFileCommand").field(arg0).finish()
             }
-            Self::Flush => write!(f, "Flush"),
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
         }
@@ -141,9 +137,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                             paths.push(path);
                         }
                     }
-                    DataCaptureFileCommand::Flush => {
-                        data_buf_handler.flush()?;
-                    }
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
@@ -192,11 +185,6 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
         self.command_producer
             .produce(DataCaptureFileCommand::RegisterObserver(attachment));
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), RPCError> {
-        self.command_producer.produce(DataCaptureFileCommand::Flush);
         Ok(())
     }
 
