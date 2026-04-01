@@ -23,6 +23,7 @@ use ostd::{
         legacy_oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
         orpc_impl, orpc_server,
     },
+    path,
     task::Task,
 };
 use snafu::OptionExt;
@@ -34,12 +35,9 @@ use crate::{
             self, AsyncReadRequest, AsyncWriteRequest, CacheState, PageCache as _,
             PageCacheReadInfo, PageHandle, PageIOObservable, PageStore,
         },
-        utils::{
-            page_cache_logger::PageCacheLogger,
-            page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
-        },
+        utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
-    kcmdline, new_data_capture_file,
+    kcmdline, new_legacy_data_capture_file,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -573,8 +571,9 @@ impl PageCacheManager {
             let file = {
                 let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
                 if file_guard.is_none() {
-                    *file_guard = Some(new_data_capture_file(FileDescriptor {
+                    *file_guard = Some(new_legacy_data_capture_file(FileDescriptor {
                         length: 10 * 1024 * 1024, // 10MB
+                        path: path!(page_cache.read_info),
                     }));
                 }
                 file_guard.as_ref().unwrap().clone()

@@ -128,7 +128,10 @@ pub struct ManagedTimeout<'a> {
 
 impl<'a> Debug for ManagedTimeout<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ManagedTimeout").field("timeout", &self.timeout).field("manager", &"<TimerManager>").finish()
+        f.debug_struct("ManagedTimeout")
+            .field("timeout", &self.timeout)
+            .field("manager", &"<TimerManager>")
+            .finish()
     }
 }
 

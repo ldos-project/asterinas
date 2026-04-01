@@ -74,6 +74,7 @@ impl<T: ?Sized> SpinLock<T, PreemptDisabled> {
 
 impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
     /// Acquires the spin lock.
+    #[track_caller]
     pub fn lock(&self) -> SpinLockGuard<T, G> {
         // Notice the guard must be created before acquiring the lock.
         let inner_guard = G::guard();
@@ -90,6 +91,7 @@ impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
     /// for compile-time checked lifetimes of the lock guard.
     ///
     /// [`lock`]: Self::lock
+    #[track_caller]
     pub fn lock_arc(self: &Arc<Self>) -> ArcSpinLockGuard<T, G> {
         let inner_guard = G::guard();
         self.acquire_lock();

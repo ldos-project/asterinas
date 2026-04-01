@@ -194,20 +194,18 @@ impl<'a> CurrentUserSpace<'a> {
         }
     }
 
-
     /// Atomically compare and exchange a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
-    /// 
+    ///
     /// On success, the previous value will be returned. On failure, the actual value at the address
     /// is returned. The cursor of the reader and writer will not move in either case.    
-    /// 
+    ///
     /// # Panics
     ///
     /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
     /// boundary.
     ///
     /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
-    pub fn atomic_compare_exchange<T>(&self, vaddr: Vaddr,         old_val: T,
-        new_val: T,) -> Result<T>
+    pub fn atomic_compare_exchange<T>(&self, vaddr: Vaddr, old_val: T, new_val: T) -> Result<T>
     where
         T: PodAtomic + Eq,
     {
@@ -215,7 +213,7 @@ impl<'a> CurrentUserSpace<'a> {
 
         let user_reader = self.reader(vaddr, core::mem::size_of::<T>())?;
         let mut user_writer = self.writer(vaddr, core::mem::size_of::<T>())?;
-        
+
         Ok(user_writer.atomic_compare_exchange(&user_reader, old_val, new_val)?)
     }
 

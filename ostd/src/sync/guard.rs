@@ -38,9 +38,11 @@ impl SpinGuardian for PreemptDisabled {
     type Guard = DisabledPreemptGuard;
     type ReadGuard = DisabledPreemptGuard;
 
+    #[track_caller]
     fn guard() -> Self::Guard {
         disable_preempt()
     }
+    #[track_caller]
     fn read_guard() -> Self::Guard {
         disable_preempt()
     }
@@ -59,9 +61,11 @@ impl SpinGuardian for LocalIrqDisabled {
     type Guard = DisabledLocalIrqGuard;
     type ReadGuard = DisabledLocalIrqGuard;
 
+    #[track_caller]
     fn guard() -> Self::Guard {
         disable_local()
     }
+    #[track_caller]
     fn read_guard() -> Self::Guard {
         disable_local()
     }
