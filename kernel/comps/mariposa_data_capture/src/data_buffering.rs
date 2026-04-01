@@ -112,7 +112,7 @@ impl ChunkingWriteWrapper {
         let raw_data = self.data_buf.written_data();
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         let n_written = bio_segment.writer()?.write(&mut raw_data.into());
-        let _ = self
+        let waiter = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
         waiter.wait();
