@@ -24,6 +24,35 @@ RUN apt update && apt-get install -y --no-install-recommends \
     unzip \
     zip
 
+# Install python dependencies for DCPerf
+RUN pip install numpy==1.23.5 && pip install pyyaml click tabulate pandas
+
+    # Install all build dependencies required by DCPerf / TAO Bench
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    autoconf \
+    automake \
+    bison \
+    flex \
+    python3-dev \
+    libpcre3-dev \
+    libzstd-dev \
+    liblz4-dev \
+    xz-utils \
+    numactl \
+    libsnappy-dev \
+    libaio-dev \
+    libunwind-dev \
+    libghc-double-conversion-dev \
+    libsodium-dev \
+    libfmt-dev \
+    libgoogle-glog-dev \
+    libgflags-dev \
+    libtool \
+    dmidecode \
+    lshw \
+    lz4 \
+    xzip \
+    iperf3
 
 #= Install linux-modules for vdso and linux config =================================
 # TODO: This is very wasteful and maybe fragile. We should have our own custom vDSO.
@@ -76,7 +105,7 @@ FROM build-base AS build-benchmarks
 
 # Download the source files of benchmarks
 WORKDIR /root
-RUN apt install -y automake \
+RUN apt update && apt install -y automake \
     libtool \
     pkg-config \
     libntirpc-dev
@@ -270,7 +299,7 @@ RUN rm -rf memcached-1.6.32.tar.gz \
 
 # Install Apache httpd v2.4.62
 WORKDIR /root
-RUN apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev libpcre2-dev
+RUN apt-get update && apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev libpcre2-dev
 RUN wget https://archive.apache.org/dist/httpd/httpd-2.4.63.tar.bz2 \
     && tar xvf httpd-2.4.63.tar.bz2 \
     && cd httpd-2.4.63 \
@@ -308,6 +337,302 @@ RUN git clone https://github.com/wg/wrk.git \
     && cp wrk /usr/local/wrk
 
 RUN rm -rf wrk
+
+FROM build-base AS build-dcperf-1
+# Install tao_bench_standalone
+WORKDIR /usr/local
+RUN git clone https://github.com/facebookresearch/DCPerf.git
+WORKDIR /usr/local/DCPerf
+RUN sed -i 's/sudo //g' ./packages/tao_bench/install_tao_bench_x86_64.sh
+RUN ./benchpress_cli.py install tao_bench_standalone
+
+# DCPerf installation
+FROM build-dcperf-1 AS build-dcperf
+
+### Trying this method of only installing binaries ###
+
+# Get rid of this once the directory is actually being cloned and created
+# RUN mkdir -p /usr/local/DCPerf/benchmarks/tao_bench && mkdir -p /usr/local/DCPerf/benchpress
+# RUN mkdir -p /usr/local/DCPerf/benchmarks/tao_bench/certs && mkdir -p /usr/local/DCPerf/packages/tao_bench
+
+# COPY DCPerf/benchmarks/tao_bench/tao_bench_client /usr/local/DCPerf/benchmarks/tao_bench
+# COPY DCPerf/benchmarks/tao_bench/tao_bench_server /usr/local/DCPerf/benchmarks/tao_bench
+# COPY DCPerf/benchpress /usr/local/DCPerf/benchpress
+# COPY DCPerf/benchpress_cli.py /usr/local/DCPerf
+# COPY DCPerf/benchmarks/tao_bench/leader_sizes.json /usr/local/DCPerf/benchmarks/tao_bench/
+# COPY DCPerf/benchmarks/tao_bench/db_items.json /usr/local/DCPerf/benchmarks/tao_bench/
+# COPY DCPerf/benchmarks/tao_bench/certs /usr/local/DCPerf/benchmarks/tao_bench/certs
+# COPY DCPerf/benchmarks/tao_bench/memtier_client/memtier_benchmark /usr/local/DCPerf/benchmarks/tao_bench/
+# # COPY run_tao_bench.py /usr/local/DCPerf/
+# COPY DCPerf_Container/run_tao_bench.py /usr/local/DCPerf/
+# COPY DCPerf/packages/tao_bench/run_standalone.py /usr/local/DCPerf/packages/tao_bench
+# COPY DCPerf/packages /usr/local/DCPerf/packages
+# RUN python3 - << 'EOF'
+# content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+# old = 'def find_numa_nodes():\n    numa_nodes = {}'
+# new = 'def find_numa_nodes():\n    if not os.path.exists("/sys/devices/system/node"):\n        return {"0": "0"}\n    numa_nodes = {}'
+# open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content.replace(old, new))
+# EOF
+# RUN python3 - << 'EOF'
+# import re
+
+# # Fix run_standalone.py
+# content = open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py').read()
+# content = content.replace(
+#     'cmd = [f"{TAO_BENCH_DIR}/run_autoscale.py --real"]',
+#     'cmd = [f"python3 {TAO_BENCH_DIR}/run_autoscale.py --real"]'
+# )
+# content = content.replace(
+#     'cmd = str(BENCHPRESS_ROOT) + client[1:]',
+#     'cmd = "python3 " + str(BENCHPRESS_ROOT) + client[1:]'
+# )
+# open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py', 'w').write(content)
+
+# # Fix run_autoscale.py - add python3 before run.py calls
+# content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+# content = content.replace(
+#     'f"{TAO_BENCH_DIR}/run.py"',
+#     'f"python3 {TAO_BENCH_DIR}/run.py"'
+# )
+# open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+# EOF
+
+### End binary method ###
+
+### Try moving everything into the container ###
+# Install tao_bench_standalone
+# WORKDIR /usr/local
+# RUN git clone https://github.com/facebookresearch/DCPerf.git
+# WORKDIR /usr/local/DCPerf
+# RUN sed -i 's/sudo //g' ./packages/tao_bench/install_tao_bench_x86_64.sh
+# RUN ./benchpress_cli.py install tao_bench_standalone
+# COPY tao_bench_client tao_bench_server /usr/local/DCPerf
+# RUN mkdir /usr/local/DCPerf
+# COPY hello.txt /usr/local/DCPerf
+# COPY tao_bench_client /usr/local/DCPerf
+# COPY tao_bench_server /usr/local/DCPerf
+# RUN ls /usr/local/DCPerf
+# This method does not install everything (for debugging purposes)
+# RUN mkdir DCPerf_Container
+# COPY DCPerf_Container /usr/local/DCPerf_Container
+
+RUN rm -rf /usr/local/DCPerf/benchmarks/tao_bench/build-folly
+# RUN rm -rf /usr/local/DCPerf/benchmarks/tao_bench/build-deps
+RUN rm -rf /usr/local/DCPerf/packages/spark_standalone
+RUN rm -rf /usr/local/DCPerf/packages/mediawiki
+RUN rm -rf /usr/local/DCPerf/packages/feedsim
+RUN rm -rf /usr/local/DCPerf/packages/video_transcode_bench
+RUN rm -rf /usr/local/DCPerf/packages/django_workload
+RUN rm -rf /usr/local/DCPerf/packages/wdl_bench
+RUN rm -rf /usr/local/DCPerf/benchmarks/tao_bench/openssl/test
+RUN cat > /usr/bin/lscpu << 'EOF'
+#!/bin/sh
+echo "Architecture:            x86_64"
+echo "Vendor ID:               GenuineIntel"
+echo "Model name:              Intel(R) Xeon(R) CPU E5-2620 v4 @ 2.10GHz"
+echo "CPU(s):                  32"
+echo "Thread(s) per core:      2"
+echo "Core(s) per socket:      8"
+echo "Socket(s):               2"
+echo "NUMA node(s):            2"
+echo "NUMA node0 CPU(s):       0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30"
+echo "NUMA node1 CPU(s):       1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31"
+EOF
+RUN chmod +x /usr/bin/lscpu
+
+RUN sed -i 's/run_cmd("lscpu")/run_cmd("\/bin\/lscpu")/g' \
+    /usr/local/DCPerf/benchpress/cli/commands/system_check.py
+
+RUN sed -i 's/\["lscpu"\]/["\/bin\/lscpu"]/g' \
+    /usr/local/DCPerf/benchpress/lib/sys_specs.py
+
+RUN sed -i 's/"lscpu", stdout/"\/bin\/lscpu", stdout/g' \
+    /usr/local/DCPerf/benchpress/plugins/hooks/perf_monitors/topdown.py
+
+RUN rm -f \
+    /usr/local/DCPerf/benchpress/cli/commands/__pycache__/system_check.cpython-310.pyc \
+    /usr/local/DCPerf/benchpress/plugins/hooks/perf_monitors/__pycache__/topdown.cpython-310.pyc \
+    /usr/local/DCPerf/benchpress/lib/__pycache__/sys_specs.cpython-310.pyc
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/benchpress/lib/sys_specs.py').read()
+
+content = content.replace(
+    'def get_dmidecode_data():\n    dmidecode_data = dmidecode.parse()\n    return dmidecode_data',
+    'def get_dmidecode_data():\n    return {}'
+)
+
+content = content.replace(
+    'def get_dpkg_packages():\n    dpkg_p = subprocess.Popen(',
+    'def get_dpkg_packages():\n    return []\n    dpkg_p = subprocess.Popen('
+)
+
+open('/usr/local/DCPerf/benchpress/lib/sys_specs.py', 'w').write(content)
+EOF
+
+RUN rm -f /usr/local/DCPerf/benchpress/lib/__pycache__/sys_specs.cpython-310.pyc
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/benchpress/lib/sys_specs.py').read()
+
+replacements = [
+    ('def get_dmidecode_data():\n    dmidecode_data = dmidecode.parse()\n    return dmidecode_data',
+     'def get_dmidecode_data():\n    return {}'),
+    ('def get_dpkg_packages():\n    dpkg_p = subprocess.Popen(',
+     'def get_dpkg_packages():\n    return []\n    dpkg_p = subprocess.Popen('),
+    ('def get_rpm_packages():\n    rpm_p = subprocess.Popen(',
+     'def get_rpm_packages():\n    return []\n    rpm_p = subprocess.Popen('),
+    ('def get_sysctl_data():\n    sysctl_p = subprocess.Popen(',
+     'def get_sysctl_data():\n    return {}\n    sysctl_p = subprocess.Popen('),
+    ('def get_hw_data():\n    hw_p = subprocess.Popen(',
+     'def get_hw_data():\n    return {}\n    hw_p = subprocess.Popen('),
+]
+
+for old, new in replacements:
+    content = content.replace(old, new)
+
+open('/usr/local/DCPerf/benchpress/lib/sys_specs.py', 'w').write(content)
+EOF
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+content = content.replace(
+    'def find_numa_nodes():\n    numa_nodes = {}',
+    'def find_numa_nodes():\n    if not os.path.exists("/sys/devices/system/node"):\n        return {"0": list(range(32))}\n    numa_nodes = {}'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+EOF
+
+# Fix run_standalone.py
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py').read()
+content = content.replace(
+    'cmd = [f"{TAO_BENCH_DIR}/run_autoscale.py --real"]',
+    'cmd = [f"python3 {TAO_BENCH_DIR}/run_autoscale.py --real"]'
+)
+content = content.replace(
+    'cmd = str(BENCHPRESS_ROOT) + client[1:]',
+    'cmd = "python3 " + str(BENCHPRESS_ROOT) + client[1:]'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py', 'w').write(content)
+
+# Fix run_autoscale.py - add python3 before run.py calls
+content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+content = content.replace(
+    'f"{TAO_BENCH_DIR}/run.py"',
+    'f"python3 {TAO_BENCH_DIR}/run.py"'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+EOF
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+content = content.replace(
+    '        os.path.join(TAO_BENCH_DIR, "run.py"),\n        "server",',
+    '        "python3",\n        os.path.join(TAO_BENCH_DIR, "run.py"),\n        "server",'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+EOF
+
+# fix all get affinity issues
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run.py').read()
+content = content.replace(
+    '        n_threads = len(os.sched_getaffinity(0)) - 6\n        if n_threads <= 0:\n            n_threads = int(len(os.sched_getaffinity(0)) * 0.8)',
+    '        n_threads = max(32 - 6, 1)'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run.py', 'w').write(content)
+EOF
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+content = content.replace(
+    'args.client_cores = len(os.sched_getaffinity(0))',
+    'args.client_cores = 32'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+EOF
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run.py').read()
+
+# Fix affinitize_nic
+content = content.replace(
+    'def affinitize_nic(args):\n    n_cores = len(os.sched_getaffinity(0))',
+    'def affinitize_nic(args):\n    n_cores = 32'
+)
+
+# Fix run_server 
+content = content.replace(
+    'def run_server(args):\n    n_cores = len(os.sched_getaffinity(0))',
+    'def run_server(args):\n    n_cores = 32'
+)
+
+# Fix client n_threads
+content = content.replace(
+    '        n_threads = len(os.sched_getaffinity(0)) - 6\n        if n_threads <= 0:\n            n_threads = int(len(os.sched_getaffinity(0)) * 0.8)',
+    '        n_threads = max(32 - 6, 1)'
+)
+
+open('/usr/local/DCPerf/packages/tao_bench/run.py', 'w').write(content)
+EOF
+
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+
+# Fix client_cores; number returned is too low. make it match lscpu file
+content = content.replace(
+    'args.client_cores = len(os.sched_getaffinity(0))',
+    'args.client_cores = 32'
+)
+
+# Fix n_cores and core_list, number returned is negative otherwise
+content = content.replace(
+    '    n_cores = len(os.sched_getaffinity(0))\n    core_list = list(os.sched_getaffinity(0))',
+    '    n_cores = 32\n    core_list = list(range(32))'
+)
+
+open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+EOF
+
+# # fix localhost issue; localhost not configured in asterinas so explicitly write address
+# RUN python3 - << 'EOF'
+# content = open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py').read()
+# content = content.replace(
+#     'args.server_hostname = "localhost"',
+#     'args.server_hostname = "127.0.0.1"'
+# )
+# open('/usr/local/DCPerf/packages/tao_bench/run_standalone.py', 'w').write(content)
+# EOF
+
+# # run autoscale takes -c as an argument, not cpu-list
+# RUN python3 - << 'EOF'
+# content = open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py').read()
+# content = content.replace(
+#     '"--cpu-list"',
+#     '"-c"'
+# )
+# open('/usr/local/DCPerf/packages/tao_bench/run_autoscale.py', 'w').write(content)
+# EOF
+
+# fix run.py to explicitly use 127.0.0.1
+RUN python3 - << 'EOF'
+content = open('/usr/local/DCPerf/packages/tao_bench/run.py').read()
+content = content.replace(
+    '"-p",\n        str(port_num),',
+    '"-p",\n        str(port_num),\n        "-l",\n        "127.0.0.1",'
+)
+open('/usr/local/DCPerf/packages/tao_bench/run.py', 'w').write(content)
+EOF
+
+RUN cp /usr/local/DCPerf/benchmarks/tao_bench/openssl/libcrypto.so.3 \
+       /usr/local/DCPerf/benchmarks/tao_bench/build-deps/lib/libcrypto.so.3
+
+RUN mkdir -p /usr/local/benchmark
+COPY test_hugepages.c /usr/local/benchmark
+WORKDIR /usr/local/benchmark
+RUN gcc -o test_hugepages test_hugepages.c
+
 
 #= Build syscall test =========================================================
 
@@ -406,25 +731,17 @@ RUN apt update && apt-get install -y --no-install-recommends \
 RUN apt clean && rm -rf /var/lib/apt/lists/*
 
 # Prepare the system call test suite
-COPY --from=build-ltp /opt/ltp /opt/ltp
-COPY --from=build-gvisor /root/gvisor/build/syscall_test_bins /root/syscall_test_bins
-ENV ASTER_PREBUILT_SYSCALL_TEST=/root/syscall_test_bins
 
 # Install Busybox built from the previous stages
 COPY --from=busybox /root/busybox/busybox /bin/busybox
 
 # Install benchmarks built from the previous stages
-COPY --from=build-benchmarks /usr/local/benchmark /usr/local/benchmark
 
 # Install applications built from the previous stages
-COPY --from=build-applications /usr/local/redis /usr/local/redis
-COPY --from=build-applications /usr/local/nginx /usr/local/nginx
-COPY --from=build-applications /usr/local/leveldb /usr/local/leveldb
-COPY --from=build-applications /usr/local/speedtest1 /usr/local/benchmark/sqlite-speedtest1
-COPY --from=build-applications /lib/x86_64-linux-gnu/libsqlite3.so /lib/x86_64-linux-gnu/libsqlite3.so
-COPY --from=build-applications /usr/local/memcached /usr/local/memcached
-COPY --from=build-applications /usr/local/apache2 /usr/local/apache2
-COPY --from=build-applications /usr/local/wrk /usr/local/wrk
+
+COPY --from=build-dcperf /usr/local/DCPerf /usr/local/DCPerf
+COPY --from=build-dcperf /usr/bin/lscpu /usr/local/bin/lscpu
+COPY --from=build-dcperf /usr/local/benchmark /usr/local/benchmark
 
 COPY --from=build-linux /opt/linux_binary_cache /opt/linux_binary_cache
 

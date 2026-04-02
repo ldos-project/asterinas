@@ -75,7 +75,7 @@ BASH_HISTORY := $(DOCKER_RUST_CACHE_LOCATION)/.bash_history
 
 # Docker Configs
 DOCKER_TAG := ldosproject/asterinas
-DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
+DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)-aanya
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
 DOCKER_RUN_ARGS := --privileged --device=/dev/kvm
 DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
