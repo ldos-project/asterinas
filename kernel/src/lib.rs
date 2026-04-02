@@ -32,6 +32,8 @@ use ostd::{
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
+use alloc::sync::Arc;
+use spin::Once;
 
 use crate::{
     kcmdline::set_kernel_cmd_line,
@@ -76,6 +78,7 @@ pub(crate) mod vdso;
 pub mod vm;
 
 mod benchmarks;
+pub static INITPROC: Once<Arc<Process>> = Once::new();
 
 #[ostd::main]
 #[controlled]
@@ -192,6 +195,8 @@ fn init_thread() {
         karg.get_initproc_envp().to_vec(),
     )
     .expect("Run init process failed.");
+
+    INITPROC.call_once(|| initproc.clone());
 
     #[cfg(not(baseline_asterinas))]
     if karg
