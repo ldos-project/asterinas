@@ -34,6 +34,38 @@ use crate::{
     prelude::*,
 };
 
+#[cfg(not(baseline_asterinas))]
+use spin::Once;
+
+/// Global handle to the data capture file, set during `setup_data_capture`.
+#[cfg(not(baseline_asterinas))]
+static DATA_CAPTURE_FILE: Once<
+    Arc<dyn mariposa_data_capture::DataCaptureFile<aster_block::bio::BlockDeviceCompletionStats>>,
+> = Once::new();
+
+/// Flush all buffered capture data to disk. Call before kernel exit.
+///
+/// Commands are enqueued into the server's OQueue and processed in FIFO order.
+/// `stop()` spins until the server thread acknowledges, so by the time it returns,
+/// the preceding `flush_all` and `sync` are guaranteed to have been processed.
+#[cfg(not(baseline_asterinas))]
+pub fn flush_data_capture() {
+    if let Some(capture_file) = DATA_CAPTURE_FILE.get() {
+        info!("[capture] Flushing all capture data before exit...");
+        if let Err(e) = capture_file.flush_all() {
+            error!("[capture] flush_all failed: {:?}", e);
+        }
+        if let Err(e) = capture_file.sync() {
+            error!("[capture] sync failed: {:?}", e);
+        }
+        // stop() blocks until the server thread processes all preceding commands.
+        if let Err(e) = capture_file.stop() {
+            error!("[capture] stop failed: {:?}", e);
+        }
+        info!("[capture] Capture data flushed.");
+    }
+}
+
 /// Start a thread of the block device to pop requests from the block device's
 /// request queue and process them if there are any. If the request queue is empty,
 /// the thread will wait until there is a request in the queue.
@@ -146,12 +178,31 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     }
 
     // #[cfg(not(baseline_asterinas))]
-    setup_data_capture(&members, RAID_MEMBER_NAMES);
+    // setup_data_capture(&members, RAID_MEMBER_NAMES);
 
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
-    #[cfg(not(baseline_asterinas))]
+    // #[cfg(not(baseline_asterinas))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+    #[cfg(not(baseline_asterinas))]
+    let observers = members
+        .iter()
+        .map(|dev| {
+            use aster_virtio::device::block::server_traits::BlockIOObservable;
+            use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+            let virtio_dev = dev
+                .downcast_ref::<VirtIoBlockDevice>()
+                .expect("RAID member must be a VirtIoBlockDevice for LinnOS");
+            ostd::sync::Mutex::new(
+                virtio_dev
+                    .bio_completion_oqueue()
+                    .attach_weak_observer(4, ObservationQuery::identity())
+                    .expect("Failed to attach weak observer to bio_completion_oqueue"),
+            )
+        })
+        .collect();
+    #[cfg(not(baseline_asterinas))]
+    let selection_policy = LinnOSPolicy::new(members.clone(), observers).unwrap();
     #[cfg(not(baseline_asterinas))]
     let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
     #[cfg(baseline_asterinas)]
@@ -275,23 +326,8 @@ fn setup_data_capture(
         error!("[capture] failed to enable capturing: {:?}", e);
     }
 
-    // Spawn a timer task that sends TimedFlush every 10 seconds to trigger
-    // a flush if data has been idle for that long.
-    let capture_file_for_timer = capture_file.clone();
-    crate::ThreadOptions::new(move || {
-        use core::time::Duration;
-        use ostd::timer::Jiffies;
-        loop {
-            let target = Jiffies::elapsed().as_duration() + Duration::from_secs(5);
-            while Jiffies::elapsed().as_duration() < target {
-                ostd::task::Task::yield_now();
-            }
-            if let Err(e) = capture_file_for_timer.timed_flush() {
-                log::error!("[capture] timed_flush failed: {:?}", e);
-            }
-        }
-    })
-    .spawn();
+    // Store the capture file globally so it can be flushed on kernel exit.
+    DATA_CAPTURE_FILE.call_once(|| capture_file);
 
     info!("[capture] data capture enabled for bio completion stats");
 }

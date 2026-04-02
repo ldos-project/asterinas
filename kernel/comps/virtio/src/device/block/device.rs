@@ -184,7 +184,8 @@ impl aster_block::BlockDevice for BlockDevice {
 
         let mut bio = bio;
         let device_index = self.device.device_index.load(Ordering::Relaxed);
-        bio.prepare_enqueue(reply_handle, self.queue.clone(), device_index);
+        bio.prepare_enqueue(reply_handle, device_index);
+        self.device.inc_page_counter(bio.num_pages());
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())
@@ -209,6 +210,7 @@ struct DeviceInner {
     id_allocator: SpinLock<IdAlloc>,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
     device_index: AtomicU64,
+    num_outstanding_pages: AtomicU64
 }
 
 impl DeviceInner {
@@ -258,6 +260,7 @@ impl DeviceInner {
             id_allocator: SpinLock::new(IdAlloc::with_capacity(Self::QUEUE_SIZE as usize)),
             submitted_requests: SpinLock::new(BTreeMap::new()),
             device_index: AtomicU64::new(u64::MAX),
+            num_outstanding_pages: AtomicU64::new(0)
         });
 
         let cloned_device = device.clone();
@@ -329,7 +332,11 @@ impl DeviceInner {
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
-                bio.report_statistics();
+                {
+                    let pages = bio.num_pages();
+                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed) - pages;
+                    bio.report_statistics(outstanding);
+                }
             });
         }
     }
@@ -581,6 +588,10 @@ impl DeviceInner {
                 .insert(token, submitted_request);
             return;
         }
+    }
+
+    fn inc_page_counter(&self, n_pages: u64) {
+        self.num_outstanding_pages.fetch_add(n_pages, Ordering::Relaxed);
     }
 }
 

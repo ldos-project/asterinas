@@ -221,6 +221,10 @@ fn init_thread() {
         ostd::task::halt_cpu();
     }
 
+    // Flush all capture data before exiting.
+    #[cfg(not(baseline_asterinas))]
+    fs::flush_data_capture();
+
     // TODO: exit via qemu isa debug device should not be the only way.
     let exit_code = if initproc.status().exit_code() == 0 {
         QemuExitCode::Success

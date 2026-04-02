@@ -67,8 +67,6 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
     fn flush(&self) -> Result<(), RPCError>;
     /// Flush All data in the output buffer to disk.
     fn flush_all(&self) -> Result<(), RPCError>;
-    /// Flush if data has been observed but not flushed for at least 10 seconds.
-    fn timed_flush(&self) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
     /// Enable capturing to this file.
@@ -82,8 +80,6 @@ enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     Flush,
     FlushAll,
-    /// Flush only if data has been observed but not yet flushed for at least 10 seconds.
-    TimedFlush,
     Sync,
     Stop,
 }
@@ -94,7 +90,6 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
             Self::RegisterObserver(arg0) => f.debug_tuple("AttachOqueue").field(arg0).finish(),
             Self::Flush => write!(f, "Flush"),
             Self::FlushAll => write!(f, "FlushAll"),
-            Self::TimedFlush => write!(f, "TimedFlush"),
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
         }
@@ -156,19 +151,7 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                     }
                     DataCaptureFileCommand::FlushAll => {
                         data_buf_handler.flush_all()?;
-                    }
-                    DataCaptureFileCommand::TimedFlush => {
-                        if need_flush {
-                            if let Some(last_us) = latest_data_observed_us {
-                                let now_us = read_monotonic_time().as_micros() as u64;
-                                if now_us.saturating_sub(last_us) > 5000000 {
-                                    log::info!("[capture] Timed flush triggered after {} seconds of inactivity", (now_us - last_us) as f64 / 1_000_000.0);
-                                    data_buf_handler.flush_all()?;
-                                    need_flush = false;
-                                    log::info!("[capture] Timed flush completed");
-                                }
-                            }
-                        }
+                        log::info!("[capture internal] Flush all completed");
                     }
                     DataCaptureFileCommand::Stop => {
                         self.server
@@ -235,11 +218,6 @@ impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<
 
     fn flush_all(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::FlushAll);
-        Ok(())
-    }
-
-    fn timed_flush(&self) -> Result<(), RPCError> {
-        self.command_producer.produce(DataCaptureFileCommand::TimedFlush);
         Ok(())
     }
 

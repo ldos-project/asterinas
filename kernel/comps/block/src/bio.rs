@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, sync::Weak};
+use alloc::{boxed::Box};
 use binary_serde::BinarySerde;
 use core::fmt::Display;
 
@@ -31,8 +31,8 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request in microseconds.
     pub latency_us: u64,
-    /// The number of outstanding requests at completion time.
-    pub outstanding_requests: u64,
+    /// The number of outstanding 4KB pages at completion time.
+    pub outstanding_pages: u64,
     /// The index of the device that produced this stat.
     pub device_index: u64,
 }
@@ -149,11 +149,12 @@ impl Bio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
+            #[cfg(not(baseline_asterinas))]
             submission_time_us: None,
             #[cfg(not(baseline_asterinas))]
-            bio_request_single_queue: None,
-            #[cfg(not(baseline_asterinas))]
             device_index: None,
+            #[cfg(not(baseline_asterinas))]
+            num_pages: None,
         }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
@@ -333,13 +334,14 @@ pub struct SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
+    #[cfg(not(baseline_asterinas))]
     submission_time_us: Option<u64>,
 
     #[cfg(not(baseline_asterinas))]
-    bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
+    device_index: Option<u64>,
 
     #[cfg(not(baseline_asterinas))]
-    device_index: Option<u64>,
+    num_pages: Option<u64>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -349,7 +351,7 @@ impl core::fmt::Debug for SubmittedBio {
         #[cfg(not(baseline_asterinas))]
         let d = d
             .field("submission_time_us", &self.submission_time_us)
-            .field("bio_request_single_queue", &self.bio_request_single_queue)
+            .field("device_index", &self.device_index)
             .field(
                 "reply_handle",
                 &self.reply_handle.as_ref().map(|_| "<Producer>"),
@@ -367,6 +369,12 @@ impl SubmittedBio {
     /// Returns the range of target sectors on the device.
     pub fn sid_range(&self) -> &Range<Sid> {
         self.bio_inner.sid_range()
+    }
+
+    /// Returns the number of 4KB pages covered by this bio's sector range.
+    pub fn num_pages(&self) -> u64 {
+        let sectors = self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
+        (sectors + 7) / 8
     }
 
     /// Returns the slice to the memory segments.
@@ -405,35 +413,26 @@ impl SubmittedBio {
     }
 
     #[cfg(not(baseline_asterinas))]
-    pub fn num_outstanding_requests(&self) -> Option<usize> {
-        self.bio_request_single_queue
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|q| q.num_requests())
-    }
-
-    #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
-        bio_request_single_queue: Arc<BioRequestSingleQueue>,
         device_index: u64,
     ) {
         self.reply_handle = Some(reply_handle);
-        self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time_us = Some(read_monotonic_time().as_micros() as u64);
         self.device_index = Some(device_index);
+        self.num_pages = Some(self.num_pages());
     }
 
     #[cfg(not(baseline_asterinas))]
-    pub fn report_statistics(&self) {
+    pub fn report_statistics(&self, outstanding_pages: u64) {
         self.reply_handle
             .as_ref()
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
                 latency_us: read_monotonic_time().as_micros() as u64
                     - self.submission_time_us.unwrap(),
-                outstanding_requests: self.num_outstanding_requests().unwrap_or(0) as u64,
+                outstanding_pages,
                 device_index: self.device_index.unwrap_or(u64::MAX),
             });
     }
