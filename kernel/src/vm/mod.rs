@@ -64,8 +64,10 @@ pub fn mem_total() -> usize {
 
     total
 }
+
+// TODO(aanya): Update this later
 pub fn num_free_hugepages() -> i32 {
-    return 0;
+    0
 }
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
@@ -73,7 +75,11 @@ static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 pub fn num_hugepages() -> i32 {
     let mut count = 0;
     let mut procs: Vec<Arc<Process>> = Vec::new();
-    let initproc = INITPROC.get().expect("initproc not yet initialized");
+    let Some(initproc) = INITPROC.get() else {
+        // Handle the case for integration tests when hugepages haven't been allocated
+        return 0;
+    };
+    
     procs.push(initproc.clone());
     while let Some(proc) = procs.pop() {
         proc.current_children()
@@ -92,7 +98,6 @@ pub fn num_hugepages() -> i32 {
             continue;
         };
         cursor.do_for_each_submapping(0, space_len, |range, _, _| {
-            crate::prelude::info!("mapping: {:#x}..{:#x} size={}", range.start, range.end, range.end - range.start);
             if (range.end - range.start) >= PROMOTED_PAGE_SIZE 
                 && range.start % PROMOTED_PAGE_SIZE == 0 {
                 count += 1;

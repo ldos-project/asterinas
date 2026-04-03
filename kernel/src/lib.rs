@@ -189,14 +189,14 @@ fn init_thread() {
         exit_qemu(QemuExitCode::Success);
     }
 
-    let initproc = spawn_init_process(
-        karg.get_initproc_path().unwrap(),
-        karg.get_initproc_argv().to_vec(),
-        karg.get_initproc_envp().to_vec(),
-    )
-    .expect("Run init process failed.");
-
-    INITPROC.call_once(|| initproc.clone());
+    let initproc = INITPROC.call_once(|| {
+        spawn_init_process(
+            karg.get_initproc_path().unwrap(),
+            karg.get_initproc_argv().to_vec(),
+            karg.get_initproc_envp().to_vec(),
+        )
+        .expect("Run init process failed.")
+    });
 
     #[cfg(not(baseline_asterinas))]
     if karg
