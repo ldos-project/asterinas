@@ -3,10 +3,12 @@
 #![expect(unused_variables)]
 
 use aster_rights::Full;
-use ostd::cpu::context::{CpuExceptionInfo, UserContext};
+use ostd::{
+    cpu::context::{CpuExceptionInfo, UserContext},
+    task::Task,
+};
 
 use crate::{
-    current_userspace,
     prelude::*,
     process::signal::signals::fault::FaultSignal,
     vm::{page_fault_handler::PageFaultHandler, perms::VmPerms, vmar::Vmar},
@@ -77,5 +79,13 @@ fn log_trap_info(trap_info: &CpuExceptionInfo) {
 }
 
 pub(super) fn page_fault_handler(info: &CpuExceptionInfo) -> core::result::Result<(), ()> {
-    handle_page_fault_from_vmar(current_userspace!().root_vmar(), &info.try_into().unwrap())
+    let task = Task::current().unwrap();
+    if task.as_thread_local().unwrap().is_page_fault_disabled() {
+        // Do nothing if the page fault handler is disabled. This will typically cause the fallible
+        // memory operation to report `EFAULT` errors immediately.
+        return Err(());
+    }
+
+    let user_space = CurrentUserSpace::new(&task);
+    handle_page_fault_from_vmar(user_space.root_vmar(), &info.try_into().unwrap())
 }

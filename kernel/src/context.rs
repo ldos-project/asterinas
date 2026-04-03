@@ -62,8 +62,7 @@ impl<'a> CurrentUserSpace<'a> {
     /// Otherwise, you can use the `current_userspace` macro
     /// to obtain an instance of `CurrentUserSpace` if it will only be used once.
     pub fn new(current_task: &'a CurrentTask) -> Self {
-        let thread_local = current_task.as_thread_local().unwrap();
-        let vmar_ref = thread_local.root_vmar().borrow();
+        let vmar_ref = current_task.as_thread_local().unwrap().root_vmar().borrow();
         Self(vmar_ref)
     }
 
