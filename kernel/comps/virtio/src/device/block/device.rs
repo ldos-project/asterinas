@@ -186,6 +186,7 @@ impl aster_block::BlockDevice for BlockDevice {
         let device_index = self.device.device_index.load(Ordering::Relaxed);
         bio.prepare_enqueue(reply_handle, device_index);
         self.device.inc_page_counter(bio.num_pages());
+        // log::info!("\x1b[32mIncremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", bio.num_pages(), self.device.num_outstanding_pages.load(Ordering::Relaxed), device_index, bio.type_());
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())
@@ -329,12 +330,14 @@ impl DeviceInner {
             }
 
             // Completes the bio request
+            // let req_type = complete_request.bio_request.type_();
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
                 {
                     let pages = bio.num_pages();
                     let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed) - pages;
+                    // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
                     bio.report_statistics(outstanding);
                 }
             });

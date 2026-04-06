@@ -152,7 +152,7 @@ impl Raid1Device {
         // log::info!("Raid1Device process request, type: {:?}", request.type_());
         match request.type_() {
             BioType::Read => self.process_read_async(request),
-            BioType::Write => self.process_write(request),
+            BioType::Write => self.process_write_async(request),
             BioType::Flush => self.process_flush(request),
             BioType::Discard => self.process_discard(request),
         }
@@ -277,6 +277,7 @@ impl Raid1Device {
 
     /// Processes write requests by fanning out to all mirrors and aggregating
     /// the results (all must succeed).
+    #[expect(dead_code)]
     fn process_write(&self, request: BioRequest) {
         for parent in request.bios() {
             // Submit the same write to all members.
@@ -285,6 +286,68 @@ impl Raid1Device {
             parent.complete(status);
             // let status = BioStatus::Complete;
             // parent.complete(status);
+        }
+    }
+
+    /// Processes write requests asynchronously by fanning out to all mirrors.
+    ///
+    /// Each child BIO carries a callback that atomically decrements a shared
+    /// counter. The last callback to fire (or the dispatch thread on submission
+    /// failure) completes the parent. Any failed member marks the write as
+    /// `IoError`; all members must succeed for `Complete` to be reported.
+    fn process_write_async(&self, request: BioRequest) {
+        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use ostd::sync::{LocalIrqDisabled, SpinLock};
+
+        for parent in request.into_bios() {
+            let n = self.members.len();
+            let remaining = Arc::new(AtomicUsize::new(n));
+            let had_error = Arc::new(AtomicBool::new(false));
+
+            // Extract before moving parent into the guard.
+            let start_sid = parent.sid_range().start;
+            let segments = parent.segments().to_vec();
+            let guard = Arc::new(SpinLock::<_, LocalIrqDisabled>::new(Some(ParentGuard::new(parent))));
+
+            for member in &self.members {
+                let remaining_cb = remaining.clone();
+                let had_error_cb = had_error.clone();
+                let guard_cb = guard.clone();
+                let remaining_err = remaining.clone();
+                let had_error_err = had_error.clone();
+                let guard_err = guard.clone();
+                let member = member.clone();
+
+                let child = Bio::new_with_closure(
+                    BioType::Write,
+                    start_sid,
+                    segments.clone(),
+                    move |child_bio: &SubmittedBio| {
+                        if child_bio.status() != BioStatus::Complete {
+                            had_error_cb.store(true, Ordering::Release);
+                        }
+                        if remaining_cb.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            let status = if had_error_cb.load(Ordering::Acquire) {
+                                BioStatus::IoError
+                            } else {
+                                BioStatus::Complete
+                            };
+                            if let Some(g) = guard_cb.lock().take() {
+                                g.complete(status);
+                            }
+                        }
+                    },
+                );
+
+                if member.submit(child).is_err() {
+                    had_error_err.store(true, Ordering::Release);
+                    if remaining_err.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        if let Some(g) = guard_err.lock().take() {
+                            g.complete(BioStatus::IoError);
+                        }
+                    }
+                }
+            }
         }
     }
 
