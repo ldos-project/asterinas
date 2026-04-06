@@ -414,6 +414,11 @@ RUN apt update && apt-get install -y --no-install-recommends \
     unzip \
     vim \
     zip
+
+# Install netcat for clean shutdown of benchmarks
+# see test/benchmark/redis/ycsb/host.sh for an example
+RUN apt-get install -y --no-install -recommends netcat-openbsd
+
 # Clean apt cache
 RUN apt clean && rm -rf /var/lib/apt/lists/*
 
