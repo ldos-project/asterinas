@@ -8,6 +8,8 @@
 
 use alloc::format;
 
+use ostd::mm::{PagingConsts, page_size};
+
 use crate::{
     fs::{
         procfs::template::{FileOps, ProcFileBuilder},
@@ -38,8 +40,8 @@ impl FileOps for MemInfoFileOps {
         let total = total / 1024;
         let available = available / 1024;
         let free = total - available;
-        let hugepage_size = 2048;
-        let anon_hugepages = num_anon_hugepages() * 2048;
+        let hugepage_size = page_size::<PagingConsts>(2) / 1024;
+        let anon_hugepages = num_anon_hugepages() as usize * hugepage_size;
         let output = format!(
             "MemTotal:        {:>8} kB\nMemFree:         {:>8} kB\nMemAvailable:    {:>8} kB\nAnonHugePages:   {:>8} kB\nHugepagesize:    {:>8} kB\n",
             total, free, available, anon_hugepages, hugepage_size
