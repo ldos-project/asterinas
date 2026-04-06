@@ -32,7 +32,6 @@ use ostd::{
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
-use alloc::sync::Arc;
 use spin::Once;
 
 use crate::{

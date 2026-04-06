@@ -17,8 +17,7 @@
 //! as zero-cost capabilities.
 
 use alloc::sync::Arc;
-use crate::Vec;
-use crate::INITPROC;
+
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
@@ -30,7 +29,10 @@ use ostd::{
 };
 use vmar::{PageFaultOQueueMessage, RssType};
 
-use crate::process::{PauseProcGuard, Process};
+use crate::{
+    INITPROC, Vec,
+    process::{PauseProcGuard, Process},
+};
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
 
@@ -65,21 +67,16 @@ pub fn mem_total() -> usize {
     total
 }
 
-// TODO(aanya): Update this later
-pub fn num_free_hugepages() -> i32 {
-    0
-}
-
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
-pub fn num_hugepages() -> i32 {
+pub fn num_anon_hugepages() -> i32 {
     let mut count = 0;
     let mut procs: Vec<Arc<Process>> = Vec::new();
     let Some(initproc) = INITPROC.get() else {
         // Handle the case for integration tests when hugepages haven't been allocated
         return 0;
     };
-    
+
     procs.push(initproc.clone());
     while let Some(proc) = procs.pop() {
         proc.current_children()
@@ -97,13 +94,16 @@ pub fn num_hugepages() -> i32 {
         let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..space_len)) else {
             continue;
         };
-        cursor.do_for_each_submapping(0, space_len, |range, _, _| {
-            if (range.end - range.start) >= PROMOTED_PAGE_SIZE 
-                && range.start % PROMOTED_PAGE_SIZE == 0 {
-                count += 1;
-            }
-            Ok(())
-        }).ok();
+        cursor
+            .do_for_each_submapping(0, space_len, |range, _, _| {
+                if (range.end - range.start) >= PROMOTED_PAGE_SIZE
+                    && range.start % PROMOTED_PAGE_SIZE == 0
+                {
+                    count += 1;
+                }
+                Ok(())
+            })
+            .ok();
     }
     count
 }
