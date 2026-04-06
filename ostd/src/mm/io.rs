@@ -964,6 +964,52 @@ impl VmWriter<'_, Fallible> {
         Ok((old_val, old_val == cur_val))
     }
 
+    /// Performs an atomic compare-and-exchange on a `PodAtomic` value.
+    ///
+    /// On success, the previous value will be returned. On failure, the actual value at the address
+    /// is returned. The cursor of the reader and writer will not move in either case.
+    ///
+    /// This method only guarantees the atomicity of the specific operation. There are no
+    /// synchronization constraints on other memory accesses. This aligns with the [Relaxed
+    /// ordering](https://en.cppreference.com/w/cpp/atomic/memory_order.html#Relaxed_ordering)
+    /// specified in the C++11 memory model.
+    ///
+    /// This method will fail with errors if:
+    ///  1. the remaining (avail) space of the reader (writer) is less than
+    ///     `core::mem::size_of::<T>()` bytes, or
+    ///  2. the memory operation fails due to an unresolvable page fault.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if:
+    ///  1. the reader and the writer does not point to the same memory location, or
+    ///  2. the memory location is not aligned on a `core::mem::align_of::<T>()`-byte boundary.
+    pub fn atomic_compare_exchange<T>(
+        &mut self,
+        reader: &VmReader,
+        old_val: T,
+        new_val: T,
+    ) -> Result<T>
+    where
+        T: PodAtomic + Eq,
+    {
+        if self.avail() < core::mem::size_of::<T>() || reader.remain() < core::mem::size_of::<T>() {
+            return InvalidArgsSnafu.fail();
+        }
+
+        assert_eq!(self.cursor.cast_const(), reader.cursor);
+
+        let cursor = self.cursor.cast::<T>();
+        assert!(cursor.is_aligned());
+
+        // SAFETY:
+        // 1. The cursor is either valid for reading or in user space for `size_of::<T>()` bytes.
+        // 2. The cursor is aligned on a `align_of::<T>()`-byte boundary.
+        let prev_val = unsafe { T::atomic_cmpxchg_fallible(cursor, old_val, new_val)? };
+
+        Ok(prev_val)
+    }
+
     /// Writes `len` zeros to the target memory.
     ///
     /// This method attempts to fill up to `len` bytes with zeros. If the available
