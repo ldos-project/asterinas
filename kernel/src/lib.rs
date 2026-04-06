@@ -32,6 +32,7 @@ use ostd::{
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
+use spin::Once;
 
 use crate::{
     kcmdline::set_kernel_cmd_line,
@@ -76,6 +77,7 @@ pub(crate) mod vdso;
 pub mod vm;
 
 mod benchmarks;
+pub static INITPROC: Once<Arc<Process>> = Once::new();
 
 #[ostd::main]
 #[controlled]
@@ -186,12 +188,14 @@ fn init_thread() {
         exit_qemu(QemuExitCode::Success);
     }
 
-    let initproc = spawn_init_process(
-        karg.get_initproc_path().unwrap(),
-        karg.get_initproc_argv().to_vec(),
-        karg.get_initproc_envp().to_vec(),
-    )
-    .expect("Run init process failed.");
+    let initproc = INITPROC.call_once(|| {
+        spawn_init_process(
+            karg.get_initproc_path().unwrap(),
+            karg.get_initproc_argv().to_vec(),
+            karg.get_initproc_envp().to_vec(),
+        )
+        .expect("Run init process failed.")
+    });
 
     #[cfg(not(baseline_asterinas))]
     if karg

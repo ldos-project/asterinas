@@ -29,7 +29,10 @@ use ostd::{
 };
 use vmar::{PageFaultOQueueMessage, RssType};
 
-use crate::process::{PauseProcGuard, Process};
+use crate::{
+    INITPROC, Vec,
+    process::{PauseProcGuard, Process},
+};
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
 
@@ -65,6 +68,45 @@ pub fn mem_total() -> usize {
 }
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
+
+pub fn num_anon_hugepages() -> i32 {
+    let mut count = 0;
+    let mut procs: Vec<Arc<Process>> = Vec::new();
+    let Some(initproc) = INITPROC.get() else {
+        // Handle the case for integration tests when hugepages haven't been allocated
+        return 0;
+    };
+
+    procs.push(initproc.clone());
+    while let Some(proc) = procs.pop() {
+        proc.current_children()
+            .iter()
+            .for_each(|c| procs.push(c.clone()));
+
+        let proc_vm = proc.vm();
+        let proc_vm_guard = proc_vm.lock_root_vmar();
+        let Some(proc_vmar) = proc_vm_guard.as_ref() else {
+            continue;
+        };
+        let preempt_guard = disable_preempt();
+        let space_len = proc_vmar.size();
+        let vm_space = proc_vmar.vm_space();
+        let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..space_len)) else {
+            continue;
+        };
+        cursor
+            .do_for_each_submapping(0, space_len, |range, _, _| {
+                if (range.end - range.start) >= PROMOTED_PAGE_SIZE
+                    && range.start % PROMOTED_PAGE_SIZE == 0
+                {
+                    count += 1;
+                }
+                Ok(())
+            })
+            .ok();
+    }
+    count
+}
 
 fn promote_hugepages(
     proc: &Arc<Process>,
