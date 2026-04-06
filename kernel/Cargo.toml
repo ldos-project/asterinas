@@ -73,6 +73,8 @@ binary_serde = "1.0.25"
 # For benchmarking
 # TODO(aneesh): move this into it's own build target or otherwise make it optional
 crossbeam-utils = { version = "0.8.21", default-features = false }
+burn = { version = "0.20.1", default-features = false, features = ["burn-ndarray", "ndarray"] }
+burn-store = { version = "0.20.1", default-features = false, features = ["burnpack"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 tdx-guest = { version = "0.2.1", optional = true }

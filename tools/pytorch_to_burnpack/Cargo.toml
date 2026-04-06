@@ -1,0 +1,11 @@
+[package]
+name = "pytorch_to_burnpack"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+burn = { version = "0.20.1", default-features = false }
+burn-store = "0.20.1"
+
+[lints]
+workspace = true
