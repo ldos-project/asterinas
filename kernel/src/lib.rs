@@ -364,60 +364,65 @@ fn print_banner() {
 
 use burn::{
     backend::NdArray,
+    module::Module,
     nn::{
-        BatchNorm, BatchNormConfig, Linear, LinearConfig,
+        BatchNorm, BatchNormConfig, Linear, LinearConfig, Relu,
         conv::{Conv2d, Conv2dConfig},
     },
     prelude::*,
-    tensor::activation::{log_softmax, relu},
+    tensor::{
+        Tensor,
+        activation::{log_softmax, relu},
+        backend::Backend,
+    },
 };
 
 #[derive(Module, Debug)]
-pub struct Model<B: Backend> {
-    conv1: Conv2d<B>,
-    conv2: Conv2d<B>,
-    conv3: Conv2d<B>,
-    norm1: BatchNorm<B>,
-    fc1: Linear<B>,
-    fc2: Linear<B>,
-    norm2: BatchNorm<B>,
+pub struct SimpleLinearModel<B: Backend> {
+    // We use a Vec to hold the dynamic number of hidden layers
+    hidden_layers: Vec<Linear<B>>,
+    output_layer: Linear<B>,
+    activation: Relu,
 }
 
-impl<B: Backend> Model<B> {
-    pub fn init(device: &B::Device) -> Self {
-        let conv1 = Conv2dConfig::new([1, 8], [3, 3]).init(device);
-        let conv2 = Conv2dConfig::new([8, 16], [3, 3]).init(device);
-        let conv3 = Conv2dConfig::new([16, 24], [3, 3]).init(device);
-        let norm1 = BatchNormConfig::new(24).init(device);
-        let fc1 = LinearConfig::new(11616, 32).init(device);
-        let fc2 = LinearConfig::new(32, 10).init(device);
-        let norm2 = BatchNormConfig::new(10).init(device);
+impl<B: Backend> SimpleLinearModel<B> {
+    pub fn new(
+        input_history: usize,
+        num_input_features: usize,
+        hidden_layer_sizes: Vec<usize>,
+        output_size: usize,
+        device: &B::Device,
+    ) -> Self {
+        let mut layers = Vec::new();
+        let mut prev_layer_size = input_history * num_input_features;
+
+        // Initialize hidden layers
+        for &hidden_size in hidden_layer_sizes.iter() {
+            layers.push(LinearConfig::new(prev_layer_size, hidden_size).init(device));
+            prev_layer_size = hidden_size;
+        }
+
+        // Initialize output layer
+        let output_layer = LinearConfig::new(prev_layer_size, output_size).init(device);
 
         Self {
-            conv1,
-            conv2,
-            conv3,
-            norm1,
-            fc1,
-            fc2,
-            norm2,
+            hidden_layers: layers,
+            output_layer,
+            activation: Relu::new(),
         }
     }
 
-    pub fn forward(&self, input1: Tensor<B, 4>) -> Tensor<B, 2> {
-        let conv1_out1 = self.conv1.forward(input1);
-        let relu1_out1 = relu(conv1_out1);
-        let conv2_out1 = self.conv2.forward(relu1_out1);
-        let relu2_out1 = relu(conv2_out1);
-        let conv3_out1 = self.conv3.forward(relu2_out1);
-        let relu3_out1 = relu(conv3_out1);
-        let norm1_out1 = self.norm1.forward(relu3_out1);
-        let flatten1_out1 = norm1_out1.flatten(1, 3);
-        let fc1_out1 = self.fc1.forward(flatten1_out1);
-        let relu4_out1 = relu(fc1_out1);
-        let fc2_out1 = self.fc2.forward(relu4_out1);
-        let norm2_out1 = self.norm2.forward(fc2_out1);
-        log_softmax(norm2_out1, 1)
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let mut x = x;
+
+        // Iterate through hidden layers and apply ReLU
+        for layer in self.hidden_layers.iter() {
+            x = layer.forward(x);
+            x = self.activation.forward(x);
+        }
+
+        // Final output layer (no activation, matching your Python script)
+        self.output_layer.forward(x)
     }
 }
 
@@ -425,7 +430,7 @@ use burn_store::{BurnpackStore, ModuleSnapshot};
 
 fn idk() {
     let device = Default::default();
-    let mut model: Model<NdArray<f32>> = Model::init(&device);
+    let mut model: SimpleLinearModel<NdArray<f32>> = SimpleLinearModel::init(&device);
     let mut store = BurnpackStore::from_bytes(None);
     model.load_from(&mut store);
 }
