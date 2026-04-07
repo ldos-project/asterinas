@@ -89,6 +89,7 @@ pub(crate) mod vdso;
 pub mod vm;
 
 mod benchmarks;
+mod hugepage_model;
 
 #[ostd::main]
 #[controlled]
@@ -360,77 +361,4 @@ fn print_banner() {
 "
     );
     println!("\x1B[0m");
-}
-
-use burn::{
-    backend::NdArray,
-    module::Module,
-    nn::{
-        BatchNorm, BatchNormConfig, Linear, LinearConfig, Relu,
-        conv::{Conv2d, Conv2dConfig},
-    },
-    prelude::*,
-    tensor::{
-        Tensor,
-        activation::{log_softmax, relu},
-        backend::Backend,
-    },
-};
-
-#[derive(Module, Debug)]
-pub struct SimpleLinearModel<B: Backend> {
-    // We use a Vec to hold the dynamic number of hidden layers
-    hidden_layers: Vec<Linear<B>>,
-    output_layer: Linear<B>,
-    activation: Relu,
-}
-
-impl<B: Backend> SimpleLinearModel<B> {
-    pub fn new(
-        input_history: usize,
-        num_input_features: usize,
-        hidden_layer_sizes: Vec<usize>,
-        output_size: usize,
-        device: &B::Device,
-    ) -> Self {
-        let mut layers = Vec::new();
-        let mut prev_layer_size = input_history * num_input_features;
-
-        // Initialize hidden layers
-        for &hidden_size in hidden_layer_sizes.iter() {
-            layers.push(LinearConfig::new(prev_layer_size, hidden_size).init(device));
-            prev_layer_size = hidden_size;
-        }
-
-        // Initialize output layer
-        let output_layer = LinearConfig::new(prev_layer_size, output_size).init(device);
-
-        Self {
-            hidden_layers: layers,
-            output_layer,
-            activation: Relu::new(),
-        }
-    }
-
-    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
-        let mut x = x;
-
-        // Iterate through hidden layers and apply ReLU
-        for layer in self.hidden_layers.iter() {
-            x = layer.forward(x);
-            x = self.activation.forward(x);
-        }
-
-        // Final output layer (no activation, matching your Python script)
-        self.output_layer.forward(x)
-    }
-}
-
-use burn_store::{BurnpackStore, ModuleSnapshot};
-
-fn idk() {
-    let device = Default::default();
-    let mut model: SimpleLinearModel<NdArray<f32>> = SimpleLinearModel::init(&device);
-    let mut store = BurnpackStore::from_bytes(None);
-    model.load_from(&mut store);
 }

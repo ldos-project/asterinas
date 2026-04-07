@@ -16,8 +16,7 @@ use burn_store::{
 #[derive(Module, Debug)]
 pub struct SimpleLinearModel<B: Backend> {
     // We use a Vec to hold the dynamic number of hidden layers
-    hidden_layers: Vec<Linear<B>>,
-    output_layer: Linear<B>,
+    model: Vec<Linear<B>>,
     activation: Relu,
 }
 
@@ -39,11 +38,10 @@ impl<B: Backend> SimpleLinearModel<B> {
         }
 
         // Initialize output layer
-        let output_layer = LinearConfig::new(prev_layer_size, output_size).init(device);
+        layers.push(LinearConfig::new(prev_layer_size, output_size).init(device));
 
         Self {
-            hidden_layers: layers,
-            output_layer,
+            model: layers,
             activation: Relu::new(),
         }
     }
@@ -52,13 +50,15 @@ impl<B: Backend> SimpleLinearModel<B> {
         let mut x = x;
 
         // Iterate through hidden layers and apply ReLU
-        for layer in self.hidden_layers.iter() {
+        for (i, layer) in self.model.iter().enumerate() {
             x = layer.forward(x);
-            x = self.activation.forward(x);
+            // Final output layer (no activation, matching your Python script)
+            if (i != self.model.len() - 1) {
+                x = self.activation.forward(x);
+            }
         }
 
-        // Final output layer (no activation, matching your Python script)
-        self.output_layer.forward(x)
+        x
     }
 }
 
