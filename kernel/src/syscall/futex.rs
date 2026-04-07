@@ -6,8 +6,7 @@ use crate::{
     current_userspace,
     prelude::*,
     process::posix_thread::futex::{
-        FutexFlags, FutexOp, futex_op_and_flags_from_u32, futex_requeue, futex_wait,
-        futex_wait_bitset, futex_wake, futex_wake_bitset, futex_wake_op,
+        FutexFlags, FutexOp, futex_lock_pi, futex_op_and_flags_from_u32, futex_requeue, futex_trylock_pi, futex_unlock_pi, futex_wait, futex_wait_bitset, futex_wake, futex_wake_bitset, futex_wake_op
     },
     syscall::SyscallReturn,
     time::{
@@ -132,6 +131,21 @@ pub fn sys_futex(
                 ctx,
                 pid,
             )
+        }
+        FutexOp::FUTEX_LOCK_PI => {
+            let timeout = get_futex_timeout(utime_addr)?;
+            futex_lock_pi(futex_addr, timeout, ctx, pid, false)
+            .map(|_| 0)
+        }
+        FutexOp::FUTEX_TRYLOCK_PI => {
+            if futex_trylock_pi(futex_addr, ctx)? {
+                Ok(0)
+            } else {
+                return_errno_with_message!(Errno::EAGAIN, "futex is locked");
+            }
+        }
+        FutexOp::FUTEX_UNLOCK_PI => {
+            futex_unlock_pi(futex_addr, 1, ctx, pid)
         }
         _ => {
             warn!("futex op = {:?}", futex_op);

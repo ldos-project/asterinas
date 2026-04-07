@@ -33,8 +33,8 @@ pub use self::{
         untyped::{AnyUFrameMeta, UFrame, UntypedMem},
     },
     io::{
-        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodOnce, VmIo, VmIoOnce, VmReader,
-        VmWriter,
+        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodAtomic, PodOnce, VmIo, VmIoOnce,
+        VmReader, VmWriter,
     },
     page_prop::{CachePolicy, PageFlags, PageProperty},
     vm_space::VmSpace,

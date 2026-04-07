@@ -126,6 +126,12 @@ pub struct ManagedTimeout<'a> {
     manager: &'a Arc<TimerManager>,
 }
 
+impl<'a> Debug for ManagedTimeout<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ManagedTimeout").field("timeout", &self.timeout).field("manager", &"<TimerManager>").finish()
+    }
+}
+
 impl<'a> ManagedTimeout<'a> {
     /// Creates a new `ManagedTimeout` with the JIFFIES timer manager.
     pub fn new(timeout: Duration) -> Self {
