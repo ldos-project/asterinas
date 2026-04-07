@@ -6,7 +6,7 @@ use core::{cell::Ref, mem};
 
 use aster_rights::Full;
 use ostd::{
-    mm::{Fallible, Infallible, VmReader, VmWriter},
+    mm::{Fallible, Infallible, PodAtomic, VmReader, VmWriter},
     task::{CurrentTask, Task},
 };
 
@@ -150,6 +150,73 @@ impl<'a> CurrentUserSpace<'a> {
 
         let mut user_writer = self.writer(dest, core::mem::size_of::<T>())?;
         Ok(user_writer.write_val(val)?)
+    }
+
+    /// Atomically loads a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
+    /// boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    pub fn atomic_load<T: PodAtomic>(&self, vaddr: Vaddr) -> Result<T> {
+        check_vaddr(vaddr)?;
+
+        let user_reader = self.reader(vaddr, core::mem::size_of::<T>())?;
+        Ok(user_reader.atomic_load()?)
+    }
+
+    /// Atomically updates a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    ///
+    /// This method internally uses an atomic compare-and-exchange operation.If the value changes
+    /// concurrently, this method will retry so the operation may be performed multiple times.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
+    /// boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    pub fn atomic_update<T>(&self, vaddr: Vaddr, op: impl Fn(T) -> T) -> Result<T>
+    where
+        T: PodAtomic + Eq,
+    {
+        check_vaddr(vaddr)?;
+
+        let user_reader = self.reader(vaddr, core::mem::size_of::<T>())?;
+        let mut user_writer = self.writer(vaddr, core::mem::size_of::<T>())?;
+        loop {
+            match user_writer.atomic_update(&user_reader, &op)? {
+                (old_val, true) => return Ok(old_val),
+                (_, false) => continue,
+            }
+        }
+    }
+
+
+    /// Atomically compare and exchange a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    /// 
+    /// On success, the previous value will be returned. On failure, the actual value at the address
+    /// is returned. The cursor of the reader and writer will not move in either case.    
+    /// 
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
+    /// boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    pub fn atomic_compare_exchange<T>(&self, vaddr: Vaddr,         old_val: T,
+        new_val: T,) -> Result<T>
+    where
+        T: PodAtomic + Eq,
+    {
+        check_vaddr(vaddr)?;
+
+        let user_reader = self.reader(vaddr, core::mem::size_of::<T>())?;
+        let mut user_writer = self.writer(vaddr, core::mem::size_of::<T>())?;
+        
+        Ok(user_writer.atomic_compare_exchange(&user_reader, old_val, new_val)?)
     }
 
     /// Reads a C string from the user space of the current process.
@@ -313,7 +380,7 @@ fn check_vaddr(va: Vaddr) -> Result<()> {
     if va < crate::vm::vmar::ROOT_VMAR_LOWEST_ADDR {
         Err(Error::with_message(
             Errno::EFAULT,
-            "Bad user space pointer specified",
+            "the userspace address is too small",
         ))
     } else {
         Ok(())

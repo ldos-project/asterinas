@@ -4,6 +4,7 @@ use int_to_c_enum::TryFromInt;
 use ostd::{
     cpu::num_cpus,
     sync::{Waiter, Waker},
+    task::Task,
 };
 use spin::Once;
 
@@ -14,6 +15,59 @@ type FutexBitSet = u32;
 const FUTEX_OP_MASK: u32 = 0x0000_000F;
 const FUTEX_FLAGS_MASK: u32 = 0xFFFF_FFF0;
 const FUTEX_BITSET_MATCH_ANY: FutexBitSet = 0xFFFF_FFFF;
+
+/// If set, the locked futex has waiters. This must match `linux/futex.h`.
+const FUTEX_WAITERS: u32 = 0x80000000;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PiFutexState {
+    bits: u32,
+}
+
+impl PiFutexState {
+    /// Creates a new PiFutexState with the given tid (has_waiters is false by default)
+    pub fn from_tid(tid: u32) -> Self {
+        Self {
+            bits: tid & 0x7FFFFFFF, // Only use lower 31 bits for tid
+        }
+    }
+
+    pub fn new(bits: u32) -> Self {
+        Self { bits }
+    }
+
+    /// Returns whether waiters are present
+    pub fn has_waiters(&self) -> bool {
+        self.bits & FUTEX_WAITERS != 0
+    }
+
+    /// Sets the waiters flag
+    pub fn set_has_waiters(&mut self, has_waiters: bool) -> Self {
+        if has_waiters {
+            self.bits |= FUTEX_WAITERS;
+        } else {
+            self.bits &= !FUTEX_WAITERS;
+        }
+        *self
+    }
+
+    /// Gets the thread ID (31 bits)
+    pub fn tid(&self) -> u32 {
+        self.bits & 0x7FFFFFFF
+    }
+
+    /// Sets the thread ID (31 bits only)
+    pub fn set_tid(&mut self, tid: u32) -> Self {
+        self.bits = (tid & 0x7FFFFFFF) | (self.bits & FUTEX_WAITERS);
+        *self
+    }
+}
+
+impl From<PiFutexState> for u32 {
+    fn from(state: PiFutexState) -> Self {
+        state.bits
+    }
+}
 
 /// do futex wait
 pub fn futex_wait(
@@ -51,7 +105,7 @@ pub fn futex_wait_bitset(
         return_errno_with_message!(Errno::EINVAL, "at least one bit should be set");
     }
 
-    let futex_key = FutexKey::new(futex_addr, bitset, pid);
+    let futex_key = FutexKey::new(futex_addr, bitset, pid)?;
     let (futex_item, waiter) = FutexItem::create(futex_key);
 
     let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
@@ -89,6 +143,130 @@ pub fn futex_wait_bitset(
     // to exhaust kernel memory.
 }
 
+/// Lock a futex with priority inheritance (PI).
+///
+/// TODO(arthurp): This implementation is *WRONG*.
+///  * It does not implement priority waking at all.
+///  * It allows other threads to steal the lock even if a thread is waiting in the kernel. This is
+///    solved with a yield loop, which is bad.
+///  * Certainly other things.
+pub fn futex_lock_pi(
+    futex_addr: Vaddr,
+    timeout: Option<ManagedTimeout>,
+    ctx: &Context,
+    pid: Option<Pid>,
+    spin: bool,
+) -> Result<()> {
+    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let (futex_item, waiter) = FutexItem::create(futex_key);
+
+    let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
+    // lock futex bucket ref here to avoid data race
+    let mut futex_bucket = futex_bucket_ref.lock();
+
+    if futex_trylock_pi(futex_addr, ctx)? {
+        // Acquired lock
+        return Ok(());
+    }
+
+    futex_bucket.add_item(futex_item);
+
+    // drop lock
+    drop(futex_bucket);
+
+    let result = if spin {
+        Task::yield_now();
+        Ok(())
+    } else {
+        waiter.pause_timeout(&timeout.into())
+    };
+    match result {
+        // FIXME: If the futex is woken up and a signal comes at the same time, we should succeed
+        // instead of failing with `EINTR`. The code below is of course wrong, but was needed to
+        // make the gVisor tests happy. See <https://github.com/asterinas/asterinas/pull/1577>.
+        Err(err) if err.error() == Errno::EINTR => Ok(()),
+        Ok(()) => {
+            // The thread was woken, so retry and spin until we get the lock.
+            futex_lock_pi(futex_addr, None, ctx, pid, true)
+        }
+        res => res,
+    }
+}
+
+pub fn futex_trylock_pi(futex_addr: usize, ctx: &Context) -> Result<bool> {
+    let tid = ctx.posix_thread.tid();
+
+    loop {
+        let prev_val = ctx.user_space().atomic_compare_exchange(
+            futex_addr,
+            0,
+            PiFutexState::from_tid(tid).into(),
+        )?;
+        match prev_val {
+            0 | FUTEX_WAITERS => {
+                // Lock acquired
+                return Ok(true);
+            }
+            prev_val if PiFutexState::new(prev_val).tid() == tid => {
+                return_errno_with_message!(
+                    Errno::EDEADLK,
+                    "thread attempted to lock a futex it already holds"
+                )
+            }
+            prev_val if !PiFutexState::new(prev_val).has_waiters() => {
+                // Acquire failed, set waiters bit if the lock has not changed state.
+                let prev_val = ctx.user_space().atomic_compare_exchange(
+                    futex_addr,
+                    prev_val,
+                    PiFutexState::new(prev_val).set_has_waiters(true).into(),
+                )?;
+                if prev_val != 0 {
+                    // The waiters bit is now set. We will add ourself to the wait list below.
+                    break;
+                }
+                // Lock is now unlocked, try again.
+            }
+            _ => {
+                // has_waiters is already set. We will add ourself to the wait list below.
+                break;
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn futex_unlock_pi(
+    futex_addr: Vaddr,
+    max_count: usize,
+    ctx: &Context,
+    pid: Option<Pid>,
+) -> Result<usize> {
+    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
+    let mut futex_bucket = futex_bucket_ref.lock();
+
+    let futex_val = futex_key.load_val(ctx)?.cast_unsigned();
+    let tid = ctx.posix_thread.tid();
+    if PiFutexState::new(futex_val).tid() != tid {
+        return_errno_with_message!(
+            Errno::EPERM,
+            "attempt to unlock a futex that the thread does not own"
+        );
+    }
+    let swapped_val = ctx
+        .user_space()
+        .atomic_compare_exchange(futex_addr, futex_val, 0)?;
+    if swapped_val != futex_val {
+        return_errno_with_message!(Errno::EINVAL, "futex value changed while locked");
+    }
+    if PiFutexState::new(futex_val).has_waiters() {
+        let res = futex_bucket.remove_and_wake_items(futex_key, max_count);
+        Ok(res)
+    } else {
+        Ok(0)
+    }
+}
+
 /// Does futex wake
 pub fn futex_wake(futex_addr: Vaddr, max_count: usize, pid: Option<Pid>) -> Result<usize> {
     futex_wake_bitset(futex_addr, max_count, FUTEX_BITSET_MATCH_ANY, pid)
@@ -110,7 +288,7 @@ pub fn futex_wake_bitset(
         return_errno_with_message!(Errno::EINVAL, "at least one bit should be set");
     }
 
-    let futex_key = FutexKey::new(futex_addr, bitset, pid);
+    let futex_key = FutexKey::new(futex_addr, bitset, pid)?;
     let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
     let mut futex_bucket = futex_bucket_ref.lock();
     let res = futex_bucket.remove_and_wake_items(futex_key, max_count);
@@ -238,8 +416,8 @@ pub fn futex_wake_op(
 ) -> Result<usize> {
     let wake_op = FutexWakeOpEncode::from_u32(wake_op_bits)?;
 
-    let futex_key_1 = FutexKey::new(futex_addr_1, FUTEX_BITSET_MATCH_ANY, pid);
-    let futex_key_2 = FutexKey::new(futex_addr_2, FUTEX_BITSET_MATCH_ANY, pid);
+    let futex_key_1 = FutexKey::new(futex_addr_1, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let futex_key_2 = FutexKey::new(futex_addr_2, FUTEX_BITSET_MATCH_ANY, pid)?;
     let (index_1, futex_bucket_ref_1) = get_futex_bucket(futex_key_1);
     let (index_2, futex_bucket_ref_2) = get_futex_bucket(futex_key_2);
 
@@ -258,10 +436,9 @@ pub fn futex_wake_op(
         }
     };
 
-    // FIXME: This should be an atomic read-modify-write memory access here.
-    let old_val = ctx.user_space().read_val(futex_addr_2)?;
-    let new_val = wake_op.calculate_new_val(old_val);
-    ctx.user_space().write_val(futex_addr_2, &new_val)?;
+    let old_val = ctx
+        .user_space()
+        .atomic_update::<u32>(futex_addr_2, |val| wake_op.calculate_new_val(val))?;
 
     let mut res = futex_bucket_1.remove_and_wake_items(futex_key_1, max_count_1);
     if wake_op.should_wake(old_val) {
@@ -284,8 +461,8 @@ pub fn futex_requeue(
         return futex_wake(futex_addr, max_nwakes, pid);
     }
 
-    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid);
-    let futex_new_key = FutexKey::new(futex_new_addr, FUTEX_BITSET_MATCH_ANY, pid);
+    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let futex_new_key = FutexKey::new(futex_new_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
     let (bucket_idx, futex_bucket_ref) = get_futex_bucket(futex_key);
     let (new_bucket_idx, futex_new_bucket_ref) = get_futex_bucket(futex_new_key);
 
@@ -373,7 +550,13 @@ impl FutexBucketVec {
     }
 }
 
+/// A hash bucket holding the waiters for a set of futex addresses.
+///
+/// Futex addresses are hashed to a bucket in [`FutexBucketVec`]. All waiters whose address hashes
+/// to the same bucket are stored together. The bucket must be locked (via its enclosing
+/// `SpinLock`) before any of its items are accessed or modified.
 struct FutexBucket {
+    /// All waiter items currently queued in this bucket.
     items: Vec<FutexItem>,
 }
 
@@ -384,10 +567,14 @@ impl FutexBucket {
         }
     }
 
+    /// Enqueues a waiter item into this bucket.
     pub fn add_item(&mut self, item: FutexItem) {
         self.items.push(item);
     }
 
+    /// Removes and wakes up to `max_count` items matching `key`.
+    ///
+    /// Returns the number of waiters actually woken.
     pub fn remove_and_wake_items(&mut self, key: FutexKey, max_count: usize) -> usize {
         let mut count = 0;
 
@@ -405,6 +592,10 @@ impl FutexBucket {
         count
     }
 
+    /// Reassigns the key of up to `max_count` items matching `key` to `new_key`.
+    ///
+    /// Used by `FUTEX_REQUEUE` when both futex addresses hash to the same bucket, so items
+    /// can be requeued in place without moving them to another bucket.
     pub fn update_item_keys(&mut self, key: FutexKey, new_key: FutexKey, max_count: usize) {
         let mut count = 0;
         for item in self.items.iter_mut() {
@@ -418,6 +609,11 @@ impl FutexBucket {
         }
     }
 
+    /// Moves up to `max_nrequeues` items matching `key` from this bucket into `another`,
+    /// updating each item's key to `new_key`.
+    ///
+    /// Used by `FUTEX_REQUEUE` when the source and destination futex addresses hash to
+    /// different buckets. Both buckets must already be locked by the caller.
     pub fn requeue_items_to_another_bucket(
         &mut self,
         key: FutexKey,
@@ -442,12 +638,22 @@ impl FutexBucket {
     }
 }
 
+/// A single waiter enqueued in a [`FutexBucket`].
+///
+/// Each item pairs a [`FutexKey`] (identifying the futex word and bitset the waiter is sleeping
+/// on) with a [`Waker`] that can unblock the corresponding [`Waiter`].
 struct FutexItem {
+    /// The futex word this waiter is sleeping on.
     key: FutexKey,
+    /// The waker used to unblock the thread when the futex is woken or requeued.
     waker: Arc<Waker>,
 }
 
 impl FutexItem {
+    /// Creates a new `FutexItem` for `key` and returns it together with the paired [`Waiter`].
+    ///
+    /// The caller should enqueue the item into the appropriate [`FutexBucket`] and then block on
+    /// the returned [`Waiter`].
     pub fn create(key: FutexKey) -> (Self, Waiter) {
         let (waiter, waker) = Waiter::new_pair();
         let futex_item = FutexItem { key, waker };
@@ -455,37 +661,80 @@ impl FutexItem {
         (futex_item, waiter)
     }
 
+    /// Wakes the waiter associated with this item.
+    ///
+    /// Returns `true` if the waiter was successfully woken, `false` if it had already been woken
+    /// or cancelled.
     #[must_use]
     pub fn wake(&self) -> bool {
         self.waker.wake_up()
     }
 }
 
-// The addr of a futex, it should be used to mark different futex word
-#[derive(Debug, Clone, Copy)]
+/// The identity of a futex word, used to match waiters against wake/requeue operations.
+///
+/// Two keys match (see [`FutexKey::match_up`]) when they refer to the same futex word in the
+/// same scope (process-private or shared) and have at least one bit in common in their bitsets.
+#[derive(Clone, Copy)]
 struct FutexKey {
+    /// User-space virtual address of the four-byte futex word.
     addr: Vaddr,
+    /// Bitmask used to select which waiters to wake; only waiters whose bitset shares at least
+    /// one bit with the waker's bitset are matched.
     bitset: FutexBitSet,
     /// Specify whether this `FutexKey` is process private or shared. If `pid` is
     /// None, then this `FutexKey` is shared.
     pid: Option<Pid>,
 }
 
+impl Debug for FutexKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FutexKey")
+            .field("addr", &format_args!("{:#x}", self.addr))
+            .field("bitset", &format_args!("{:#x}", self.bitset))
+            .field("pid", &self.pid)
+            .finish()
+    }
+}
+
 impl FutexKey {
-    pub fn new(addr: Vaddr, bitset: FutexBitSet, pid: Option<Pid>) -> Self {
-        Self { addr, bitset, pid }
+    /// Creates a new `FutexKey` for the given address, bitset, and scope.
+    ///
+    /// `pid` being `Some` makes the key process-private; `None` makes it shared across
+    /// processes.
+    ///
+    /// Returns `Err(EINVAL)` if `addr` is not aligned to a four-byte boundary.
+    pub fn new(addr: Vaddr, bitset: FutexBitSet, pid: Option<Pid>) -> Result<Self> {
+        // "On all platforms, futexes are four-byte integers that must be aligned on a four-byte
+        // boundary."
+        // Reference: <https://man7.org/linux/man-pages/man2/futex.2.html>.
+        if addr % core::mem::align_of::<u32>() != 0 {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the futex word is not aligend on a four-byte boundary"
+            );
+        }
+
+        Ok(Self { addr, bitset, pid })
     }
 
+    /// Atomically loads the current value of the futex word from user space.
     pub fn load_val(&self, ctx: &Context) -> Result<i32> {
-        // FIXME: how to implement a atomic load?
-        warn!("implement an atomic load");
-        ctx.user_space().read_val(self.addr)
+        Ok(ctx
+            .user_space()
+            .atomic_load::<u32>(self.addr)?
+            .cast_signed())
     }
 
+    /// Returns the user-space virtual address of the futex word.
     pub fn addr(&self) -> Vaddr {
         self.addr
     }
 
+    /// Returns `true` if this key and `another` refer to the same futex waiter set.
+    ///
+    /// Two keys match when their addresses are equal, their `pid` scopes are equal, and their
+    /// bitsets share at least one bit.
     pub fn match_up(&self, another: &Self) -> bool {
         // TODO: Use hash value to do match_up
         self.addr == another.addr && (self.bitset & another.bitset) != 0 && self.pid == another.pid
