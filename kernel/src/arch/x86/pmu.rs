@@ -4,14 +4,15 @@ use alloc::{boxed::Box, sync::Arc, vec};
 use core::time::Duration;
 
 use aster_time::Instant;
+use binary_serde::BinarySerde;
 use ostd::orpc::{
     framework::{notifier::Notifier, spawn_thread},
     oqueue::{OQueue, OQueueRef},
     orpc_server, orpc_trait,
     path::{Path, PathComponent::Name},
 };
-use binary_serde::BinarySerde;
 use snafu::Whatever;
+use spin::Once;
 
 use crate::util::timer::TimerServer;
 
@@ -38,6 +39,12 @@ pub struct PMUServer {
     pub dtlb_miss_count_oq: OQueueRef<DtlbMisses>,
 }
 
+static PMU_SERVER: Once<Arc<PMUServer>> = Once::new();
+
+pub fn get_pmu_oqueue() -> Arc<OQueueRef<DtlbMisses>> {
+    PMU_SERVER.wait().dtlb_miss_count_oq.clone().into()
+}
+
 impl PMUServer {
     /// Create and spawn a new HugepagedServer.
     pub fn spawn() -> Arc<Self> {
@@ -47,6 +54,7 @@ impl PMUServer {
             let pmud = pmud.clone();
             move || pmud.main()
         });
+        PMU_SERVER.call_once(|| pmud.clone());
         pmud
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {

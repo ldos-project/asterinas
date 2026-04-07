@@ -111,4 +111,77 @@ pub fn main() {
         "Model successfully saved to '{}.bpk'.",
         output_file_path.display()
     );
+
+    let mut model: SimpleLinearModel<NdArray<f32>> =
+        SimpleLinearModel::new(5, 4, vec![64, 32], 1, &device);
+    println!("?!? loading model weights");
+    let mut store = BurnpackStore::from_file("weights/mlp_weights.bpk");
+    model
+        .load_from(&mut store)
+        .unwrap_or_else(|e| panic!("Failed to load bpk model weights: {e}"));
+    println!("?!? constructing a tensor");
+
+    /*
+    0    208          9502672          7117333.0        -530376.0   5712
+    1    199          9502672          9502672.0              0.0   5703
+    2    198          9502672          9502672.0              0.0   5702
+    3    193          9502672          9502672.0              0.0   5697
+    4    188          9502672          9502672.0              0.0   5692
+    */
+
+    let l1_tlb_mean = 17962217092.36901;
+    let l1_tlb_std = 10438282560.234997;
+    let pgfault_std = 5907488.000634078;
+    let pgfault_mean = -751.5422939879493;
+    let rss_std = 225.91115460963047;
+    let rss_mean = 5739.57650502839;
+    let bloat_std = 243.9566731489499;
+    let bloat_mean = 207.82560494187038;
+
+    let l1_trans = |x| (x - l1_tlb_mean) / l1_tlb_std;
+    let pgfault_trans = |x| (x - pgfault_mean) / pgfault_std;
+    let rss_trans = |x| (x - rss_mean) / rss_std;
+
+    let bloat_untrans = |x| x * bloat_std + bloat_mean;
+
+    let t: Tensor<NdArray<f32>, 2> = Tensor::from_floats(
+        [
+            [
+                l1_trans(9502672.0),
+                l1_trans(7117333.0),
+                pgfault_trans(-530376.0),
+                rss_trans(5712.0),
+            ],
+            [
+                l1_trans(9502672.0),
+                l1_trans(9502672.0),
+                pgfault_trans(0.0),
+                rss_trans(5703.0),
+            ],
+            [
+                l1_trans(9502672.0),
+                l1_trans(9502672.0),
+                pgfault_trans(0.0),
+                rss_trans(5702.0),
+            ],
+            [
+                l1_trans(9502672.0),
+                l1_trans(9502672.0),
+                pgfault_trans(0.0),
+                rss_trans(5697.0),
+            ],
+            [
+                l1_trans(9502672.0),
+                l1_trans(9502672.0),
+                pgfault_trans(0.0),
+                rss_trans(5692.0),
+            ],
+        ],
+        &device,
+    );
+    // Flatten the array into 1x?
+    let t = t.reshape([1, -1]);
+    println!("?!? input={:?}", t);
+    let t = model.forward(t);
+    println!("?!? output={:?}", bloat_untrans(t.into_scalar()));
 }

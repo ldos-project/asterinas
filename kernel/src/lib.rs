@@ -232,7 +232,14 @@ fn init_thread() {
         let pmu = arch::pmu::PMUServer::spawn();
         pmu.reset();
         pmu.start();
+    }
 
+    #[cfg(target_arch = "x86_64")]
+    #[cfg(not(baseline_asterinas))]
+    if karg
+        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
+        .unwrap_or(false)
+    {
         let device = fs::start_block_device("data0").unwrap();
         println!("[datadisk] 0 online");
         let dcdserver = DataCaptureDeviceServer::new(device.clone());
@@ -246,8 +253,7 @@ fn init_thread() {
         let server = builder.build();
         let attachment = ObserverRegistration {
             path,
-            observer: pmu
-                .dtlb_miss_count_oq
+            observer: arch::pmu::get_pmu_oqueue()
                 .attach_strong_observer(ObservationQuery::new(|x| *x))
                 .unwrap(),
         };

@@ -17,11 +17,12 @@ use core::{
 use align_ext::AlignExt;
 use aster_rights::Rights;
 use binary_serde::BinarySerde;
+use burn::{Tensor, backend::NdArray, prelude::Module};
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
 use ostd::mm::vm_space::VmMappingPolicyOQueues;
+use ostd::orpc::legacy_oqueue::ringbuffer::MPMCWeakObserver;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue};
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::{
@@ -30,23 +31,35 @@ use ostd::{
         tlb::TlbFlushOp,
         vm_space::{CursorMut, VmMappingPolicy, VmMappingRequest},
     },
-    orpc::{errors::RPCError, new_server, orpc_impl, orpc_server},
+    orpc::{
+        errors::RPCError,
+        legacy_oqueue::WeakObserver as LegacyWeakObserver,
+        legacy_oqueue::{OQueue as _, OQueueRef, ringbuffer::MPMCOQueue},
+        new_server,
+        oqueue::{OQueueBase, ObservationQuery, WeakObserver},
+        orpc_impl, orpc_server,
+    },
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
+use spin::Once;
 
 use self::{
     interval_set::{Interval, IntervalSet},
     vm_mapping::{MappedVmo, VmMapping},
 };
 use crate::{
+    arch::pmu::{DtlbMisses, get_pmu_oqueue},
     fs::utils::Inode,
+    hugepage_model,
     prelude::*,
     process::{Process, ResourceType},
+    syscall::{AcceptMessage, get_accept_oq},
     thread::exception::PageFaultInfo,
     util::per_cpu_counter::PerCpuCounter,
     vm::{
         perms::VmPerms,
+        vmar::oqueues::{ObservableEvent, get_page_fault_oqueue, get_rss_delta_oqueue},
         vmo::{Vmo, VmoRightsOp},
     },
 };
@@ -94,46 +107,78 @@ impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
     }
 }
 
-/*
 #[orpc_server(VmMappingPolicy)]
 struct VmMappingPolicyMLPHugeMapping {
-    model: crate::hugepage_model::MlpModel,
+    pmu_observer: Mutex<WeakObserver<DtlbMisses>>,
+    pagefault_observer:
+        Arc<Mutex<Box<dyn LegacyWeakObserver<ObservableEvent<PageFaultOQueueMessage>>>>>,
+    rss_observer: Arc<Mutex<Box<dyn LegacyWeakObserver<ObservableEvent<i64>>>>>,
+    connect_observer: Arc<Mutex<Box<dyn LegacyWeakObserver<AcceptMessage>>>>,
     // TODO(aneesh): add weak observation handles for the pmu, rss, and pagefault oqs
 }
 
 impl VmMappingPolicyMLPHugeMapping {
-    fn new() -> Self {
-        Self {
-            model: crate::hugepage_model::get_mlp_model(),
-        }
+    fn new() -> Arc<Self> {
+        let id = ObservationQuery::new(|x| *x);
+        let pmu_observer = Mutex::new(get_pmu_oqueue().attach_weak_observer(5, id).unwrap());
+        let pagefault_observer = Arc::new(Mutex::new(
+            get_page_fault_oqueue().attach_weak_observer().unwrap(),
+        ));
+        let rss_observer = Arc::new(Mutex::new(
+            get_rss_delta_oqueue().attach_weak_observer().unwrap(),
+        ));
+        let connect_observer =
+            Arc::new(Mutex::new(get_accept_oq().attach_weak_observer().unwrap()));
+        new_server!(|_| Self {
+            pmu_observer,
+            pagefault_observer,
+            rss_observer,
+            connect_observer,
+        })
     }
 }
 
-#[orpc_impl]
+// From training script
+const L1_TLB_MEAN: f32 = 17962217092.36901;
+const L1_TLB_STD: f32 = 10438282560.234997;
+const PGFAULT_STD: f32 = 5907488.000634078;
+const PGFAULT_MEAN: f32 = -751.5422939879493;
+const RSS_STD: f32 = 225.91115460963047;
+const RSS_MEAN: f32 = 5739.57650502839;
+const BLOAT_STD: f32 = 243.9566731489499;
+const BLOAT_MEAN: f32 = 207.82560494187038;
+const BLOAT_THRESH: f32 = 200.0;
+
+// #[orpc_impl]
 impl VmMappingPolicy for VmMappingPolicyMLPHugeMapping {
     fn get_page_level(
         &self,
         req: &VmMappingRequest,
     ) -> core::result::Result<PagingLevel, RPCError> {
-        Tensor<NdArray<f32>>
-            self.model.forward();
-        self.model.forward();
+        // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
+        // mapped at a level larger than 1.
+        if (req.page_aligned_addr % page_size::<PagingConsts>(2)) != 0 {
+            return Ok(1);
+        }
+
+        let l1_trans = |x: f32| (x - L1_TLB_MEAN) / L1_TLB_STD;
+        let pgfault_trans = |x: f32| (x - PGFAULT_MEAN) / PGFAULT_STD;
+        let rss_trans = |x: f32| (x - RSS_MEAN) / RSS_STD;
+        let bloat_untrans = |x: f32| x * BLOAT_STD + BLOAT_MEAN;
+
+        let bloat = {
+            let model = hugepage_model::get_mlp_model();
+            let model = model.lock();
+            let t: Tensor<NdArray<f32>, 2> = Tensor::from_floats([[0.0]], &model.devices()[0]);
+            bloat_untrans(model.forward(t).into_scalar())
+        };
         // Read 5 values from each oq
         // Build a Burn::Tensor
-        // run self.model.forward(inputs)[0]
+        // run model.forward(inputs)[0]
         // determine if bloat is low enough to justify level 2 mapping
-        Ok(
-            // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
-            // mapped at a level larger than 1.
-            if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
-                2
-            } else {
-                1
-            },
-        )
+        Ok(if bloat < BLOAT_THRESH { 2 } else { 1 })
     }
 }
-*/
 
 /// Virtual Memory Address Regions (VMARs) are a type of capability that manages
 /// user address spaces.
