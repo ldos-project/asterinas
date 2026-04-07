@@ -2,6 +2,20 @@
 
 # SPDX-License-Identifier: MPL-2.0
 
+# Run gVisor syscall tests.
+#
+# Usage: run_gvisor_test.sh [TEST_NAME...]
+#
+# If no arguments are given, all tests not on the blocklist are run. If one or more TEST_NAME
+# arguments are given, only those test binaries are run (each argument is an exact binary name, e.g.
+# "futex_test"). They are run with the same configuration as this script otherwise would, so the
+# configuration (e.g., `test/syscall_test/gvisor/blocklists/futex_test`) will still apply.
+#
+# To run a subset of tests via the `make run`, pass the test names through INITARGS:
+#
+#   make run AUTO_TEST=syscall SYSCALL_TEST_SUITE=gvisor INITARGS="futex_test"
+#   make run AUTO_TEST=syscall SYSCALL_TEST_SUITE=gvisor INITARGS="futex_test socket_test"
+
 SCRIPT_DIR=$(dirname "$0")
 TEST_TMP_DIR=${SYSCALL_TEST_WORKDIR:-/tmp}
 TEST_BIN_DIR=$SCRIPT_DIR/tests
@@ -53,7 +67,14 @@ run_one_test(){
 rm -f $FAIL_CASES && touch $FAIL_CASES
 rm -rf $TEST_TMP_DIR/*
 
-for syscall_test in $(find $TEST_BIN_DIR/. -name \*_test) ; do
+# Create test list based on arguments
+if [ $# -gt 0 ]; then
+    tests="$*"
+else
+    tests="$(find $TEST_BIN_DIR/. -name \*_test)"
+fi
+
+for syscall_test in  "$tests" ; do
     test_name=$(basename "$syscall_test")
     run_one_test $test_name
     if [ $? -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS+1));then
