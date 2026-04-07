@@ -94,6 +94,47 @@ impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
     }
 }
 
+/*
+#[orpc_server(VmMappingPolicy)]
+struct VmMappingPolicyMLPHugeMapping {
+    model: crate::hugepage_model::MlpModel,
+    // TODO(aneesh): add weak observation handles for the pmu, rss, and pagefault oqs
+}
+
+impl VmMappingPolicyMLPHugeMapping {
+    fn new() -> Self {
+        Self {
+            model: crate::hugepage_model::get_mlp_model(),
+        }
+    }
+}
+
+#[orpc_impl]
+impl VmMappingPolicy for VmMappingPolicyMLPHugeMapping {
+    fn get_page_level(
+        &self,
+        req: &VmMappingRequest,
+    ) -> core::result::Result<PagingLevel, RPCError> {
+        Tensor<NdArray<f32>>
+            self.model.forward();
+        self.model.forward();
+        // Read 5 values from each oq
+        // Build a Burn::Tensor
+        // run self.model.forward(inputs)[0]
+        // determine if bloat is low enough to justify level 2 mapping
+        Ok(
+            // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
+            // mapped at a level larger than 1.
+            if (req.page_aligned_addr % page_size::<PagingConsts>(2)) == 0 {
+                2
+            } else {
+                1
+            },
+        )
+    }
+}
+*/
+
 /// Virtual Memory Address Regions (VMARs) are a type of capability that manages
 /// user address spaces.
 ///
@@ -202,9 +243,9 @@ pub struct PageFaultOQueueMessage {
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
     use alloc::sync::Arc;
-    use binary_serde::BinarySerde;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
+    use binary_serde::BinarySerde;
     use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
     use spin::Once;
 

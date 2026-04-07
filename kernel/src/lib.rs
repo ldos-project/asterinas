@@ -89,7 +89,7 @@ pub(crate) mod vdso;
 pub mod vm;
 
 mod benchmarks;
-mod hugepage_model;
+pub mod hugepage_model;
 
 #[ostd::main]
 #[controlled]
@@ -331,6 +331,8 @@ fn init_thread() {
             server.stop().unwrap();
         }));
     }
+
+    hugepage_model::get_mlp_model();
 
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
