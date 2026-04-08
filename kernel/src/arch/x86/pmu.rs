@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
-use serde::Serialize;
 use core::time::Duration;
 
 use aster_time::Instant;
@@ -14,6 +13,7 @@ use ostd::{
     },
     path,
 };
+use serde::Serialize;
 use snafu::Whatever;
 
 use crate::util::timer::TimerServer;

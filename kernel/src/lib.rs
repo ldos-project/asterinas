@@ -222,7 +222,9 @@ fn init_thread() {
     {
         use mariposa_data_capture::ObserverRegistration;
         use ostd::{
-            ignore_err, orpc::oqueue::{OQueueBase, ObservationQuery, registry::lookup_by_path}, path
+            ignore_err,
+            orpc::oqueue::{OQueueBase, ObservationQuery, registry::lookup_by_path},
+            path,
         };
 
         use crate::arch::pmu::DtlbMisses;
@@ -237,12 +239,15 @@ fn init_thread() {
                 length: 100 * 1024 * 1024,
             });
 
-        ignore_err!(capture_file.register_observer(ObserverRegistration {
-            path: path!(pmu.dtlb_miss_count),
-            observer: lookup_by_path(&path!(pmu.dtlb_miss_count))
-                .unwrap()
-                .attach_strong_observer(ObservationQuery::identity()).unwrap(),
-        }));
+        ignore_err!(
+            capture_file.register_observer(ObserverRegistration {
+                path: path!(pmu.dtlb_miss_count),
+                observer: lookup_by_path(&path!(pmu.dtlb_miss_count))
+                    .unwrap()
+                    .attach_strong_observer(ObservationQuery::identity())
+                    .unwrap(),
+            })
+        );
     }
 
     // Wait till initproc become zombie.

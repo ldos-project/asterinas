@@ -10,6 +10,8 @@
 use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
 use core::{fmt::Display, hash::Hash};
 
+use serde::Serialize;
+
 // TODO(arthurp): PERFORMANCE: Paths are constructed inefficiently with a lot of potential
 // allocations.
 
@@ -36,7 +38,7 @@ impl<'a> From<PathComponentRef<'a>> for PathComponent {
 ///
 /// In the case of a name it can either be an owned on `'static` string. Use [`Self::borrow`] to
 /// access names uniformly.
-#[derive(Clone, Debug, Eq)]
+#[derive(Clone, Debug, Eq, Serialize)]
 pub enum PathComponent {
     /// A name in the path (unowned string).
     Name(&'static str),
@@ -79,7 +81,7 @@ impl PathComponent {
 }
 
 /// A path consisting of multiple components. For example, "a.b" or "x[2].y".
-#[derive(Debug, PartialEq, Eq, Clone, Default, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Default, Hash, Serialize)]
 pub struct Path {
     components: Vec<PathComponent>,
 }

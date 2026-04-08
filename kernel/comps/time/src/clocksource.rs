@@ -11,11 +11,11 @@
 //! or used standalone for time tracking and elapsed time measurements.
 
 use alloc::sync::Arc;
-use serde::Serialize;
 use core::{cmp::max, ops::Add, time::Duration};
 
 use aster_util::coeff::Coeff;
 use ostd::sync::{LocalIrqDisabled, RwLock};
+use serde::Serialize;
 
 use crate::NANOS_PER_SECOND;
 

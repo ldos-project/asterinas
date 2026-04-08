@@ -6,6 +6,7 @@ use core::marker::Copy;
 use ostd::orpc::{
     legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
     orpc_trait,
+    path::Path,
 };
 use serde::Serialize;
 
@@ -135,6 +136,11 @@ pub trait PageStore: PageIOObservable {
 
     /// Returns the number of pages in this store.
     fn npages(&self) -> Result<usize>;
+
+    /// The path of the filesystem server
+    ///
+    /// TODO(arthurp): This is a faked stand-in for a server path.
+    fn path(&self) -> Result<&'static str>;
 }
 
 /// The state of a page in the cache.
@@ -156,6 +162,8 @@ pub struct PageCacheReadInfo {
     pub idx: u64,
     /// The state of the cached page when the request was made.
     pub cache_state: CacheState,
+    pub fs_path: &'static str,
+    pub cache_id: usize,
 }
 
 #[orpc_trait]

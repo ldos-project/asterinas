@@ -673,6 +673,8 @@ impl PageCacheManager {
                     page_cache_read_info_producer.produce(PageCacheReadInfo {
                         idx: idx as u64,
                         cache_state: CacheState::Pending,
+                        fs_path: backend.path()?,
+                        cache_id: self as *const _ as usize,
                     });
                     assert!(inner.outstanding_requests.has_requests());
                     inner
@@ -684,6 +686,8 @@ impl PageCacheManager {
                     page_cache_read_info_producer.produce(PageCacheReadInfo {
                         idx: idx as u64,
                         cache_state: CacheState::Hit,
+                        fs_path: backend.path()?,
+                        cache_id: self as *const _ as usize,
                     });
                     page.clone()
                 }
@@ -692,6 +696,8 @@ impl PageCacheManager {
                 page_cache_read_info_producer.produce(PageCacheReadInfo {
                     idx: idx as u64,
                     cache_state: CacheState::Miss,
+                    fs_path: backend.path()?,
+                    cache_id: self as *const _ as usize,
                 });
                 // Conducts the sync read operation.
                 let page = if idx < backend.npages()? {

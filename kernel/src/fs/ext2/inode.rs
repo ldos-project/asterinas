@@ -16,6 +16,8 @@ use ostd::{
     orpc::{orpc_impl, orpc_server},
     util::callback_counter::CallbackCounter,
 };
+#[cfg(not(baseline_asterinas))]
+use ostd::{orpc::path::Path, path};
 
 use super::{
     block_ptr::{BID_SIZE, BidPath, BlockPtrs, Ext2Bid, MAX_BLOCK_PTRS},
@@ -2062,6 +2064,10 @@ impl server_traits::PageStore for InodeBlockManager {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.nblocks())
+    }
+
+    fn path(&self) -> Result<&'static str> {
+        Ok(&"ext2")
     }
 }
 

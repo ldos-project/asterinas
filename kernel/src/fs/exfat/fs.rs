@@ -18,6 +18,8 @@ pub(super) use ostd::mm::VmIo;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
 use ostd::{mm::Segment, new_server, orpc::orpc_server};
+#[cfg(not(baseline_asterinas))]
+use ostd::{orpc::path::Path, path};
 
 use super::{
     bitmap::ExfatBitmap,
@@ -446,6 +448,10 @@ impl PageStore for ExfatFS {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.fs_size() / PAGE_SIZE)
+    }
+
+    fn path(&self) -> Result<&'static str> {
+        Ok(&"exfat")
     }
 }
 
