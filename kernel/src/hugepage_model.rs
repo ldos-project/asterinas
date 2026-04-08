@@ -68,6 +68,7 @@ pub fn init_mlp_model() {
     let device = Default::default();
     let mut model: SimpleLinearModel<NdArray<f32>> =
         SimpleLinearModel::new(5, 4, vec![64, 32], 1, &device);
+    crate::prelude::println!("weights: {}", MODEL_WEIGHTS.len());
     let mut store = BurnpackStore::from_static(MODEL_WEIGHTS);
     model.load_from(&mut store).unwrap();
     HUGEPAGE_MODEL.call_once(|| Arc::new(Mutex::new(model)));

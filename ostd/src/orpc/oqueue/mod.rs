@@ -668,8 +668,13 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     /// history being too short or them being concurrently overwritten) will be replaced by `None`.
     pub fn weak_observe_recent_into(&self, buf: &mut [Option<U>]) -> Result<(), OQueueError> {
         let recent = self.newest_cursor();
+        crate::prelude::println!("cursor.0 = {}, {}", recent.0, buf.len());
         for i in 0..buf.len() {
-            buf[i] = self.weak_observe(recent - (buf.len() - i - 1))?;
+            if (buf.len() - i - 1) > recent.0 {
+                buf[i] = None;
+            } else {
+                buf[i] = self.weak_observe(recent - (buf.len() - i - 1))?;
+            }
         }
         Ok(())
     }

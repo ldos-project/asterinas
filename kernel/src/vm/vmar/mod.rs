@@ -129,14 +129,18 @@ struct VmMappingPolicyMLPHugeMapping {
 
 impl VmMappingPolicyMLPHugeMapping {
     fn new() -> Arc<Self> {
+        println!("?!? Initializing learned huge policy");
         let id = ObservationQuery::new(|x| *x);
         let pmu_observer = Mutex::new(get_pmu_oqueue().attach_weak_observer(10, id).unwrap());
+        println!("?!? got pmu oq");
         let pagefault_observer = Arc::new(Mutex::new(
             get_page_fault_oqueue().attach_weak_observer().unwrap(),
         ));
+        println!("?!? got pgfault oq");
         let rss_observer = Arc::new(Mutex::new(
             get_rss_delta_oqueue().attach_weak_observer().unwrap(),
         ));
+        println!("?!? got rss oq");
         new_server!(|_| Self {
             pmu_observer,
             pagefault_observer,
@@ -164,17 +168,15 @@ impl VmMappingPolicy for VmMappingPolicyMLPHugeMapping {
     ) -> core::result::Result<PagingLevel, RPCError> {
         // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
         // mapped at a level larger than 1.
-        if true || (req.page_aligned_addr % page_size::<PagingConsts>(2)) != 0 {
+        if (req.page_aligned_addr % page_size::<PagingConsts>(2)) != 0 {
             return Ok(1);
         }
 
-        crate::prelude::println!("learned policy start");
         let l1_trans = |x: f32| (x - L1_TLB_MEAN) / L1_TLB_STD;
         let pgfault_trans = |x: f32| (x - PGFAULT_MEAN) / PGFAULT_STD;
         let rss_trans = |x: f32| (x - RSS_MEAN) / RSS_STD;
         let bloat_untrans = |x: f32| x * BLOAT_STD + BLOAT_MEAN;
 
-        crate::prelude::println!("locking oqueues");
         // TODO(aneesh): is it actually safe to lock here? This might need to be a cpulocal or
         // something instead.
         let pmu_values = self.pmu_observer.lock().weak_observe_recent(10).unwrap();
@@ -207,25 +209,31 @@ impl VmMappingPolicy for VmMappingPolicyMLPHugeMapping {
             .filter_map(|x| x.map(|x| (x.timestamp, l1_trans(x.miss_all_tlb as f32))))
             .collect();
 
-        crate::prelude::println!("rss_values: {}", rss_values.len());
-        crate::prelude::println!("pgfault_values: {}", pgfault_values.len());
-        crate::prelude::println!("l1_tlb_misses: {}", l1_tlb_misses.len());
-        crate::prelude::println!("all_tlb_misses: {}", all_tlb_misses.len());
-        return Ok(1);
-        /*
-        // Read 5 values from each oq
-        // Build a Burn::Tensor
-        let input_tensor: Tensor<NdArray<f32>, 2> =
-            Tensor::from_floats([[0.0]], &model.devices()[0]);
+        // TODO(aneesh) correlate timestamps:
+        // let ts0: Vec<u128> = rss_values.iter().map(|x| x.0).collect();
+        // let ts1: Vec<u128> = pgfault_values.iter().map(|x| x.0).collect();
+        // let ts2: Vec<u128> = l1_tlb_misses.iter().map(|x| x.0).collect();
+        // let ts3: Vec<u128> = all_tlb_misses.iter().map(|x| x.0).collect();
 
+        let mut floats = [[0.0f32; 4]; 5];
+        let get_ith = |v: &Vec<(u128, f32)>, i: usize| v[v.len() - 1 - i].1;
+        for i in 0..5 {
+            floats[5 - 1 - i][0] = get_ith(&l1_tlb_misses, i);
+            floats[5 - 1 - i][1] = get_ith(&all_tlb_misses, i);
+            floats[5 - 1 - i][2] = get_ith(&pgfault_values, i);
+            floats[5 - 1 - i][3] = get_ith(&rss_values, i);
+        }
         let bloat = {
             let model = hugepage_model::get_mlp_model();
             let model = model.lock();
+            let input_tensor: Tensor<NdArray<f32>, 2> =
+                Tensor::from_floats(floats, &model.devices()[0]);
+            let input_tensor = input_tensor.reshape([1, -1]);
             bloat_untrans(model.forward(input_tensor).into_scalar())
         };
+        crate::prelude::println!("bloat: {}", bloat);
         // determine if bloat is low enough to justify level 2 mapping
         Ok(if bloat < BLOAT_THRESH { 2 } else { 1 })
-        */
     }
 }
 

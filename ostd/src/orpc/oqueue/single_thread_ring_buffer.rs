@@ -175,6 +175,7 @@ impl RingBuffer {
         // TODO: PERFORMANCE: The caller will often already have checked `can_produce`, so maybe we
         // should use a `produce_unchecked` instead.
         if !self.can_produce() {
+            crate::prelude::println!("Couldn't produce");
             return Some(v);
         };
 
