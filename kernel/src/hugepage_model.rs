@@ -62,30 +62,14 @@ pub type MlpModel = SimpleLinearModel<NdArray<f32>>;
 
 pub(super) static HUGEPAGE_MODEL: Once<Arc<Mutex<MlpModel>>> = Once::new();
 
+static MODEL_WEIGHTS: &[u8] =
+    include_bytes!("../../tools/pytorch_to_burnpack/weights/mlp_weights.bpk");
 pub fn init_mlp_model() {
     let device = Default::default();
     let mut model: SimpleLinearModel<NdArray<f32>> =
         SimpleLinearModel::new(5, 4, vec![64, 32], 1, &device);
-    println!("?!? loading model weights");
-    let mut store = BurnpackStore::from_static(include_bytes!(
-        "../../tools/pytorch_to_burnpack/weights/mlp_weights.bpk"
-    ));
+    let mut store = BurnpackStore::from_static(MODEL_WEIGHTS);
     model.load_from(&mut store).unwrap();
-    println!("?!? constructing a tensor");
-    let t: Tensor<NdArray<f32>, 2> = Tensor::from_floats(
-        [
-            [9502672.0, 9502672.0, 0.0, 5703.0],
-            [9502672.0, 9502672.0, 0.0, 5703.0],
-            [9502672.0, 9502672.0, 0.0, 5703.0],
-            [9502672.0, 9502672.0, 0.0, 5703.0],
-            [9502672.0, 9502672.0, 0.0, 5703.0],
-        ],
-        &device,
-    );
-    // Flatten the array into 1x?
-    let t = t.reshape([1, -1]);
-    println!("?!? input={:?}", t);
-    println!("?!? {:?}", model.forward(t));
     HUGEPAGE_MODEL.call_once(|| Arc::new(Mutex::new(model)));
 }
 

@@ -349,7 +349,7 @@ fn init_thread() {
         }));
     }
 
-    hugepage_model::get_mlp_model();
+    hugepage_model::init_mlp_model();
 
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
