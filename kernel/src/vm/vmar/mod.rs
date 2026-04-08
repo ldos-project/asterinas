@@ -74,6 +74,17 @@ pub fn set_huge_mapping_enabled(value: bool) {
     MAP_HUGE_ENABLED.store(value, Ordering::Relaxed)
 }
 
+static LEARNED_HUGE_MAPPING_POLICY: AtomicBool = AtomicBool::new(false);
+
+/// Returns true if huge pages were enabled on the kernel CLI
+pub fn learned_huge_mapping_enabled() -> bool {
+    LEARNED_HUGE_MAPPING_POLICY.load(Ordering::Relaxed)
+}
+
+pub fn set_learned_huge_mapping_enabled(value: bool) {
+    LEARNED_HUGE_MAPPING_POLICY.store(value, Ordering::Relaxed)
+}
+
 static MAP_HUGE_PRESERVE_ON_DONTNEED: AtomicBool = AtomicBool::new(false);
 
 /// Returns true if huge page mappings should be preserved when a MADV_DONTNEED is issued.
@@ -113,27 +124,23 @@ struct VmMappingPolicyMLPHugeMapping {
     pagefault_observer:
         Arc<Mutex<Box<dyn LegacyWeakObserver<ObservableEvent<PageFaultOQueueMessage>>>>>,
     rss_observer: Arc<Mutex<Box<dyn LegacyWeakObserver<ObservableEvent<i64>>>>>,
-    connect_observer: Arc<Mutex<Box<dyn LegacyWeakObserver<AcceptMessage>>>>,
     // TODO(aneesh): add weak observation handles for the pmu, rss, and pagefault oqs
 }
 
 impl VmMappingPolicyMLPHugeMapping {
     fn new() -> Arc<Self> {
         let id = ObservationQuery::new(|x| *x);
-        let pmu_observer = Mutex::new(get_pmu_oqueue().attach_weak_observer(5, id).unwrap());
+        let pmu_observer = Mutex::new(get_pmu_oqueue().attach_weak_observer(10, id).unwrap());
         let pagefault_observer = Arc::new(Mutex::new(
             get_page_fault_oqueue().attach_weak_observer().unwrap(),
         ));
         let rss_observer = Arc::new(Mutex::new(
             get_rss_delta_oqueue().attach_weak_observer().unwrap(),
         ));
-        let connect_observer =
-            Arc::new(Mutex::new(get_accept_oq().attach_weak_observer().unwrap()));
         new_server!(|_| Self {
             pmu_observer,
             pagefault_observer,
             rss_observer,
-            connect_observer,
         })
     }
 }
@@ -157,26 +164,68 @@ impl VmMappingPolicy for VmMappingPolicyMLPHugeMapping {
     ) -> core::result::Result<PagingLevel, RPCError> {
         // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
         // mapped at a level larger than 1.
-        if (req.page_aligned_addr % page_size::<PagingConsts>(2)) != 0 {
+        if true || (req.page_aligned_addr % page_size::<PagingConsts>(2)) != 0 {
             return Ok(1);
         }
 
+        crate::prelude::println!("learned policy start");
         let l1_trans = |x: f32| (x - L1_TLB_MEAN) / L1_TLB_STD;
         let pgfault_trans = |x: f32| (x - PGFAULT_MEAN) / PGFAULT_STD;
         let rss_trans = |x: f32| (x - RSS_MEAN) / RSS_STD;
         let bloat_untrans = |x: f32| x * BLOAT_STD + BLOAT_MEAN;
 
+        crate::prelude::println!("locking oqueues");
+        // TODO(aneesh): is it actually safe to lock here? This might need to be a cpulocal or
+        // something instead.
+        let pmu_values = self.pmu_observer.lock().weak_observe_recent(10).unwrap();
+        let pgfault_values: Vec<(u128, f32)> = self
+            .pagefault_observer
+            .lock()
+            .weak_observe_recent(10)
+            .iter()
+            .map(|x| {
+                (
+                    x.timestamp,
+                    pgfault_trans(x.event.fault_info.address as f32),
+                )
+            })
+            .collect();
+        let rss_values: Vec<(u128, f32)> = self
+            .rss_observer
+            .lock()
+            .weak_observe_recent(10)
+            .iter()
+            .map(|x| (x.timestamp, rss_trans(x.event as f32)))
+            .collect();
+
+        let l1_tlb_misses: Vec<(u128, f32)> = pmu_values
+            .iter()
+            .filter_map(|x| x.map(|x| (x.timestamp, l1_trans(x.miss_l1_tlb as f32))))
+            .collect();
+        let all_tlb_misses: Vec<(u128, f32)> = pmu_values
+            .iter()
+            .filter_map(|x| x.map(|x| (x.timestamp, l1_trans(x.miss_all_tlb as f32))))
+            .collect();
+
+        crate::prelude::println!("rss_values: {}", rss_values.len());
+        crate::prelude::println!("pgfault_values: {}", pgfault_values.len());
+        crate::prelude::println!("l1_tlb_misses: {}", l1_tlb_misses.len());
+        crate::prelude::println!("all_tlb_misses: {}", all_tlb_misses.len());
+        return Ok(1);
+        /*
+        // Read 5 values from each oq
+        // Build a Burn::Tensor
+        let input_tensor: Tensor<NdArray<f32>, 2> =
+            Tensor::from_floats([[0.0]], &model.devices()[0]);
+
         let bloat = {
             let model = hugepage_model::get_mlp_model();
             let model = model.lock();
-            let t: Tensor<NdArray<f32>, 2> = Tensor::from_floats([[0.0]], &model.devices()[0]);
-            bloat_untrans(model.forward(t).into_scalar())
+            bloat_untrans(model.forward(input_tensor).into_scalar())
         };
-        // Read 5 values from each oq
-        // Build a Burn::Tensor
-        // run model.forward(inputs)[0]
         // determine if bloat is low enough to justify level 2 mapping
         Ok(if bloat < BLOAT_THRESH { 2 } else { 1 })
+        */
     }
 }
 
@@ -667,8 +716,12 @@ impl Vmar_ {
         let vmar_inner = VmarInner::new();
         let mut vm_space = VmSpace::new();
         if huge_mapping_enabled() {
-            vm_space =
-                vm_space.with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}));
+            let policy: Arc<dyn VmMappingPolicy> = if learned_huge_mapping_enabled() {
+                VmMappingPolicyMLPHugeMapping::new()
+            } else {
+                new_server!(|_| VmMappingPolicyGreedyHugeMapping {})
+            };
+            vm_space = vm_space.with_mapping_policy(policy);
         }
         Vmar_::new(
             vmar_inner,
@@ -938,8 +991,12 @@ impl Vmar_ {
             let vmar_inner = VmarInner::new();
             let mut new_space = VmSpace::new();
             if huge_mapping_enabled() {
-                new_space = new_space
-                    .with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}))
+                let policy: Arc<dyn VmMappingPolicy> = if learned_huge_mapping_enabled() {
+                    VmMappingPolicyMLPHugeMapping::new()
+                } else {
+                    new_server!(|_| VmMappingPolicyGreedyHugeMapping {})
+                };
+                new_space = new_space.with_mapping_policy(policy);
             }
             Vmar_::new(
                 vmar_inner,

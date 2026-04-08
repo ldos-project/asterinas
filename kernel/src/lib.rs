@@ -50,7 +50,10 @@ use crate::{
     kcmdline::set_kernel_cmd_line,
     prelude::*,
     thread::kernel_thread::ThreadOptions,
-    vm::vmar::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
+    vm::vmar::{
+        set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed,
+        set_learned_huge_mapping_enabled,
+    },
 };
 
 extern crate alloc;
@@ -165,6 +168,14 @@ fn init_thread() {
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
         .unwrap_or(false);
     set_huge_mapping_enabled(huge_mapping_enabled);
+
+    let learned_huge_mapping_enabled = karg
+        .get_module_arg_by_name::<bool>("vm", "learned_huge_mapping_enabled")
+        .unwrap_or(false);
+    if learned_huge_mapping_enabled {
+        set_huge_mapping_enabled(true);
+        set_learned_huge_mapping_enabled(learned_huge_mapping_enabled);
+    }
 
     let huge_mapping_preserve_on_dontneed = karg
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")

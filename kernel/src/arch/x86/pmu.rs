@@ -23,9 +23,9 @@ pub(crate) trait PMUD {}
 #[derive(BinarySerde, Debug, Clone, Copy)]
 #[expect(dead_code)]
 pub struct DtlbMisses {
-    timestamp: u128,
-    miss_l1_tlb: u64,
-    miss_all_tlb: u64,
+    pub timestamp: u128,
+    pub miss_l1_tlb: u64,
+    pub miss_all_tlb: u64,
 }
 
 /// PMU daemon that periodically read values and outputs to oq
