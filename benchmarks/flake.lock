@@ -1,0 +1,78 @@
+{
+  "nodes": {
+    "libmemcached-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1391947053,
+        "narHash": "sha256-P7xOpEhWvSAq8B3vH0fNVCgI35RWgdxYzhcfhMNRcx0=",
+        "type": "tarball",
+        "url": "https://launchpad.net/libmemcached/1.0/1.0.18/%2Bdownload/libmemcached-1.0.18.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://launchpad.net/libmemcached/1.0/1.0.18/%2Bdownload/libmemcached-1.0.18.tar.gz"
+      }
+    },
+    "memcached-benchmark": {
+      "inputs": {
+        "libmemcached-src": [
+          "libmemcached-src"
+        ],
+        "memcached-src": [
+          "memcached-src"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./memcached",
+        "type": "path"
+      },
+      "original": {
+        "path": "./memcached",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "memcached-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1729462814,
+        "narHash": "sha256-6a2QScoCi0CmuN00lbdWi0Xyl1J+bS+jtohnDW0svhw=",
+        "type": "tarball",
+        "url": "https://memcached.org/files/memcached-1.6.32.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://memcached.org/files/memcached-1.6.32.tar.gz"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1775036866,
+        "narHash": "sha256-ZojAnPuCdy657PbTq5V0Y+AHKhZAIwSIT2cb8UgAz/U=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "6201e203d09599479a3b3450ed24fa81537ebc4e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "libmemcached-src": "libmemcached-src",
+        "memcached-benchmark": "memcached-benchmark",
+        "memcached-src": "memcached-src",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
