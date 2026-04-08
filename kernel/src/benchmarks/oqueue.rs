@@ -698,6 +698,7 @@ fn strong_obs_bench(
     .spawn();
 
     if input.q_type == "mpmc_oq" || input.q_type == "locking" {
+        info!("strong obs bench starting");
         // Start all consumers
         for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
             let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -793,13 +794,13 @@ impl OQueueBenchmark {
 
 impl Benchmark for OQueueBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
-        let karg = get_kernel_cmd_line().unwrap();
+        let karg = get_kernel_cmd_line().expect("no kernel command line");
         self.input = Some(OQueueBenchmarkInput {
             n_threads,
             n_messages: N_MESSAGES_PER_THREAD * n_threads,
             q_type: karg
                 .get_module_arg_by_name::<String>("bench", "q_type")
-                .unwrap(),
+                .expect("missing bench.q_type=... on kernel command line"),
         });
     }
 
