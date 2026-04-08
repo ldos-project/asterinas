@@ -10,13 +10,13 @@ GVISOR_DIR=/opt/gvisor
 
 if [ "${SYSCALL_TEST_SUITE}" == "ltp" ]; then
     echo "Running LTP syscall tests..."
-    if ! "${LTP_DIR}/run_ltp_test.sh"; then
+    if ! "${LTP_DIR}/run_ltp_test.sh" "$@"; then
         echo "Error: LTP syscall tests failed." >&2
         exit 1
     fi
 elif [ "${SYSCALL_TEST_SUITE}" == "gvisor" ]; then
     echo "Running gVisor syscall tests..."
-    if ! "${GVISOR_DIR}/run_gvisor_test.sh"; then
+    if ! "${GVISOR_DIR}/run_gvisor_test.sh" "$@"; then
         echo "Error: gVisor syscall tests failed." >&2
         exit 2
     fi
