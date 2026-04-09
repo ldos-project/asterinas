@@ -10,11 +10,14 @@ pub mod info;
 
 use core::time::Duration;
 
+use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
+    orpc::oqueue::{OQueue, OQueueRef, RefProducer},
+    path,
     prelude::*,
     task::disable_preempt,
     timer,
@@ -36,6 +39,31 @@ pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
 }
 
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
+
+#[derive(Debug)]
+pub enum SchedulingEvent {
+    Schedule { task: Arc<Task> },
+    Deschedule { task: Arc<Task> },
+}
+
+struct SchedulingEventTracingHandles {
+    oqueue: OQueueRef<SchedulingEvent>,
+    producer: RefProducer<SchedulingEvent>,
+}
+
+static SCHEDULING_EVENT_TRACING_HANDLES: Once<SchedulingEventTracingHandles> = Once::new();
+
+fn get_scheduling_event_producer() -> &'static RefProducer<SchedulingEvent> {
+    &SCHEDULING_EVENT_TRACING_HANDLES
+        .call_once(|| {
+            let oqueue = OQueueRef::new(1024, path!(sched.events));
+            SchedulingEventTracingHandles {
+                oqueue: oqueue.clone(),
+                producer: oqueue.attach_ref_producer().unwrap(),
+            }
+        })
+        .producer
+}
 
 /// A per-CPU task scheduler.
 pub trait Scheduler<T = Task>: Sync + Send {
@@ -268,6 +296,18 @@ where
                 break next_task;
             }
         };
+    };
+
+    let producer = get_scheduling_event_producer();
+    if let Some(t) = Task::current() {
+        producer.produce_ref(&SchedulingEvent::Deschedule { task: t.cloned() });
+    }
+
+    let scheduling_event = SchedulingEvent::Schedule { task: next_task };
+    producer.produce_ref(&scheduling_event);
+    let next_task = match scheduling_event {
+        SchedulingEvent::Schedule { task } => task,
+        SchedulingEvent::Deschedule { task } => task,
     };
 
     // `switch_to_task` will spin if it finds that the next task is still running on some CPU core,

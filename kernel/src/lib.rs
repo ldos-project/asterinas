@@ -26,22 +26,32 @@
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
+pub mod event;
+use aster_time::Instant;
 #[cfg(not(baseline_asterinas))]
 pub use data_capture::{new_data_capture_file, new_legacy_data_capture_file};
 use kcmdline::KCmdlineArg;
+use mariposa_data_capture::ObserverRegistration;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    ignore_err,
+    orpc::oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_path},
+    path,
+    task::{Task, scheduler::SchedulingEvent},
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
+use serde::Serialize;
 use spin::Once;
 
 use crate::{
+    event::{EventContext, TaskId},
     kcmdline::set_kernel_cmd_line,
     prelude::*,
-    thread::kernel_thread::ThreadOptions,
+    process::posix_thread::AsPosixThread,
+    thread::{Tid, kernel_thread::ThreadOptions},
     vm::vmar::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
 };
 
@@ -248,6 +258,51 @@ fn init_thread() {
                     .unwrap(),
             })
         );
+    }
+
+    if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(sched.events)) {
+        #[derive(Debug, Clone, Copy, Serialize)]
+        enum EventType {
+            Schedule,
+            Deschedule,
+        }
+
+        #[derive(Debug, Clone, Copy, Serialize)]
+        struct KernelSchedulingEvent {
+            timestamp: Instant,
+            task: TaskId,
+            event_type: EventType,
+        }
+
+        let capture_file =
+            new_data_capture_file::<KernelSchedulingEvent>(mariposa_data_capture::FileDescriptor {
+                path: path!(sched.events),
+                length: 100 * 1024 * 1024,
+            });
+
+        ignore_err!(
+            capture_file.register_observer(ObserverRegistration {
+                path: path!(sched.events),
+                observer: oqueue
+                    .attach_strong_observer(ObservationQuery::new(|e| {
+                        let context = EventContext::new();
+                        match e {
+                            SchedulingEvent::Schedule { task } => KernelSchedulingEvent {
+                                timestamp: context.timestamp,
+                                event_type: EventType::Schedule,
+                                task: TaskId::new(task),
+                            },
+                            SchedulingEvent::Deschedule { task } => KernelSchedulingEvent {
+                                timestamp: context.timestamp,
+                                event_type: EventType::Deschedule,
+                                task: TaskId::new(task),
+                            },
+                        }
+                    }))
+                    .unwrap(),
+            })
+        );
+        ignore_err!(capture_file.start());
     }
 
     // Wait till initproc become zombie.
