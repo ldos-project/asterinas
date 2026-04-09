@@ -3,14 +3,18 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::marker::Copy;
 
-use ostd::orpc::{
-    legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
-    orpc_trait,
-    path::Path,
+use aster_time::Instant;
+use ostd::{
+    orpc::{
+        legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
+        orpc_trait,
+        path::Path,
+    },
+    task::Task,
 };
 use serde::Serialize;
 
-use crate::{Result, fs::utils::CachePage};
+use crate::{Result, event::EventContext, fs::utils::CachePage, process::posix_thread::AsPosixThread as _, thread::Tid};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
@@ -155,15 +159,32 @@ pub enum CacheState {
     Pending,
 }
 
-/// Information about a read request on the page cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct PageCacheReadInfo {
-    /// The index of the page.
     pub idx: u64,
     /// The state of the cached page when the request was made.
     pub cache_state: CacheState,
     pub fs_path: &'static str,
     pub cache_id: usize,
+    pub context: EventContext,
+}
+
+impl PageCacheReadInfo {
+    /// Creates a new PageCacheReadInfo with computed timestamp and tid.
+    pub fn new(
+        idx: u64,
+        cache_state: CacheState,
+        fs_path: &'static str,
+        cache_id: usize,
+    ) -> Self {
+        PageCacheReadInfo {
+            idx,
+            cache_state,
+            fs_path,
+            cache_id,
+            context: EventContext::new(),
+        }
+    }
 }
 
 #[orpc_trait]

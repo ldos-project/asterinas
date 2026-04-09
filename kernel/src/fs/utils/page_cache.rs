@@ -533,7 +533,7 @@ impl PageCacheManager {
                 outstanding_requests: Default::default(),
                 page_cache_read_info_producer: None,
             }),
-            max_cache_size, 
+            max_cache_size,
             weak_this: weak_this.clone(),
             orpc_internal,
         });
@@ -568,9 +568,8 @@ impl PageCacheManager {
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
         if get_log_hits_misses() {
-            static PAGE_CACHE_LOG_FILE: Mutex<
-                Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>,
-            > = Mutex::new(None);
+            static PAGE_CACHE_LOG_FILE: Mutex<Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>> =
+                Mutex::new(None);
 
             let file = {
                 let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
@@ -670,12 +669,12 @@ impl PageCacheManager {
                 if let PageState::Uninit = page.load_state() {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx: idx as u64,
-                        cache_state: CacheState::Pending,
-                        fs_path: backend.path()?,
-                        cache_id: self as *const _ as usize,
-                    });
+                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                        idx as u64,
+                        CacheState::Pending,
+                        backend.path()?,
+                        self as *const _ as usize,
+                    ));
                     assert!(inner.outstanding_requests.has_requests());
                     inner
                         .outstanding_requests
@@ -683,22 +682,22 @@ impl PageCacheManager {
                     inner.pages.get(&idx).context(UNREACHABLE_SNAFU)?.clone()
                 } else {
                     // Cond 1.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx: idx as u64,
-                        cache_state: CacheState::Hit,
-                        fs_path: backend.path()?,
-                        cache_id: self as *const _ as usize,
-                    });
+                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                        idx as u64,
+                        CacheState::Hit,
+                        backend.path()?,
+                        self as *const _ as usize,
+                    ));
                     page.clone()
                 }
             } else {
                 // Cond 3.
-                page_cache_read_info_producer.produce(PageCacheReadInfo {
-                    idx: idx as u64,
-                    cache_state: CacheState::Miss,
-                    fs_path: backend.path()?,
-                    cache_id: self as *const _ as usize,
-                });
+                page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                    idx as u64,
+                    CacheState::Miss,
+                    backend.path()?,
+                    self as *const _ as usize,
+                ));
                 // Conducts the sync read operation.
                 let page = if idx < backend.npages()? {
                     let page = CachePage::alloc_uninit()?;
