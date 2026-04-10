@@ -460,8 +460,9 @@ fn consume_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
-    produced_completed_wq
-        .wait_until(|| (completed.load(Ordering::Relaxed) == input.n_threads).then_some(()));
+    produced_completed_wq.wait_until(|| {
+        (produce_completed.load(Ordering::Relaxed) == input.n_threads).then_some(())
+    });
 
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     // Start all consumers
@@ -500,6 +501,12 @@ fn mixed_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    // number of threads MUST be even because an equal number of producers and consumers are created
+    assert!(
+        input.n_threads % 2 == 0,
+        "mixed_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
     let n_threads_per_type: usize = input.n_threads / 2;
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
@@ -553,6 +560,11 @@ fn weak_obs_bench(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
     let n_threads_per_type: usize = input.n_threads / 2;
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
