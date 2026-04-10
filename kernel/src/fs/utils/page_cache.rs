@@ -136,6 +136,12 @@ impl PageCache {
         Ok(())
     }
 
+    /// Returns an identifier for this cache instance, matching the `cache_id` field in
+    /// `PageCacheReadInfo` events.
+    pub fn cache_id(&self) -> usize {
+        Arc::as_ptr(&self.manager) as usize
+    }
+
     /// Returns the Vmo object.
     // TODO: The capability is too high, restrict it to eliminate the possibility of misuse.
     //       For example, the `resize` api should be forbidden.
@@ -518,7 +524,7 @@ impl PageCacheManager {
             policy
         };
 
-        let max_cache_size = crate::vm::mem_total() / 16 / PAGE_SIZE;
+        let max_cache_size = 1024 * 10;
 
         let server = Self::new_with(|orpc_internal, weak_this| Self {
             backend,
@@ -553,8 +559,26 @@ impl PageCacheManager {
                     let mut inner = server.inner.lock();
                     let inner = inner.deref_mut();
 
+                    let cache_pages = inner.pages.len() as u64;
+
                     // If the page is not in the cache, issue a request.
                     if inner.pages.get(&idx).is_none() {
+                        if inner.page_cache_read_info_producer.is_none() {
+                            inner.page_cache_read_info_producer =
+                                Some(server.page_cache_read_info_oqueue().attach_producer()?);
+                        }
+                        inner
+                            .page_cache_read_info_producer
+                            .as_ref()
+                            .unwrap()
+                            .produce(PageCacheReadInfo::new(
+                                idx as u64,
+                                CacheState::Prefetch,
+                                server.backend()?.path()?,
+                                server.as_ref() as *const _ as usize,
+                                server.backend()?.npages()? as u64,
+                                cache_pages,
+                            ));
                         inner.outstanding_requests.request_async(
                             &mut inner.pages,
                             &server.backend()?,
@@ -664,6 +688,8 @@ impl PageCacheManager {
             // 1. The requested page is ready for read in page cache.
             // 2. The requested page is currently being read (generally due to a prefetch).
             // 3. The requested page is on disk, need a sync read operation here.
+            let store_size = backend.npages()? as u64;
+            let cache_pages = inner.pages.len() as u64;
             let frame = if let Some(page) = inner.pages.get(&idx) {
                 // Cond 1 & 2.
                 if let PageState::Uninit = page.load_state() {
@@ -674,6 +700,8 @@ impl PageCacheManager {
                         CacheState::Pending,
                         backend.path()?,
                         self as *const _ as usize,
+                        store_size,
+                        cache_pages,
                     ));
                     assert!(inner.outstanding_requests.has_requests());
                     inner
@@ -687,6 +715,8 @@ impl PageCacheManager {
                         CacheState::Hit,
                         backend.path()?,
                         self as *const _ as usize,
+                        store_size,
+                        cache_pages,
                     ));
                     page.clone()
                 }
@@ -697,6 +727,8 @@ impl PageCacheManager {
                     CacheState::Miss,
                     backend.path()?,
                     self as *const _ as usize,
+                    store_size,
+                    cache_pages,
                 ));
                 // Conducts the sync read operation.
                 let page = if idx < backend.npages()? {
@@ -718,8 +750,7 @@ impl PageCacheManager {
             // Invoke built-in policy.
             inner.maybe_builtin_prefetch(idx, &backend, self)?;
 
-            let cache_size = inner.pages.len();
-            if cache_size > self.max_cache_size {
+            while inner.pages.len() > self.max_cache_size {
                 if let Some((idx, _)) = inner.pages.peek_lru() {
                     let idx = *idx;
                     // println!("Evicting {idx} (from {cache_size})");

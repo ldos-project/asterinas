@@ -14,7 +14,10 @@ use ostd::{
 };
 use serde::Serialize;
 
-use crate::{Result, event::EventContext, fs::utils::CachePage, process::posix_thread::AsPosixThread as _, thread::Tid};
+use crate::{
+    Result, event::EventContext, fs::utils::CachePage, process::posix_thread::AsPosixThread as _,
+    thread::Tid,
+};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
@@ -157,6 +160,7 @@ pub enum CacheState {
     Miss,
     /// The page was currently being read into the cache.
     Pending,
+    Prefetch,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -166,6 +170,10 @@ pub struct PageCacheReadInfo {
     pub cache_state: CacheState,
     pub fs_path: &'static str,
     pub cache_id: usize,
+    /// Total number of pages in the underlying store.
+    pub store_size: u64,
+    /// Number of pages currently held in the cache.
+    pub cache_pages: u64,
     pub context: EventContext,
 }
 
@@ -176,12 +184,16 @@ impl PageCacheReadInfo {
         cache_state: CacheState,
         fs_path: &'static str,
         cache_id: usize,
+        store_size: u64,
+        cache_pages: u64,
     ) -> Self {
         PageCacheReadInfo {
             idx,
             cache_state,
             fs_path,
             cache_id,
+            store_size,
+            cache_pages,
             context: EventContext::new(),
         }
     }
