@@ -618,7 +618,7 @@ impl Sub<usize> for Cursor {
     type Output = Cursor;
 
     fn sub(self, rhs: usize) -> Self::Output {
-        Cursor(self.0 - rhs)
+        Cursor(self.0.wrapping_sub(rhs))
     }
 }
 
