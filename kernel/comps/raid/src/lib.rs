@@ -208,21 +208,20 @@ impl Raid1Device {
     #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
         // Submit all children first to overlap device I/O.
-        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
+        let mut pending: alloc::vec::Vec<(SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
-        for parent in request.bios() {
-            let member = self.selection_policy.select_block_device(parent).unwrap();
+        for mut parent in request.into_bios() {
+            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
                 parent.sid_range().start,
-                Self::clone_segments(parent),
+                Self::clone_segments(&parent),
                 None,
             );
             match child.submit(&*member) {
                 Ok(waiter) => pending.push((parent, waiter)),
-                // Err(_) => parent.complete(BioStatus::IoError),
-                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
+                Err(_) => todo!("Failed to submit child BIO, Don’t know what to do"),
             }
         }
 
@@ -245,9 +244,9 @@ impl Raid1Device {
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.    
     fn process_read_async(&self, request: BioRequest) {
-        for parent in request.into_bios() {
+        for mut parent in request.into_bios() {
             #[cfg(not(baseline_asterinas))]
-            let member = self.selection_policy.select_block_device(&parent).unwrap();
+            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
 
             #[cfg(baseline_asterinas)]
             let member = self.members[0].clone();

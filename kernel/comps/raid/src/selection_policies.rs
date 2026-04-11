@@ -36,7 +36,7 @@ impl Dummy0Policy {
 impl SelectionPolicy for Dummy0Policy {
     fn select_block_device(
         &self,
-        _submitted: &SubmittedBio,
+        _submitted: &mut SubmittedBio,
     ) -> Result<Arc<dyn BlockDevice>, Error> {
         Ok(self.members[0].clone())
     }
@@ -63,7 +63,7 @@ impl RoundRobinPolicy {
 impl SelectionPolicy for RoundRobinPolicy {
     fn select_block_device(
         &self,
-        _submitted: &SubmittedBio,
+        _submitted: &mut SubmittedBio,
     ) -> Result<Arc<dyn BlockDevice>, Error> {
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
         Ok(self.members[idx % self.members.len()].clone())
@@ -141,9 +141,10 @@ impl LinnOSPolicy {
 }
 
 impl SelectionPolicy for LinnOSPolicy {
-    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
         let num_devices = self.members.len();
         let mut fail_cnt = 0;
+        let num_pages = submitted.num_pages();
 
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
@@ -161,18 +162,14 @@ impl SelectionPolicy for LinnOSPolicy {
             let mut input = [0.0f32; 31];
 
             // Current outstanding pages: use most recent trace entry, decompose into 3 digits
-            let current_outstanding = completion_trace
-                .iter()
-                .flatten()
-                .next()
-                .map(|t| t.outstanding_pages as usize)
-                .unwrap_or(0);
+            let current_outstanding = num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
             input[0] = ((current_outstanding / 100) % 10) as f32;
             input[1] = ((current_outstanding / 10) % 10) as f32;
             input[2] = (current_outstanding % 10) as f32;
 
             // Feature Engineering in LinnOS: Decompose numbers into digits.
             // Historical features: 4 steps, each with 3 digits outstanding + 4 digits latency
+            let mut observed: [(usize, usize); 4] = [(0, 0); 4];
             for (i, trace_entry) in completion_trace.iter().enumerate().take(4) {
                 let Some(trace_entry) = trace_entry else {
                     continue;
@@ -180,6 +177,8 @@ impl SelectionPolicy for LinnOSPolicy {
                 let outstanding = trace_entry.outstanding_pages as usize;
                 let latency_us = trace_entry.latency_us as usize;
                 let base = 3 + i * 7;
+
+                observed[i] = (outstanding, latency_us);
 
                 // Outstanding pages -> 3 digits (hundreds, tens, ones)
                 input[base] = ((outstanding / 100) % 10) as f32;
@@ -192,6 +191,13 @@ impl SelectionPolicy for LinnOSPolicy {
                 input[base + 5] = ((latency_us / 10) % 10) as f32;
                 input[base + 6] = (latency_us % 10) as f32;
             }
+
+            // log::info!(
+            //     "LinnOS dev={} cur_outstanding={} outstanding=[{},{},{},{}] latency_us=[{},{},{},{}]",
+            //     device_idx, current_outstanding,
+            //     observed[0].0, observed[1].0, observed[2].0, observed[3].0,
+            //     observed[0].1, observed[1].1, observed[2].1, observed[3].1,
+            // );
 
             // Hidden layer: input (31) x hidden_weights (31x256) + bias (256) -> hidden_out (256)
             let hidden_weights = &self.hidden_layers[device_idx];
@@ -216,8 +222,9 @@ impl SelectionPolicy for LinnOSPolicy {
                 }
             }
 
-            // Argmax: output[0] > output[1] means fast, otherwise slow
-            if output[0] > output[1] {
+            // Argmax: output[0] < output[1] means fast, otherwise slow
+            if output[0] < output[1] {
+                log::info!("Submitting to device {} predicted FAST. output=[{:.4},{:.4}]", device_idx, output[0], output[1]);
                 return Ok(self.members[device_idx].clone());
             }
 
@@ -225,6 +232,7 @@ impl SelectionPolicy for LinnOSPolicy {
             // All devices predicted slow -- fall back to round-robin
             if fail_cnt >= num_devices {
                 let fallback_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_devices;
+                log::info!("Submitting to device {} as all devices are busy. output=[{:.4},{:.4}]", fallback_idx, output[0], output[1]);
                 return Ok(self.members[fallback_idx].clone());
             }
         }

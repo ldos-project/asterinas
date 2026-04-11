@@ -58,6 +58,11 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
 
     /// Returns the metadata of the block device.
     fn metadata(&self) -> BlockDeviceMeta;
+
+    /// Returns the number of outstanding pages for this device.
+    fn num_outstanding_pages(&self) -> u64 {
+        0
+    }
 }
 
 /// Metadata for a block device.

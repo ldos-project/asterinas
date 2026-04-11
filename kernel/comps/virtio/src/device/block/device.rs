@@ -184,7 +184,7 @@ impl aster_block::BlockDevice for BlockDevice {
 
         let mut bio = bio;
         let device_index = self.device.device_index.load(Ordering::Relaxed);
-        bio.prepare_enqueue(reply_handle, device_index);
+        bio.prepare_enqueue(reply_handle, device_index, self.device.num_outstanding_pages.load(Ordering::Relaxed));
         self.device.inc_page_counter(bio.num_pages());
         // log::info!("\x1b[32mIncremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", bio.num_pages(), self.device.num_outstanding_pages.load(Ordering::Relaxed), device_index, bio.type_());
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
@@ -197,6 +197,10 @@ impl aster_block::BlockDevice for BlockDevice {
             max_nr_segments_per_bio: self.queue.as_ref().max_nr_segments_per_bio(),
             nr_sectors: self.device.config_manager.capacity_sectors(),
         }
+    }
+
+    fn num_outstanding_pages(&self) -> u64 {
+        self.device.num_outstanding_pages.load(Ordering::Relaxed)
     }
 }
 
@@ -335,10 +339,10 @@ impl DeviceInner {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
                 {
-                    let pages = bio.num_pages();
-                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed) - pages;
+                    let pages = bio.get_num_pages();
+                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed);
                     // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
-                    bio.report_statistics(outstanding);
+                    bio.report_statistics();
                 }
             });
         }
