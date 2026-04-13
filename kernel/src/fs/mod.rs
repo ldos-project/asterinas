@@ -25,7 +25,7 @@ pub mod utils;
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
 #[expect(unused_imports)]
-use aster_raid::selection_policies::{Dummy0Policy, LinnOSPolicy, RoundRobinPolicy};
+use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
@@ -177,32 +177,50 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     }
 
-    // #[cfg(not(baseline_asterinas))]
-    // setup_data_capture(&members, RAID_MEMBER_NAMES);
+    #[cfg(all(not(baseline_asterinas), capture_data))]
+    setup_data_capture(&members, RAID_MEMBER_NAMES);
 
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
-    // #[cfg(not(baseline_asterinas))]
+
+    // Round Robin Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "roundrobin"))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
-    #[cfg(not(baseline_asterinas))]
-    let observers = members
-        .iter()
-        .map(|dev| {
-            use aster_virtio::device::block::server_traits::BlockIOObservable;
-            use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
-            let virtio_dev = dev
-                .downcast_ref::<VirtIoBlockDevice>()
-                .expect("RAID member must be a VirtIoBlockDevice for LinnOS");
-            ostd::sync::Mutex::new(
-                virtio_dev
-                    .bio_completion_oqueue()
-                    .attach_weak_observer(4, ObservationQuery::identity())
-                    .expect("Failed to attach weak observer to bio_completion_oqueue"),
-            )
-        })
-        .collect();
-    #[cfg(not(baseline_asterinas))]
+
+    // Shared weak observer setup for all observer-based policies (LinnOS, LinnOS Plus, Decision Tree)
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))]
+    let observers = {
+        use aster_virtio::device::block::server_traits::BlockIOObservable;
+        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+        members
+            .iter()
+            .map(|dev| {
+                let virtio_dev = dev
+                    .downcast_ref::<VirtIoBlockDevice>()
+                    .expect("RAID member must be a VirtIoBlockDevice");
+                ostd::sync::Mutex::new(
+                    virtio_dev
+                        .bio_completion_oqueue()
+                        .attach_weak_observer(4, ObservationQuery::identity())
+                        .expect("Failed to attach weak observer to bio_completion_oqueue"),
+                )
+            })
+            .collect()
+    };
+
+    // LinnOS Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "linnos"))]
     let selection_policy = LinnOSPolicy::new(members.clone(), observers).unwrap();
+
+    // LinnOS Plus Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "linnos_plus"))]
+    let selection_policy = LinnOSPlusPolicy::new(members.clone(), observers).unwrap();
+
+    // Decision Tree Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "decision_tree"))]
+    let selection_policy = DecisionTreePolicy::new(members.clone(), observers).unwrap();
+
+    // Initialize and Register RAID-1 device
     #[cfg(not(baseline_asterinas))]
     let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
     #[cfg(baseline_asterinas)]
