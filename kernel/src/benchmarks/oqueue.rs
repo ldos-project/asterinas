@@ -26,10 +26,8 @@ use ostd::{
             ringbuffer::MPMCOQueue,
         },
         oqueue::{
-            Consumer as OtherConsumer, Cursor as OtherCursor, 
-            OQueue as OtherOQueue, StrongObserver as OtherStrongObserver, 
-            WeakObserver as OtherWeakObserver, ValueProducer as OtherValueProducer, 
-            RefProducer as OtherRefProducer, InlineStrongObserver as OtherInlineStrongObserver,
+            OQueue as OtherOQueue, ConsumableOQueue, OQueueRef,
+            ConsumableOQueueRef
         },
         sync::Blocker,
     },
@@ -437,8 +435,8 @@ fn produce_bench(
     }
 }
 
-fn produce_bench_new<Q: ostd::orpc::oqueue::OQueue<u64> + Send + Sync + 'static>(
-    input: &OQueueBenchmarkInput,
+fn produce_bench_new<Q: OtherOQueue<u64> + Send + Sync + 'static> (
+    input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
 ) {
@@ -502,6 +500,72 @@ fn consume_bench(
         .cpu_affinity(cpu_set)
         .spawn();
     }
+    produced_completed_wq.wait_until(|| {
+        (produce_completed.load(Ordering::Relaxed) == input.n_threads).then_some(())
+    });
+
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    // Start all consumers
+    for tid in 0..input.n_threads {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let consumer = q.attach_consumer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let now = time::clocks::RealTimeClock::get().read_time();
+                for _ in 0..N_MESSAGES_PER_THREAD {
+                    let _ = consumer.consume();
+                }
+                let end = time::clocks::RealTimeClock::get().read_time();
+                println!(
+                    "[consumer-{}-{:?}] recv msg in {:?}",
+                    tid,
+                    ostd::cpu::CpuId::current_racy(),
+                    end - now
+                );
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+    drop(consumer);
+}
+
+fn consume_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    let produced_completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+    let produce_completed = Arc::new(AtomicUsize::new(0));
+
+    // Initialize consumer so that the producer knows to retain values
+    let consumer = q.attach_consumer().unwrap();
+    println!("Populating queue");
+    for tid in 0..input.n_threads {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let produce_completed = produce_completed.clone();
+            let produced_completed_wq = produced_completed_wq.clone();
+            let producer = q.attach_value_producer().unwrap();
+            move || {
+                for _ in 0..N_MESSAGES_PER_THREAD {
+                    producer.produce(0);
+                }
+                produce_completed.fetch_add(1, Ordering::Relaxed);
+                produced_completed_wq.wake_all();
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
     produced_completed_wq.wait_until(|| {
         (produce_completed.load(Ordering::Relaxed) == input.n_threads).then_some(())
     });
@@ -1088,37 +1152,55 @@ impl Benchmark for OQueueScalingBenchmark {
 
 struct OQueueNewBenchmark {
     name: String,
-    input: Option<OQueueBenchmarkInput>,
+    test_type: NewBenchType,
+    input: Option<OQueueNewBenchmarkInput>,
+}
+
+struct OQueueNewBenchmarkInput {
+    pub n_threads: usize,
+    pub n_messages: usize,
+}
+
+enum NewBenchType {
+    Produce,
+    Consume,
 }
 
 impl OQueueNewBenchmark {
-    fn new(name: &str) -> Box<Self> {
-        Box::new(Self { name: name.to_string(), input: None })
+    fn new(name: &str, test_type: NewBenchType) -> Box<Self> {
+        Box::new(Self { name: name.to_string(), input: None, test_type })
     }
 
-    fn get_oq(&self) -> ostd::orpc::oqueue::OQueueRef<u64> {
-        // or OQueueRef depending on what produce_bench_new needs
-        let input = self.input.as_ref().unwrap();
-        ostd::orpc::oqueue::OQueueRef::new_anonymous(2 << 20)
+    fn get_ref_oq(&self) -> OQueueRef<u64> {
+        OQueueRef::new_anonymous(2 << 20)
+    }
+
+    fn get_consumable_oq(&self) -> ConsumableOQueueRef<u64> {
+        ConsumableOQueueRef::new_anonymous(2 << 20)
     }
 }
 
 impl Benchmark for OQueueNewBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
         let karg = get_kernel_cmd_line().expect("no kernel command line");
-        self.input = Some(OQueueBenchmarkInput {
+        self.input = Some(OQueueNewBenchmarkInput {
             n_threads,
             n_messages: N_MESSAGES_PER_THREAD * n_threads,
-            q_type: karg
-                .get_module_arg_by_name::<String>("bench", "q_type")
-                .expect("missing bench.q_type=..."),
         });
     }
 
     fn run(&self, completed: Arc<AtomicUsize>) {
-        let q = Arc::new(self.get_oq());
         let input = self.input.as_ref().unwrap();
-        produce_bench_new(input, &q, &completed);
+        match self.test_type {
+        NewBenchType::Produce => {
+            let q = Arc::new(self.get_ref_oq());
+            produce_bench_new(input, &q, &completed);
+        }
+        NewBenchType::Consume => {
+            let q = Arc::new(self.get_consumable_oq());
+            consume_bench_new(input, &q, &completed);
+        }
+    }
     }
 
     fn name(&self) -> &str { &self.name }
@@ -1128,9 +1210,6 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueBenchmark::new(
         &produce_bench,
         "oqueue::produce_bench",
-    ));
-    bc.register_benchmark(OQueueNewBenchmark::new(
-        "oqueue::produce_bench_new"
     ));
     bc.register_benchmark(OQueueBenchmark::new(
         &consume_bench,
@@ -1157,5 +1236,13 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::weak_obs",
         OQueueScalingBenchmarkType::WeakObserver,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::produce_bench_new", 
+        NewBenchType::Produce,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::consume_bench_new", 
+        NewBenchType::Consume,
     ));
 }
