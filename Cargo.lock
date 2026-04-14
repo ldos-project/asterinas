@@ -101,6 +101,7 @@ dependencies = [
  "int-to-c-enum",
  "log",
  "ostd",
+ "serde",
  "spin",
 ]
 
@@ -257,6 +258,7 @@ name = "aster-raid"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-time",
  "aster-virtio",
  "log",
  "ostd",
