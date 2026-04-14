@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::fmt::Display;
+
 use ostd::{
     cpu::{CpuSet, context::UserContext},
+    stacktrace::CapturedStackTrace,
     sync::RwArc,
     task::Task,
 };
@@ -12,7 +15,7 @@ use crate::{
     prelude::*,
     process::{
         Credentials, Process,
-        posix_thread::name::ThreadName,
+        posix_thread::name::{self, ThreadName},
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
@@ -129,7 +132,7 @@ impl PosixThreadBuilder {
                 PosixThread {
                     process,
                     tid,
-                    name: Mutex::new(thread_name),
+                    name: Mutex::new(thread_name.as_ref().cloned()),
                     credentials,
                     file_table: Mutex::new(Some(file_table.clone_ro())),
                     fs,
@@ -154,7 +157,20 @@ impl PosixThreadBuilder {
                 ThreadLocal::new(set_child_tid, clear_child_tid, root_vmar, file_table);
 
             thread_table::add_thread(tid, thread.clone());
-            task::create_new_user_task(user_ctx, thread, thread_local)
+            let task = task::create_new_user_task(user_ctx, thread, thread_local);
+            let kernel_task_id: usize = task.id().into();
+            let stack = CapturedStackTrace::capture(0);
+            println!(
+                "[thread create] posix tid={}, posix name={}, kernel_task_id={}, {}",
+                tid,
+                thread_name
+                    .map(|n| n.to_string())
+                    .as_deref()
+                    .unwrap_or("<missing>"),
+                kernel_task_id,
+                stack
+            );
+            task
         })
     }
 }

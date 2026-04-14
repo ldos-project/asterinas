@@ -2,6 +2,7 @@
 
 use ostd::{
     cpu::CpuSet,
+    stacktrace::CapturedStackTrace,
     task::{Task, TaskOptions},
 };
 
@@ -59,7 +60,7 @@ impl ThreadOptions {
             current_thread!().exit();
         };
 
-        Arc::new_cyclic(|weak_task| {
+        let task = Arc::new_cyclic(|weak_task| {
             let thread = {
                 let kernel_thread = KernelThread;
                 let cpu_affinity = self.cpu_affinity;
@@ -73,7 +74,14 @@ impl ThreadOptions {
             };
 
             TaskOptions::new(thread_fn).data(thread).build().unwrap()
-        })
+        });
+        let kernel_task_id: usize = task.id().into();
+        let stack = CapturedStackTrace::capture(0);
+        println!(
+            "[thread create] kernel task id={}, {}",
+            kernel_task_id, stack
+        );
+        task
     }
 
     /// Builds a new kernel thread and runs it immediately.

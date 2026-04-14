@@ -86,7 +86,7 @@ mod sched;
 pub mod syscall;
 pub mod thread;
 pub mod time;
-mod util;
+pub mod util;
 pub(crate) mod vdso;
 pub mod vm;
 
@@ -277,7 +277,7 @@ fn init_thread() {
         let capture_file =
             new_data_capture_file::<KernelSchedulingEvent>(mariposa_data_capture::FileDescriptor {
                 path: path!(sched.events),
-                length: 100 * 1024 * 1024,
+                length: 500 * 1024 * 1024,
             });
 
         ignore_err!(

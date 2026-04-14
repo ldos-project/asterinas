@@ -9,14 +9,17 @@ use crate::{process::posix_thread::AsPosixThread as _, thread::Tid};
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum TaskId {
     KernelTask(usize),
-    PosixThread(Tid),
+    PosixThread { tid: Tid, kernel_task_id: usize },
     Unknown,
 }
 
 impl TaskId {
     pub fn new(task: &Task) -> Self {
         if let Some(t) = task.as_posix_thread() {
-            Self::PosixThread(t.tid())
+            Self::PosixThread {
+                tid: t.tid(),
+                kernel_task_id: task.id().into(),
+            }
         } else {
             Self::KernelTask(task.id().into())
         }
