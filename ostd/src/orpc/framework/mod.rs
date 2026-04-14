@@ -36,12 +36,14 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use log::error;
 pub use threads::spawn_thread;
 
 use crate::{
     cpu_local_cell,
     orpc::errors::{RPCError, ServerMissingSnafu},
     prelude::Arc,
+    stack_info::StackInfo,
     sync::Mutex,
     task::{Task, TaskOptions, disable_preempt, scheduler},
 };
@@ -106,6 +108,10 @@ impl ServerBase {
     /// Abort a server.
     #[doc(hidden)]
     pub fn abort(&self, _payload: &impl Display) {
+        error!(
+            "Aborting server with payload: {_payload}\n({})",
+            StackInfo::new(1)
+        );
         self.aborted.store(true, Ordering::SeqCst);
         // Wake up all the threads in the server. This assumes that all threads have an abort point
         let server_threads = self.server_threads.lock();
