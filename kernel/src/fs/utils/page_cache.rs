@@ -753,7 +753,7 @@ impl PageCacheManager {
             while inner.pages.len() > self.max_cache_size {
                 if let Some((idx, _)) = inner.pages.peek_lru() {
                     let idx = *idx;
-                    println!("Evicting {idx} (from {})", inner.pages.len());
+                    // println!("Evicting {idx} (from {})", inner.pages.len());
                     let reply_consumer = flush_page(&mut inner.pages, &backend, idx)?;
                     if let Some(consumer) = reply_consumer {
                         // Wait for the flush to complete.

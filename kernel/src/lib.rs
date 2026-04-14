@@ -23,6 +23,12 @@
 #![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
+use core::ops::Range;
+
+use aster_block::{
+    bio::{BlockDeviceCompletionStats, SubmittedBio},
+    id::Sid,
+};
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
@@ -37,7 +43,10 @@ use ostd::{
     boot::boot_info,
     cpu::{CpuId, CpuSet},
     ignore_err,
-    orpc::oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_path},
+    orpc::oqueue::{
+        OQueueBase as _, ObservationQuery,
+        registry::{lookup_by_path, lookup_by_type},
+    },
     path,
     task::{Task, scheduler::SchedulingEvent},
 };
@@ -303,6 +312,82 @@ fn init_thread() {
             })
         );
         ignore_err!(capture_file.start());
+    }
+    {
+        // Setup submitted bio recording
+        let oqueues = lookup_by_type::<SubmittedBio>();
+        if !oqueues.is_empty() {
+            #[derive(Serialize, Clone, Copy)]
+            struct SubmittedBioEvent {
+                sid_range: (Sid, Sid),
+                timestamp: Option<Instant>,
+                task: TaskId,
+            }
+
+            let capture_file =
+                new_data_capture_file::<SubmittedBioEvent>(mariposa_data_capture::FileDescriptor {
+                    path: path!(io.block.submitted),
+                    length: 500 * 1024 * 1024,
+                });
+
+            for (path, oqueue) in oqueues {
+                ignore_err!(
+                    capture_file.register_observer(ObserverRegistration {
+                        path,
+                        observer: oqueue
+                            .attach_strong_observer(ObservationQuery::new(|e: &SubmittedBio| {
+                                let sid_range = e.sid_range();
+                                SubmittedBioEvent {
+                                    sid_range: (sid_range.start, sid_range.end),
+                                    timestamp: e
+                                        .submission_time_us()
+                                        .map(|t| Instant::from_usecs(t)),
+                                    task: EventContext::new().task,
+                                }
+                            },))
+                            .unwrap(),
+                    })
+                );
+            }
+            ignore_err!(capture_file.start());
+        }
+    }
+
+    {
+        // Setup submitted bio recording
+        let oqueues = lookup_by_type::<BlockDeviceCompletionStats>();
+        if !oqueues.is_empty() {
+            #[derive(Clone, Copy, Serialize)]
+            struct BlockDeviceCompletionEvent {
+                stats: BlockDeviceCompletionStats,
+                context: EventContext,
+            }
+
+            let capture_file = new_data_capture_file::<BlockDeviceCompletionEvent>(
+                mariposa_data_capture::FileDescriptor {
+                    path: path!(io.block.completion),
+                    length: 500 * 1024 * 1024,
+                },
+            );
+
+            for (path, oqueue) in oqueues {
+                ignore_err!(
+                    capture_file.register_observer(ObserverRegistration {
+                        path,
+                        observer: oqueue
+                            .attach_strong_observer(ObservationQuery::new(|stats| {
+                                let context = EventContext::new();
+                                BlockDeviceCompletionEvent {
+                                    stats: *stats,
+                                    context,
+                                }
+                            }))
+                            .unwrap(),
+                    })
+                );
+            }
+            ignore_err!(capture_file.start());
+        }
     }
 
     // Wait till initproc become zombie.
