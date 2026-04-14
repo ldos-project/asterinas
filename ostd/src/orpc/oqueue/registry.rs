@@ -121,18 +121,21 @@ pub fn lookup_by_path_pattern<T: ?Sized + 'static>(pat: &PathPattern) -> Vec<Any
 }
 
 /// Get all OQueues of a given type.
-pub fn lookup_by_type<T: ?Sized + 'static>() -> Vec<AnyOQueueRef<T>> {
+pub fn lookup_by_type<T: ?Sized + 'static>() -> Vec<(Path, AnyOQueueRef<T>)> {
     let mut map = registry();
     let type_map = get_type_map::<T>(&mut map);
 
     type_map
         .map
-        .values()
-        .filter_map(|value| {
-            value
-                .downcast_ref::<WeakAnyOQueueRef<T>>()
-                .unwrap()
-                .upgrade()
+        .iter()
+        .filter_map(|(path, value)| {
+            Some((
+                path.clone(),
+                value
+                    .downcast_ref::<WeakAnyOQueueRef<T>>()
+                    .unwrap()
+                    .upgrade()?,
+            ))
         })
         .collect()
 }
