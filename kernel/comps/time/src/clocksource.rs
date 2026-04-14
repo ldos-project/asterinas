@@ -190,6 +190,14 @@ impl Instant {
         Self { secs, nanos }
     }
 
+    /// Creates a new `Instant` from a number of microseconds.
+    pub fn from_usecs(usecs: u64) -> Self {
+        Self {
+            secs: usecs / 1_000_000,
+            nanos: (usecs % 1_000_000) as u32 * 1000,
+        }
+    }
+
     /// Returns the seconds recorded in the Instant.
     pub fn secs(&self) -> u64 {
         self.secs
