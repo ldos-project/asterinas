@@ -17,6 +17,7 @@ use ostd::{
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
+use serde::Serialize;
 use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
@@ -25,15 +26,14 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone, Copy, Default)]
-#[repr(C)]
+#[derive(Clone, Copy, Default, Serialize)]
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request in microseconds.
-    pub latency_us: Duration,
+    pub latency: Duration,
     /// The number of outstanding requests at completion time.
     pub outstanding_requests: u64,
     /// The index of the device that produced this stat.
-    pub device_index: u64,
+    pub device_index: Option<u64>,
 }
 
 /// The unit for block I/O.
@@ -416,12 +416,12 @@ impl SubmittedBio {
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
         bio_request_single_queue: Arc<BioRequestSingleQueue>,
-        device_index: u64,
+        device_index: Option<u64>,
     ) {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time = Some(read_monotonic_time());
-        self.device_index = Some(device_index);
+        self.device_index = device_index;
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -430,9 +430,9 @@ impl SubmittedBio {
             .as_ref()
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
-                latency_us: read_monotonic_time() - self.submission_time.unwrap(),
+                latency: read_monotonic_time() - self.submission_time.unwrap(),
                 outstanding_requests: self.num_outstanding_requests().unwrap_or(0) as u64,
-                device_index: self.device_index.unwrap_or(u64::MAX),
+                device_index: self.device_index,
             });
     }
 }

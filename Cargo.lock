@@ -101,6 +101,7 @@ dependencies = [
  "int-to-c-enum",
  "log",
  "ostd",
+ "serde",
  "spin",
 ]
 

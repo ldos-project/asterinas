@@ -178,7 +178,7 @@ impl SelectionPolicy for LinnOSPolicy {
                     continue;
                 };
                 let outstanding = trace_entry.outstanding_requests as usize;
-                let latency_us = trace_entry.latency_us.as_micros() as usize;
+                let latency_us = trace_entry.latency.as_micros() as usize;
                 let base = 3 + i * 7;
 
                 // Outstanding requests -> 3 digits (hundreds, tens, ones)
