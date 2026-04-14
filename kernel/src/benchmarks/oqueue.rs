@@ -661,6 +661,65 @@ fn mixed_bench(
     }
 }
 
+fn mixed_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    // number of threads MUST be even because an equal number of producers and consumers are created
+    assert!(
+        input.n_threads % 2 == 0,
+        "mixed_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    // Start all producers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let producer = q.attach_value_producer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                crate::prelude::println!("finished producer {}", tid);
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let consumer = q.attach_consumer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    let _ = consumer.consume();
+                }
+                crate::prelude::println!("finished consumer {}", tid);
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+}
+
 fn weak_obs_bench(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
@@ -1164,6 +1223,7 @@ struct OQueueNewBenchmarkInput {
 enum NewBenchType {
     Produce,
     Consume,
+    Mixed,
 }
 
 impl OQueueNewBenchmark {
@@ -1192,15 +1252,19 @@ impl Benchmark for OQueueNewBenchmark {
     fn run(&self, completed: Arc<AtomicUsize>) {
         let input = self.input.as_ref().unwrap();
         match self.test_type {
-        NewBenchType::Produce => {
-            let q = Arc::new(self.get_ref_oq());
-            produce_bench_new(input, &q, &completed);
+            NewBenchType::Produce => {
+                let q = Arc::new(self.get_ref_oq());
+                produce_bench_new(input, &q, &completed);
+            }
+            NewBenchType::Consume => {
+                let q = Arc::new(self.get_consumable_oq());
+                consume_bench_new(input, &q, &completed);
+            }
+            NewBenchType::Mixed => {
+                let q = Arc::new(self.get_consumable_oq());
+                mixed_bench_new(input, &q, &completed);
+            }
         }
-        NewBenchType::Consume => {
-            let q = Arc::new(self.get_consumable_oq());
-            consume_bench_new(input, &q, &completed);
-        }
-    }
     }
 
     fn name(&self) -> &str { &self.name }
@@ -1215,7 +1279,10 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
         &consume_bench,
         "oqueue::consume_bench",
     ));
-    bc.register_benchmark(OQueueBenchmark::new(&mixed_bench, "oqueue::mixed_bench"));
+    bc.register_benchmark(OQueueBenchmark::new(
+        &mixed_bench, 
+        "oqueue::mixed_bench"
+    ));
     bc.register_benchmark(OQueueBenchmark::new(
         &weak_obs_bench,
         "oqueue::weak_obs_bench",
@@ -1244,5 +1311,9 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueNewBenchmark::new(
         "oqueue::consume_bench_new", 
         NewBenchType::Consume,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::mixed_bench_new", 
+        NewBenchType::Mixed,
     ));
 }
