@@ -21,13 +21,13 @@ use crate::prelude::Box;
 pub enum RPCError {
     /// A panic occurred in the server during the call. The panic payload will be converted to a string, if possible. If
     /// it cannot be, then the string will be a generic error message.
-    #[snafu(display("{message}"))]
+    #[snafu(display("{message} ({context})"))]
     Panic {
         /// message associated with this panic
         message: String,
     },
     /// The server does not exist or is not running. This can happen when a server already crashed or has been shutdown.
-    #[snafu(display("Server does not exist or not running"))]
+    #[snafu(display("Server does not exist or is not running ({context})"))]
     ServerMissing,
 }
 

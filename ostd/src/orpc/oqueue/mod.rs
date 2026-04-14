@@ -92,17 +92,18 @@ pub enum OQueueError {
     /// The handle has been detached. Once this is returned, all future operations will return
     /// it. This can happen because access has been revoked (for instance, due to the observer
     /// being too slow), or the OQueue has been deleted.
+    #[snafu(display("Handle detached ({context})"))]
     Detached,
-
     /// The operation is supported by this OQueue but the required resources are missing (e.g.,
     /// observer slots or memory).
+    #[snafu(display("Resource unavailable ({context})"))]
     ResourceUnavailable,
-
     /// The operation is not supported or not allowed by this OQueue. An operation may not be
     /// supported if, for example, the OQueue does not support consumers and a client tries to
     /// attach one. An operation may also be disallowed to prevent problems such as potential hangs
     /// or crashes. For example, strong observers may not be allowed on an OQueue to prevent
     /// `produce` from blocking.
+    #[snafu(display("Operation unsupported or disallowed ({context})"))]
     Unsupported,
 }
 
