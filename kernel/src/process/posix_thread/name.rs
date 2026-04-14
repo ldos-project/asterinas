@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::fmt::{Display, Formatter};
+
 use crate::prelude::*;
 
 pub const MAX_THREAD_NAME_LEN: usize = 16;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ThreadName {
     inner: [u8; MAX_THREAD_NAME_LEN],
     count: usize,
+}
+
+impl Display for ThreadName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_str(str::from_utf8(&self.inner[..self.count]).unwrap_or("<invalid utf8>"))
+    }
 }
 
 impl Default for ThreadName {
