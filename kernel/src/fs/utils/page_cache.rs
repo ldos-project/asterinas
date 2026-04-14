@@ -599,7 +599,7 @@ impl PageCacheManager {
                 let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
                 if file_guard.is_none() {
                     *file_guard = Some(new_legacy_data_capture_file(FileDescriptor {
-                        length: 10 * 1024 * 1024, // 10MB
+                        length: 200 * 1024 * 1024,
                         path: path!(page_cache.read_info),
                     }));
                 }
@@ -753,7 +753,7 @@ impl PageCacheManager {
             while inner.pages.len() > self.max_cache_size {
                 if let Some((idx, _)) = inner.pages.peek_lru() {
                     let idx = *idx;
-                    // println!("Evicting {idx} (from {cache_size})");
+                    println!("Evicting {idx} (from {})", inner.pages.len());
                     let reply_consumer = flush_page(&mut inner.pages, &backend, idx)?;
                     if let Some(consumer) = reply_consumer {
                         // Wait for the flush to complete.

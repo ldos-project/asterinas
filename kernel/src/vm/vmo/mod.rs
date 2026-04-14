@@ -340,21 +340,19 @@ impl Vmo_ {
     pub fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<()> {
         let read_len = writer.avail().min(self.size().saturating_sub(offset));
         let read_range = offset..(offset + read_len);
+        let page_idx_range = get_page_idx_range(&read_range);
         let mut read_offset = offset % PAGE_SIZE;
 
-        let read =
-            move |commit_fn: &mut dyn FnMut() -> core::result::Result<UFrame, VmoCommitError>| {
-                let frame = commit_fn()?;
-                frame
-                    .reader()
-                    .skip(read_offset)
-                    .read_fallible(writer)
-                    .map_err(|e| VmoCommitError::from(e.0))?;
-                read_offset = 0;
-                Ok(())
-            };
-
-        self.operate_on_range(read_range, read, CommitFlags::empty())
+        for page_idx in page_idx_range {
+            let frame = self.commit_on(page_idx, CommitFlags::empty())?;
+            frame
+                .reader()
+                .skip(read_offset)
+                .read_fallible(writer)
+                .map_err(|(e, _)| Error::from(e))?;
+            read_offset = 0;
+        }
+        Ok(())
     }
 
     /// Writes the specified amount of buffer content starting from the target offset in the VMO.
