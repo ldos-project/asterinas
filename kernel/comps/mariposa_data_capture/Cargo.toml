@@ -9,6 +9,7 @@ edition = "2024"
 component = { path = "../../libs/comp-sys/component" }
 aster-logger = { path = "../logger" }
 aster-block = { path = "../block" }
+aster-time = { path = "../time" }
 ostd = { path = "../../../ostd" }
 binary_serde = "1.0.25"
 log = "0.4"

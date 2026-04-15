@@ -12,8 +12,8 @@ use binary_serde::{BinarySerde, Endianness};
 use ostd::orpc::path::Path;
 
 /// A buffer for managing data which will be written bit by bit, but the extracted in larger blocks.
-struct DataBuf {
-    data: Vec<u8>,
+pub(crate) struct DataBuf {
+    pub data: Vec<u8>,
 }
 
 impl DataBuf {
@@ -63,7 +63,7 @@ impl DataBuf {
 
 /// Handles buffering and flushing data to a block device.
 pub(crate) struct ChunkingWriteWrapper {
-    data_buf: DataBuf,
+    pub data_buf: DataBuf,
     pub(crate) block_device: Arc<dyn aster_block::BlockDevice>,
     pub(crate) current_bid: Bid,
 }
@@ -112,10 +112,20 @@ impl ChunkingWriteWrapper {
         let raw_data = self.data_buf.written_data();
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         let n_written = bio_segment.writer()?.write(&mut raw_data.into());
-        let _ = self
+        let waiter = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
+        waiter.wait();
         Ok(n_written)
+    }
+
+    /// Flushes all complete blocks from the buffer to storage.
+    /// Stops when fewer than BLOCK_SIZE bytes remain to avoid writing partial blocks.
+    pub fn flush_all(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+        while self.data_buf.len() > BLOCK_SIZE {
+            self.flush_if_needed()?;
+        }
+        Ok(())
     }
 
     pub fn sync(&mut self) -> Result<(), Box<dyn Error + 'static>> {

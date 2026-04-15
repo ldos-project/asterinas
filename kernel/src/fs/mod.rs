@@ -25,7 +25,7 @@ pub mod utils;
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
 #[expect(unused_imports)]
-use aster_raid::selection_policies::{Dummy0Policy, LinnOSPolicy, RoundRobinPolicy};
+use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
@@ -33,6 +33,38 @@ use crate::{
     fs::{ext2::Ext2, fs_resolver::FsPath},
     prelude::*,
 };
+
+#[cfg(not(baseline_asterinas))]
+use spin::Once;
+
+/// Global handle to the data capture file, set during `setup_data_capture`.
+#[cfg(not(baseline_asterinas))]
+static DATA_CAPTURE_FILE: Once<
+    Arc<dyn mariposa_data_capture::DataCaptureFile<aster_block::bio::BlockDeviceCompletionStats>>,
+> = Once::new();
+
+/// Flush all buffered capture data to disk. Call before kernel exit.
+///
+/// Commands are enqueued into the server's OQueue and processed in FIFO order.
+/// `stop()` spins until the server thread acknowledges, so by the time it returns,
+/// the preceding `flush_all` and `sync` are guaranteed to have been processed.
+#[cfg(not(baseline_asterinas))]
+pub fn flush_data_capture() {
+    if let Some(capture_file) = DATA_CAPTURE_FILE.get() {
+        info!("[capture] Flushing all capture data before exit...");
+        if let Err(e) = capture_file.flush_all() {
+            error!("[capture] flush_all failed: {:?}", e);
+        }
+        if let Err(e) = capture_file.sync() {
+            error!("[capture] sync failed: {:?}", e);
+        }
+        // stop() blocks until the server thread processes all preceding commands.
+        if let Err(e) = capture_file.stop() {
+            error!("[capture] stop failed: {:?}", e);
+        }
+        info!("[capture] Capture data flushed.");
+    }
+}
 
 /// Start a thread of the block device to pop requests from the block device's
 /// request queue and process them if there are any. If the request queue is empty,
@@ -47,7 +79,13 @@ fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevice>> {
                 virtio_block_device.handle_requests();
             }
         };
-        crate::ThreadOptions::new(task_fn).spawn();
+        // Elevate to RealTime 50 so these I/O threads are not starved by other RealTime threads.
+        crate::ThreadOptions::new(task_fn)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None },
+            })
+            .spawn();
         Ok(device)
     } else {
         return_errno_with_message!(Errno::ENOENT, "Device does not exist")
@@ -76,26 +114,42 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
+    // single disk benchmark
+    // let nvme_device_name = "raid0";
+    // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
+    //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
+    //     let target_path = FsPath::try_from("/raid1").unwrap();
+    //     self::rootfs::mount_fs_at(nvme_fs, &target_path).unwrap();
+    //     info!("[kernel] Mounted NVMe fs at {:?} ", target_path);
+    // } else {
+    //     error!("[kernel] Failed to start NVMe block device '{}'", nvme_device_name);
+    // }
+    // return;
+
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-        let raid_fs = Ext2::open(raid).unwrap();
-        let target_path = FsPath::try_from("/raid1").unwrap();
-        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
-            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+
+        match Ext2::open(raid) {
+            Ok(raid_fs) => {
+                let target_path = FsPath::try_from("/raid1").unwrap();
+                self::rootfs::mount_fs_at(raid_fs, &target_path).unwrap();
+                info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+            }
+            Err(err) => {
+                error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+            }
         }
-        info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
     } else {
         error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
     }
 }
 
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
-    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
-    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
+    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
@@ -104,10 +158,13 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
 
     // Start the RAID-1's underlying member devices.
-    for &name in RAID_MEMBER_NAMES {
+    for (index, &name) in RAID_MEMBER_NAMES.iter().enumerate() {
         match start_block_device(name) {
             Ok(device) => {
                 info!("[raid] member '{}' online", name);
+                if let Some(virtio_dev) = device.downcast_ref::<VirtIoBlockDevice>() {
+                    virtio_dev.set_device_index((index) as u32);
+                }
                 members.push(device);
             }
             Err(err) => {
@@ -120,10 +177,104 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     }
 
+    #[cfg(all(not(baseline_asterinas), capture_data))]
+    setup_data_capture(&members, RAID_MEMBER_NAMES);
+
+    // Clone members for Heimdall before they are consumed by the selection policy / RAID init.
+    #[cfg(not(baseline_asterinas))]
+    let members_for_heimdall = members.clone();
+
+    // Initialize Heimdall device performance monitor
+    #[cfg(not(baseline_asterinas))]
+    let heimdall = {
+        use aster_virtio::device::block::server_traits::BlockIOObservable;
+        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+
+        let heimdall_observers: Vec<_> = members_for_heimdall
+            .iter()
+            .map(|dev| {
+                let virtio_dev = dev
+                    .downcast_ref::<VirtIoBlockDevice>()
+                    .expect("RAID member must be a VirtIoBlockDevice");
+                virtio_dev
+                    .bio_completion_oqueue()
+                    .attach_strong_observer(ObservationQuery::identity())
+                    .expect("Failed to attach strong observer for Heimdall")
+            })
+            .collect();
+
+        let heimdall = aster_raid::heimdall::Heimdall::new(
+            members_for_heimdall,
+            heimdall_observers,
+        )
+        .expect("Failed to create Heimdall monitor");
+
+        let heimdall_clone = heimdall.clone();
+        let heimdall_task = move || {
+            info!("[heimdall] Heimdall monitor thread started");
+            heimdall_clone.run();
+        };
+
+        crate::ThreadOptions::new(heimdall_task)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                    base_slice_factor: None,
+                },
+            })
+            .spawn();
+
+        info!("[heimdall] is Online");
+        heimdall
+    };
+
+    
+
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
-    #[cfg(not(baseline_asterinas))]
+
+    // Shared weak observer setup for all observer-based policies (LinnOS, LinnOS Plus, Decision Tree)
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))]
+    let observers = {
+        use aster_virtio::device::block::server_traits::BlockIOObservable;
+        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+        members
+            .iter()
+            .map(|dev| {
+                let virtio_dev = dev
+                    .downcast_ref::<VirtIoBlockDevice>()
+                    .expect("RAID member must be a VirtIoBlockDevice");
+                ostd::sync::Mutex::new(
+                    virtio_dev
+                        .bio_completion_oqueue()
+                        .attach_weak_observer(4, ObservationQuery::identity())
+                        .expect("Failed to attach weak observer to bio_completion_oqueue"),
+                )
+            })
+            .collect()
+    };
+
+    // LinnOS Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "linnos"))]
+    let selection_policy = LinnOSPolicy::new(members.clone(), observers).unwrap();
+
+    // LinnOS Plus Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "linnos_plus"))]
+    let selection_policy = LinnOSPlusPolicy::new(members.clone(), observers).unwrap();
+
+    // Decision Tree Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "decision_tree"))]
+    let selection_policy = DecisionTreePolicy::new(members.clone(), observers).unwrap();
+
+    // Heimdall Round Robin Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "heimdall"))]
+    let selection_policy = HeimdallRoundRobinPolicy::new(members.clone(), heimdall).unwrap();
+
+    // Round Robin Policy (explicit or default when no raid_selection is specified)
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree", raid_selection = "heimdall")))))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+
+    // Initialize and Register RAID-1 device
     #[cfg(not(baseline_asterinas))]
     let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
     #[cfg(baseline_asterinas)]
@@ -147,11 +298,108 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     };
 
-    crate::ThreadOptions::new(task_fn).spawn();
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
         raid_device_name
     );
     Ok(())
+}
+
+/// Set up data capture for the RAID-1 member devices' bio completion stats.
+///
+/// This starts the capture block device and uses the legacy `DataCaptureDevice` /
+/// `DataCaptureFile` server to observe each member's `bio_completion_oqueue` and write the
+/// serialized data to disk.
+#[cfg(not(baseline_asterinas))]
+fn setup_data_capture(
+    members: &[Arc<dyn BlockDevice>],
+    member_names: &[&str],
+) {
+    use aster_block::{SECTOR_SIZE, bio::BlockDeviceCompletionStats};
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+    use mariposa_data_capture::{
+        DataCaptureDevice as _, DataCaptureDeviceServer, DataCaptureFile as _, FileDescriptor,
+        ObserverRegistration,
+    };
+    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+
+    // Start the capture block device
+    // let capture_dev = match start_block_device("capture") {
+    //     Ok(dev) => dev,
+    //     Err(e) => {
+    //         error!("[capture] failed to start capture device: {:?}", e);
+    //         return;
+    //     }
+    // };
+    let device_name = "capture";
+    let capture_dev = aster_block::get_device(device_name).unwrap_or_else(|| {
+        panic!("[capture] failed to get capture device '{}'", device_name);
+    });
+    let cloned_device = capture_dev.clone();
+    let task_fn = move || {
+        info!("[capture] spawn the virt-io-block thread for the capturing device");
+        let virtio_block_device = cloned_device.downcast_ref::<VirtIoBlockDevice>().unwrap();
+        loop {
+            virtio_block_device.handle_requests();
+        }
+    };
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
+
+
+    // Display the capture device backend info
+    let capture_size = capture_dev.metadata().nr_sectors * SECTOR_SIZE;
+    info!(
+        "[capture] capture device online, size = {} bytes",
+        capture_size
+    );
+
+    // Create the data capture device and file
+    let capture_device = DataCaptureDeviceServer::new(capture_dev.clone());
+    let capture_path = ostd::path!(data_capture.bio_completion);
+    let capture_file = match capture_device.new_file(FileDescriptor { length: 65536, path: capture_path.clone() }) {  // 512MB * 1024 * 1024 / 2 / 4096  (using half of the space, and number of pages here)
+        Ok(builder) => builder.build::<BlockDeviceCompletionStats>(),
+        Err(e) => {
+            error!("[capture] failed to create capture file: {:?}", e);
+            return;
+        }
+    };
+
+    // Attach a strong observer to each RAID member's bio_completion_oqueue
+    // and register it directly with the capture file.
+    for (member, &name) in members.iter().zip(member_names.iter()) {  // (member, name)
+        let virtio_dev = member.downcast_ref::<VirtIoBlockDevice>().unwrap();
+        let oqueue = virtio_dev.bio_completion_oqueue();
+        let observer_path = capture_path.append(&ostd::path!({name}));
+        match oqueue.attach_strong_observer(ObservationQuery::identity()) {
+            Ok(observer) => {
+                let registration = ObserverRegistration { path: observer_path, observer };
+                if let Err(e) = capture_file.register_observer(registration) {
+                    error!("[capture] failed to register observer for '{}': {:?}", name, e);
+                } else {
+                    info!("[capture] attached observer to '{}'", name);
+                }
+            }
+            Err(e) => {
+                error!("[capture] failed to attach observer to '{}': {:?}", name, e);
+            }
+        }
+    }
+
+    // Enable capturing
+    if let Err(e) = capture_file.start() {
+        error!("[capture] failed to enable capturing: {:?}", e);
+    }
+
+    // Store the capture file globally so it can be flushed on kernel exit.
+    DATA_CAPTURE_FILE.call_once(|| capture_file);
+
+    info!("[capture] data capture enabled for bio completion stats");
 }

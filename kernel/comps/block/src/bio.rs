@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, sync::Weak};
-use core::{fmt::Display, time::Duration};
+use alloc::{boxed::Box};
+use binary_serde::BinarySerde;
+use core::fmt::Display;
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueueAttachError, Producer};
+use ostd::orpc::oqueue::{OQueueError, RefProducer};
 use ostd::{
     Error,
     mm::{
@@ -25,12 +26,19 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone)]
+#[derive(Clone, Copy, Default, BinarySerde)]
+#[repr(C)]
 pub struct BlockDeviceCompletionStats {
-    /// The latency of the I/O request (time from submission to completion).
-    pub latency: Duration,
-    /// The number of outstanding requests at completion time.
-    pub outstanding_requests: usize,
+    /// The latency of the I/O request in microseconds.
+    pub latency_us: u64,
+    /// The number of outstanding 4KB pages at completion time.
+    pub outstanding_pages: u32,
+    /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device. 
+    pub queue_len: u32, 
+    /// Size of the IO request, which is num_pages of a bio request.
+    pub request_size_pages: u32,
+    /// The index of the device that produced this stat.
+    pub device_index: u32,
 }
 
 /// The unit for block I/O.
@@ -141,13 +149,21 @@ impl Bio {
 
         // enqueue to the block device
         // A SubmittedBio is created here from a Bio, and then pass down to the lower layers.
+        // Those empty fields will be set just before in the block_device.enqueue function in the prepare_enqueue function. 
         if let Err(e) = block_device.enqueue(SubmittedBio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
-            submission_time: None,
             #[cfg(not(baseline_asterinas))]
-            bio_request_single_queue: None,
+            submission_time_us: None,
+            #[cfg(not(baseline_asterinas))]
+            device_index: None,
+            #[cfg(not(baseline_asterinas))]
+            num_pages: None,
+            #[cfg(not(baseline_asterinas))]
+            outstanding_pages: None,
+            #[cfg(not(baseline_asterinas))]
+            outstanding_requests: None,
         }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
@@ -200,15 +216,15 @@ pub enum BioEnqueueError {
     Refused,
     /// Too big bio
     TooBig,
-    /// OQueue attachment failures
+    /// OQueue error
     #[cfg(not(baseline_asterinas))]
-    OQueueAttachError(OQueueAttachError),
+    OQueueError(OQueueError),
 }
 
 #[cfg(not(baseline_asterinas))]
-impl From<OQueueAttachError> for BioEnqueueError {
-    fn from(err: OQueueAttachError) -> Self {
-        Self::OQueueAttachError(err)
+impl From<OQueueError> for BioEnqueueError {
+    fn from(err: OQueueError) -> Self {
+        Self::OQueueError(err)
     }
 }
 
@@ -325,12 +341,22 @@ pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
     #[cfg(not(baseline_asterinas))]
-    reply_handle: Option<Box<dyn Producer<BlockDeviceCompletionStats>>>,
-
-    submission_time: Option<Duration>,
+    reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
     #[cfg(not(baseline_asterinas))]
-    bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
+    submission_time_us: Option<u64>,
+
+    #[cfg(not(baseline_asterinas))]
+    device_index: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    num_pages: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    outstanding_pages: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    outstanding_requests: Option<u32>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -339,12 +365,13 @@ impl core::fmt::Debug for SubmittedBio {
         let d = d.field("bio_inner", &self.bio_inner);
         #[cfg(not(baseline_asterinas))]
         let d = d
-            .field("submission_time", &self.submission_time)
-            .field("bio_request_single_queue", &self.bio_request_single_queue)
+            .field("submission_time_us", &self.submission_time_us)
+            .field("device_index", &self.device_index)
             .field(
                 "reply_handle",
                 &self.reply_handle.as_ref().map(|_| "<Producer>"),
-            );
+            )
+            .field("outstanding_pages", &self.outstanding_pages);
         d.finish()
     }
 }
@@ -358,6 +385,20 @@ impl SubmittedBio {
     /// Returns the range of target sectors on the device.
     pub fn sid_range(&self) -> &Range<Sid> {
         self.bio_inner.sid_range()
+    }
+
+    /// an immutable version of the num_pages function. Panic if the num_pages field is not set yet.
+    pub fn get_num_pages(&self) -> u32 {
+        self.num_pages.expect("num_pages is not set yet")
+    }
+
+    /// Returns the number of 4KB pages covered by this bio's sector range.
+    /// Note the field num_pages is only available when calling this function, but accessing it directly is not available. 
+    pub fn num_pages(&mut self) -> u32 {
+        *self.num_pages.get_or_insert_with(|| {
+            let sectors = self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
+            ((sectors + 7) / 8) as u32  // each page has 8 sectors
+        })
     }
 
     /// Returns the slice to the memory segments.
@@ -391,27 +432,28 @@ impl SubmittedBio {
         }
     }
 
-    pub fn submission_time(&self) -> Option<Duration> {
-        self.submission_time
+    pub fn submission_time_us(&self) -> Option<u64> {
+        self.submission_time_us
     }
 
-    #[cfg(not(baseline_asterinas))]
-    pub fn num_outstanding_requests(&self) -> Option<usize> {
-        self.bio_request_single_queue
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|q| q.num_requests())
-    }
-
+    /// Argument:
+    /// - `num_pages`: The number of pages covered by this bio's sector range. This is used to update the outstanding page counter in the block device, and also used for performance statistics reporting.
+    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueing this bio request. 
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
-        reply_handle: Box<dyn Producer<BlockDeviceCompletionStats>>,
-        bio_request_single_queue: Arc<BioRequestSingleQueue>,
+        reply_handle: RefProducer<BlockDeviceCompletionStats>,
+        device_index: u32,
+        outstanding_pages: u32,
+        outstanding_requests: u32,
     ) {
+        
         self.reply_handle = Some(reply_handle);
-        self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
-        self.submission_time = Some(read_monotonic_time());
+        self.submission_time_us = Some(read_monotonic_time().as_micros() as u64);
+        self.device_index = Some(device_index);
+        self.num_pages();  // set the num_pages field
+        self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap());  // accumulate the number of outstanding pages
+        self.outstanding_requests = Some(outstanding_requests);
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -419,9 +461,13 @@ impl SubmittedBio {
         self.reply_handle
             .as_ref()
             .unwrap()
-            .produce(BlockDeviceCompletionStats {
-                latency: read_monotonic_time() - self.submission_time.unwrap(),
-                outstanding_requests: self.num_outstanding_requests().unwrap_or(0),
+            .try_produce_ref(&BlockDeviceCompletionStats {
+                latency_us: read_monotonic_time().as_micros() as u64
+                    - self.submission_time_us.unwrap(),
+                outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
+                queue_len: self.outstanding_requests.unwrap_or(u32::MAX),    
+                request_size_pages: self.num_pages.unwrap_or(u32::MAX),
+                device_index: self.device_index.unwrap_or(u32::MAX),
             });
     }
 }
