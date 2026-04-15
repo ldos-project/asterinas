@@ -27,7 +27,7 @@ use ostd::{
         },
         oqueue::{
             OQueue as OtherOQueue, ConsumableOQueue, OQueueRef,
-            ConsumableOQueueRef
+            ConsumableOQueueRef, ObservationQuery
         },
         sync::Blocker,
     },
@@ -821,6 +821,87 @@ fn weak_obs_bench(
     }
 }
 
+fn weak_obs_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    // Start all producers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let producer = q.attach_value_producer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let consumer = q.attach_consumer().unwrap();
+        let barrier = barrier.clone();
+        move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
+            for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                let _ = consumer.consume();
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let weak_observer = q.attach_weak_observer(1,
+                ObservationQuery::new(|v: &u64| *v)).unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let mut cnt = 0;
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    cnt += weak_observer.weak_observe_recent(1)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|v| v.is_some())
+                            .count();
+                }
+                crate::prelude::println!("weak observed {} values", cnt);
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+}
+
 fn strong_obs_bench(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
@@ -1224,6 +1305,8 @@ enum NewBenchType {
     Produce,
     Consume,
     Mixed,
+    WeakObs,
+    StrongObs,
 }
 
 impl OQueueNewBenchmark {
@@ -1263,6 +1346,15 @@ impl Benchmark for OQueueNewBenchmark {
             NewBenchType::Mixed => {
                 let q = Arc::new(self.get_consumable_oq());
                 mixed_bench_new(input, &q, &completed);
+            }
+            NewBenchType::WeakObs => {
+                let q = Arc::new(self.get_consumable_oq());
+                weak_obs_bench_new(input, &q, &completed);
+            }
+            NewBenchType::StrongObs => {
+                let q = Arc::new(self.get_consumable_oq());
+                mixed_bench_new(input, &q, &completed);
+                // weak_obs_bench_new(input, &q, &completed);
             }
         }
     }
@@ -1315,5 +1407,9 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueNewBenchmark::new(
         "oqueue::mixed_bench_new", 
         NewBenchType::Mixed,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::weak_obs_bench_new",
+        NewBenchType::WeakObs,
     ));
 }
