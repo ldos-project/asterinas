@@ -15,6 +15,7 @@ use ostd::{
     sync::Mutex,
 };
 
+use crate::heimdall::Heimdall;
 use crate::server_traits::SelectionPolicy;
 
 #[derive(Debug)]
@@ -343,6 +344,57 @@ impl SelectionPolicy for DecisionTreePolicy {
                 return Ok(self.members[fallback_idx].clone());
             }
         }
+    }
+}
+
+/// Heimdall-guided round-robin selection policy.
+///
+/// Uses the Heimdall asynchronous monitor to skip devices predicted slow.
+/// If all devices are slow, falls back to plain round-robin so IO is never
+/// stalled.  The Heimdall monitor must be spawned on a separate thread via
+/// `Heimdall::run()` before any IO arrives.
+#[derive(Debug)]
+#[orpc_server]
+pub struct HeimdallRoundRobinPolicy {
+    read_cursor: AtomicUsize,
+    members: Vec<Arc<dyn BlockDevice>>,
+    heimdall: Arc<Heimdall>,
+}
+
+impl HeimdallRoundRobinPolicy {
+    pub fn new(
+        members: Vec<Arc<dyn BlockDevice>>,
+        heimdall: Arc<Heimdall>,
+    ) -> Result<Arc<Self>, Error> {
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            read_cursor: AtomicUsize::new(0),
+            members,
+            heimdall,
+        });
+        Ok(server)
+    }
+}
+
+impl SelectionPolicy for HeimdallRoundRobinPolicy {
+    fn select_block_device(
+        &self,
+        _submitted: &mut SubmittedBio,
+    ) -> Result<Arc<dyn BlockDevice>, Error> {
+        let num_devices = self.members.len();
+        let start_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
+
+        // Try each device once, starting from the round-robin cursor.
+        for offset in 0..num_devices {
+            let device_idx = (start_idx + offset) % num_devices;
+            if self.heimdall.is_device_fast(device_idx) {
+                return Ok(self.members[device_idx].clone());
+            }
+        }
+
+        // All devices are slow — fall back to round-robin.
+        let fallback_idx = start_idx % num_devices;
+        Ok(self.members[fallback_idx].clone())
     }
 }
 
