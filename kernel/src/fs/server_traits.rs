@@ -161,6 +161,8 @@ pub enum CacheState {
     /// The page was currently being read into the cache.
     Pending,
     Prefetch,
+    /// The page was evicted from the cache (LRU eviction).
+    Evict,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
