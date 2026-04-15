@@ -48,8 +48,8 @@ xmas-elf = "0.10.0"
 bitflags = "1.3"
 keyable-arc = { path = "libs/keyable-arc" }
 # unzip initramfs
-libflate = { version = "2", default-features = false }
-core2 = { version = "0.4", default-features = false, features = ["alloc"] }
+libflate = { version = "2.3", default-features = false }
+no_std_io2 = { version = "0.9.3", features = ["alloc"] }
 lending-iterator = "0.1.7"
 spin = "0.9.4"
 lru = "0.12.3"
