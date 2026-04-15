@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core2::io::{Cursor, Read};
 use cpio_decoder::{CpioDecoder, FileType};
 use lending_iterator::LendingIterator;
 use libflate::gzip::Decoder as GZipDecoder;
+use no_std_io2::io::{Cursor, Read};
 use spin::Once;
 
 use super::{
@@ -25,7 +25,7 @@ impl<'a> BoxedReader<'a> {
 }
 
 impl Read for BoxedReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> core2::io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> no_std_io2::io::Result<usize> {
         self.0.read(buf)
     }
 }
