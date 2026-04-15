@@ -184,6 +184,50 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(not(baseline_asterinas))]
     let members_for_heimdall = members.clone();
 
+    // Initialize Heimdall device performance monitor
+    #[cfg(not(baseline_asterinas))]
+    {
+        use aster_virtio::device::block::server_traits::BlockIOObservable;
+        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+
+        let heimdall_observers: Vec<_> = members_for_heimdall
+            .iter()
+            .map(|dev| {
+                let virtio_dev = dev
+                    .downcast_ref::<VirtIoBlockDevice>()
+                    .expect("RAID member must be a VirtIoBlockDevice");
+                virtio_dev
+                    .bio_completion_oqueue()
+                    .attach_strong_observer(ObservationQuery::identity())
+                    .expect("Failed to attach strong observer for Heimdall")
+            })
+            .collect();
+
+        let heimdall = aster_raid::heimdall::Heimdall::new(
+            members_for_heimdall,
+            heimdall_observers,
+        )
+        .expect("Failed to create Heimdall monitor");
+
+        let heimdall_task = move || {
+            info!("[heimdall] Heimdall monitor thread started");
+            heimdall.run();
+        };
+
+        crate::ThreadOptions::new(heimdall_task)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                    base_slice_factor: None,
+                },
+            })
+            .spawn();
+
+        info!("[heimdall] Heimdall monitor initialized and thread spawned");
+    }
+
+    
+
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
 
@@ -235,48 +279,6 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     })?;
     info!("[raid] RAID-1 device created");
-
-    // Initialize Heimdall device performance monitor
-    #[cfg(not(baseline_asterinas))]
-    {
-        use aster_virtio::device::block::server_traits::BlockIOObservable;
-        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
-
-        let heimdall_observers: Vec<_> = members_for_heimdall
-            .iter()
-            .map(|dev| {
-                let virtio_dev = dev
-                    .downcast_ref::<VirtIoBlockDevice>()
-                    .expect("RAID member must be a VirtIoBlockDevice");
-                virtio_dev
-                    .bio_completion_oqueue()
-                    .attach_strong_observer(ObservationQuery::identity())
-                    .expect("Failed to attach strong observer for Heimdall")
-            })
-            .collect();
-
-        let heimdall = aster_raid::heimdall::Heimdall::new(
-            members_for_heimdall,
-            heimdall_observers,
-        )
-        .expect("Failed to create Heimdall monitor");
-
-        let heimdall_task = move || {
-            info!("[heimdall] Heimdall monitor thread started");
-            heimdall.run();
-        };
-
-        crate::ThreadOptions::new(heimdall_task)
-            .sched_policy(crate::sched::SchedPolicy::RealTime {
-                rt_prio: 50.try_into().unwrap(),
-                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
-                    base_slice_factor: None,
-                },
-            })
-            .spawn();
-
-        info!("[heimdall] Heimdall monitor initialized and thread spawned");
-    }
 
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
