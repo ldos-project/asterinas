@@ -131,14 +131,14 @@ $(INITRAMFS)/usr/bin: | $(INITRAMFS)/bin
 	@mkdir -p $@
 	@cp /usr/bin/busybox $@
 
-$(INITRAMFS)/usr/local:
+$(INITRAMFS)/usr/local: ../filebench/filebench ../filebench/workloads
 	@mkdir -p $@
 	@cp -r /usr/local/nginx $@
 	@cp -r /usr/local/redis $@
 	@cp -r /usr/local/memcached $@
-	mkdir $@/filebench
-	cp -r /root/tmp/filebench-1.4.9.1/filebench $@/filebench/
-	cp -r /root/tmp/filebench-1.4.9.1/workloads $@/filebench/
+	mkdir -p $@/filebench
+	cp -r ../filebench/filebench $@/filebench/
+	cp -r ../filebench/workloads $@/filebench/
 
 .PHONY: $(INITRAMFS)/test
 $(INITRAMFS)/test:

@@ -229,9 +229,11 @@ impl StridedPrefetcher {
 
                                 // Issue prefetches for all unique strides
                                 for &stride in &unique_strides {
-                                    cache.prefetch_oqueue().produce(
-                                        (idx as isize + stride * n_steps_ahead) as usize,
-                                    )?;
+                                    if stride < 4 {
+                                        cache.prefetch_oqueue().produce(
+                                            (idx as isize + stride * n_steps_ahead) as usize,
+                                        )?;
+                                    }
                                 }
                             }
                         },

@@ -89,7 +89,14 @@ fn get_prefetch_policy() -> PrefetchPolicy {
 
 /// Retrieves whether cache hits and misses should be logged based on the kernel command-line argument
 /// "page_cache.log_hits_misses". The options are: `true` or `false`.
+/// Returns `false` if data capture is globally disabled via "capture.enabled=false".
 fn get_log_hits_misses() -> bool {
+    let capture_enabled = kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name("capture", "enabled"))
+        .unwrap_or(true);
+    if !capture_enabled {
+        return false;
+    }
     kcmdline::get_kernel_cmd_line()
         .and_then(|cl| cl.get_module_arg_by_name("page_cache", "log_hits_misses"))
         .unwrap_or(false)
@@ -524,7 +531,7 @@ impl PageCacheManager {
             policy
         };
 
-        let max_cache_size = 1024 * 10;
+        let max_cache_size = 1024;
 
         let server = Self::new_with(|orpc_internal, weak_this| Self {
             backend,
@@ -747,13 +754,17 @@ impl PageCacheManager {
                 frame
             };
 
-            // Invoke built-in policy.
-            inner.maybe_builtin_prefetch(idx, &backend, self)?;
-
             while inner.pages.len() > self.max_cache_size {
                 if let Some((idx, _)) = inner.pages.peek_lru() {
                     let idx = *idx;
-                    // println!("Evicting {idx} (from {})", inner.pages.len());
+                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                        idx as u64,
+                        CacheState::Evict,
+                        backend.path()?,
+                        self as *const _ as usize,
+                        store_size,
+                        inner.pages.len() as u64,
+                    ));
                     let reply_consumer = flush_page(&mut inner.pages, &backend, idx)?;
                     if let Some(consumer) = reply_consumer {
                         // Wait for the flush to complete.
@@ -764,6 +775,9 @@ impl PageCacheManager {
                     inner.pages.pop(&idx);
                 }
             }
+            
+            // Invoke built-in policy.
+            inner.maybe_builtin_prefetch(idx, &backend, self)?;
 
             frame
         };

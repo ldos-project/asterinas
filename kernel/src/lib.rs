@@ -233,11 +233,16 @@ fn init_thread() {
         vm::hugepaged::HugepagedServer::spawn(initproc.clone());
     }
 
+    let data_capture_enabled = karg
+        .get_module_arg_by_name::<bool>("capture", "enabled")
+        .unwrap_or(true);
+
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
-        .unwrap_or(false)
+    if data_capture_enabled
+        && karg
+            .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
+            .unwrap_or(false)
     {
         use mariposa_data_capture::ObserverRegistration;
         use ostd::{
@@ -269,6 +274,7 @@ fn init_thread() {
         );
     }
 
+    if data_capture_enabled {
     if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(sched.events)) {
         #[derive(Debug, Clone, Copy, Serialize)]
         enum EventType {
@@ -319,7 +325,7 @@ fn init_thread() {
         if !oqueues.is_empty() {
             #[derive(Serialize, Clone, Copy)]
             struct SubmittedBioEvent {
-                sid_range: (Sid, Sid),
+                byte_range: (usize, usize),
                 timestamp: Option<Instant>,
                 task: TaskId,
             }
@@ -338,7 +344,7 @@ fn init_thread() {
                             .attach_strong_observer(ObservationQuery::new(|e: &SubmittedBio| {
                                 let sid_range = e.sid_range();
                                 SubmittedBioEvent {
-                                    sid_range: (sid_range.start, sid_range.end),
+                                    byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
                                     timestamp: e
                                         .submission_time_us()
                                         .map(|t| Instant::from_usecs(t)),
@@ -389,6 +395,7 @@ fn init_thread() {
             ignore_err!(capture_file.start());
         }
     }
+    } // if data_capture_enabled
 
     // Wait till initproc become zombie.
     while !initproc.status().is_zombie() {
