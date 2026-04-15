@@ -32,9 +32,13 @@ pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request in microseconds.
     pub latency_us: u64,
     /// The number of outstanding 4KB pages at completion time.
-    pub outstanding_pages: u64,
+    pub outstanding_pages: u32,
+    /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device. 
+    pub queue_len: u32, 
+    /// Size of the IO request, which is num_pages of a bio request.
+    pub request_size_pages: u32,
     /// The index of the device that produced this stat.
-    pub device_index: u64,
+    pub device_index: u32,
 }
 
 /// The unit for block I/O.
@@ -158,6 +162,8 @@ impl Bio {
             num_pages: None,
             #[cfg(not(baseline_asterinas))]
             outstanding_pages: None,
+            #[cfg(not(baseline_asterinas))]
+            outstanding_requests: None,
         }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
@@ -341,13 +347,16 @@ pub struct SubmittedBio {
     submission_time_us: Option<u64>,
 
     #[cfg(not(baseline_asterinas))]
-    device_index: Option<u64>,
+    device_index: Option<u32>,
 
     #[cfg(not(baseline_asterinas))]
-    num_pages: Option<u64>,
+    num_pages: Option<u32>,
 
     #[cfg(not(baseline_asterinas))]
-    outstanding_pages: Option<u64>,
+    outstanding_pages: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    outstanding_requests: Option<u32>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -379,16 +388,16 @@ impl SubmittedBio {
     }
 
     /// an immutable version of the num_pages function. Panic if the num_pages field is not set yet.
-    pub fn get_num_pages(&self) -> u64 {
+    pub fn get_num_pages(&self) -> u32 {
         self.num_pages.expect("num_pages is not set yet")
     }
 
     /// Returns the number of 4KB pages covered by this bio's sector range.
     /// Note the field num_pages is only available when calling this function, but accessing it directly is not available. 
-    pub fn num_pages(&mut self) -> u64 {
+    pub fn num_pages(&mut self) -> u32 {
         *self.num_pages.get_or_insert_with(|| {
             let sectors = self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
-            (sectors + 7) / 8
+            ((sectors + 7) / 8) as u32  // each page has 8 sectors
         })
     }
 
@@ -434,8 +443,9 @@ impl SubmittedBio {
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
-        device_index: u64,
-        outstanding_pages: u64
+        device_index: u32,
+        outstanding_pages: u32,
+        outstanding_requests: u32,
     ) {
         
         self.reply_handle = Some(reply_handle);
@@ -443,6 +453,7 @@ impl SubmittedBio {
         self.device_index = Some(device_index);
         self.num_pages();  // set the num_pages field
         self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap());  // accumulate the number of outstanding pages
+        self.outstanding_requests = Some(outstanding_requests);
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -453,8 +464,10 @@ impl SubmittedBio {
             .try_produce_ref(&BlockDeviceCompletionStats {
                 latency_us: read_monotonic_time().as_micros() as u64
                     - self.submission_time_us.unwrap(),
-                outstanding_pages: self.outstanding_pages.unwrap_or(u64::MAX),
-                device_index: self.device_index.unwrap_or(u64::MAX),
+                outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
+                queue_len: self.outstanding_requests.unwrap_or(u32::MAX),    
+                request_size_pages: self.num_pages.unwrap_or(u32::MAX),
+                device_index: self.device_index.unwrap_or(u32::MAX),
             });
     }
 }

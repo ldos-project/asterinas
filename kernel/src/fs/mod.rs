@@ -163,7 +163,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
             Ok(device) => {
                 info!("[raid] member '{}' online", name);
                 if let Some(virtio_dev) = device.downcast_ref::<VirtIoBlockDevice>() {
-                    virtio_dev.set_device_index(index as u64);
+                    virtio_dev.set_device_index((index) as u32);
                 }
                 members.push(device);
             }
@@ -180,12 +180,12 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(all(not(baseline_asterinas), capture_data))]
     setup_data_capture(&members, RAID_MEMBER_NAMES);
 
+    // Clone members for Heimdall before they are consumed by the selection policy / RAID init.
+    #[cfg(not(baseline_asterinas))]
+    let members_for_heimdall = members.clone();
+
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
-
-    // Round Robin Policy
-    #[cfg(all(not(baseline_asterinas), raid_selection = "roundrobin"))]
-    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
     // Shared weak observer setup for all observer-based policies (LinnOS, LinnOS Plus, Decision Tree)
     #[cfg(all(not(baseline_asterinas), any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))]
@@ -220,6 +220,10 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(all(not(baseline_asterinas), raid_selection = "decision_tree"))]
     let selection_policy = DecisionTreePolicy::new(members.clone(), observers).unwrap();
 
+    // Round Robin Policy (explicit or default when no raid_selection is specified)
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))))]
+    let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
+
     // Initialize and Register RAID-1 device
     #[cfg(not(baseline_asterinas))]
     let raid1device = Raid1Device::init(raid_device_name, members, selection_policy);
@@ -231,6 +235,48 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     })?;
     info!("[raid] RAID-1 device created");
+
+    // Initialize Heimdall device performance monitor
+    #[cfg(not(baseline_asterinas))]
+    {
+        use aster_virtio::device::block::server_traits::BlockIOObservable;
+        use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+
+        let heimdall_observers: Vec<_> = members_for_heimdall
+            .iter()
+            .map(|dev| {
+                let virtio_dev = dev
+                    .downcast_ref::<VirtIoBlockDevice>()
+                    .expect("RAID member must be a VirtIoBlockDevice");
+                virtio_dev
+                    .bio_completion_oqueue()
+                    .attach_strong_observer(ObservationQuery::identity())
+                    .expect("Failed to attach strong observer for Heimdall")
+            })
+            .collect();
+
+        let heimdall = aster_raid::heimdall::Heimdall::new(
+            members_for_heimdall,
+            heimdall_observers,
+        )
+        .expect("Failed to create Heimdall monitor");
+
+        let heimdall_task = move || {
+            info!("[heimdall] Heimdall monitor thread started");
+            heimdall.run();
+        };
+
+        crate::ThreadOptions::new(heimdall_task)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                    base_slice_factor: None,
+                },
+            })
+            .spawn();
+
+        info!("[heimdall] Heimdall monitor initialized and thread spawned");
+    }
 
     let worker = aster_block::get_device(raid_device_name).unwrap();
     // The registry stores `Arc<dyn BlockDevice>`. Use `downcast_ref` on the captured Arc each
