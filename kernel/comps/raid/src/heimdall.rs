@@ -62,12 +62,12 @@ impl core::fmt::Debug for Heimdall {
 use crate::heimdall_weights::{HIDDEN1_SIZE, HIDDEN2_SIZE, INPUT_DIM};
 
 /// Number of completion records to drain before running an inference.
-const BATCH_SIZE: usize = 16;
+const BATCH_SIZE: usize = 8;
 
 /// Inference timeout in milliseconds. If this duration elapses since the last
 /// inference for a device, inference is triggered even if fewer than `BATCH_SIZE`
 /// records have been observed.
-const INFERENCE_TIMEOUT_MS: u64 = 5;
+const INFERENCE_TIMEOUT_MS: u64 = 28;
 
 impl Heimdall {
     /// Creates a new Heimdall monitor.
@@ -123,6 +123,13 @@ impl Heimdall {
         self.fast_indicators[idx].load(Ordering::Relaxed)
     }
 
+    /// Returns the fast indicator for device `idx`.
+    ///
+    /// `true` means the device is currently predicted fast; `false` means slow.
+    pub fn check_device(&self, idx: usize) -> bool {
+        self.fast_indicators[idx].load(Ordering::Relaxed)
+    }
+
     /// The number of member devices being monitored.
     pub fn num_devices(&self) -> usize {
         self.members.len()
@@ -163,6 +170,11 @@ impl Heimdall {
                             // Condition 1: batch is full.
                             // Do device inference, then break to give other devices a turn.
                             if batch_buffers[device_idx].len() >= BATCH_SIZE {
+                                // log::info!(
+                                //     "Heimdall: triggered by batch for device {} ({} records)",
+                                //     device_idx,
+                                //     batch_buffers[device_idx].len()
+                                // );
                                 self.run_inference(device_idx, &mut batch_buffers[device_idx]);
                                 last_inference_jiffies[device_idx] = Jiffies::elapsed().as_u64();
                                 break;
@@ -193,6 +205,11 @@ impl Heimdall {
                 // transition back to fast when IO pressure drops).
                 let elapsed = Jiffies::elapsed().as_u64().wrapping_sub(last_inference_jiffies[device_idx]);
                 if elapsed >= timeout_jiffies && !batch_buffers[device_idx].is_empty() {
+                    // log::info!(
+                    //     "Heimdall: triggered by timeout for device {} ({} ms since last inference)",
+                    //     device_idx,
+                    //     elapsed * 1000 / ostd::arch::timer::TIMER_FREQ
+                    // );
                     self.run_inference(device_idx, &mut batch_buffers[device_idx]);
                     last_inference_jiffies[device_idx] = Jiffies::elapsed().as_u64();
                 }
@@ -212,12 +229,12 @@ impl Heimdall {
         // Model output: 1 → slow (reject IO), 0 → fast (accept IO).
         let is_slow = self.infer_device_speed(device_idx, batch);
         self.fast_indicators[device_idx].store(!is_slow, Ordering::Relaxed);
-        log::info!(
-            "Heimdall: labeling device {} to {} (by {} records)",
-            device_idx,
-            if is_slow { "slow" } else { "fast" },
-            batch.len()
-        );
+        // log::info!(
+        //     "Heimdall: labeling device {} to {} (by {} records)",
+        //     device_idx,
+        //     if is_slow { "slow" } else { "fast" },
+        //     batch.len()
+        // );
         batch.clear();
     }
 
@@ -317,4 +334,6 @@ impl Heimdall {
         // threshold comparison at 0.5.
         logit >= 0.0
     }
+
+
 }
