@@ -25,7 +25,7 @@ pub mod utils;
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
 #[expect(unused_imports)]
-use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
+use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
@@ -186,7 +186,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
 
     // Initialize Heimdall device performance monitor
     #[cfg(not(baseline_asterinas))]
-    {
+    let heimdall = {
         use aster_virtio::device::block::server_traits::BlockIOObservable;
         use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
 
@@ -209,9 +209,10 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         )
         .expect("Failed to create Heimdall monitor");
 
+        let heimdall_clone = heimdall.clone();
         let heimdall_task = move || {
             info!("[heimdall] Heimdall monitor thread started");
-            heimdall.run();
+            heimdall_clone.run();
         };
 
         crate::ThreadOptions::new(heimdall_task)
@@ -223,8 +224,9 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
             })
             .spawn();
 
-        info!("[heimdall] Heimdall monitor initialized and thread spawned");
-    }
+        info!("[heimdall] is Online");
+        heimdall
+    };
 
     
 
@@ -264,8 +266,12 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(all(not(baseline_asterinas), raid_selection = "decision_tree"))]
     let selection_policy = DecisionTreePolicy::new(members.clone(), observers).unwrap();
 
+    // Heimdall Round Robin Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "heimdall"))]
+    let selection_policy = HeimdallRoundRobinPolicy::new(members.clone(), heimdall).unwrap();
+
     // Round Robin Policy (explicit or default when no raid_selection is specified)
-    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))))]
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree", raid_selection = "heimdall")))))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
     // Initialize and Register RAID-1 device

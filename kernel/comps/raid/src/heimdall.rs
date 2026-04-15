@@ -23,7 +23,7 @@ use ostd::{
 /// to update that device's fast/slow indicator.
 ///
 /// Model architecture (per device):
-///   Linear(INPUT_DIM, 128) -> ReLU -> Linear(128, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
+///   Linear(INPUT_DIM, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
 ///
 /// Selection policies can query `is_device_fast(idx)` to incorporate Heimdall's
 /// classification into their scheduling decisions.
@@ -32,16 +32,12 @@ pub struct Heimdall {
     observers: Vec<Mutex<StrongObserver<BlockDeviceCompletionStats>>>,
     /// Per-device fast/slow indicator. `true` means the device is predicted fast.
     fast_indicators: Vec<AtomicBool>,
-    /// Per-device fc1 weights: [INPUT_DIM][HIDDEN1_SIZE]
-    fc1_weights: Vec<[[f32; HIDDEN1_SIZE]; INPUT_DIM]>,
-    /// Per-device fc1 biases: [HIDDEN1_SIZE]
-    fc1_biases: Vec<[f32; HIDDEN1_SIZE]>,
-    /// Per-device fc2 weights: [HIDDEN1_SIZE][HIDDEN2_SIZE]
-    fc2_weights: Vec<[[f32; HIDDEN2_SIZE]; HIDDEN1_SIZE]>,
-    /// Per-device fc2 biases: [HIDDEN2_SIZE]
-    fc2_biases: Vec<[f32; HIDDEN2_SIZE]>,
-    /// Per-device fc3 weights: [HIDDEN2_SIZE]
-    fc3_weights: Vec<[f32; HIDDEN2_SIZE]>,
+    /// Per-device fc1 weights: [INPUT_DIM][HIDDEN_SIZE]
+    fc1_weights: Vec<[[f32; HIDDEN_SIZE]; INPUT_DIM]>,
+    /// Per-device fc1 biases: [HIDDEN_SIZE]
+    fc1_biases: Vec<[f32; HIDDEN_SIZE]>,
+    /// Per-device fc3 weights: [HIDDEN_SIZE]
+    fc3_weights: Vec<[f32; HIDDEN_SIZE]>,
     /// Per-device fc3 biases: scalar
     fc3_biases: Vec<f32>,
 }
@@ -59,10 +55,10 @@ impl core::fmt::Debug for Heimdall {
     }
 }
 
-use crate::heimdall_weights::{HIDDEN1_SIZE, HIDDEN2_SIZE, INPUT_DIM};
+use crate::heimdall_weights::{HIDDEN_SIZE, INPUT_DIM};
 
 /// Number of completion records to drain before running an inference.
-const BATCH_SIZE: usize = 8;
+const BATCH_SIZE: usize = 6;
 
 /// Inference timeout in milliseconds. If this duration elapses since the last
 /// inference for a device, inference is triggered even if fewer than `BATCH_SIZE`
@@ -79,7 +75,7 @@ impl Heimdall {
         observers: Vec<StrongObserver<BlockDeviceCompletionStats>>,
     ) -> Result<Arc<Self>, Error> {
         use crate::heimdall_weights::{
-            FC1_BIASES, FC1_WEIGHTS, FC2_BIASES, FC2_WEIGHTS, FC3_BIASES, FC3_WEIGHTS,
+            FC1_BIASES, FC1_WEIGHTS, FC3_BIASES, FC3_WEIGHTS,
         };
 
         let num_devices = members.len();
@@ -95,8 +91,6 @@ impl Heimdall {
 
         let fc1_weights: Vec<_> = (0..num_devices).map(|i| *FC1_WEIGHTS[i]).collect();
         let fc1_biases: Vec<_> = (0..num_devices).map(|i| *FC1_BIASES[i]).collect();
-        let fc2_weights: Vec<_> = (0..num_devices).map(|i| *FC2_WEIGHTS[i]).collect();
-        let fc2_biases: Vec<_> = (0..num_devices).map(|i| *FC2_BIASES[i]).collect();
         let fc3_weights: Vec<_> = (0..num_devices).map(|i| *FC3_WEIGHTS[i]).collect();
         let fc3_biases: Vec<_> = (0..num_devices).map(|i| FC3_BIASES[i]).collect();
 
@@ -111,8 +105,6 @@ impl Heimdall {
             fast_indicators,
             fc1_weights,
             fc1_biases,
-            fc2_weights,
-            fc2_biases,
             fc3_weights,
             fc3_biases,
         }))
@@ -287,9 +279,9 @@ impl Heimdall {
     ///
     /// Each device has its own model weights.
     /// Architecture:
-    ///   Linear(INPUT_DIM, 128) -> ReLU -> Linear(128, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
+    ///   Linear(INPUT_DIM, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
     ///
-    /// Returns `true` if the device is predicted fast (sigmoid output >= 0.5).
+    /// Returns `true` if the model output >= 0.5 (sigmoid(logit) >= 0.5 ⟺ logit >= 0).
     fn infer_device_speed(
         &self,
         device_idx: usize,
@@ -297,11 +289,11 @@ impl Heimdall {
     ) -> bool {
         let input = self.build_features(batch);
 
-        // fc1: input (INPUT_DIM) x fc1_weights (INPUT_DIM x HIDDEN1_SIZE) + bias -> ReLU
+        // fc1: input (INPUT_DIM) x fc1_weights (INPUT_DIM x HIDDEN_SIZE) + bias -> ReLU
         let w1 = &self.fc1_weights[device_idx];
         let b1 = &self.fc1_biases[device_idx];
-        let mut h1 = [0.0f32; HIDDEN1_SIZE];
-        for j in 0..HIDDEN1_SIZE {
+        let mut h1 = [0.0f32; HIDDEN_SIZE];
+        for j in 0..HIDDEN_SIZE {
             let mut sum = b1[j];
             for i in 0..INPUT_DIM {
                 sum += input[i] * w1[i][j];
@@ -309,24 +301,12 @@ impl Heimdall {
             h1[j] = if sum > 0.0 { sum } else { 0.0 }; // ReLU
         }
 
-        // fc2: h1 (HIDDEN1_SIZE) x fc2_weights (HIDDEN1_SIZE x HIDDEN2_SIZE) + bias -> ReLU
-        let w2 = &self.fc2_weights[device_idx];
-        let b2 = &self.fc2_biases[device_idx];
-        let mut h2 = [0.0f32; HIDDEN2_SIZE];
-        for j in 0..HIDDEN2_SIZE {
-            let mut sum = b2[j];
-            for i in 0..HIDDEN1_SIZE {
-                sum += h1[i] * w2[i][j];
-            }
-            h2[j] = if sum > 0.0 { sum } else { 0.0 }; // ReLU
-        }
-
-        // fc3: h2 (HIDDEN2_SIZE) x fc3_weights (HIDDEN2_SIZE) + bias -> Sigmoid
+        // fc3: h1 (HIDDEN_SIZE) x fc3_weights (HIDDEN_SIZE) + bias -> Sigmoid
         let w3 = &self.fc3_weights[device_idx];
         let b3 = self.fc3_biases[device_idx];
         let mut logit = b3;
-        for j in 0..HIDDEN2_SIZE {
-            logit += h2[j] * w3[j];
+        for j in 0..HIDDEN_SIZE {
+            logit += h1[j] * w3[j];
         }
 
         // Sigmoid: 1 / (1 + exp(-x)).  Equivalent to: logit >= 0.
