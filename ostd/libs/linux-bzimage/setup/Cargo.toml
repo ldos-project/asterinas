@@ -13,14 +13,14 @@ path = "src/main.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [target.'cfg(target_os = "none")'.dependencies]
-core2 = { version = "0.4.0", default-features = false, features = ["nightly"] }
+no_std_io2 = { version = "0.9.3", default-features = false }
 
 [target.'cfg(not(target_os = "none"))'.dependencies]
-core2 = { version = "0.4.0", default-features = false }
+no_std_io2 = { version = "0.9.3", default-features = false }
 
 [dependencies]
 cfg-if = "1.0.0"
-libflate = { version = "2.1.0", default-features = false }
+libflate = { version = "2.3.0", default-features = false }
 linux-boot-params = { version = "0.15.2", path = "../boot-params" }
 uart_16550 = "0.3.0"
 xmas-elf = "0.10.0"

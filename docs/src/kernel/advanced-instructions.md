@@ -48,6 +48,16 @@ The following command builds and runs the syscall test binaries on Asterinas.
 make run AUTO_TEST=syscall
 ```
 
+To select a subset of the gVisor tests, pass test blocklist file name to the test runner script. For
+example:
+
+```bash
+make run AUTO_TEST=syscall SYSCALL_TEST_SUITE=gvisor INITARGS="futex_test"
+```
+
+(See comment in the launcher script, `test/syscall_test/gvisor/run_gvisor_test.sh`, for more information.)
+(TODO(arthurp): This is not available for LTP tests.)
+
 To run system call tests interactively, start an instance of Asterinas with the system call tests built and installed.
 
 ```bash

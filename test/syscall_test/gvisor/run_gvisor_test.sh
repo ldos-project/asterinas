@@ -6,15 +6,17 @@
 #
 # Usage: run_gvisor_test.sh [TEST_NAME...]
 #
-# If no arguments are given, all tests not on the blocklist are run. If one or more TEST_NAME
-# arguments are given, only those test binaries are run (each argument is an exact binary name, e.g.
-# "futex_test"). They are run with the same configuration as this script otherwise would, so the
-# configuration (e.g., `test/syscall_test/gvisor/blocklists/futex_test`) will still apply.
+# If no arguments are given, all tests are run. If TEST_NAME arguments are given, only those test
+# binaries are run (matched exactly, e.g. "futex_test"). They are run with the same configuration as
+# this script otherwise would, so the configuration (e.g.,
+# `test/syscall_test/gvisor/blocklists/futex_test`) will still apply.
 #
 # To run a subset of tests via the `make run`, pass the test names through INITARGS:
 #
 #   make run AUTO_TEST=syscall SYSCALL_TEST_SUITE=gvisor INITARGS="futex_test"
 #   make run AUTO_TEST=syscall SYSCALL_TEST_SUITE=gvisor INITARGS="futex_test socket_test"
+
+# TODO: This should probably allow passing full test selectors as passed to --gtest_filter.
 
 SCRIPT_DIR=$(dirname "$0")
 TEST_TMP_DIR=${SYSCALL_TEST_WORKDIR:-/tmp}

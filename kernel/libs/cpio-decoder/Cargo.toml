@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 int-to-c-enum = { path = "../../libs/int-to-c-enum" }
-core2 = { version = "0.4", default-features = false, features = ["alloc"] }
+no_std_io2 = { version = "0.9.3", features = ["alloc"] }
 lending-iterator = "0.1.7"
 
 [lints]

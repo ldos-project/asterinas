@@ -5,7 +5,7 @@
 use core::{any::TypeId, time::Duration};
 
 use aster_rights::Full;
-use core2::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
+use no_std_io2::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
 use ostd::task::Task;
 
 use super::{
