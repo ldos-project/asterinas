@@ -12,6 +12,7 @@ Benchmarks are configured via `KCMDARGS`.
 | `bench.q_type` | Queue type: `mpmc_oq`, `locking`, or `rigtorp` (default) |
 
 > **SMP**: Number of processors to use — always pass `32`.
+> **n_threads**: Must always be less than `32`.
 
 ## Legacy OQueue Benchmarks
 
@@ -35,9 +36,11 @@ Benchmarks are configured via `KCMDARGS`.
 
 ## New OQueue Benchmarks
 
+> `q_type` is not required for new oqueue benchmarks.
+
 | Benchmark | Arguments |
 |---|---|
 | `produce_bench_new` | `n_threads`, `n_repeat` |
 | `consume_bench_new` | `n_threads`, `n_repeat` |
-| `mixed_bench_new` | `n_threads`, `n_repeat` |
+| `mixed_bench_new` | `n_threads`, `n_repeat` | `n_threads` must be even |
 | `weak_obs_bench_new` | `n_threads`, `n_repeat` |
