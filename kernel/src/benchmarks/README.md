@@ -18,7 +18,7 @@ Benchmarks are configured via `KCMDARGS`.
 | Benchmark | Arguments | Notes |
 |---|---|---|
 | `oqueue::produce_bench` | `n_threads`, `n_repeat`, `q_type` | |
-| `oqueue::consume_bench` | `n_threads`, `n_repeat`, `q_type` | `n_threads` must be less than SMP |
+| `oqueue::consume_bench` | `n_threads`, `n_repeat`, `q_type` | |
 | `oqueue::mixed_bench` | `n_threads`, `n_repeat`, `q_type` | `n_threads` must be even |
 | `oqueue::weak_obs_bench` | `n_threads`, `n_repeat`, `q_type` | `n_threads` must be even |
 | `oqueue::strong_obs_bench` | `n_threads`, `n_repeat`, `q_type` | `n_threads` must be even |

@@ -435,7 +435,7 @@ fn produce_bench(
     }
 }
 
-fn produce_bench_new<Q: OtherOQueue<u64> + Send + Sync + 'static> (
+fn produce_bench_new<Q: OtherOQueue<u64>> (
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -536,7 +536,7 @@ fn consume_bench(
     drop(consumer);
 }
 
-fn consume_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+fn consume_bench_new<Q: ConsumableOQueue<u64>> (
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -661,7 +661,7 @@ fn mixed_bench(
     }
 }
 
-fn mixed_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+fn mixed_bench_new<Q: ConsumableOQueue<u64>> (
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -1011,7 +1011,7 @@ fn strong_obs_bench(
     }
 }
 
-fn strong_obs_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+fn strong_obs_bench_new<Q: ConsumableOQueue<u64>> (
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -1159,6 +1159,7 @@ impl Benchmark for OQueueBenchmark {
 
 enum OQueueScalingBenchmarkType {
     Consumer,
+    ConsumerNew,
     StrongObserver,
     WeakObserver,
 }
@@ -1278,6 +1279,34 @@ impl Benchmark for OQueueScalingBenchmark {
 
         match self.test_type {
             OQueueScalingBenchmarkType::Consumer => {
+                // Start conumser
+                let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+                cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
+                ThreadOptions::new({
+                    let barrier = barrier.clone();
+                    let completed = completed.clone();
+                    let handles = queues
+                        .iter()
+                        .map(|q| q.attach_consumer().unwrap())
+                        .collect();
+                    move || {
+                        barrier.fetch_sub(1, Ordering::Acquire);
+                        while barrier.load(Ordering::Relaxed) > 0 {}
+                        let now = time::clocks::RealTimeClock::get().read_time();
+                        consumer_thread(handles);
+                        let end = time::clocks::RealTimeClock::get().read_time();
+                        println!(
+                            "[consumer-{:?}] recv msg in {:?}",
+                            ostd::cpu::CpuId::current_racy(),
+                            end - now
+                        );
+                        completed.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+                .cpu_affinity(cpu_set)
+                .spawn();
+            }
+            OQueueScalingBenchmarkType::ConsumerNew => {
                 // Start conumser
                 let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
                 cpu_set.add(ostd::cpu::CpuId::try_from(n_threads).unwrap());
