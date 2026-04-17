@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--source <branch>] [--target <branch>] [-f <file>]... [-s <regex>]... [<commit-file>|-]
+
+Topologically sort commits that you might want to merge and find other related commits.
+
+This enables the following workflow:
+  * Select some commits you want to cherry pick and make a file listing them. We will call it
+    commits.txt.
+  * Attempt to cherry-pick them, one at a time. Stacked git is useful for this for reasons below.
+  * When you encounter a problem, find additional commits you may need and add them to commits.txt
+    (at the end is fine).
+  * Run the script to generate a new list and put it in commits.txt.
+  * Use stacked git to move back up the branch (without losing your commits) and cherry pick the
+    added commits into the correct location. Reapplying the changes using stacked git may be easier 
+    than cherry picking from scratch.
+
+The script supports searching for commits in between the commits you are trying to cherry pick and
+the merge point which have a given file or a message that matches a pattern. This is simply to
+make it easy to find additional commits you might want to include without having to copy-paste or
+use another script. Everything it does is possible with \`git log\`.
+
+Options:
+  --source <branch>   Source branch to check commits against (default: upstream/main)
+  -t, --target <branch>
+                      Target branch commits must NOT be on (default: HEAD)
+  -f <file>           Also include commits touching <file>
+  -s <regex>          Also include commits whose message matches <regex>
+
+Arguments:
+  <commit-file>       File listing commit hashes to sort. Use - or omit to read from stdin. 
+                      Lines not starting with a letter or digit are ignored; everything 
+                      after the first word on each line is ignored. So, "oneline" format from 
+                      git and the output of this script are accepted.
+EOF
+}
+
+set -euo pipefail
+
+SOURCE="upstream/main"
+TARGET="HEAD"
+COMMITS=()
+FILES=()
+PATTERNS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source)
+            SOURCE="$2"; shift 2 ;;
+        -t|--target)
+            TARGET="$2"; shift 2 ;;
+        -f)
+            FILES+=("$2"); shift 2 ;;
+        -s)
+            PATTERNS+=("$2"); shift 2 ;;
+        --)
+            shift
+            if [[ $# -gt 0 ]]; then COMMIT_FILE="$1"; shift; fi
+            break ;;
+        --help|-h)
+            usage; exit 0 ;;
+        -*)
+            echo "Error: Unknown option '$1'" >&2; exit 1 ;;
+        *)
+            if [[ -n "${COMMIT_FILE+set}" ]]; then
+                echo "Error: Unexpected argument '$1' (commit file already given as '${COMMIT_FILE}')" >&2; exit 1
+            fi
+            COMMIT_FILE="$1"; shift ;;
+    esac
+done
+
+COMMIT_FILE="${COMMIT_FILE:--}"  # default to stdin
+[[ "$COMMIT_FILE" == "-" ]] && COMMIT_FILE=/dev/stdin
+
+while IFS= read -r line; do
+    [[ "$line" =~ ^[A-Za-z0-9] ]] || continue
+    COMMITS+=("${line%% *}")
+done < "$COMMIT_FILE"
+
+if [[ ${#COMMITS[@]} -eq 0 ]]; then
+    echo "Error: No commit IDs found in '${COMMIT_FILE}'." >&2
+    exit 1
+fi
+
+# Resolve each commit to its full SHA
+declare -A COMMIT_SET
+for commit in "${COMMITS[@]}"; do
+    hash=$(git rev-parse --verify "${commit}^{commit}" 2>/dev/null) || {
+        echo "Error: Cannot resolve commit '${commit}'" >&2
+        exit 1
+    }
+    COMMIT_SET["$hash"]=1
+done
+
+# Verify source and target refs are valid
+git rev-parse --verify "$SOURCE" >/dev/null 2>&1 || {
+    echo "Error: Source branch '${SOURCE}' not found." >&2; exit 1
+}
+git rev-parse --verify "$TARGET" >/dev/null 2>&1 || {
+    echo "Error: Target branch '${TARGET}' not found." >&2; exit 1
+}
+
+# Check each commit is reachable from source, and not reachable from target This is to cache cases
+# where the user includes a commit that is actually the cherry picked version instead of the
+# original. This is easy to do since they have the same description.
+for hash in "${!COMMIT_SET[@]}"; do
+    if ! git merge-base --is-ancestor "$hash" "$SOURCE" 2>/dev/null; then
+        echo "Error: Commit ${hash} is not on source branch '${SOURCE}'" >&2
+        exit 1
+    fi
+    if git merge-base --is-ancestor "$hash" "$TARGET" 2>/dev/null; then
+        echo "Error: Commit ${hash} is already on target branch '${TARGET}'" >&2
+        exit 1
+    fi
+done
+
+# Accumulate extra commits from -f and -s, annotated with what triggered them.
+# EXTRA_COMMITS maps hash -> human-readable reason string
+declare -A EXTRA_COMMITS
+
+add_extra() {
+    local hash="$1" reason="$2"
+    [[ -n "${COMMIT_SET[$hash]+set}" ]] && return  # already in the main set
+    if [[ -n "${EXTRA_COMMITS[$hash]+set}" ]]; then
+        EXTRA_COMMITS["$hash"]+=" $reason"
+    else
+        EXTRA_COMMITS["$hash"]="$reason"
+    fi
+}
+
+if [[ ${#FILES[@]} -gt 0 || ${#PATTERNS[@]} -gt 0 ]]; then
+    MERGE_BASE=$(git merge-base "$SOURCE" "$TARGET")
+
+    # Most recent = first hit walking newest-first from source toward target
+    MOST_RECENT=""
+    while IFS=' ' read -r hash _rest; do
+        if [[ -n "${COMMIT_SET[$hash]+set}" ]]; then
+            MOST_RECENT="$hash"
+            break
+        fi
+    done < <(git log --topo-order --format="%H x" "${TARGET}..${SOURCE}")
+
+    if [[ -z "$MOST_RECENT" ]]; then
+        echo "Error: None of the provided commits were found in ${TARGET}..${SOURCE}" >&2
+        exit 1
+    fi
+
+    for file in "${FILES[@]}"; do
+        while IFS= read -r hash; do
+            add_extra "$hash" "touches: $file"
+        done < <(git log --format="%H" "${MERGE_BASE}..${MOST_RECENT}" -- "$file")
+    done
+
+    for pattern in "${PATTERNS[@]}"; do
+        while IFS= read -r hash; do
+            add_extra "$hash" "matches: $pattern"
+        done < <(git log --format="%H" --grep="$pattern" "${MERGE_BASE}..${MOST_RECENT}")
+    done
+fi
+
+# Walk commits on source but not target in topological order, printing matches.
+# Process substitution keeps the loop in the current shell so EXTRA_COMMITS is visible.
+while IFS=' ' read -r hash subject; do
+    if [[ -n "${COMMIT_SET[$hash]+set}" ]]; then
+        echo "$hash $subject"
+    elif [[ -n "${EXTRA_COMMITS[$hash]+set}" ]]; then
+        echo "# $hash $subject  [${EXTRA_COMMITS[$hash]}]"
+    fi
+done < <(git log --topo-order --reverse --format="%H %s" "${TARGET}..${SOURCE}")
