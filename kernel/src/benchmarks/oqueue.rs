@@ -1011,6 +1011,85 @@ fn strong_obs_bench(
     }
 }
 
+fn strong_obs_bench_new<Q: ConsumableOQueue<u64> + Send + Sync + 'static> (
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    // Start all producers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let producer = q.attach_value_producer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let consumer = q.attach_consumer().unwrap();
+        let barrier = barrier.clone();
+        move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            // ostd::task::Task::yield_now();
+            while barrier.load(Ordering::Relaxed) > 0 {}
+            for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                let _ = consumer.consume();
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    // Start all consumers
+        for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+            let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+            cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 2 + tid).unwrap());
+            ThreadOptions::new({
+                let completed = completed.clone();
+                let strong_observer = q.attach_strong_observer(ObservationQuery::new(|v: &u64| *v)).unwrap();
+                let barrier = barrier.clone();
+                move || {
+                    barrier.fetch_sub(1, Ordering::Acquire);
+                    while barrier.load(Ordering::Relaxed) > 0 {}
+                    let mut cnt = 0;
+                    for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                        strong_observer.strong_observe();
+                        cnt += 1;
+                    }
+                    crate::prelude::println!("strong observed {} values", cnt);
+                    completed.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .cpu_affinity(cpu_set)
+            .spawn();
+        }
+}
+
 type OQueueBenchFn =
     &'static dyn Fn(&OQueueBenchmarkInput, &Arc<dyn OQueue<u64>>, &Arc<AtomicUsize>);
 
@@ -1353,8 +1432,7 @@ impl Benchmark for OQueueNewBenchmark {
             }
             NewBenchType::StrongObs => {
                 let q = Arc::new(self.get_consumable_oq());
-                mixed_bench_new(input, &q, &completed);
-                // weak_obs_bench_new(input, &q, &completed);
+                strong_obs_bench_new(input, &q, &completed);
             }
         }
     }
@@ -1411,5 +1489,9 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueNewBenchmark::new(
         "oqueue::weak_obs_bench_new",
         NewBenchType::WeakObs,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::strong_obs_bench_new",
+        NewBenchType::StrongObs,
     ));
 }
