@@ -3,19 +3,22 @@
 use int_to_c_enum::TryFromInt;
 use ostd::{
     cpu::num_cpus,
-    sync::{Waiter, Waker},
+    sync::{PreemptDisabled, Waiter, Waker},
 };
 use spin::Once;
 
-use crate::{prelude::*, process::Pid, time::wait::ManagedTimeout};
+use crate::{
+    prelude::*,
+    process::Pid,
+    thread::exception::PageFaultInfo,
+    time::wait::ManagedTimeout,
+    vm::{page_fault_handler::PageFaultHandler, perms::VmPerms},
+};
 
 type FutexBitSet = u32;
 
-const FUTEX_OP_MASK: u32 = 0x0000_000F;
-const FUTEX_FLAGS_MASK: u32 = 0xFFFF_FFF0;
 const FUTEX_BITSET_MATCH_ANY: FutexBitSet = 0xFFFF_FFFF;
 
-/// do futex wait
 pub fn futex_wait(
     futex_addr: u64,
     futex_val: i32,
@@ -33,7 +36,6 @@ pub fn futex_wait(
     )
 }
 
-/// Does futex wait bitset
 pub fn futex_wait_bitset(
     futex_addr: Vaddr,
     futex_val: i32,
@@ -43,7 +45,7 @@ pub fn futex_wait_bitset(
     pid: Option<Pid>,
 ) -> Result<()> {
     debug!(
-        "futex_wait_bitset addr: {:#x}, val: {}, bitset: {:#x}",
+        "futex_wait_bitset: addr = {:#x}, val = {}, bitset = {:#x}",
         futex_addr, futex_val, bitset
     );
 
@@ -51,50 +53,79 @@ pub fn futex_wait_bitset(
         return_errno_with_message!(Errno::EINVAL, "at least one bit should be set");
     }
 
-    let futex_key = FutexKey::new(futex_addr, bitset, pid);
+    let futex_key = FutexKey::new(futex_addr, bitset, pid)?;
+    let (_, futex_bucket_ref) = get_futex_bucket(&futex_key);
     let (futex_item, waiter) = FutexItem::create(futex_key);
 
-    let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
-    // lock futex bucket ref here to avoid data race
-    let mut futex_bucket = futex_bucket_ref.lock();
+    let user_space = ctx.user_space();
 
-    if !futex_key.load_val(ctx).is_ok_and(|val| val == futex_val) {
+    let (mut futex_bucket, val) = loop {
+        // Lock the futex bucket first to avoid race conditions.
+        let futex_bucket = futex_bucket_ref.lock();
+
+        let pf_result = ctx
+            .thread_local
+            .with_page_fault_disabled(|| user_space.atomic_load::<u32>(futex_addr));
+        if let Some(result) = pf_result {
+            break (futex_bucket, result?);
+        }
+
+        drop(futex_bucket);
+
+        // The futex word is aligned on a 4-byte boundary, so it cannot cross the page boundary.
+        user_space
+            .root_vmar()
+            .handle_page_fault(&PageFaultInfo {
+                address: futex_addr,
+                required_perms: VmPerms::READ,
+            })
+            .map_err(|_| {
+                Error::with_message(
+                    Errno::EFAULT,
+                    "the page fault of the futex word cannot be resolved",
+                )
+            })?;
+    };
+
+    if val != futex_val.cast_unsigned() {
         return_errno_with_message!(
             Errno::EAGAIN,
-            "futex value does not match or load_val failed"
+            "the futex word does not contain the expected value"
         );
     }
 
     futex_bucket.add_item(futex_item);
 
-    // drop lock
+    // Release the lock.
     drop(futex_bucket);
 
     let result = waiter.pause_timeout(&timeout.into());
-    match result {
-        // FIXME: If the futex is woken up and a signal comes at the same time, we should succeed
-        // instead of failing with `EINTR`. The code below is of course wrong, but was needed to
-        // make the gVisor tests happy. See <https://github.com/asterinas/asterinas/pull/1577>.
-        Err(err) if err.error() == Errno::EINTR => Ok(()),
-        res => res,
-    }
 
-    // TODO: Ensure the futex item is dequeued and dropped.
-    //
-    // The enqueued futex item remain undequeued
-    // if the futex wait operation is interrupted by a signal or times out.
-    // In such cases, the `Box<FutexItem>` would persist in memory,
-    // leaving our implementation vulnerable to exploitation by user programs
-    // that could repeatedly issue futex wait operations
-    // to exhaust kernel memory.
+    // If the futex wait operation was interrupted by a signal or timed out, the
+    // `FutexItem` must be dequeued and dropped. Otherwise, malicious user programs
+    // could repeatedly issue futex wait operations to exhaust kernel memory.
+    let item = futex_bucket_ref.lock().remove_by_waker(&waiter.waker());
+    if item.is_none() {
+        // The futex item will be removed asynchronously if and only if it has been woken up. In
+        // that case, we should report success to the user.
+        // FIXME: `pause_timeout` should return `Ok(())` in this case, but it currently may return
+        // errors due to race conditions.
+        Ok(())
+    } else if let Err(err) = result {
+        Err(err)
+    } else {
+        // Spurious wakeups. Return `EINTR` anyway.
+        return_errno_with_message!(
+            Errno::EINTR,
+            "the current thread is interrupted by a signal"
+        );
+    }
 }
 
-/// Does futex wake
 pub fn futex_wake(futex_addr: Vaddr, max_count: usize, pid: Option<Pid>) -> Result<usize> {
     futex_wake_bitset(futex_addr, max_count, FUTEX_BITSET_MATCH_ANY, pid)
 }
 
-/// Does futex wake with bitset
 pub fn futex_wake_bitset(
     futex_addr: Vaddr,
     max_count: usize,
@@ -102,7 +133,7 @@ pub fn futex_wake_bitset(
     pid: Option<Pid>,
 ) -> Result<usize> {
     debug!(
-        "futex_wake_bitset addr: {:#x}, max_count: {}, bitset: {:#x}",
+        "futex_wake_bitset: addr = {:#x}, max_count = {}, bitset = {:#x}",
         futex_addr, max_count, bitset
     );
 
@@ -110,10 +141,10 @@ pub fn futex_wake_bitset(
         return_errno_with_message!(Errno::EINVAL, "at least one bit should be set");
     }
 
-    let futex_key = FutexKey::new(futex_addr, bitset, pid);
-    let (_, futex_bucket_ref) = get_futex_bucket(futex_key);
+    let futex_key = FutexKey::new(futex_addr, bitset, pid)?;
+    let (_, futex_bucket_ref) = get_futex_bucket(&futex_key);
     let mut futex_bucket = futex_bucket_ref.lock();
-    let res = futex_bucket.remove_and_wake_items(futex_key, max_count);
+    let res = futex_bucket.remove_and_wake_items(&futex_key, max_count);
 
     Ok(res)
 }
@@ -210,7 +241,7 @@ impl FutexWakeOpEncode {
             FutexWakeOp::FUTEX_OP_SET => oparg,
             FutexWakeOp::FUTEX_OP_ADD => oparg.wrapping_add(old_val),
             FutexWakeOp::FUTEX_OP_OR => oparg | old_val,
-            FutexWakeOp::FUTEX_OP_ANDN => oparg & !old_val,
+            FutexWakeOp::FUTEX_OP_ANDN => !oparg & old_val,
             FutexWakeOp::FUTEX_OP_XOR => oparg ^ old_val,
         }
     }
@@ -238,41 +269,49 @@ pub fn futex_wake_op(
 ) -> Result<usize> {
     let wake_op = FutexWakeOpEncode::from_u32(wake_op_bits)?;
 
-    let futex_key_1 = FutexKey::new(futex_addr_1, FUTEX_BITSET_MATCH_ANY, pid);
-    let futex_key_2 = FutexKey::new(futex_addr_2, FUTEX_BITSET_MATCH_ANY, pid);
-    let (index_1, futex_bucket_ref_1) = get_futex_bucket(futex_key_1);
-    let (index_2, futex_bucket_ref_2) = get_futex_bucket(futex_key_2);
+    let futex_key_1 = FutexKey::new(futex_addr_1, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let futex_key_2 = FutexKey::new(futex_addr_2, FUTEX_BITSET_MATCH_ANY, pid)?;
 
-    let (mut futex_bucket_1, mut futex_bucket_2) = if index_1 == index_2 {
-        (futex_bucket_ref_1.lock(), None)
-    } else {
-        // Ensure that we always lock the buckets in a consistent order to avoid deadlocks.
-        if index_1 < index_2 {
-            let bucket_1 = futex_bucket_ref_1.lock();
-            let bucket_2 = futex_bucket_ref_2.lock();
-            (bucket_1, Some(bucket_2))
-        } else {
-            let bucket_2 = futex_bucket_ref_2.lock();
-            let bucket_1 = futex_bucket_ref_1.lock();
-            (bucket_1, Some(bucket_2))
+    let user_space = ctx.user_space();
+
+    let (mut futex_bucket_1, mut futex_bucket_2, old_val) = loop {
+        let (futex_bucket_1, futex_bucket_2) = lock_bucket_pairs(&futex_key_1, &futex_key_2);
+
+        let pf_result = ctx.thread_local.with_page_fault_disabled(|| {
+            user_space
+                .atomic_fetch_update::<u32>(futex_addr_2, |val| wake_op.calculate_new_val(val))
+        });
+        if let Some(result) = pf_result {
+            break (futex_bucket_1, futex_bucket_2, result?);
         }
+
+        drop(futex_bucket_1);
+        drop(futex_bucket_2);
+
+        // The futex word is aligned on a 4-byte boundary, so it cannot cross the page boundary.
+        user_space
+            .root_vmar()
+            .handle_page_fault(&PageFaultInfo {
+                address: futex_addr_2,
+                required_perms: VmPerms::READ | VmPerms::WRITE,
+            })
+            .map_err(|_| {
+                Error::with_message(
+                    Errno::EFAULT,
+                    "the page fault of the futex word cannot be resolved",
+                )
+            })?;
     };
 
-    // FIXME: This should be an atomic read-modify-write memory access here.
-    let old_val = ctx.user_space().read_val(futex_addr_2)?;
-    let new_val = wake_op.calculate_new_val(old_val);
-    ctx.user_space().write_val(futex_addr_2, &new_val)?;
-
-    let mut res = futex_bucket_1.remove_and_wake_items(futex_key_1, max_count_1);
+    let mut res = futex_bucket_1.remove_and_wake_items(&futex_key_1, max_count_1);
     if wake_op.should_wake(old_val) {
         let bucket = futex_bucket_2.as_mut().unwrap_or(&mut futex_bucket_1);
-        res += bucket.remove_and_wake_items(futex_key_2, max_count_2);
+        res += bucket.remove_and_wake_items(&futex_key_2, max_count_2);
     }
 
     Ok(res)
 }
 
-/// Does futex requeue
 pub fn futex_requeue(
     futex_addr: Vaddr,
     max_nwakes: usize,
@@ -284,60 +323,73 @@ pub fn futex_requeue(
         return futex_wake(futex_addr, max_nwakes, pid);
     }
 
-    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid);
-    let futex_new_key = FutexKey::new(futex_new_addr, FUTEX_BITSET_MATCH_ANY, pid);
-    let (bucket_idx, futex_bucket_ref) = get_futex_bucket(futex_key);
-    let (new_bucket_idx, futex_new_bucket_ref) = get_futex_bucket(futex_new_key);
+    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
+    let futex_new_key = FutexKey::new(futex_new_addr, FUTEX_BITSET_MATCH_ANY, pid)?;
 
-    let nwakes = {
-        if bucket_idx == new_bucket_idx {
-            let mut futex_bucket = futex_bucket_ref.lock();
-            let nwakes = futex_bucket.remove_and_wake_items(futex_key, max_nwakes);
-            futex_bucket.update_item_keys(futex_key, futex_new_key, max_nrequeues);
-            drop(futex_bucket);
-            nwakes
-        } else {
-            let (mut futex_bucket, mut futex_new_bucket) = {
-                if bucket_idx < new_bucket_idx {
-                    let futex_bucket = futex_bucket_ref.lock();
-                    let futext_new_bucket = futex_new_bucket_ref.lock();
-                    (futex_bucket, futext_new_bucket)
-                } else {
-                    // bucket_idx > new_bucket_idx
-                    let futex_new_bucket = futex_new_bucket_ref.lock();
-                    let futex_bucket = futex_bucket_ref.lock();
-                    (futex_bucket, futex_new_bucket)
-                }
-            };
+    let (mut futex_bucket, futex_new_bucket) = lock_bucket_pairs(&futex_key, &futex_new_key);
 
-            let nwakes = futex_bucket.remove_and_wake_items(futex_key, max_nwakes);
-            futex_bucket.requeue_items_to_another_bucket(
-                futex_key,
-                &mut futex_new_bucket,
-                futex_new_key,
-                max_nrequeues,
-            );
-            nwakes
-        }
-    };
+    let nwakes = futex_bucket.remove_and_wake_items(&futex_key, max_nwakes);
+
+    if let Some(mut futex_new_bucket) = futex_new_bucket {
+        futex_bucket.requeue_items_to_another_bucket(
+            &futex_key,
+            &mut futex_new_bucket,
+            &futex_new_key,
+            max_nrequeues,
+        );
+    } else {
+        futex_bucket.update_item_keys(&futex_key, &futex_new_key, max_nrequeues);
+    }
+
     Ok(nwakes)
 }
 
 static FUTEX_BUCKETS: Once<FutexBucketVec> = Once::new();
 
-/// Get the futex hash bucket count.
+/// Gets the futex hash bucket count.
 ///
 /// This number is calculated the same way as Linux's:
-/// <https://github.com/torvalds/linux/blob/master/kernel/futex/core.c>
+/// <https://elixir.bootlin.com/linux/v6.17/source/kernel/futex/core.c#L1981>.
 fn get_bucket_count() -> usize {
     ((1 << 8) * num_cpus()).next_power_of_two()
 }
 
-fn get_futex_bucket(key: FutexKey) -> (usize, &'static SpinLock<FutexBucket>) {
+fn get_futex_bucket(key: &FutexKey) -> (usize, &'static SpinLock<FutexBucket>) {
     FUTEX_BUCKETS.get().unwrap().get_bucket(key)
 }
 
-/// Initialize the futex system.
+/// Locks the futex buckets associated with a given pair of keys in a consistent
+/// order to avoid deadlock.
+///
+/// The order is defined by comparing the respective bucket indices and then locking
+/// the one with the lowest index first. If both keys belong to the same bucket,
+/// lock it and return the second lock guard as `None`.
+fn lock_bucket_pairs(
+    futex_key_1: &FutexKey,
+    futex_key_2: &FutexKey,
+) -> (
+    SpinLockGuard<'static, FutexBucket, PreemptDisabled>,
+    Option<SpinLockGuard<'static, FutexBucket, PreemptDisabled>>,
+) {
+    let (index_1, futex_bucket_ref_1) = get_futex_bucket(futex_key_1);
+    let (index_2, futex_bucket_ref_2) = get_futex_bucket(futex_key_2);
+
+    match index_1.cmp(&index_2) {
+        core::cmp::Ordering::Equal => (futex_bucket_ref_1.lock(), None),
+        core::cmp::Ordering::Less => {
+            let bucket_1 = futex_bucket_ref_1.lock();
+            let bucket_2 = futex_bucket_ref_2.lock();
+            (bucket_1, Some(bucket_2))
+        }
+        core::cmp::Ordering::Greater => {
+            let bucket_2 = futex_bucket_ref_2.lock();
+            let bucket_1 = futex_bucket_ref_1.lock();
+            (bucket_1, Some(bucket_2))
+        }
+    }
+}
+
+/// Initializes the futex system.
 pub fn init() {
     FUTEX_BUCKETS.call_once(|| FutexBucketVec::new(get_bucket_count()));
 }
@@ -347,7 +399,7 @@ struct FutexBucketVec {
 }
 
 impl FutexBucketVec {
-    pub fn new(size: usize) -> FutexBucketVec {
+    pub(self) fn new(size: usize) -> FutexBucketVec {
         let mut buckets = FutexBucketVec {
             vec: Vec::with_capacity(size),
         };
@@ -358,17 +410,14 @@ impl FutexBucketVec {
         buckets
     }
 
-    pub fn get_bucket(&self, key: FutexKey) -> (usize, &SpinLock<FutexBucket>) {
-        let index = (self.size() - 1) & {
-            // The addr is the multiples of 4, so we ignore the last 2 bits
-            let addr = key.addr() >> 2;
-            // simple hash
-            addr / self.size()
-        };
+    pub(self) fn get_bucket(&self, key: &FutexKey) -> (usize, &SpinLock<FutexBucket>) {
+        // Since `self.size()` is known to be a power of 2, the following is
+        // equivalent to `key.hash % self.size()`, buf faster.
+        let index = key.hash & (self.size() - 1);
         (index, &self.vec[index])
     }
 
-    fn size(&self) -> usize {
+    pub(self) fn size(&self) -> usize {
         self.vec.len()
     }
 }
@@ -378,24 +427,33 @@ struct FutexBucket {
 }
 
 impl FutexBucket {
-    pub fn new() -> FutexBucket {
+    pub(self) fn new() -> FutexBucket {
         FutexBucket {
             items: Vec::with_capacity(1),
         }
     }
 
-    pub fn add_item(&mut self, item: FutexItem) {
+    pub(self) fn add_item(&mut self, item: FutexItem) {
         self.items.push(item);
     }
 
-    pub fn remove_and_wake_items(&mut self, key: FutexKey, max_count: usize) -> usize {
+    pub(self) fn remove_by_waker(&mut self, waker: &Arc<Waker>) -> Option<FutexItem> {
+        let idx = self
+            .items
+            .iter()
+            .position(|item| Arc::ptr_eq(&item.waker, waker))?;
+        Some(self.items.swap_remove(idx))
+    }
+
+    pub(self) fn remove_and_wake_items(&mut self, key: &FutexKey, max_count: usize) -> usize {
         let mut count = 0;
 
         self.items.retain(|item| {
-            if item.key.match_up(&key) && count < max_count {
-                if item.wake() {
-                    count += 1;
-                }
+            // FIXME: `match_up` only checks the hash, which may wake up unrelated futex items. We
+            // need to check a globally unique identifier here instead. This is important because
+            // the number of woken items will be returned as the system call return value.
+            if item.key.match_up(key) && count < max_count && item.wake() {
+                count += 1;
                 false
             } else {
                 true
@@ -405,11 +463,11 @@ impl FutexBucket {
         count
     }
 
-    pub fn update_item_keys(&mut self, key: FutexKey, new_key: FutexKey, max_count: usize) {
+    pub(self) fn update_item_keys(&mut self, key: &FutexKey, new_key: &FutexKey, max_count: usize) {
         let mut count = 0;
         for item in self.items.iter_mut() {
-            if item.key.match_up(&key) {
-                item.key = new_key;
+            if item.key.match_up(key) {
+                item.key = new_key.clone();
                 count += 1;
             }
             if count >= max_count {
@@ -418,17 +476,17 @@ impl FutexBucket {
         }
     }
 
-    pub fn requeue_items_to_another_bucket(
+    pub(self) fn requeue_items_to_another_bucket(
         &mut self,
-        key: FutexKey,
+        key: &FutexKey,
         another: &mut Self,
-        new_key: FutexKey,
+        new_key: &FutexKey,
         max_nrequeues: usize,
     ) {
         let mut count = 0;
         self.items
             .extract_if(.., |item| {
-                if item.key.match_up(&key) && count < max_nrequeues {
+                if item.key.match_up(key) && count < max_nrequeues {
                     count += 1;
                     true
                 } else {
@@ -436,7 +494,7 @@ impl FutexBucket {
                 }
             })
             .for_each(|mut extracted| {
-                extracted.key = new_key;
+                extracted.key = new_key.clone();
                 another.add_item(extracted);
             });
     }
@@ -448,7 +506,7 @@ struct FutexItem {
 }
 
 impl FutexItem {
-    pub fn create(key: FutexKey) -> (Self, Waiter) {
+    pub(self) fn create(key: FutexKey) -> (Self, Waiter) {
         let (waiter, waker) = Waiter::new_pair();
         let futex_item = FutexItem { key, waker };
 
@@ -456,45 +514,57 @@ impl FutexItem {
     }
 
     #[must_use]
-    pub fn wake(&self) -> bool {
+    pub(self) fn wake(&self) -> bool {
         self.waker.wake_up()
     }
 }
 
-// The addr of a futex, it should be used to mark different futex word
-#[derive(Debug, Clone, Copy)]
+/// The key of a futex used to mark a futex word.
+#[derive(Debug, Clone)]
 struct FutexKey {
-    addr: Vaddr,
+    /// A hash value deterministically computed from the `Vaddr` and `Option<Pid>`
+    /// associated with the futex on instantiation.
+    hash: usize,
     bitset: FutexBitSet,
-    /// Specify whether this `FutexKey` is process private or shared. If `pid` is
-    /// None, then this `FutexKey` is shared.
-    pid: Option<Pid>,
 }
 
 impl FutexKey {
-    pub fn new(addr: Vaddr, bitset: FutexBitSet, pid: Option<Pid>) -> Self {
-        Self { addr, bitset, pid }
+    // FIXME: Shared mappings can be mapped to different virtual addresses in different processes.
+    // Using the virtual address as the key does not makes any sense at all. We need to use a
+    // global identifier here, e.g., something like the one used in the Linux implementation:
+    // <https://elixir.bootlin.com/linux/v6.17/source/kernel/futex/core.c#L533-L544>.
+    pub(self) fn new(addr: Vaddr, bitset: FutexBitSet, pid: Option<Pid>) -> Result<Self> {
+        // "On all platforms, futexes are four-byte integers that must be aligned on a four-byte
+        // boundary."
+        // Reference: <https://man7.org/linux/man-pages/man2/futex.2.html>.
+        if addr % core::mem::align_of::<u32>() != 0 {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the futex word is not aligned on a four-byte boundary"
+            );
+        }
+
+        // Use `jhash` to hash `addr` and `pid`.
+        let hash = {
+            let addr_low = addr as u32;
+            let addr_high = (addr >> 32) as u32;
+            // Choose a different jhash seed (or salt) for each process (unless the futex is shared)
+            // to prevent common key patterns from causing excessive collisions in the table.
+            let seed = pid.unwrap_or(u32::MAX);
+            jhash::jhash_2vals(addr_low, addr_high, seed) as usize
+        };
+
+        Ok(Self { hash, bitset })
     }
 
-    pub fn load_val(&self, ctx: &Context) -> Result<i32> {
-        // FIXME: how to implement a atomic load?
-        warn!("implement an atomic load");
-        ctx.user_space().read_val(self.addr)
-    }
-
-    pub fn addr(&self) -> Vaddr {
-        self.addr
-    }
-
-    pub fn match_up(&self, another: &Self) -> bool {
-        // TODO: Use hash value to do match_up
-        self.addr == another.addr && (self.bitset & another.bitset) != 0 && self.pid == another.pid
+    pub(self) fn match_up(&self, another: &Self) -> bool {
+        self.hash == another.hash && (self.bitset & another.bitset) != 0
     }
 }
 
-// The implementation is from occlum
-
-#[derive(PartialEq, Debug, Clone, Copy)]
+// Reference: <https://elixir.bootlin.com/linux/v6.18.2/source/include/uapi/linux/futex.h#L11>
+#[derive(PartialEq, Debug, Clone, Copy, TryFromInt)]
+#[repr(u32)]
 #[expect(non_camel_case_types)]
 pub enum FutexOp {
     FUTEX_WAIT = 0,
@@ -510,47 +580,28 @@ pub enum FutexOp {
     FUTEX_WAKE_BITSET = 10,
 }
 
-impl FutexOp {
-    pub fn from_u32(bits: u32) -> Result<FutexOp> {
-        match bits {
-            0 => Ok(FutexOp::FUTEX_WAIT),
-            1 => Ok(FutexOp::FUTEX_WAKE),
-            2 => Ok(FutexOp::FUTEX_FD),
-            3 => Ok(FutexOp::FUTEX_REQUEUE),
-            4 => Ok(FutexOp::FUTEX_CMP_REQUEUE),
-            5 => Ok(FutexOp::FUTEX_WAKE_OP),
-            6 => Ok(FutexOp::FUTEX_LOCK_PI),
-            7 => Ok(FutexOp::FUTEX_UNLOCK_PI),
-            8 => Ok(FutexOp::FUTEX_TRYLOCK_PI),
-            9 => Ok(FutexOp::FUTEX_WAIT_BITSET),
-            10 => Ok(FutexOp::FUTEX_WAKE_BITSET),
-            _ => return_errno_with_message!(Errno::EINVAL, "Unknown futex op"),
-        }
-    }
-}
-
 bitflags! {
+    // Reference: <https://elixir.bootlin.com/linux/v6.18.2/source/include/uapi/linux/futex.h#L26>
     pub struct FutexFlags : u32 {
         const FUTEX_PRIVATE         = 128;
         const FUTEX_CLOCK_REALTIME  = 256;
     }
 }
 
-impl FutexFlags {
-    pub fn from_u32(bits: u32) -> Result<FutexFlags> {
-        FutexFlags::from_bits(bits)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown futex flags"))
-    }
-}
-
 pub fn futex_op_and_flags_from_u32(bits: u32) -> Result<(FutexOp, FutexFlags)> {
+    const FUTEX_OP_MASK: u32 = 0x0000_000F;
+    const FUTEX_FLAGS_MASK: u32 = 0xFFFF_FFF0;
+
     let op = {
         let op_bits = bits & FUTEX_OP_MASK;
-        FutexOp::from_u32(op_bits)?
+        FutexOp::try_from(op_bits)?
     };
+
     let flags = {
         let flags_bits = bits & FUTEX_FLAGS_MASK;
-        FutexFlags::from_u32(flags_bits)?
+        FutexFlags::from_bits(flags_bits)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid futex flags"))?
     };
+
     Ok((op, flags))
 }

@@ -395,6 +395,65 @@ mod io {
         assert_eq!(result.unwrap(), vec![1, 2, 3]);
     }
 
+    /// Tests the `atomic_load` method in Fallible mode.
+    #[ktest]
+    fn atomic_load_fallible() {
+        let buffer = [1u8, 1, 1, 1, 2, 2, 2, 2];
+        let reader = VmReader::from(&buffer[..]);
+        let mut reader_fallible = reader.to_fallible();
+
+        assert_eq!(reader_fallible.atomic_load::<u32>().unwrap(), 0x01010101);
+        reader_fallible.skip(4);
+        assert_eq!(reader_fallible.atomic_load::<u32>().unwrap(), 0x02020202);
+    }
+
+    /// Tests the `atomic_compare_exchange` method in Fallible mode.
+    #[ktest]
+    fn atomic_compare_exchange_fallible() {
+        let segment = FrameAllocOptions::new()
+            .zeroed(true)
+            .alloc_segment(1)
+            .unwrap();
+
+        let cmpxchg = |expected, new| {
+            segment
+                .writer()
+                .to_fallible()
+                .atomic_compare_exchange(&segment.reader().to_fallible(), expected, new)
+                .unwrap()
+        };
+
+        // Initially 0, expect 0 -> succeed and set to 100
+        let (val, ok) = cmpxchg(0, 100);
+        assert_eq!(val, 0);
+        assert!(ok);
+
+        // Now 100, expect 100 -> succeed and set to 200
+        let (val, ok) = cmpxchg(100, 200);
+        assert_eq!(val, 100);
+        assert!(ok);
+
+        // Now 200, but we expect 300 -> fail, memory stays 200
+        let (val, ok) = cmpxchg(300, 400);
+        assert_eq!(val, 200);
+        assert!(!ok);
+
+        // Still 200, expect 200 -> succeed and set to 300
+        let (val, ok) = cmpxchg(200, 300);
+        assert_eq!(val, 200);
+        assert!(ok);
+
+        // Now 300, expect 200 -> fail, memory stays 300
+        let (val, ok) = cmpxchg(200, 400);
+        assert_eq!(val, 300);
+        assert!(!ok);
+
+        // Final check with raw reader
+        let mut reader = segment.reader().to_fallible();
+        assert_eq!(reader.atomic_load::<u32>().unwrap(), 300);
+        assert_eq!(reader.read_val::<u32>().unwrap(), 300);
+    }
+
     /// Tests the `fill_zeros` method in Fallible mode.
     #[ktest]
     fn fill_zeros_fallible() {
