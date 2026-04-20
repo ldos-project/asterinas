@@ -119,7 +119,7 @@ run_benchmark() {
      done <<< "$runtime_configs_str"
 
     # Prepare commands for Asterinas and Linux using arrays
-    local asterinas_cmd_arr=(make run "BENCHMARK=${benchmark}" KCMDARGS="page_cache.prefetch_policy=none page_cache.log_hits_misses=true" )
+    local asterinas_cmd_arr=(make run "BENCHMARK=${benchmark}" KCMDARGS="page_cache.prefetch_policy=none page_cache.capture_accesses=true" )
     # Add scheme part only if it's not empty and the platform is not TDX (OSDK doesn't support multiple SCHEME)
     [[ -n "$aster_scheme_cmd_part" && "$platform" != "tdx" ]] && asterinas_cmd_arr+=("$aster_scheme_cmd_part")
     asterinas_cmd_arr+=(

@@ -88,17 +88,10 @@ fn get_prefetch_policy() -> PrefetchPolicy {
 }
 
 /// Retrieves whether cache hits and misses should be logged based on the kernel command-line argument
-/// "page_cache.log_hits_misses". The options are: `true` or `false`.
-/// Returns `false` if data capture is globally disabled via "capture.enabled=false".
-fn get_log_hits_misses() -> bool {
-    let capture_enabled = kcmdline::get_kernel_cmd_line()
-        .and_then(|cl| cl.get_module_arg_by_name("capture", "enabled"))
-        .unwrap_or(true);
-    if !capture_enabled {
-        return false;
-    }
+/// "page_cache.capture_accesses". The options are: `true` or `false`.
+fn get_capture_accesses() -> bool {
     kcmdline::get_kernel_cmd_line()
-        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "log_hits_misses"))
+        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "capture_accesses"))
         .unwrap_or(false)
 }
 
@@ -598,7 +591,7 @@ impl PageCacheManager {
         });
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
-        if get_log_hits_misses() {
+        if get_capture_accesses() {
             static PAGE_CACHE_LOG_FILE: Mutex<Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>> =
                 Mutex::new(None);
 
@@ -619,7 +612,6 @@ impl PageCacheManager {
                     .attach_strong_observer()?,
             })?;
             file.start()?;
-            // PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
         }
 
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
