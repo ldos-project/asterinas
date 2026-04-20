@@ -3,21 +3,13 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::marker::Copy;
 
-use aster_time::Instant;
-use ostd::{
-    orpc::{
-        legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
-        orpc_trait,
-        path::Path,
-    },
-    task::Task,
+use ostd::orpc::{
+    legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
+    orpc_trait,
 };
 use serde::Serialize;
 
-use crate::{
-    Result, event::EventContext, fs::utils::CachePage, process::posix_thread::AsPosixThread as _,
-    thread::Tid,
-};
+use crate::{Result, event::EventContext, fs::utils::CachePage};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
@@ -143,11 +135,6 @@ pub trait PageStore: PageIOObservable {
 
     /// Returns the number of pages in this store.
     fn npages(&self) -> Result<usize>;
-
-    /// The path of the filesystem server
-    ///
-    /// TODO(arthurp): This is a faked stand-in for a server path.
-    fn path(&self) -> Result<&'static str>;
 }
 
 /// The state of a page in the cache.
@@ -170,7 +157,6 @@ pub struct PageCacheReadInfo {
     pub idx: u64,
     /// The state of the cached page when the request was made.
     pub cache_state: CacheState,
-    pub fs_path: &'static str,
     pub cache_id: usize,
     /// Total number of pages in the underlying store.
     pub store_size: u64,
@@ -184,7 +170,6 @@ impl PageCacheReadInfo {
     pub fn new(
         idx: u64,
         cache_state: CacheState,
-        fs_path: &'static str,
         cache_id: usize,
         store_size: u64,
         cache_pages: u64,
@@ -192,7 +177,6 @@ impl PageCacheReadInfo {
         PageCacheReadInfo {
             idx,
             cache_state,
-            fs_path,
             cache_id,
             store_size,
             cache_pages,

@@ -13,11 +13,10 @@ use core::{
 
 use align_ext::AlignExt;
 use aster_rights::Full;
-use bitvec::ptr::Mut;
 use lru::LruCache;
 use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
 use ostd::{
-    ignore_err, impl_untyped_frame_meta_for,
+    impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
     orpc::{
         framework::spawn_thread,
@@ -450,7 +449,6 @@ impl OutstandingRequests {
 struct PageCacheManager {
     backend: Weak<dyn PageStore>,
     inner: Mutex<PageCacheManagerInner>,
-    max_cache_size: usize,
     weak_this: Weak<PageCacheManager>,
 }
 
@@ -524,8 +522,6 @@ impl PageCacheManager {
             policy
         };
 
-        let max_cache_size = 1024;
-
         let server = Self::new_with(|orpc_internal, weak_this| Self {
             backend,
             inner: Mutex::new(PageCacheManagerInner {
@@ -539,7 +535,6 @@ impl PageCacheManager {
                 outstanding_requests: Default::default(),
                 page_cache_read_info_producer: None,
             }),
-            max_cache_size,
             weak_this: weak_this.clone(),
             orpc_internal,
         });
@@ -574,7 +569,6 @@ impl PageCacheManager {
                             .produce(PageCacheReadInfo::new(
                                 idx as u64,
                                 CacheState::Prefetch,
-                                server.backend()?.path()?,
                                 server.as_ref() as *const _ as usize,
                                 server.backend()?.npages()? as u64,
                                 cache_pages,
@@ -697,7 +691,6 @@ impl PageCacheManager {
                     page_cache_read_info_producer.produce(PageCacheReadInfo::new(
                         idx as u64,
                         CacheState::Pending,
-                        backend.path()?,
                         self as *const _ as usize,
                         store_size,
                         cache_pages,
@@ -712,7 +705,6 @@ impl PageCacheManager {
                     page_cache_read_info_producer.produce(PageCacheReadInfo::new(
                         idx as u64,
                         CacheState::Hit,
-                        backend.path()?,
                         self as *const _ as usize,
                         store_size,
                         cache_pages,
@@ -724,7 +716,6 @@ impl PageCacheManager {
                 page_cache_read_info_producer.produce(PageCacheReadInfo::new(
                     idx as u64,
                     CacheState::Miss,
-                    backend.path()?,
                     self as *const _ as usize,
                     store_size,
                     cache_pages,
@@ -746,28 +737,6 @@ impl PageCacheManager {
                 frame
             };
 
-            while inner.pages.len() > self.max_cache_size {
-                if let Some((idx, _)) = inner.pages.peek_lru() {
-                    let idx = *idx;
-                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
-                        idx as u64,
-                        CacheState::Evict,
-                        backend.path()?,
-                        self as *const _ as usize,
-                        store_size,
-                        inner.pages.len() as u64,
-                    ));
-                    let reply_consumer = flush_page(&mut inner.pages, &backend, idx)?;
-                    if let Some(consumer) = reply_consumer {
-                        // Wait for the flush to complete.
-                        // TODO(arthurp): This waits for the flush with the lock held.
-                        let PageHandle { idx: _, frame } = consumer.consume();
-                        frame.store_state(PageState::UpToDate);
-                    }
-                    inner.pages.pop(&idx);
-                }
-            }
-            
             // Invoke built-in policy.
             inner.maybe_builtin_prefetch(idx, &backend, self)?;
 

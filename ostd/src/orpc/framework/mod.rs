@@ -43,7 +43,7 @@ use crate::{
     orpc::errors::{RPCError, ServerMissingSnafu},
     prelude::Arc,
     sync::Mutex,
-    task::{Task, TaskOptions, disable_preempt, scheduler},
+    task::{Task, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -291,6 +291,7 @@ mod test {
     use crate::{
         orpc::{errors, legacy_oqueue::generic_test, sync::Blocker},
         sync::{Waker, WakerKey},
+        task::TaskOptions,
     };
 
     struct InfiniteBlocker;

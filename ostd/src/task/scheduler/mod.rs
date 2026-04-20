@@ -10,7 +10,6 @@ pub mod info;
 
 use core::time::Duration;
 
-use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
@@ -40,14 +39,22 @@ pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
 
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
+/// An event either or scheduling or descheduling a task.
 #[derive(Debug)]
 pub enum SchedulingEvent {
-    Schedule { task: Arc<Task> },
-    Deschedule { task: Arc<Task> },
+    /// The task is about to start executing.
+    Schedule {
+        /// The task
+        task: Arc<Task>,
+    },
+    /// The task has stopped executing.
+    Deschedule {
+        /// The task
+        task: Arc<Task>,
+    },
 }
 
 struct SchedulingEventTracingHandles {
-    oqueue: OQueueRef<SchedulingEvent>,
     producer: RefProducer<SchedulingEvent>,
 }
 
@@ -58,7 +65,6 @@ fn get_scheduling_event_producer() -> &'static RefProducer<SchedulingEvent> {
         .call_once(|| {
             let oqueue = OQueueRef::new(1024, path!(sched.events));
             SchedulingEventTracingHandles {
-                oqueue: oqueue.clone(),
                 producer: oqueue.attach_ref_producer().unwrap(),
             }
         })

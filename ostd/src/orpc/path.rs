@@ -7,7 +7,7 @@
 //! immediately after a name. This not required by the [`Path`] and [`PathPattern`] types, but is
 //! enforced in the syntax.
 
-use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use core::{fmt::Display, hash::Hash};
 
 use serde::Serialize;
@@ -128,7 +128,7 @@ impl Path {
     #[cfg(ktest)]
     /// Create an arbitrary path to use for testing.
     pub fn test() -> Path {
-        Path::new(vec![PathComponent::Name("TESTING_OQUEUE")])
+        Path::new(alloc::vec![PathComponent::Name("TESTING_OQUEUE")])
     }
 }
 

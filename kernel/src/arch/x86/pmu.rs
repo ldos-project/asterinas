@@ -20,7 +20,6 @@ use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
 #[derive(Debug, Clone, Copy, Serialize)]
-#[expect(dead_code)]
 pub struct DtlbMisses {
     timestamp: Instant,
     miss_l1_tlb: u64,

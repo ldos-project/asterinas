@@ -13,6 +13,7 @@ int-to-c-enum = { path = "../../libs/int-to-c-enum" }
 component = { path = "../../libs/comp-sys/component" }
 aster-time = { path = "../time" }
 log = "0.4"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
 bitvec = { version = "1.0.1", default-features = false, features = ["alloc"] }
 
 [lints]

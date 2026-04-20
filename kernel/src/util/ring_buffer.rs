@@ -224,7 +224,6 @@ impl RingBuffer<u8> {
     /// Writes data from the `reader` to the `RingBuffer`.
     ///
     /// Returns the number of bytes written.
-    #[expect(unused)]
     pub fn write_fallible(&mut self, reader: &mut dyn MultiRead) -> Result<usize> {
         let mut producer = Producer {
             rb: self,

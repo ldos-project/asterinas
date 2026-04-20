@@ -11,8 +11,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
 
-use aster_logger::println;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use ostd::orpc::{
     errors::RPCError,
     framework::{
@@ -223,7 +222,10 @@ impl StridedPrefetcher {
                                 for j in i..history.len() {
                                     let stride = history[j] as isize - history[i] as isize;
                                     let idx = history[j];
-                                    if idx == trigger_idx && stride.abs() < 4 && issued_prefetches.insert(stride) {
+                                    if idx == trigger_idx
+                                        && stride.abs() < 4
+                                        && issued_prefetches.insert(stride)
+                                    {
                                         cache.prefetch_oqueue().produce(
                                             (idx as isize + (stride * n_steps_ahead)) as usize,
                                         )?;

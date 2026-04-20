@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::fmt::Display;
-
 use ostd::{
     cpu::{CpuSet, context::UserContext},
     stacktrace::CapturedStackTrace,
@@ -15,7 +13,7 @@ use crate::{
     prelude::*,
     process::{
         Credentials, Process,
-        posix_thread::name::{self, ThreadName},
+        posix_thread::name::ThreadName,
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},

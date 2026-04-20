@@ -17,6 +17,7 @@ use ostd::{
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
+use serde::Serialize;
 use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
@@ -25,7 +26,7 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone)]
+#[derive(Clone, Copy, Serialize)]
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request (time from submission to completion).
     pub latency: Duration,
