@@ -22,6 +22,12 @@
 //!
 //! The set of OQueue paths is only for convenience, so it can be incomplete or missing. This may be
 //! because of set of OQueues was not known when output started.
+//! 
+//! Note: The output format is not particularly space efficient because it includes the field names
+//! of structs every time they are serialized. If this becomes a problem there are a few options: 1)
+//! use [`#[serde(rename=...)`](https://serde.rs/field-attrs.html) to give shorter field names in
+//! the output, 2) explore using `serde_cbor`s [packed
+//! format](https://docs.rs/serde_cbor/latest/serde_cbor/struct.Serializer.html#method.packed_format).
 #![no_std]
 #![deny(unsafe_code)]
 
@@ -54,7 +60,7 @@ pub enum DataCaptureError {
     RPCError {
         source: ostd::orpc::errors::RPCError,
     },
-    #[snafu(display("Insufficient space on device or in file"))]
+    #[snafu(display("Insufficient space on device or in file ({context})"))]
     InsufficientSpaceError {},
     #[snafu(transparent)]
     IOError {
