@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
+# /// script
+# dependencies = [
+#   "cbor2==5.9"
+# ]
+# ///
+
 """
 Decode a Mariposa data-capture device image and write one JSONL file per
 capture file in the image.
