@@ -3,38 +3,61 @@
 """
 A library to parse data written using the `mariposa_data_capture` crate.
 
-This reads the data using the headers in the format defined in the crate and then decodes and
-returns the records directly.
+This reads the data using the headers in the format defined in the crate and then decodes the
+records.
 """
 
+import logging
 from pathlib import Path
 
 import cbor2
 
+# This must match the DIRECTORY_BLOCKS constant in `data_capture_device.rs`
 BLOCK_SIZE = 4096
 DIRECTORY_BLOCKS = 1
 DIRECTORY_SIZE = DIRECTORY_BLOCKS * BLOCK_SIZE
 
+# This must match the MAGIC constant in `data_buffering.rs`
 MAGIC = b"MARIPOSALDOSDATA\x00"
 
+logger = logging.getLogger(__name__)
 
-class InvalidHeaderError(Exception):
+
+class InvalidHeaderError(ValueError):
     pass
 
 
 def _decode_cbor_values(decoder: cbor2.CBORDecoder, end_pos: int):
     """
-    Yield decoded CBOR values from *decoder* until *end_pos* is reached in the underlying stream or
-    a 0xff (the CBOR "break" command) is encountered after a message.
+    Yield decoded CBOR values from `decoder` until file offset `end_pos`, a `0xff` (the CBOR "break"
+    command) is encountered after a message, or an invalid record is encountered.
     """
     fp = decoder.fp
-    while fp.tell() < end_pos:
+    i = 0
+    # Breaks when the stream is over as defined above.
+    while True:
         peek_pos = fp.tell()
         peek = fp.read(1)
         fp.seek(peek_pos)
         if peek == b"\xff":
             break
-        yield decoder.decode()
+        try:
+            record = decoder.decode()
+            # Check if we have overrun the file here, since we can't know the record length before
+            # reading it.
+            if fp.tell() < end_pos:
+                yield record
+            else:
+                break
+        except cbor2.CBORDecodeValueError as e:
+            # Only print an error if the record completed before the end of the file.
+            if fp.tell() < end_pos:
+                logger.error(
+                    f"CBOR decoding failed at element {i} (at offset {peek_pos}), assuming end of event stream: {e}\n"
+                    "(The stream may have been truncated, e.g., by failing to flush or running out of space.)"
+                )
+            break
+        i += 1
 
 
 class DataCaptureDevice:
@@ -63,25 +86,31 @@ class DataCaptureDevice:
 
 class DataCaptureFile:
     """
-    A single capture file in a DataCaptureDevice.
+    A single capture file in a `DataCaptureDevice`.
     """
 
     def __init__(self, device_filename: Path, record: dict):
         self._device_filename = device_filename
-        self._offset = record["offset"]
-        self._length = record["length"]
-        self._path = record["path"]
+        try:
+            if not isinstance(record, dict):
+                raise KeyError()
+            self._offset = record["offset"]
+            self._length = record["length"]
+            self._path = record["path"]
+        except KeyError:
+            raise ValueError(f"Invalid file record: {record}")
         self._header = None
 
     def _new_decoder(self, f) -> cbor2.CBORDecoder:
         """
-        Construct a new decoder on this file. It starts at the beginning of the file header.
+        Construct a new decoder on this file. It starts at the beginning of the file header;
+        immediately after the magic number.
         """
         f.seek(self._offset)
         magic = f.read(len(MAGIC))
         if magic != MAGIC:
             raise InvalidHeaderError(
-                f"Expected file magic at offset {self._offset:#x}, got {magic!r}. "
+                f"Expected file magic at offset {self._offset}, got {magic!r}. "
                 f"This generally means the data capture file was not sync()'ed."
             )
         return cbor2.CBORDecoder(f)
@@ -111,11 +140,15 @@ class DataCaptureFile:
         """
         Iterate over the records in the capture file.
 
-        This stops when either the file is empty or the decoder encounters 0xff instead of a record.
-        This is the CBOR2 "break" command, so it can never appear as the start of a correct record.
+        The end is either when the file length is reached, the decoder encounters `0xff` instead of
+        a record, or an invalid CBOR record is found. `0xff` is the CBOR "break" command, so it can
+        never appear as the start of a correct record. An invalid record is treated as a terminator,
+        since a truncated file should still be readable. Note that a truncated file can produce an
+        oddly formatted record (or records), if the following bytes happen to be valid CBOR.
         """
         end_offset = self._offset + self._length
         with open(self._device_filename, "rb") as f:
             decoder = self._new_decoder(f)
-            decoder.decode()  # skip the header
+            # skip the header
+            decoder.decode()
             yield from _decode_cbor_values(decoder, end_offset)
