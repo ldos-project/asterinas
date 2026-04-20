@@ -22,8 +22,6 @@ use ostd::{
     new_server,
     orpc::{orpc_impl, orpc_server},
 };
-#[cfg(not(baseline_asterinas))]
-use ostd::{orpc::path::Path, path};
 
 use super::{
     constants::*,
@@ -219,10 +217,6 @@ impl server_traits::PageStore for ExfatInode {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.inner.read().size.align_up(PAGE_SIZE) / PAGE_SIZE)
-    }
-
-    fn path(&self) -> Result<&'static str> {
-        Ok(&"exfat")
     }
 }
 

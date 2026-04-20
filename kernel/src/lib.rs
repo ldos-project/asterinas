@@ -23,12 +23,7 @@
 #![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
-use core::ops::Range;
-
-use aster_block::{
-    bio::{BlockDeviceCompletionStats, SubmittedBio},
-    id::Sid,
-};
+use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
@@ -48,7 +43,7 @@ use ostd::{
         registry::{lookup_by_path, lookup_by_type},
     },
     path,
-    task::{Task, scheduler::SchedulingEvent},
+    task::scheduler::SchedulingEvent,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
@@ -59,8 +54,7 @@ use crate::{
     event::{EventContext, TaskId},
     kcmdline::set_kernel_cmd_line,
     prelude::*,
-    process::posix_thread::AsPosixThread,
-    thread::{Tid, kernel_thread::ThreadOptions},
+    thread::kernel_thread::ThreadOptions,
     vm::vmar::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
 };
 
@@ -275,126 +269,130 @@ fn init_thread() {
     }
 
     if data_capture_enabled {
-    if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(sched.events)) {
-        #[derive(Debug, Clone, Copy, Serialize)]
-        enum EventType {
-            Schedule,
-            Deschedule,
-        }
+        if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(sched.events)) {
+            #[derive(Debug, Clone, Copy, Serialize)]
+            enum EventType {
+                Schedule,
+                Deschedule,
+            }
 
-        #[derive(Debug, Clone, Copy, Serialize)]
-        struct KernelSchedulingEvent {
-            timestamp: Instant,
-            task: TaskId,
-            event_type: EventType,
-        }
-
-        let capture_file =
-            new_data_capture_file::<KernelSchedulingEvent>(mariposa_data_capture::FileDescriptor {
-                path: path!(sched.events),
-                length: 500 * 1024 * 1024,
-            });
-
-        ignore_err!(
-            capture_file.register_observer(ObserverRegistration {
-                path: path!(sched.events),
-                observer: oqueue
-                    .attach_strong_observer(ObservationQuery::new(|e| {
-                        let context = EventContext::new();
-                        match e {
-                            SchedulingEvent::Schedule { task } => KernelSchedulingEvent {
-                                timestamp: context.timestamp,
-                                event_type: EventType::Schedule,
-                                task: TaskId::new(task),
-                            },
-                            SchedulingEvent::Deschedule { task } => KernelSchedulingEvent {
-                                timestamp: context.timestamp,
-                                event_type: EventType::Deschedule,
-                                task: TaskId::new(task),
-                            },
-                        }
-                    }))
-                    .unwrap(),
-            })
-        );
-        ignore_err!(capture_file.start());
-    }
-    {
-        // Setup submitted bio recording
-        let oqueues = lookup_by_type::<SubmittedBio>();
-        if !oqueues.is_empty() {
-            #[derive(Serialize, Clone, Copy)]
-            struct SubmittedBioEvent {
-                byte_range: (usize, usize),
-                timestamp: Option<Instant>,
+            #[derive(Debug, Clone, Copy, Serialize)]
+            struct KernelSchedulingEvent {
+                timestamp: Instant,
                 task: TaskId,
+                event_type: EventType,
             }
 
-            let capture_file =
-                new_data_capture_file::<SubmittedBioEvent>(mariposa_data_capture::FileDescriptor {
-                    path: path!(io.block.submitted),
-                    length: 500 * 1024 * 1024,
-                });
-
-            for (path, oqueue) in oqueues {
-                ignore_err!(
-                    capture_file.register_observer(ObserverRegistration {
-                        path,
-                        observer: oqueue
-                            .attach_strong_observer(ObservationQuery::new(|e: &SubmittedBio| {
-                                let sid_range = e.sid_range();
-                                SubmittedBioEvent {
-                                    byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
-                                    timestamp: e
-                                        .submission_time_us()
-                                        .map(|t| Instant::from_usecs(t)),
-                                    task: EventContext::new().task,
-                                }
-                            },))
-                            .unwrap(),
-                    })
-                );
-            }
-            ignore_err!(capture_file.start());
-        }
-    }
-
-    {
-        // Setup submitted bio recording
-        let oqueues = lookup_by_type::<BlockDeviceCompletionStats>();
-        if !oqueues.is_empty() {
-            #[derive(Clone, Copy, Serialize)]
-            struct BlockDeviceCompletionEvent {
-                stats: BlockDeviceCompletionStats,
-                context: EventContext,
-            }
-
-            let capture_file = new_data_capture_file::<BlockDeviceCompletionEvent>(
+            let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
                 mariposa_data_capture::FileDescriptor {
-                    path: path!(io.block.completion),
+                    path: path!(sched.events),
                     length: 500 * 1024 * 1024,
                 },
             );
 
-            for (path, oqueue) in oqueues {
-                ignore_err!(
-                    capture_file.register_observer(ObserverRegistration {
-                        path,
-                        observer: oqueue
-                            .attach_strong_observer(ObservationQuery::new(|stats| {
-                                let context = EventContext::new();
-                                BlockDeviceCompletionEvent {
-                                    stats: *stats,
-                                    context,
-                                }
-                            }))
-                            .unwrap(),
-                    })
-                );
-            }
+            ignore_err!(
+                capture_file.register_observer(ObserverRegistration {
+                    path: path!(sched.events),
+                    observer: oqueue
+                        .attach_strong_observer(ObservationQuery::new(|e| {
+                            let context = EventContext::new();
+                            match e {
+                                SchedulingEvent::Schedule { task } => KernelSchedulingEvent {
+                                    timestamp: context.timestamp,
+                                    event_type: EventType::Schedule,
+                                    task: TaskId::new(task),
+                                },
+                                SchedulingEvent::Deschedule { task } => KernelSchedulingEvent {
+                                    timestamp: context.timestamp,
+                                    event_type: EventType::Deschedule,
+                                    task: TaskId::new(task),
+                                },
+                            }
+                        }))
+                        .unwrap(),
+                })
+            );
             ignore_err!(capture_file.start());
         }
-    }
+        {
+            // Setup submitted bio recording
+            let oqueues = lookup_by_type::<SubmittedBio>();
+            if !oqueues.is_empty() {
+                #[derive(Serialize, Clone, Copy)]
+                struct SubmittedBioEvent {
+                    byte_range: (usize, usize),
+                    context: EventContext,
+                }
+
+                let capture_file = new_data_capture_file::<SubmittedBioEvent>(
+                    mariposa_data_capture::FileDescriptor {
+                        path: path!(io.block.submitted),
+                        length: 500 * 1024 * 1024,
+                    },
+                );
+
+                for (path, oqueue) in oqueues {
+                    ignore_err!(
+                        capture_file.register_observer(ObserverRegistration {
+                            path,
+                            observer: oqueue
+                                .attach_strong_observer(ObservationQuery::new(
+                                    |e: &SubmittedBio| {
+                                        let sid_range = e.sid_range();
+                                        let context = EventContext::new();
+                                        SubmittedBioEvent {
+                                            byte_range: (
+                                                sid_range.start.to_offset(),
+                                                sid_range.end.to_offset(),
+                                            ),
+                                            context,
+                                        }
+                                    },
+                                ))
+                                .unwrap(),
+                        })
+                    );
+                }
+                ignore_err!(capture_file.start());
+            }
+        }
+
+        {
+            // Setup submitted bio recording
+            let oqueues = lookup_by_type::<BlockDeviceCompletionStats>();
+            if !oqueues.is_empty() {
+                #[derive(Clone, Copy, Serialize)]
+                struct BlockDeviceCompletionEvent {
+                    stats: BlockDeviceCompletionStats,
+                    context: EventContext,
+                }
+
+                let capture_file = new_data_capture_file::<BlockDeviceCompletionEvent>(
+                    mariposa_data_capture::FileDescriptor {
+                        path: path!(io.block.completion),
+                        length: 500 * 1024 * 1024,
+                    },
+                );
+
+                for (path, oqueue) in oqueues {
+                    ignore_err!(
+                        capture_file.register_observer(ObserverRegistration {
+                            path,
+                            observer: oqueue
+                                .attach_strong_observer(ObservationQuery::new(|stats| {
+                                    let context = EventContext::new();
+                                    BlockDeviceCompletionEvent {
+                                        stats: *stats,
+                                        context,
+                                    }
+                                }))
+                                .unwrap(),
+                        })
+                    );
+                }
+                ignore_err!(capture_file.start());
+            }
+        }
     } // if data_capture_enabled
 
     // Wait till initproc become zombie.

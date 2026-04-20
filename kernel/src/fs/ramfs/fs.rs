@@ -19,8 +19,6 @@ use ostd::{
     orpc::{orpc_impl, orpc_server},
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
-#[cfg(not(baseline_asterinas))]
-use ostd::{orpc::path::Path, path};
 
 use super::{xattr::RamXattr, *};
 #[cfg(not(baseline_asterinas))]
@@ -679,10 +677,6 @@ impl PageStore for RamInode {
 
     fn npages(&self) -> Result<usize> {
         Ok(self.metadata.lock().blocks)
-    }
-
-    fn path(&self) -> Result<&'static str> {
-        Ok(&"ramfs")
     }
 }
 
