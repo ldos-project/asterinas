@@ -32,6 +32,8 @@ pub struct FileDescriptor {
     pub path: Path,
 }
 
+/// The number of blocks allocated for the directory. This must match the DIRECTORY_BLOCKS constant
+/// in `mariposa_data_reader.py`.
 const DIRECTORY_BLOCKS: usize = 1;
 
 /// A wrapper around a [`BlockDevice`] which supports creating [`DataCaptureFile`]s.

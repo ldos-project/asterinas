@@ -18,30 +18,14 @@ stdout instead of writing any files.
 
 import argparse
 import json
+import logging
 import re
-import sys
 from pathlib import Path
-
-import cbor2
 
 from mariposa_data_reader import DataCaptureDevice
 
 
-class _CborEncoder(json.JSONEncoder):
-    """Extend the default JSON encoder to handle types cbor2 may return."""
-
-    def default(self, o):
-        if isinstance(o, bytes):
-            return {"$bytes": o.hex()}
-        if isinstance(o, set) or isinstance(o, frozenset):
-            return list(o)
-        if isinstance(o, cbor2.CBORTag):
-            return o.value
-        return super().default(o)
-
-
-def _to_json(record) -> str:
-    return json.dumps(record, cls=_CborEncoder)
+logger = logging.getLogger(__name__)
 
 
 def _output_name(capture_path: str) -> str:
@@ -56,7 +40,7 @@ def _preview(device: DataCaptureDevice, n: int):
         try:
             type_name = capture_file.type_name
         except Exception as exc:
-            print(f"[{path}] warning: could not read header: {exc}", file=sys.stderr)
+            logger.error(f"[{path}] warning: could not read header: {exc}")
             type_name = "<unknown>"
 
         print(f"=== {path} (type: {type_name})")
@@ -64,7 +48,10 @@ def _preview(device: DataCaptureDevice, n: int):
             if i >= n:
                 print(f"  ... (showing first {n} records)")
                 break
-            print(f"  {_to_json(record)}")
+            try:
+                print(f"  {json.dumps(record)}")
+            except (ValueError, TypeError) as e:
+                logger.error(f"{e}")
         print()
 
 
@@ -75,9 +62,15 @@ def _dump(device: DataCaptureDevice, output_dir: Path):
         count = 0
         with open(out_path, "w") as out:
             for record in capture_file:
-                out.write(_to_json(record))
-                out.write("\n")
-                count += 1
+                try:
+                    out.write(json.dumps(record))
+                    out.write("\n")
+                    count += 1
+                except (ValueError, TypeError) as e:
+                    logger.error(
+                        f"Failed to write record {count} as JSON: {record}\n  {e}\n"
+                        "  (If this is the last record, the stream may have been truncated, e.g., by failing to flush or running out of space.)"
+                    )
         print(
             f"Wrote {count} records (of type {capture_file.type_name}) to {out_path}."
         )
@@ -99,7 +92,8 @@ def main():
         "-p",
         type=int,
         metavar="N",
-        help="Print the first N records of each file to stdout instead of writing files.",
+        help="Print the first N records of each file to stdout instead of writing files. "
+        "This intensionally permits more errors than full decoding.",
     )
     args = parser.parse_args()
 
