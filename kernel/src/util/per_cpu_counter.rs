@@ -53,3 +53,9 @@ impl PerCpuCounter {
         }
     }
 }
+
+impl Default for PerCpuCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}

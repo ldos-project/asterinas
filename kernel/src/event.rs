@@ -43,3 +43,9 @@ impl EventContext {
         }
     }
 }
+
+impl Default for EventContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
