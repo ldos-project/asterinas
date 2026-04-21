@@ -7,8 +7,9 @@ use ostd::orpc::{
     legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue},
     orpc_trait,
 };
+use serde::Serialize;
 
-use crate::{Result, fs::utils::CachePage};
+use crate::{Result, event::EventContext, fs::utils::CachePage};
 
 /// A reference to a page in a [`PageStore`]. It contains the page index and the frame that holds
 /// the page data (if available).
@@ -137,7 +138,8 @@ pub trait PageStore: PageIOObservable {
 }
 
 /// The state of a page in the cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[repr(u8)]
 pub enum CacheState {
     /// The page was in the cache.
     Hit,
@@ -145,15 +147,42 @@ pub enum CacheState {
     Miss,
     /// The page was currently being read into the cache.
     Pending,
+    Prefetch,
+    /// The page was evicted from the cache (LRU eviction).
+    Evict,
 }
 
-/// Information about a read request on the page cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct PageCacheReadInfo {
-    /// The index of the page.
-    pub idx: usize,
+    pub idx: u64,
     /// The state of the cached page when the request was made.
     pub cache_state: CacheState,
+    pub cache_id: usize,
+    /// Total number of pages in the underlying store.
+    pub store_size: u64,
+    /// Number of pages currently held in the cache.
+    pub cache_pages: u64,
+    pub context: EventContext,
+}
+
+impl PageCacheReadInfo {
+    /// Creates a new PageCacheReadInfo with computed timestamp and tid.
+    pub fn new(
+        idx: u64,
+        cache_state: CacheState,
+        cache_id: usize,
+        store_size: u64,
+        cache_pages: u64,
+    ) -> Self {
+        PageCacheReadInfo {
+            idx,
+            cache_state,
+            cache_id,
+            store_size,
+            cache_pages,
+            context: EventContext::new(),
+        }
+    }
 }
 
 #[orpc_trait]
