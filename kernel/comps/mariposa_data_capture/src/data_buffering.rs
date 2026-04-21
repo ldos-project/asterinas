@@ -18,6 +18,10 @@ use snafu::ensure;
 
 use crate::{DataCaptureError, InsufficientSpaceSnafu};
 
+/// The "magic number" included at the start of files to catch errors and allow finding them in
+/// corrupted data.
+const MAGIC: &[u8; 17] = b"MARIPOSALDOSDATA\0";
+
 /// A buffer for managing data which will be written bit by bit, but the extracted in larger blocks.
 struct DataBuf {
     data: Serializer<Vec<u8>>,
@@ -98,16 +102,12 @@ impl ChunkingWriteWrapper {
         self.data_buf.write_value(v);
     }
 
-    /// Flushes the buffer to storage if it contains more than one block's worth of data.
+    /// Flushes the a block to storage if it contains more than one block's worth of data.
     pub fn flush_if_needed(&mut self) -> Result<(), DataCaptureError> {
         if self.data_buf.len() > BLOCK_SIZE {
             let n_written = self.flush()?;
             self.current_bid = self.current_bid + 1;
             self.data_buf.delete(n_written);
-
-            // Flush again to write out any remaining data to the next page, and make sure there are
-            // 0xff terminators following the data.
-            self.flush()?;
         }
         Ok(())
     }
@@ -142,8 +142,7 @@ impl ChunkingWriteWrapper {
     /// Writes a structured header with magic number, type information, and paths.
     pub fn write_header<T>(&mut self, name: &str, paths: &[Path]) -> Result<(), DataCaptureError> {
         // Write magic number
-        let magic = b"MARIPOSALDOSDATA\0";
-        self.data_buf.write_bytes(magic);
+        self.data_buf.write_bytes(MAGIC);
 
         #[derive(Serialize)]
         struct Header<'a> {
