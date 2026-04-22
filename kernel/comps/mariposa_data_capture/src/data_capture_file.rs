@@ -18,11 +18,10 @@
 //! [`DataCaptureFile`] has a thread which will observe all OQueues attach via
 //! [`DataCaptureFile::register_observer`].
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{any::Any, error::Error, sync::atomic::AtomicBool};
+use alloc::{string::ToString as _, sync::Arc, vec::Vec};
+use core::{any::Any, sync::atomic::AtomicBool};
 
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
-use binary_serde::BinarySerde;
 use ostd::{
     new_server,
     orpc::{
@@ -37,32 +36,31 @@ use ostd::{
     },
     path,
 };
+use serde::Serialize;
 
-use crate::data_buffering::ChunkingWriteWrapper;
+use crate::{DataCaptureError, data_buffering::ChunkingWriteWrapper};
 
 /// Registration information for an OQueue observer
-pub struct ObserverRegistration<T: Copy + Send + BinarySerde> {
+pub struct ObserverRegistration<T: Copy + Send + Serialize> {
     /// The path of the OQueue this is observing
     pub path: Path,
     /// An observer attachment at the appropriate type.
     pub observer: StrongObserver<T>,
 }
 
-impl<T: Copy + Send + BinarySerde> core::fmt::Debug for ObserverRegistration<T> {
+impl<T: Copy + Send + Serialize> core::fmt::Debug for ObserverRegistration<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("OQueueAttachment")
+        f.debug_struct("ObserverRegistration")
             .field("path", &self.path)
             .finish()
     }
 }
 
 #[orpc_trait]
-pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
+pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// Attach a new OQueue to the output. If output has already started, then the path will not
     /// appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
-    /// Flush any data remaining in the output buffers to disk.
-    fn flush(&self) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
     /// Enable capturing to this file.
@@ -72,18 +70,18 @@ pub trait DataCaptureFile<T: Copy + Send + BinarySerde>: Any {
 }
 
 /// Command enum for DataCaptureFile operations
-enum DataCaptureFileCommand<T: Copy + Send + BinarySerde + 'static> {
+enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
-    Flush,
     Sync,
     Stop,
 }
 
-impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
+impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::RegisterObserver(arg0) => f.debug_tuple("AttachOqueue").field(arg0).finish(),
-            Self::Flush => write!(f, "Flush"),
+            Self::RegisterObserver(arg0) => {
+                f.debug_tuple("DataCaptureFileCommand").field(arg0).finish()
+            }
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
         }
@@ -91,14 +89,15 @@ impl<T: Copy + Send + BinarySerde + 'static> core::fmt::Debug for DataCaptureFil
 }
 
 #[orpc_server(DataCaptureFile<T>)]
-struct DataCaptureFileServer<T: Copy + Send + BinarySerde + 'static> {
+struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     command_oqueue: ConsumableOQueueRef<DataCaptureFileCommand<T>>,
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     started: AtomicBool,
     stopped: AtomicBool,
 }
 
-pub struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
+pub struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
+    path: Path,
     command_consumer: Consumer<DataCaptureFileCommand<T>>,
     block_device: Arc<dyn aster_block::BlockDevice>,
     start_bid: Bid,
@@ -106,10 +105,14 @@ pub struct DataCaptureFileServerThread<T: Copy + Send + BinarySerde + 'static> {
     server: Arc<DataCaptureFileServer<T>>,
 }
 
-impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
-    fn run(&self) -> Result<(), Box<dyn Error>> {
-        let mut data_buf_handler =
-            ChunkingWriteWrapper::new(BLOCK_SIZE * 2, self.block_device.clone(), self.start_bid);
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
+    fn run(&self) -> Result<(), DataCaptureError> {
+        let mut data_buf_handler = ChunkingWriteWrapper::new(
+            BLOCK_SIZE * 2,
+            self.block_device.clone(),
+            self.start_bid,
+            self.end_bid,
+        );
         let mut observers: Vec<StrongObserver<T>> = Default::default();
         // The paths of the attached OQueues. Once the header is written this is set to None and
         // paths are no longer collected even if more OQueues are attached.
@@ -134,13 +137,11 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                             paths.push(path);
                         }
                     }
-                    DataCaptureFileCommand::Flush => {
-                        data_buf_handler.flush()?;
-                    }
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
                     DataCaptureFileCommand::Stop => {
+                        data_buf_handler.sync()?;
                         self.server
                             .stopped
                             .store(true, core::sync::atomic::Ordering::SeqCst);
@@ -160,7 +161,10 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
                 while let Ok(Some(v)) = o.try_strong_observe() {
                     if started {
                         if paths.is_some() {
-                            data_buf_handler.write_header::<T>(paths.as_ref().unwrap())?;
+                            data_buf_handler.write_header::<T>(
+                                &self.path.to_string(),
+                                paths.as_ref().unwrap(),
+                            )?;
                             paths = None;
                         }
 
@@ -177,15 +181,10 @@ impl<T: Copy + Send + BinarySerde + 'static> DataCaptureFileServerThread<T> {
 }
 
 #[orpc_impl]
-impl<T: Copy + Send + BinarySerde> DataCaptureFile<T> for DataCaptureFileServer<T> {
+impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T> {
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
         self.command_producer
             .produce(DataCaptureFileCommand::RegisterObserver(attachment));
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), RPCError> {
-        self.command_producer.produce(DataCaptureFileCommand::Flush);
         Ok(())
     }
 
@@ -225,7 +224,7 @@ impl DataCaptureFileBuilder {
     /// Construct the [`DataCaptureFile`] for a specific type of data.
     pub fn build<T>(self) -> Arc<dyn DataCaptureFile<T>>
     where
-        T: Copy + Send + BinarySerde + 'static,
+        T: Copy + Send + Serialize + 'static,
     {
         // We manually context switch into the server here. This is not something we should
         // generally do, but this build function is required and can't be on a server (due to the
@@ -246,16 +245,17 @@ impl DataCaptureFileBuilder {
 
                 spawn_thread(server.clone(), {
                     let thread = DataCaptureFileServerThread {
+                        path: self.path.clone(),
                         command_consumer: server
                             .command_oqueue
                             .attach_consumer()
                             .expect("single purpose OQueue failed."),
                         block_device: self.block_device,
-                        start_bid: Bid::new(self.start as u64),
-                        end_bid: Bid::new(self.end as u64),
+                        start_bid: Bid::from_offset(self.start),
+                        end_bid: Bid::from_offset(self.end),
                         server: server.clone(),
                     };
-                    move || thread.run()
+                    move || Ok(thread.run()?)
                 });
 
                 Ok(server)

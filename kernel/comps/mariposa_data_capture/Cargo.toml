@@ -10,7 +10,10 @@ component = { path = "../../libs/comp-sys/component" }
 aster-logger = { path = "../logger" }
 aster-block = { path = "../block" }
 ostd = { path = "../../../ostd" }
-binary_serde = "1.0.25"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
+minicbor = { version = "2.2", default-features = false, features = ["derive", "alloc"] }
+minicbor-serde = { version = "0.6", default-features = false }
+
 log = "0.4"
 snafu = { workspace = true }
 

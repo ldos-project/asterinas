@@ -25,6 +25,9 @@ EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 RAID1_IMAGE0 := $(BUILD_DIR)/raid1_0.img
 RAID1_IMAGE1 := $(BUILD_DIR)/raid1_1.img
+CAPTURE_IMAGE := $(BUILD_DIR)/capture.img
+CAPTURE_LEGACY_IMAGE := $(BUILD_DIR)/capture_legacy.img
+CAPTURE_IMAGE_SIZE := 4G
 
 INITRAMFS_EMPTY_DIRS := \
 	$(INITRAMFS)/root \
@@ -255,8 +258,16 @@ $(RAID1_IMAGE0) $(RAID1_IMAGE1):
 	@mke2fs $(RAID1_IMAGE0)
 	@dd if=$(RAID1_IMAGE0) of=$(RAID1_IMAGE1)
 
+# We use truncate for capture files because sparse allocation will save disk-space in the host, the
+# writes will mostly be cached in RAM, and realistic access times are not needed.
+$(CAPTURE_IMAGE):
+	truncate -s $(CAPTURE_IMAGE_SIZE) $@
+
+$(CAPTURE_LEGACY_IMAGE):
+	truncate -s $(CAPTURE_IMAGE_SIZE) $@
+
 .PHONY: build
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(RAID1_IMAGE0) $(RAID1_IMAGE1)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(RAID1_IMAGE0) $(RAID1_IMAGE1) $(CAPTURE_IMAGE) $(CAPTURE_LEGACY_IMAGE)
 
 .PHONY: format
 format:

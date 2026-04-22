@@ -1,63 +1,70 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
-use core::error::Error;
+use alloc::{
+    string::{String, ToString as _},
+    sync::Arc,
+    vec::Vec,
+};
 
 use aster_block::{
     BLOCK_SIZE, BlockDevice,
     bio::{BioDirection, BioSegment},
     id::Bid,
 };
-use binary_serde::{BinarySerde, Endianness};
+use minicbor_serde::Serializer;
 use ostd::orpc::path::Path;
+use serde::Serialize;
+use snafu::ensure;
+
+use crate::{DataCaptureError, InsufficientSpaceSnafu};
+
+/// The "magic number" included at the start of files to catch errors and allow finding them in
+/// corrupted data.
+const MAGIC: &[u8; 17] = b"MARIPOSALDOSDATA\0";
 
 /// A buffer for managing data which will be written bit by bit, but the extracted in larger blocks.
 struct DataBuf {
-    data: Vec<u8>,
+    data: Serializer<Vec<u8>>,
 }
 
 impl DataBuf {
     /// Creates a new DataBuf with the specified size.
     pub fn new(size: usize) -> Self {
         DataBuf {
-            data: Vec::with_capacity(size),
+            data: Serializer::new(Vec::with_capacity(size)),
         }
     }
 
-    /// Writes a [`BinarySerde`] value to the buffer at the current offset.
-    ///
-    /// [`BinarySerde`] is derivable. See
-    /// https://docs.rs/binary_serde/latest/binary_serde/index.html.
+    /// Writes a [`Serialize`] value to the buffer at the current offset.
     pub fn write_value<T>(&mut self, v: &T)
     where
-        T: BinarySerde,
+        T: Serialize,
     {
-        let serialization_start = self.data.len();
-        self.data
-            .resize(serialization_start + T::SERIALIZED_SIZE, 0);
-        v.binary_serialize(&mut self.data[serialization_start..], Endianness::NATIVE);
+        v.serialize(&mut self.data).unwrap()
     }
 
     /// Writes raw bytes to the buffer at the current position.
     pub fn write_bytes(&mut self, v: &[u8]) {
-        self.data.extend(v);
+        let data = self.data.encoder_mut().writer_mut();
+        data.extend(v);
     }
 
     /// Returns a slice containing all written data in the buffer.
     pub fn written_data(&self) -> &[u8] {
-        &self.data
+        self.data.encoder().writer()
     }
 
     /// Removes the leading n bytes by shifting remaining data to start of buffer.
     pub fn delete(&mut self, n: usize) {
-        let remaining = self.data.len() - n;
-        self.data.drain(0..n);
-        debug_assert_eq!(self.data.len(), remaining);
+        let data = self.data.encoder_mut().writer_mut();
+        let remaining = data.len() - n;
+        data.drain(0..n);
+        debug_assert_eq!(data.len(), remaining);
     }
 
     /// Returns the number of bytes currently in the buffer.
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.written_data().len()
     }
 }
 
@@ -66,37 +73,37 @@ pub(crate) struct ChunkingWriteWrapper {
     data_buf: DataBuf,
     pub(crate) block_device: Arc<dyn aster_block::BlockDevice>,
     pub(crate) current_bid: Bid,
+    end_bid: Bid,
 }
 
 impl ChunkingWriteWrapper {
     /// Create a new wrapper for chunking writes.
     pub fn new(
-        size: usize,
+        buffer_size: usize,
         block_device: Arc<dyn BlockDevice>,
         start_bid: Bid,
+        end_bid: Bid,
     ) -> ChunkingWriteWrapper {
         ChunkingWriteWrapper {
-            data_buf: DataBuf::new(size),
+            data_buf: DataBuf::new(buffer_size),
             block_device,
             current_bid: start_bid,
+            end_bid,
         }
     }
 
-    /// Writes a [`BinarySerde`] value to the output.
-    ///
-    /// [`BinarySerde`] is derivable. See
-    /// https://docs.rs/binary_serde/latest/binary_serde/index.html.
+    /// Writes a [`Serialize`] value to the output.
     ///
     /// See [`DataBuf::write_value`].
     pub fn write_value<T>(&mut self, v: &T)
     where
-        T: BinarySerde,
+        T: Serialize,
     {
         self.data_buf.write_value(v);
     }
 
-    /// Flushes the buffer to storage if it contains more than one block's worth of data.
-    pub fn flush_if_needed(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    /// Flushes a block to storage if it contains more than one block's worth of data.
+    pub fn flush_if_needed(&mut self) -> Result<(), DataCaptureError> {
         if self.data_buf.len() > BLOCK_SIZE {
             let n_written = self.flush()?;
             self.current_bid = self.current_bid + 1;
@@ -105,49 +112,50 @@ impl ChunkingWriteWrapper {
         Ok(())
     }
 
-    /// Flush the buffered data to storage regardless of the state.
+    /// Flush the buffered data to storage regardless of the state. If there is no data in the
+    /// buffer, this writes a block of 0xff (the CBOR "break" command). This serves to mark the end
+    /// of the data.
     ///
-    /// The same page may be written again if it was not full when this was called.
-    pub fn flush(&mut self) -> Result<usize, Box<dyn Error + 'static>> {
+    /// The same page may be written again if this is called again and if it was not full when this
+    /// was called the first time.
+    pub fn flush(&mut self) -> Result<usize, DataCaptureError> {
+        ensure!(self.current_bid < self.end_bid, InsufficientSpaceSnafu);
+
         let raw_data = self.data_buf.written_data();
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
-        let n_written = bio_segment.writer()?.write(&mut raw_data.into());
+        let mut writer = bio_segment.writer().expect("segment direction known");
+        let n_written = writer.write(&mut raw_data.into());
+        writer.fill(0xffu8);
         let _ = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
         Ok(n_written)
     }
 
-    pub fn sync(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    /// Sync all of the data to the block device.
+    pub fn sync(&mut self) -> Result<(), DataCaptureError> {
+        self.flush()?;
         self.block_device.sync()?;
         Ok(())
     }
 
     /// Writes a structured header with magic number, type information, and paths.
-    pub fn write_header<T>(&mut self, paths: &[Path]) -> Result<(), Box<dyn Error + 'static>> {
+    pub fn write_header<T>(&mut self, name: &str, paths: &[Path]) -> Result<(), DataCaptureError> {
         // Write magic number
-        let magic = b"MARIPOSALDOSDATA\0";
-        self.data_buf.write_bytes(magic);
+        self.data_buf.write_bytes(MAGIC);
 
-        // Create JSON header with type information and optional paths
-        let mut json_header = format!("{{\"type\":\"{}\"", core::any::type_name::<T>());
-
-        json_header.push_str(", \"oqueues\": [");
-        for (i, path) in paths.iter().enumerate() {
-            json_header.push_str(&format!("{}\"{}\"", if i > 0 { "," } else { "" }, path));
+        #[derive(Serialize)]
+        struct Header<'a> {
+            name: &'a str,
+            type_name: &'a str,
+            oqueues: Vec<String>,
         }
-        json_header.push(']');
 
-        json_header.push('}');
-        self.data_buf.write_bytes(json_header.as_bytes());
-
-        self.data_buf.write_bytes(&[0]);
-
-        let padding = 64 - (self.data_buf.len() % 64);
-        if padding != 0 {
-            // The weird [0; 64] avoids an allocation by referencing a static block of 0s.
-            self.data_buf.write_bytes(&[0; 64][..padding]);
-        }
+        self.data_buf.write_value(&Header {
+            name,
+            type_name: core::any::type_name::<T>(),
+            oqueues: paths.iter().map(|p| p.to_string()).collect(),
+        });
 
         Ok(())
     }
@@ -170,7 +178,7 @@ mod test {
 
     #[ktest]
     fn test_write_value() {
-        #[derive(Debug, PartialEq, Eq, BinarySerde)]
+        #[derive(Debug, PartialEq, Eq, Serialize)]
         struct TestStruct {
             a: u32,
             b: u16,
@@ -186,12 +194,12 @@ mod test {
 
         // Verify the bytes were written correctly
         let data = buf.written_data();
-        assert_eq!(data.len(), 6);
         assert_eq!(
-            u32::from_le_bytes(data[..4].try_into().unwrap()),
-            0x12345678
-        );
-        assert_eq!(u16::from_le_bytes(data[4..6].try_into().unwrap()), 0x9012);
+            data,
+            &[
+                0xa2, 0x61, 0x61, 0x1a, 0x12, 0x34, 0x56, 0x78, 0x61, 0x62, 0x19, 0x90, 0x12
+            ]
+        )
     }
 
     #[ktest]
@@ -227,10 +235,10 @@ mod test {
             data_buf: DataBuf::new(4096 * 2),
             block_device: block_device.clone(),
             current_bid: Bid::new(0),
+            end_bid: Bid::new(4),
         };
 
-        wrapper.write_header::<u32>(&paths).unwrap();
-        assert_eq!(wrapper.data_buf.len(), 64);
+        wrapper.write_header::<u32>("test", &paths).unwrap();
         assert_eq!(&wrapper.data_buf.written_data()[..16], b"MARIPOSALDOSDATA");
 
         wrapper.flush().unwrap();
@@ -244,6 +252,7 @@ mod test {
             data_buf: DataBuf::new(4096),
             block_device: block_device.clone(),
             current_bid: Bid::new(0),
+            end_bid: Bid::new(4),
         };
 
         // Test case 1: Buffer doesn't need flushing (<= BLOCK_SIZE)

@@ -22,7 +22,10 @@ mod legacy_tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::legacy_oqueue::{OQueue as _, locking::ObservableLockingQueue},
+        orpc::{
+            legacy_oqueue::{OQueue as _, locking::ObservableLockingQueue},
+            path::Path,
+        },
         prelude::*,
     };
 
@@ -37,7 +40,10 @@ mod legacy_tests {
         let device = DataCaptureDeviceServer::new(block_device.clone());
 
         let builder = device
-            .new_file(FileDescriptor { length: 4096 * 2 })
+            .new_file(FileDescriptor {
+                path: Path::test(),
+                length: 4096 * 2,
+            })
             .unwrap();
         let server = builder.build::<u8>();
 
@@ -62,12 +68,18 @@ mod legacy_tests {
         sleep(Duration::from_millis(10));
 
         // Flush and give time for capture to complete
-        server.flush().unwrap();
+        server.sync().unwrap();
 
         sleep(Duration::from_millis(10));
 
         let device_data = block_device.data.lock();
 
-        assert_eq!(device_data[64..64 + 3], [42, 100, 200]);
+        // The CBOR encoding of 42, 100, 200
+        let data_bytes = [0x18, 0x2a, 0x18, 0x64, 0x18, 0xc8];
+        assert!(
+            device_data
+                .windows(data_bytes.len())
+                .any(|window| window == data_bytes)
+        );
     }
 }
