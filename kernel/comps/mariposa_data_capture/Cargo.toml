@@ -15,7 +15,7 @@ minicbor = { version = "2.2", default-features = false, features = ["derive", "a
 minicbor-serde = { version = "0.6", default-features = false }
 
 log = "0.4"
-snafu = { workspace = true } 
+snafu = { workspace = true }
 
 [lints]
 workspace = true

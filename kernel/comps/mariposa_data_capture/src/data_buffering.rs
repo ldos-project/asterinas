@@ -102,7 +102,7 @@ impl ChunkingWriteWrapper {
         self.data_buf.write_value(v);
     }
 
-    /// Flushes the a block to storage if it contains more than one block's worth of data.
+    /// Flushes a block to storage if it contains more than one block's worth of data.
     pub fn flush_if_needed(&mut self) -> Result<(), DataCaptureError> {
         if self.data_buf.len() > BLOCK_SIZE {
             let n_written = self.flush()?;
