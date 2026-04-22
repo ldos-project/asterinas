@@ -30,7 +30,7 @@ pub struct FileDescriptor {
 pub enum DataCaptureDeviceError {
     #[snafu(transparent)]
     RPCError { source: RPCError },
-    #[snafu(display("Insufficient space on device"))]
+    #[snafu(display("Insufficient space on device ({context})"))]
     InsufficientSpace {},
 }
 
