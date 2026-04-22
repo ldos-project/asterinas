@@ -3,6 +3,7 @@
 #![expect(unused_variables)]
 
 use aster_rights::Full;
+use binary_serde::{BinarySerde, recursive_array};
 use ostd::cpu::context::{CpuExceptionInfo, UserContext};
 
 use crate::{
@@ -25,6 +26,36 @@ pub struct PageFaultInfo {
     /// The [`VmPerms`] required by the memory operation that causes page fault.
     /// For example, a "store" operation may require `VmPerms::WRITE`.
     pub required_perms: VmPerms,
+}
+
+#[derive(BinarySerde)]
+pub struct PageFaultInfoSerde {
+    pub address: u64,
+    pub required_perms: u32,
+}
+
+impl BinarySerde for PageFaultInfo {
+    const SERIALIZED_SIZE: usize = PageFaultInfoSerde::SERIALIZED_SIZE;
+
+    type RecursiveArray = <PageFaultInfoSerde as BinarySerde>::RecursiveArray;
+
+    fn binary_serialize(&self, buf: &mut [u8], endianness: binary_serde::Endianness) {
+        PageFaultInfoSerde {
+            address: self.address as u64,
+            required_perms: self.required_perms.bits(),
+        }
+        .binary_serialize(buf, endianness);
+    }
+
+    fn binary_deserialize(
+        buf: &[u8],
+        endianness: binary_serde::Endianness,
+    ) -> core::result::Result<Self, binary_serde::DeserializeError> {
+        PageFaultInfoSerde::binary_deserialize(buf, endianness).map(|x| Self {
+            address: x.address as Vaddr,
+            required_perms: VmPerms::from_bits_truncate(x.required_perms),
+        })
+    }
 }
 
 /// We can't handle most exceptions, just send self a fault signal before return to user space.

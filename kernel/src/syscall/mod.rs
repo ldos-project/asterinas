@@ -2,8 +2,15 @@
 
 //! System call handlers.
 
+use alloc::sync::Arc;
+
+use binary_serde::BinarySerde;
 pub use clock_gettime::ClockId;
-use ostd::cpu::context::UserContext;
+use ostd::{
+    cpu::context::UserContext,
+    orpc::legacy_oqueue::{OQueue, ringbuffer::MPMCOQueue},
+};
+use spin::Once;
 pub use timer_create::create_timer;
 
 use crate::{context::Context, cpu::LinuxAbi, prelude::*};
@@ -29,7 +36,7 @@ mod chroot;
 mod clock_gettime;
 mod clone;
 mod close;
-mod connect;
+pub mod connect;
 mod constants;
 mod dup;
 mod epoll;
@@ -389,6 +396,23 @@ macro_rules! log_syscall_entry {
     };
 }
 
+#[derive(BinarySerde, Clone, Copy)]
+pub struct SocketOQueueMessage {
+    fd: i32,
+    is_close: u8,
+    timestamp: u128,
+}
+
+static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
+
+pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
+    SOCKET_OQUEUE.wait().clone()
+}
+
 pub(super) fn init() {
     uname::init();
+    #[cfg(not(baseline_asterinas))]
+    {
+        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+    }
 }

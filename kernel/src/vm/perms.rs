@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_rights::Rights;
+use binary_serde::BinarySerde;
 use bitflags::bitflags;
 use ostd::mm::PageFlags;
 
@@ -13,6 +14,22 @@ bitflags! {
         const WRITE   = 1 << 1;
         /// Executable.
         const EXEC   = 1 << 2;
+    }
+}
+impl BinarySerde for VmPerms {
+    const SERIALIZED_SIZE: usize = u32::SERIALIZED_SIZE;
+
+    type RecursiveArray = <u32 as BinarySerde>::RecursiveArray;
+
+    fn binary_serialize(&self, buf: &mut [u8], endianness: binary_serde::Endianness) {
+        self.bits.binary_serialize(buf, endianness)
+    }
+
+    fn binary_deserialize(
+        buf: &[u8],
+        endianness: binary_serde::Endianness,
+    ) -> Result<Self, binary_serde::DeserializeError> {
+        u32::binary_deserialize(buf, endianness).map(|x| VmPerms::from_bits(x).unwrap())
     }
 }
 

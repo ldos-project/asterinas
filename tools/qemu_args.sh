@@ -116,6 +116,10 @@ QEMU_ARGS="\
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
     -device virtconsole,chardev=mux \
+    -drive if=none,id=pmucap,file=./pmu_datacapture.img,format=raw -device virtio-blk,drive=pmucap,serial=data0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -drive if=none,id=pagefaultcap,file=./pagefault_datacapture.img,format=raw -device virtio-blk,drive=pagefaultcap,serial=data1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -drive if=none,id=rsscap,file=./rss_datacapture.img,format=raw -device virtio-blk,drive=rsscap,serial=data2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -drive if=none,id=connectcap,file=./connect_datacapture.img,format=raw -device virtio-blk,drive=connectcap,serial=data3,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     $IOMMU_EXTRA_ARGS \
 "
 

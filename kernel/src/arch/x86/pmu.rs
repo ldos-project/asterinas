@@ -4,6 +4,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use aster_time::Instant;
+use binary_serde::BinarySerde;
 use ostd::{
     new_server,
     orpc::{
@@ -18,10 +19,10 @@ use snafu::Whatever;
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy)]
+#[derive(BinarySerde, Debug, Clone, Copy)]
 #[expect(dead_code)]
-struct DtlbMisses {
-    timestamp: Instant,
+pub struct DtlbMisses {
+    timestamp: u128,
     miss_l1_tlb: u64,
     miss_all_tlb: u64,
 }
@@ -32,7 +33,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
+    pub dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {
@@ -78,7 +79,7 @@ impl PmuServer {
             notify_observer.strong_observe();
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();
             let misses = DtlbMisses {
-                timestamp: aster_time::read_monotonic_time().into(),
+                timestamp: aster_time::read_monotonic_time().as_nanos(),
                 miss_l1_tlb,
                 miss_all_tlb,
             };

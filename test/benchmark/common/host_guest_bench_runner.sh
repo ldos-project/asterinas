@@ -81,9 +81,9 @@ run_benchmark "${ASTERINAS_GUEST_CMD}" "${ASTERINAS_OUTPUT}" "/tmp/asterinas.log
 # Wait for the Asterinas QEMU process to exit
 wait
 
-# Run the benchmark on the Linux VM
-prepare_fs
-run_benchmark "${LINUX_GUEST_CMD}" "${LINUX_OUTPUT}" "/tmp/linux.log" "${READY_MESSAGE}"
-
-# Wait for the Linux QEMU process to exit
-wait
+# # Run the benchmark on the Linux VM
+# prepare_fs
+# run_benchmark "${LINUX_GUEST_CMD}" "${LINUX_OUTPUT}" "/tmp/linux.log" "${READY_MESSAGE}"
+# 
+# # Wait for the Linux QEMU process to exit
+# wait
