@@ -311,6 +311,7 @@ dependencies = [
  "component",
  "log",
  "ostd",
+ "serde",
  "spin",
 ]
 
