@@ -10,22 +10,24 @@
 //! The format is a large raw file with blocks. Each block must be 4k page aligned and is in the
 //! following format:
 //! * The magic "number": `MARIPOSALDOSDATA` (null terminated).
-//! * A JSON object (null terminated):
+//! * A [CBOR](https://cbor.io/) object:
 //!     ```
-//!     { "oqueues": ["oqueue.path", ...], "type": "TypeName", "length": <block length in bytes> }
+//!     { "name": "file.path", "oqueues": ["oqueue.path", ...], "type_name": "TypeName" }
 //!     ```
 //!   The `oqueues` and `length` fields are optional.
-//! * 0 padding to a 64-byte boundary.
-//! * A packed series of [`binary_serde`] records serialized from type `TypeName`.
-//!
-//! The length makes it easier to find the next block and eliminates the (very very small) risk of
-//! randomly occuring magic numbers. However, it is not required.
+//! * A series of CBOR objects serialized from type `TypeName` using Serde. The CBOR objects are not
+//!   part of a list, instead just being concatinated. In Python, they can be read using repeated
+//!   calls to
+//!   [`cbor2.CBORDecoder.decode`](https://cbor2.readthedocs.io/en/latest/api.html#cbor2.CBORDecoder.decode).
 //!
 //! The set of OQueue paths is only for convenience, so it can be incomplete or missing. This may be
 //! because of set of OQueues was not known when output started.
 //!
-//! (Note: If you want to memory map the output file and read it directly, you should make sure that
-//! the serialized length of `TypeName` is a multiple of it's alignment.)
+//! Note: The output format is not particularly space efficient because it includes the field names
+//! of structs every time they are serialized. If this becomes a problem there are a few options: 1)
+//! use [`#[serde(rename=...)`](https://serde.rs/field-attrs.html) to give shorter field names in
+//! the output, 2) explore using `serde_cbor`s [packed
+//! format](https://docs.rs/serde_cbor/latest/serde_cbor/struct.Serializer.html#method.packed_format).
 #![no_std]
 #![deny(unsafe_code)]
 
@@ -46,6 +48,25 @@ pub use data_capture_file::{DataCaptureFile, DataCaptureFileBuilder, ObserverReg
 extern crate alloc;
 
 use component::{ComponentInitError, init_component};
+use ostd::ostd_error;
+use snafu::Snafu;
+
+#[non_exhaustive]
+#[ostd_error]
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub(crate)))]
+pub enum DataCaptureError {
+    #[snafu(transparent)]
+    RPCError {
+        source: ostd::orpc::errors::RPCError,
+    },
+    #[snafu(display("Insufficient space on device or in file ({context})"))]
+    InsufficientSpaceError {},
+    #[snafu(transparent)]
+    IOError {
+        source: aster_block::bio::BioEnqueueError,
+    },
+}
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
@@ -108,7 +129,7 @@ mod tests {
         sleep(Duration::from_millis(10));
 
         // Flush and give time for capture to complete
-        server.flush().unwrap();
+        server.sync().unwrap();
 
         sleep(Duration::from_millis(10));
 
@@ -121,6 +142,12 @@ mod tests {
                 .any(|window| window == path_bytes)
         );
 
-        assert_eq!(device_data[64..64 + 3], [42, 100, 200]); // First value in first block
+        // The CBOR encoding of 42, 100, 200
+        let data_bytes = [0x18, 0x2a, 0x18, 0x64, 0x18, 0xc8];
+        assert!(
+            device_data
+                .windows(data_bytes.len())
+                .any(|window| window == data_bytes)
+        );
     }
 }
