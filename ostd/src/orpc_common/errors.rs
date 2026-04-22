@@ -2,12 +2,13 @@
 //! Error module for ORPC
 
 use alloc::string::{String, ToString};
-use core::any::Any;
+use log::error;
+use core::{any::Any};
 
 use ostd_macros::ostd_error;
 use snafu::Snafu;
 
-use crate::prelude::Box;
+use crate::{early_println, prelude::Box};
 
 /// An error during an RPC call: failure via panic and the server not running.
 ///
@@ -32,11 +33,15 @@ pub enum RPCError {
 }
 
 /// Convert a payload to a string if possible. This simply performs downcasts.
-fn payload_as_str(payload: &dyn Any) -> Option<&str> {
+fn payload_as_str(payload: &dyn Any) -> Option<String> {
     if let Some(s) = payload.downcast_ref::<&str>() {
-        Some(s)
+        Some(s.to_string())
     } else if let Some(s) = payload.downcast_ref::<String>() {
-        Some(s)
+        Some(s.to_string())
+    } else if let Some(s) = payload.downcast_ref::<core::panic::PanicInfo>() {
+        Some(s.to_string())
+    // } else if let Some(s) = payload.downcast_ref::<PanicInfo>() {
+    //     Some(s.to_string())
     } else {
         None
     }
@@ -48,12 +53,12 @@ impl RPCError {
     /// This take ownership of the payload to allow it to be implemented allocation free in as many cases as possible.
     /// This is important since allocating on an error path can cause issues.
     pub fn from_panic(payload: Box<dyn Any>) -> Self {
+        early_println!("Paniced: {:?}", payload_as_str(payload.as_ref()));
         // TODO(#72): The `to_string` call could potentially allocate which could be an issue on the panic path. A better way
         // to do this may be needed.
         PanicSnafu {
             message: payload_as_str(payload.as_ref())
-                .unwrap_or("Non-string panic payload")
-                .to_string(),
+                .unwrap_or("Non-string panic payload".to_string()),
         }
         .build()
     }

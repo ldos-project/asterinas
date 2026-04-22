@@ -19,7 +19,7 @@ use ostd::{
     early_print, early_println,
     ktest::{
         KtestError, KtestItem, KtestIter, get_ktest_crate_whitelist, get_ktest_test_whitelist,
-    },
+    }, panic::print_stack_trace,
 };
 use owo_colors::OwoColorize;
 use path::{KtestPath, SuffixTrie};
@@ -60,12 +60,16 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 
     use ostd::panic::begin_panic;
 
+    print_stack_trace();
+
     let throw_info = ostd::ktest::PanicInfo {
         message: info.message().to_string(),
         file: info.location().unwrap().file().to_string(),
         line: info.location().unwrap().line() as usize,
         col: info.location().unwrap().column() as usize,
     };
+
+    early_println!("KTEST {}", throw_info);
 
     // Throw an exception and expecting it to be caught.
     begin_panic(Box::new(throw_info.clone()));

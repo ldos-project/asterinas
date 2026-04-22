@@ -17,6 +17,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
+use aster_logger::println;
 use core::{
     result::Result,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -92,6 +93,9 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
             } else {
                 message.to_string()
             };
+            println!("KERNEL {}", message);
+            // HERE:
+            // Panic unwinding starts here (and HERE). The type for test and non-test mode are different. I think the payload type is Box<...>.
             // Raise the panic and expect it to be caught.
             panic::begin_panic(Box::new(OopsInfo { message, thread }));
         }

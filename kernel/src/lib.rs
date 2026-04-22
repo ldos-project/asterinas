@@ -426,3 +426,19 @@ fn print_banner() {
     );
     println!("\x1B[0m");
 }
+
+#[cfg(ktest)]
+mod aa_test {
+    use ostd::prelude::ktest;
+
+    use crate::time;
+
+    #[ktest]
+    fn test_init() {
+        component::init_all(component::parse_metadata!()).unwrap();
+        time::init();
+    }
+}
+
+
+ktests failing with panic.
