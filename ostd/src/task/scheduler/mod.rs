@@ -24,13 +24,16 @@ use crate::{
 };
 
 /// Initialize scheduler globals.
-/// 
+///
 /// This should be called before the scheduler runs for the first time, but after the allocator is
 /// fully initialized.
 pub(crate) fn init() {
     #[cfg(feature = "capture_scheduling")]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
-        use crate::{orpc::oqueue::{OQueue, OQueueRef}, path};
+        use crate::{
+            orpc::oqueue::{OQueue, OQueueRef},
+            path,
+        };
 
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
