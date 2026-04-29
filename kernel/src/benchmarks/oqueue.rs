@@ -414,8 +414,7 @@ fn spawn_bench_thread<F>(
     label: &'static str,
     timed: bool,
     f: F,
-)
-where
+) where
     F: FnOnce() + Send + 'static,
 {
     spawn_on_cpu(cpu_idx, move || {
@@ -430,7 +429,8 @@ where
             let end = time::clocks::RealTimeClock::get().read_time();
             println!(
                 "[{}-{:?}] done in {:?}",
-                label, ostd::cpu::CpuId::current_racy(),
+                label,
+                ostd::cpu::CpuId::current_racy(),
                 end - now
             );
         } else {
@@ -450,8 +450,7 @@ fn run_bench_threads<Setup, Work, Done>(
     cpu_offset: usize,
     mut setup: Setup,
     on_complete: Done,
-)
-where
+) where
     Setup: FnMut() -> Work,
     Work: FnMut() + Send + 'static,
     Done: Fn() + Send + Sync + 'static,
@@ -462,23 +461,35 @@ where
         let barrier = barrier.clone();
         let on_complete = on_complete.clone();
         let completed = completed.clone();
-        spawn_bench_thread(tid + cpu_offset, barrier, completed, label, true, move || {
-            for _ in 0..n_messages {
-                work();
-            }
-            on_complete();
-        });
+        spawn_bench_thread(
+            tid + cpu_offset,
+            barrier,
+            completed,
+            label,
+            true,
+            move || {
+                for _ in 0..n_messages {
+                    work();
+                }
+                on_complete();
+            },
+        );
     }
 }
 
 fn produce_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
-    completed: &Arc<AtomicUsize>) {
+    completed: &Arc<AtomicUsize>,
+) {
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads, N_MESSAGES_PER_THREAD,
-        barrier, completed.clone(), "producer", 1,
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        barrier,
+        completed.clone(),
+        "producer",
+        1,
         || {
             let producer = q.attach_producer().unwrap();
             move || producer.produce(0)
@@ -494,13 +505,17 @@ fn produce_bench<Q: OtherOQueue<u64>>(
 ) {
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads, N_MESSAGES_PER_THREAD,
-        barrier, completed.clone(), "producer", 1,
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        barrier,
+        completed.clone(),
+        "producer",
+        1,
         || {
             let producer = q.attach_ref_producer().unwrap();
             move || producer.produce_ref(&0u64)
         },
-        || {}
+        || {},
     );
 }
 
@@ -514,9 +529,18 @@ fn consume_bench_legacy(
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
     run_bench_threads(
-        input.n_threads, N_MESSAGES_PER_THREAD,
-        barrier, completed.clone(), "producer", 1,
-        || { let producer = q.attach_producer().unwrap(); move || { producer.produce(0); } },
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        barrier,
+        Arc::new(AtomicUsize::new(0)),
+        "producer",
+        1,
+        || {
+            let producer = q.attach_producer().unwrap();
+            move || {
+                producer.produce(0);
+            }
+        },
         {
             let produce_completed = produce_completed.clone();
             let produced_completed_wq = produced_completed_wq.clone();
@@ -534,9 +558,18 @@ fn consume_bench_legacy(
 
     let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads, N_MESSAGES_PER_THREAD,
-        consume_barrier, completed.clone(), "consumer", 1,
-        || { let consumer = q.attach_consumer().unwrap(); move || { let _ = consumer.consume(); } },
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        consume_barrier,
+        completed.clone(),
+        "consumer",
+        1,
+        || {
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                let _ = consumer.consume();
+            }
+        },
         || {},
     );
 }
@@ -557,13 +590,18 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
 
     println!("Populating queue");
     run_bench_threads(
-        input.n_threads, 
-        N_MESSAGES_PER_THREAD, 
-        produce_barrier, 
-        Arc::new(AtomicUsize::new(0)), 
-        "producer", 
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        produce_barrier,
+        Arc::new(AtomicUsize::new(0)),
+        "producer",
         1,
-        || { let producer = q.attach_value_producer().unwrap(); move || { producer.produce(0); } },
+        || {
+            let producer = q.attach_value_producer().unwrap();
+            move || {
+                producer.produce(0);
+            }
+        },
         {
             let produce_completed = produce_completed.clone();
             let produced_completed_wq = produced_completed_wq.clone();
@@ -571,7 +609,7 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
                 produce_completed.fetch_add(1, Ordering::Relaxed);
                 produced_completed_wq.wake_all();
             }
-        }
+        },
     );
 
     produced_completed_wq.wait_until(|| {
@@ -580,9 +618,18 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
 
     let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads, N_MESSAGES_PER_THREAD,
-        consume_barrier, completed.clone(), "consumer", 1,
-        || { let consumer = q.attach_consumer().unwrap(); move || { let _ = consumer.consume(); } },
+        input.n_threads,
+        N_MESSAGES_PER_THREAD,
+        consume_barrier,
+        completed.clone(),
+        "consumer",
+        1,
+        || {
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                let _ = consumer.consume();
+            }
+        },
         || {},
     );
 }
