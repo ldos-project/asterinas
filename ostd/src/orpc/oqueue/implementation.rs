@@ -37,6 +37,7 @@ use crate::{
             Cursor, InlineStrongObserver, OQueueError, ObservationQuery, ResourceUnavailableSnafu,
             single_thread_ring_buffer::RingBuffer,
         },
+        path::Path,
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue, WakerKey},
 };
@@ -65,6 +66,7 @@ pub(crate) struct OQueueImplementation<T: ?Sized> {
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
+    path: Option<Path>,
     pub(super) put_wait_queue: WaitQueue,
     pub(super) read_wait_queue: WaitQueue,
 }
@@ -74,7 +76,9 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     ///
     /// * `len` is the ring buffer length used for consumers and strong-observers.
     /// * `supports_consume` specifies the attachment it allows later.
-    pub(crate) fn new(mut len: usize, supports_consume: bool) -> Self {
+    /// * `paths` are the paths associated with this OQueue; pass an empty `Vec` for anonymous
+    ///   queues.
+    pub(crate) fn new(mut len: usize, supports_consume: bool, path: Option<Path>) -> Self {
         if len < 2 {
             warn!(
                 "Creating an OQueue with length {len} is automatically increased to 2. Ring buffers smaller than 2 are not supported."
@@ -91,9 +95,15 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
             }),
             len,
             supports_consume,
+            path,
             put_wait_queue: WaitQueue::new(),
             read_wait_queue: WaitQueue::new(),
         }
+    }
+
+    /// Return the path associated with this OQueue, or `None` for anonymous queues.
+    pub(super) fn path(&self) -> Option<&Path> {
+        self.path.as_ref()
     }
 
     /// Detach a consumer. This will free the consumer ring buffer if there are no consumers left.
