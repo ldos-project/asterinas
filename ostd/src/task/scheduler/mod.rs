@@ -10,15 +10,47 @@ pub mod info;
 
 use core::time::Duration;
 
+use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
+#[cfg(feature = "capture_scheduling")]
+use crate::orpc::oqueue::RefProducer;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
     task::disable_preempt,
     timer,
 };
+
+/// Initialize scheduler globals.
+///
+/// This should be called before the scheduler runs for the first time, but after the allocator is
+/// fully initialized.
+pub(crate) fn init() {
+    #[cfg(feature = "capture_scheduling")]
+    SCHEDULING_EVENT_PRODUCER.call_once(|| {
+        use crate::{
+            orpc::oqueue::{OQueue, OQueueRef},
+            path,
+        };
+
+        // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
+        // probably safe, but we should have documentation on when and why this is allowed.
+        let oqueue = OQueueRef::new(1024, path!(scheduler.events));
+        oqueue.attach_ref_producer().unwrap()
+    });
+}
+
+#[cfg(feature = "capture_scheduling")]
+static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
+
+/// Get the producer handle for the scheduling event OQueue. This will panic if called before
+/// [`init()`].
+#[cfg(feature = "capture_scheduling")]
+fn get_scheduling_event_producer() -> &'static crate::orpc::oqueue::RefProducer<SchedulingEvent> {
+    SCHEDULING_EVENT_PRODUCER.get().unwrap()
+}
 
 /// Injects a scheduler implementation into framework.
 ///
@@ -36,6 +68,24 @@ pub fn inject_scheduler(scheduler: &'static dyn Scheduler<Task>) {
 }
 
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
+
+/// An event either or scheduling or descheduling a task.
+#[derive(Debug)]
+pub struct SchedulingEvent {
+    /// The task
+    pub task: Arc<Task>,
+    /// The kind of event
+    pub kind: SchedulingEventKind,
+}
+
+/// The kind of a [`SchedulingEvent`].
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum SchedulingEventKind {
+    /// The task is about to start executing.
+    Schedule,
+    /// The task has stopped executing.
+    Deschedule,
+}
 
 /// A per-CPU task scheduler.
 pub trait Scheduler<T = Task>: Sync + Send {
@@ -268,6 +318,26 @@ where
                 break next_task;
             }
         };
+    };
+
+    // This redefines `next_task` with the same value it started with, but moves the value out
+    // temporarily. This avoids an atomic incr and decr.
+    #[cfg(feature = "capture_scheduling")]
+    let next_task = {
+        let producer = get_scheduling_event_producer();
+        if let Some(t) = Task::current() {
+            producer.produce_ref(&SchedulingEvent {
+                task: t.cloned(),
+                kind: SchedulingEventKind::Deschedule,
+            });
+        }
+
+        let scheduling_event = SchedulingEvent {
+            task: next_task,
+            kind: SchedulingEventKind::Schedule,
+        };
+        producer.produce_ref(&scheduling_event);
+        scheduling_event.task
     };
 
     // `switch_to_task` will spin if it finds that the next task is still running on some CPU core,
