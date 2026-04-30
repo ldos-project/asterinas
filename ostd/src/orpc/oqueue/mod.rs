@@ -139,6 +139,9 @@ pub trait OQueueBase<T: ?Sized> {
     where
         U: Copy + Send + 'static;
 
+    /// Return the path of this OQueue, or `None` if it is anonymous.
+    fn path(&self) -> Option<&Path>;
+
     /// Erase the kind of OQueue. This will not allow additional operations to succeed. It
     /// simply makes the checks dynamic.
     fn as_any_oqueue(&self) -> AnyOQueueRef<T>;
@@ -196,6 +199,10 @@ macro_rules! impl_oqueue_base_forward {
             ) -> Result<InlineStrongObserver, OQueueError>
             {
                 self.$member.attach_inline_strong_observer(f)
+            }
+
+            fn path(&self) -> Option<&Path> {
+                self.$member.path()
             }
 
             fn as_any_oqueue(&self) -> AnyOQueueRef<T> {
@@ -286,7 +293,12 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
     /// consumers.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self::new_anonymous(len);
+        let inner = Arc::new(implementation::OQueueImplementation::new(
+            len,
+            true,
+            Some(path.clone()),
+        ));
+        let ret = Self { inner };
         registry::register(&path, ret.as_any_oqueue());
         ret
     }
@@ -296,7 +308,7 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// observation such as for ephemeral queues.
     pub fn new_anonymous(len: usize) -> Self {
         Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, true)),
+            inner: Arc::new(implementation::OQueueImplementation::new(len, true, None)),
         }
     }
 }
@@ -316,7 +328,13 @@ clone_without_t!(OQueueRef, : ?Sized + 'static);
 impl<T: ?Sized + Send + 'static> OQueueRef<T> {
     /// Create a new observation OQueue with the specified buffer length.
     pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self::new_anonymous(len);
+        let ret = Self {
+            inner: Arc::new(implementation::OQueueImplementation::new(
+                len,
+                false,
+                Some(path.clone()),
+            )),
+        };
         registry::register(&path, ret.as_any_oqueue());
         ret
     }
@@ -325,7 +343,7 @@ impl<T: ?Sized + Send + 'static> OQueueRef<T> {
     /// when the OQueue should never be discovered for observation such as for ephemeral queues.
     pub fn new_anonymous(len: usize) -> Self {
         Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, false)),
+            inner: Arc::new(implementation::OQueueImplementation::new(len, false, None)),
         }
     }
 }
@@ -1159,5 +1177,14 @@ mod test {
         generic_test::test_strong_observer_late_attach(ConsumableOQueueRef::<
             generic_test::TestMessage,
         >::new(4, Path::test()));
+    }
+
+    #[ktest]
+    fn oqueue_path() {
+        let named = ConsumableOQueueRef::<u32>::new(4, Path::test());
+        assert_eq!(named.path(), Some(&Path::test()));
+
+        let anon = ConsumableOQueueRef::<u32>::new_anonymous(4);
+        assert_eq!(anon.path(), None);
     }
 }
