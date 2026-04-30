@@ -26,19 +26,32 @@
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
+pub mod event;
+use aster_time::Instant;
 #[cfg(not(baseline_asterinas))]
 pub use data_capture::{new_data_capture_file, new_legacy_data_capture_file};
 use kcmdline::KCmdlineArg;
+#[cfg(not(baseline_asterinas))]
+use mariposa_data_capture::ObserverRegistration;
 use ostd::{
     arch::qemu::{QemuExitCode, exit_qemu},
     boot::boot_info,
     cpu::{CpuId, CpuSet},
+    ignore_err,
+    task::scheduler::{SchedulingEvent, SchedulingEventKind},
+};
+#[cfg(not(baseline_asterinas))]
+use ostd::{
+    orpc::oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_path},
+    path,
 };
 use process::{Process, spawn_init_process};
 use sched::SchedPolicy;
+use serde::Serialize;
 use spin::Once;
 
 use crate::{
+    event::{EventContext, TaskId},
     kcmdline::set_kernel_cmd_line,
     prelude::*,
     thread::kernel_thread::ThreadOptions,
@@ -223,6 +236,47 @@ fn init_thread() {
         let pmu = arch::pmu::PmuServer::spawn();
         pmu.reset();
         pmu.start();
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    if karg
+        .get_module_arg_by_name::<bool>("scheduler", "capture_data")
+        .unwrap_or(false)
+    {
+        if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(scheduler.events)) {
+            #[derive(Debug, Clone, Copy, Serialize)]
+            struct KernelSchedulingEvent {
+                timestamp: Instant,
+                task: TaskId,
+                kind: SchedulingEventKind,
+            }
+
+            let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
+                mariposa_data_capture::FileDescriptor {
+                    path: path!(scheduler.events),
+                    length: 500 * 1024 * 1024,
+                },
+            );
+
+            ignore_err!(
+                capture_file.register_observer(ObserverRegistration {
+                    path: path!(scheduler.events),
+                    observer: oqueue
+                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
+                            let context = EventContext::new();
+                            KernelSchedulingEvent {
+                                timestamp: context.timestamp,
+                                kind: e.kind,
+                                task: TaskId::new(&e.task),
+                            }
+                        }))
+                        .unwrap(),
+                })
+            );
+            ignore_err!(capture_file.start());
+        } else {
+            error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")
+        }
     }
 
     // Wait till initproc become zombie.

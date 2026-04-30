@@ -138,6 +138,8 @@ unsafe fn init() {
 
     bus::init();
 
+    task::scheduler::init();
+
     arch::irq::enable_local();
 
     invoke_ffi_init_funcs();
