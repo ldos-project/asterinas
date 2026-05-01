@@ -524,7 +524,6 @@ fn consume_bench_legacy(
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
-
     // Attach consumer so the queue knows to retain values
     let _consumer = q.attach_consumer().unwrap();
 
@@ -654,7 +653,7 @@ fn mixed_bench_legacy(
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
         n_threads_per_type,
-        N_MESSAGES_PER_THREAD,
+        2 * N_MESSAGES_PER_THREAD,
         barrier.clone(),
         completed.clone(),
         "producer",
@@ -668,11 +667,11 @@ fn mixed_bench_legacy(
 
     run_bench_threads(
         n_threads_per_type,
-        N_MESSAGES_PER_THREAD,
+        2 * N_MESSAGES_PER_THREAD,
         barrier.clone(),
         completed.clone(),
         "consumer",
-        n_threads_per_type + 1, // offset so consumers go on different CPUs than producers
+        n_threads_per_type + 1,
         || {
             let consumer = q.attach_consumer().unwrap();
             move || {
@@ -699,7 +698,7 @@ fn mixed_bench_new<Q: ConsumableOQueue<u64>>(
 
     run_bench_threads(
         n_threads_per_type,
-        N_MESSAGES_PER_THREAD,
+        2 * N_MESSAGES_PER_THREAD,
         barrier.clone(),
         completed.clone(),
         "producer",
@@ -713,7 +712,7 @@ fn mixed_bench_new<Q: ConsumableOQueue<u64>>(
 
     run_bench_threads(
         n_threads_per_type,
-        N_MESSAGES_PER_THREAD,
+        2 * N_MESSAGES_PER_THREAD,
         barrier.clone(),
         completed.clone(),
         "consumer",
@@ -728,7 +727,7 @@ fn mixed_bench_new<Q: ConsumableOQueue<u64>>(
     );
 }
 
-fn weak_obs_bench(
+fn weak_obs_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
@@ -829,7 +828,7 @@ fn weak_obs_bench(
     }
 }
 
-fn weak_obs_bench_new<Q: ConsumableOQueue<u64>>(
+fn weak_obs_bench<Q: ConsumableOQueue<u64>>(
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -912,7 +911,7 @@ fn weak_obs_bench_new<Q: ConsumableOQueue<u64>>(
     }
 }
 
-fn strong_obs_bench(
+fn strong_obs_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
@@ -1020,7 +1019,7 @@ fn strong_obs_bench(
     }
 }
 
-fn strong_obs_bench_new<Q: ConsumableOQueue<u64>>(
+fn strong_obs_bench<Q: ConsumableOQueue<u64>>(
     input: &OQueueNewBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -1443,11 +1442,11 @@ impl Benchmark for OQueueNewBenchmark {
             }
             NewBenchType::WeakObs => {
                 let q = Arc::new(self.get_consumable_oq());
-                weak_obs_bench_new(input, &q, &completed);
+                weak_obs_bench(input, &q, &completed);
             }
             NewBenchType::StrongObs => {
                 let q = Arc::new(self.get_consumable_oq());
-                strong_obs_bench_new(input, &q, &completed);
+                strong_obs_bench(input, &q, &completed);
             }
         }
     }
@@ -1467,14 +1466,15 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     ));
     bc.register_benchmark(OQueueBenchmark::new(
         &mixed_bench_legacy,
-        "oqueue::mixed_bench_legacy"));
-    bc.register_benchmark(OQueueBenchmark::new(
-        &weak_obs_bench,
-        "oqueue::weak_obs_bench",
+        "oqueue::mixed_bench_legacy",
     ));
     bc.register_benchmark(OQueueBenchmark::new(
-        &strong_obs_bench,
-        "oqueue::strong_obs_bench",
+        &weak_obs_bench_legacy,
+        "oqueue::weak_obs_bench_legacy",
+    ));
+    bc.register_benchmark(OQueueBenchmark::new(
+        &strong_obs_bench_legacy,
+        "oqueue::strong_obs_bench_legacy",
     ));
 
     bc.register_benchmark(OQueueScalingBenchmark::new(
@@ -1502,11 +1502,11 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
         NewBenchType::Mixed,
     ));
     bc.register_benchmark(OQueueNewBenchmark::new(
-        "oqueue::weak_obs_bench_new",
+        "oqueue::weak_obs_bench",
         NewBenchType::WeakObs,
     ));
     bc.register_benchmark(OQueueNewBenchmark::new(
-        "oqueue::strong_obs_bench_new",
+        "oqueue::strong_obs_bench",
         NewBenchType::StrongObs,
     ));
 }
