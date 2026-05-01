@@ -15,7 +15,7 @@ use aster_systree::{
     Error as SysTreeError, Result as SysTreeResult, SysAttrFlags, SysAttrSet, SysAttrSetBuilder,
     SysBranchNode, SysBranchNodeFields, SysNode, SysNodeId, SysNodeType, SysNormalNodeFields,
     SysObj, SysStr, SysSymlink, SysTree, impl_cast_methods_for_branch, impl_cast_methods_for_node,
-    impl_cast_methods_for_symlink, init_for_ktest, singleton as systree_singleton,
+    impl_cast_methods_for_symlink, singleton as systree_singleton,
 };
 use inherit_methods_macro::inherit_methods;
 use ostd::{
@@ -30,7 +30,6 @@ use crate::{
         sysfs::fs::SysFs,
         utils::{DirentVisitor, FileSystem, InodeMode, InodeType},
     },
-    time::clocks::init_for_ktest as time_init_for_ktest,
 };
 
 // --- Mock SysTree Components ---
@@ -264,8 +263,7 @@ impl SysSymlink for MockSymlinkNode {
 
 // Create a mock SysTree instance populated with mock nodes.
 fn create_mock_systree_instance() -> &'static Arc<SysTree> {
-    time_init_for_ktest();
-    init_for_ktest();
+    crate::init_for_ktest();
     // Create nodes
     let root = systree_singleton().root();
     let branch1 = MockBranchNode::new("branch1");

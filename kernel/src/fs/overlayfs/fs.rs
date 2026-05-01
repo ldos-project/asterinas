@@ -1076,7 +1076,7 @@ mod tests {
     use crate::fs::{path::MountNode, ramfs::RamFS};
 
     fn create_overlay_fs() -> Arc<dyn FileSystem> {
-        crate::time::clocks::init_for_ktest();
+        crate::init_for_ktest();
 
         let mode = InodeMode::all();
         let upper = {
@@ -1121,7 +1121,7 @@ mod tests {
 
     #[ktest]
     fn obscured_multi_layers() {
-        crate::time::clocks::init_for_ktest();
+        crate::init_for_ktest();
 
         let mode = InodeMode::all();
         let upper = {
