@@ -2,11 +2,74 @@
 
 //! Tools for capturing information about the stack execution context.
 
-use core::{fmt::Display, num::NonZeroUsize, panic::Location};
+use alloc::{
+    borrow::{Cow, ToOwned},
+    fmt,
+};
+use core::{fmt::Display, num::NonZeroUsize};
 
 use snafu::GenerateImplicitData;
 
 use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task};
+
+/// A location in the code. Unlike, [`snafu::Location`] and [`core::panic::Location`], this can hold
+/// a dynamic string. However, if given a `&'static str`, it will not allocate memory (internally it
+/// uses [`Cow`]).
+#[derive(Clone, Debug)]
+pub struct Location {
+    /// The file where the error was reported.
+    ///
+    /// This can be either a `&'static str` or a `String`.
+    pub file: Cow<'static, str>,
+    /// The line where the error was reported
+    pub line: u32,
+    /// The column where the error was reported
+    pub column: u32,
+}
+
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{file}:{line}:{column}",
+            file = self.file,
+            line = self.line,
+            column = self.column,
+        )
+    }
+}
+
+impl From<&snafu::Location> for Location {
+    fn from(value: &snafu::Location) -> Self {
+        Self {
+            file: value.file.into(),
+            line: value.line,
+            column: value.column,
+        }
+    }
+}
+
+impl From<&core::panic::Location<'static>> for Location {
+    fn from(value: &core::panic::Location<'static>) -> Self {
+        Self {
+            file: value.file().into(),
+            line: value.line(),
+            column: value.column(),
+        }
+    }
+}
+
+impl Location {
+    /// Create a [`Location`] from a [`core::panic::Location`] with a limited lifetime. This
+    /// allocates memory in which to store the filename.
+    pub fn from_location(value: &core::panic::Location<'_>) -> Self {
+        Self {
+            file: value.file().to_owned().into(),
+            line: value.line(),
+            column: value.column(),
+        }
+    }
+}
 
 /// The stack context in which an error may have occurred. This should be used in most error types.
 ///
@@ -18,7 +81,7 @@ use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task};
 /// NOTE: This module has some degree of "premature" optimization. This is because we want to
 /// encourage [`StackInfo`] to be used liberally so keeping the cost as low as possible has a
 /// very significant value.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct StackInfo {
     /// The stacktrace.
@@ -34,10 +97,7 @@ pub struct StackInfo {
     /// occurred.
     pub server_id: Option<NonZeroUsize>,
     /// The source location.
-    ///
-    /// NOTE: We use `core::panic::Location` instead of `snafu::Location`. `core::panic::Location`
-    /// can be stored as a single pointer making this field 8-bytes instead of 24-bytes.
-    pub location: Option<&'static Location<'static>>,
+    pub location: Option<Location>,
 }
 
 impl StackInfo {
@@ -62,7 +122,7 @@ impl StackInfo {
             task_id,
             cpu_id: CpuId::current_racy(),
             server_id,
-            location: Some(Location::caller()),
+            location: Some(core::panic::Location::caller().into()),
         }
     }
 
@@ -80,7 +140,7 @@ impl StackInfo {
 
 impl Display for StackInfo {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if let Some(location) = self.location {
+        if let Some(location) = &self.location {
             write!(f, "at {location} ")?;
         }
         if let Some(tid) = self.task_id {
@@ -106,8 +166,6 @@ impl GenerateImplicitData for StackInfo {
 
 #[cfg(ktest)]
 mod test {
-    use alloc::borrow::ToOwned;
-
     use super::*;
     use crate::prelude::*;
 
@@ -138,8 +196,8 @@ and generate a stack trace with the top frame
         assert_eq!(context.task_id.unwrap(), task.id());
         assert!(context.server_id.is_none());
         assert_eq!(
-            context.location.unwrap().file().to_owned(),
-            Location::caller().file().to_owned()
+            context.location.unwrap().file.as_ref(),
+            core::panic::Location::caller().file()
         );
     }
 
