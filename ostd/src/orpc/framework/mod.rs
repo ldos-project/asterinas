@@ -36,6 +36,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use log::error;
 pub use threads::spawn_thread;
 
 use crate::{
@@ -153,9 +154,10 @@ impl ServerBase {
         }) {
             Ok(ret) => ret,
             Err(payload) => {
-                let e = RPCError::from_panic(payload);
-                self.abort(&e);
-                Err(e.into())
+                let err = RPCError::from_panic(payload);
+                error!("ORPC method call panicked: {}", err);
+                self.abort(&err);
+                Err(err.into())
             }
         }
     }
