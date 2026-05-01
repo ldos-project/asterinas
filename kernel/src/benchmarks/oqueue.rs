@@ -25,6 +25,10 @@ use ostd::{
             Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
             ringbuffer::MPMCOQueue,
         },
+        oqueue::{
+            ConsumableOQueue, ConsumableOQueueRef, OQueue as OtherOQueue, OQueueRef,
+            ObservationQuery,
+        },
         sync::Blocker,
     },
     sync::{Waker, WakerKey},
@@ -394,165 +398,374 @@ struct OQueueBenchmarkInput {
     pub q_type: String,
 }
 
-fn produce_bench(
-    input: &OQueueBenchmarkInput,
-    q: &Arc<dyn OQueue<u64>>,
-    completed: &Arc<AtomicUsize>,
-) {
-    println!("Starting producers");
-    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
-    // Start all producers
-    for tid in 0..input.n_threads {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
-        ThreadOptions::new({
-            let barrier = barrier.clone();
-            let completed = completed.clone();
-            let producer = q.attach_producer().unwrap();
+fn spawn_on_cpu<F>(cpu_idx: usize, f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(cpu_idx).unwrap());
+    ThreadOptions::new(f).cpu_affinity(cpu_set).spawn();
+}
+
+fn spawn_bench_thread<F>(
+    cpu_idx: usize,
+    barrier: Arc<AtomicUsize>,
+    completed: Arc<AtomicUsize>,
+    label: &'static str,
+    timed: bool,
+    f: F,
+) where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_on_cpu(cpu_idx, move || {
+        barrier.fetch_sub(1, Ordering::Acquire);
+        while barrier.load(Ordering::Relaxed) > 0 {
+            core::hint::spin_loop();
+        }
+
+        if timed {
+            let now = time::clocks::RealTimeClock::get().read_time();
+            f();
+            let end = time::clocks::RealTimeClock::get().read_time();
+            println!(
+                "[{}-{:?}] done in {:?}",
+                label,
+                ostd::cpu::CpuId::current_racy(),
+                end - now
+            );
+        } else {
+            f();
+        }
+
+        completed.fetch_add(1, Ordering::Relaxed);
+    });
+}
+
+struct BenchThreadConfig {
+    pub n_threads: usize,
+    pub n_messages: usize,
+    pub barrier: Arc<AtomicUsize>,
+    pub completed: Arc<AtomicUsize>,
+    pub label: &'static str,
+    pub cpu_offset: usize,
+}
+
+fn run_bench_threads<Setup, Work, Done>(
+    config: BenchThreadConfig,
+    mut setup: Setup,
+    on_complete: Done,
+) where
+    Setup: FnMut() -> Work,
+    Work: FnMut() + Send + 'static,
+    Done: Fn() + Send + Sync + 'static,
+{
+    let on_complete = Arc::new(on_complete);
+    for tid in 0..config.n_threads {
+        let mut work = setup();
+        let barrier = config.barrier.clone();
+        let completed = config.completed.clone();
+        let on_complete = on_complete.clone();
+        let n_messages = config.n_messages;
+        spawn_bench_thread(
+            tid + config.cpu_offset,
+            barrier,
+            completed,
+            config.label,
+            true,
             move || {
-                barrier.fetch_sub(1, Ordering::Acquire);
-                while barrier.load(Ordering::Relaxed) > 0 {}
-                let now = time::clocks::RealTimeClock::get().read_time();
-                for _ in 0..N_MESSAGES_PER_THREAD {
-                    producer.produce(0);
+                for _ in 0..n_messages {
+                    work();
                 }
-                let end = time::clocks::RealTimeClock::get().read_time();
-                println!(
-                    "[producer-{}-{:?}] sent msg in {:?}",
-                    tid,
-                    ostd::cpu::CpuId::current_racy(),
-                    end - now
-                );
-                completed.fetch_add(1, Ordering::Relaxed);
-            }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
+                on_complete();
+            },
+        );
     }
 }
 
-fn consume_bench(
+fn produce_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
+            let producer = q.attach_producer().unwrap();
+            move || producer.produce(0)
+        },
+        || {},
+    );
+}
+
+fn produce_bench<Q: OtherOQueue<u64>>(
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
+            let producer = q.attach_ref_producer().unwrap();
+            move || producer.produce_ref(&0u64)
+        },
+        || {},
+    );
+}
+
+fn consume_bench_legacy(
+    input: &OQueueBenchmarkInput,
+    q: &Arc<dyn OQueue<u64>>,
+    completed: &Arc<AtomicUsize>,
+) {
+    // Attach consumer so the queue knows to retain values
+    let _consumer = q.attach_consumer().unwrap();
+
     let produced_completed_wq = Arc::new(ostd::sync::WaitQueue::new());
     let produce_completed = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
-    // Initialize consumer so that the producer knows to retain values
-    let consumer = q.attach_consumer().unwrap();
-    println!("Populating queue");
-    for tid in 0..input.n_threads {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
-        ThreadOptions::new({
-            let produce_completed = produce_completed.clone();
-            let produced_completed_wq = produced_completed_wq.clone();
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: Arc::new(AtomicUsize::new(0)),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
             let producer = q.attach_producer().unwrap();
             move || {
-                for _ in 0..N_MESSAGES_PER_THREAD {
-                    producer.produce(0);
-                }
+                producer.produce(0);
+            }
+        },
+        {
+            let produce_completed = produce_completed.clone();
+            let produced_completed_wq = produced_completed_wq.clone();
+            move || {
                 produce_completed.fetch_add(1, Ordering::Relaxed);
                 produced_completed_wq.wake_all();
             }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
-    }
-    produced_completed_wq
-        .wait_until(|| (completed.load(Ordering::Relaxed) == input.n_threads).then_some(()));
+        },
+    );
 
-    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
-    // Start all consumers
-    for tid in 0..input.n_threads {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
-        ThreadOptions::new({
-            let completed = completed.clone();
+    // Wait for queue to be full
+    produced_completed_wq.wait_until(|| {
+        (produce_completed.load(Ordering::Relaxed) == input.n_threads).then_some(())
+    });
+
+    let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: consume_barrier,
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: 1,
+        },
+        || {
             let consumer = q.attach_consumer().unwrap();
-            let barrier = barrier.clone();
             move || {
-                barrier.fetch_sub(1, Ordering::Acquire);
-                while barrier.load(Ordering::Relaxed) > 0 {}
-                let now = time::clocks::RealTimeClock::get().read_time();
-                for _ in 0..N_MESSAGES_PER_THREAD {
-                    let _ = consumer.consume();
-                }
-                let end = time::clocks::RealTimeClock::get().read_time();
-                println!(
-                    "[consumer-{}-{:?}] recv msg in {:?}",
-                    tid,
-                    ostd::cpu::CpuId::current_racy(),
-                    end - now
-                );
-                completed.fetch_add(1, Ordering::Relaxed);
+                let _ = consumer.consume();
             }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
-    }
-    drop(consumer);
+        },
+        || {},
+    );
 }
 
-fn mixed_bench(
+fn consume_bench<Q: ConsumableOQueue<u64>>(
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    // Attach consumers first so the queue knows to retain messages
+    let _consumers: Vec<_> = (0..input.n_threads)
+        .map(|_| q.attach_consumer().unwrap())
+        .collect();
+
+    let produced_completed_wq = Arc::new(ostd::sync::WaitQueue::new());
+    let produce_completed = Arc::new(AtomicUsize::new(0));
+    let produce_barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    println!("Populating queue");
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: produce_barrier,
+            completed: Arc::new(AtomicUsize::new(0)),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
+            let producer = q.attach_value_producer().unwrap();
+            move || {
+                producer.produce(0);
+            }
+        },
+        {
+            let produce_completed = produce_completed.clone();
+            let produced_completed_wq = produced_completed_wq.clone();
+            move || {
+                produce_completed.fetch_add(1, Ordering::Relaxed);
+                produced_completed_wq.wake_all();
+            }
+        },
+    );
+
+    produced_completed_wq.wait_until(|| {
+        (produce_completed.load(Ordering::Relaxed) == input.n_threads).then_some(())
+    });
+
+    let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: consume_barrier,
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: 1,
+        },
+        || {
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                let _ = consumer.consume();
+            }
+        },
+        || {},
+    );
+}
+
+fn mixed_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    // number of threads MUST be even because an equal number of producers and consumers are created
+    assert!(
+        input.n_threads % 2 == 0,
+        "mixed_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
+            let producer = q.attach_producer().unwrap();
+            move || {
+                producer.produce(0);
+            }
+        },
+        || {},
+    );
+
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: n_threads_per_type + 1,
+        },
+        || {
+            let consumer = q.attach_consumer().unwrap();
+            move || {
+                let _ = consumer.consume();
+            }
+        },
+        || {},
+    );
+}
+
+fn mixed_bench_new<Q: ConsumableOQueue<u64>>(
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    // number of threads MUST be even because an equal number of producers and consumers are created
+    assert!(
+        input.n_threads % 2 == 0,
+        "mixed_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
     let n_threads_per_type: usize = input.n_threads / 2;
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
-    // Start all producers
-    for tid in 0..n_threads_per_type {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
-        ThreadOptions::new({
-            let completed = completed.clone();
-            let producer = q.attach_producer().unwrap();
-            let barrier = barrier.clone();
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
+        || {
+            let producer = q.attach_value_producer().unwrap();
             move || {
-                barrier.fetch_sub(1, Ordering::Acquire);
-                while barrier.load(Ordering::Relaxed) > 0 {}
-                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
-                    producer.produce(0);
-                }
-                crate::prelude::println!("finished producer {}", tid);
-                completed.fetch_add(1, Ordering::Relaxed);
+                producer.produce(0);
             }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
-    }
+        },
+        || {},
+    );
 
-    // Start all consumers
-    for tid in 0..n_threads_per_type {
-        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
-        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 1).unwrap());
-        ThreadOptions::new({
-            let completed = completed.clone();
+    run_bench_threads(
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: n_threads_per_type + 1,
+        },
+        || {
             let consumer = q.attach_consumer().unwrap();
-            let barrier = barrier.clone();
             move || {
-                barrier.fetch_sub(1, Ordering::Acquire);
-                while barrier.load(Ordering::Relaxed) > 0 {}
-                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
-                    let _ = consumer.consume();
-                }
-                crate::prelude::println!("finished consumer {}", tid);
-                completed.fetch_add(1, Ordering::Relaxed);
+                let _ = consumer.consume();
             }
-        })
-        .cpu_affinity(cpu_set)
-        .spawn();
-    }
+        },
+        || {},
+    );
 }
 
-fn weak_obs_bench(
+fn weak_obs_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
     let n_threads_per_type: usize = input.n_threads / 2;
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
@@ -644,11 +857,99 @@ fn weak_obs_bench(
     }
 }
 
-fn strong_obs_bench(
+fn weak_obs_bench<Q: ConsumableOQueue<u64>>(
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    // Start all producers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let producer = q.attach_value_producer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let consumer = q.attach_consumer().unwrap();
+        let barrier = barrier.clone();
+        move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
+            for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                let _ = consumer.consume();
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + tid + 2).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let weak_observer = q
+                .attach_weak_observer(1, ObservationQuery::new(|v: &u64| *v))
+                .unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let mut cnt = 0;
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    cnt += weak_observer
+                        .weak_observe_recent(1)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|v| v.is_some())
+                        .count();
+                }
+                crate::prelude::println!("weak observed {} values", cnt);
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+}
+
+fn strong_obs_bench_legacy(
     input: &OQueueBenchmarkInput,
     q: &Arc<dyn OQueue<u64>>,
     completed: &Arc<AtomicUsize>,
 ) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
     let n_threads_per_type: usize = input.n_threads / 2;
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
@@ -684,7 +985,6 @@ fn strong_obs_bench(
         let barrier = barrier.clone();
         move || {
             barrier.fetch_sub(1, Ordering::Acquire);
-            // ostd::task::Task::yield_now();
             while barrier.load(Ordering::Relaxed) > 0 {}
             crate::prelude::println!("consumer start");
             for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
@@ -698,6 +998,7 @@ fn strong_obs_bench(
     .spawn();
 
     if input.q_type == "mpmc_oq" || input.q_type == "locking" {
+        info!("strong obs bench starting");
         // Start all consumers
         for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
             let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
@@ -712,7 +1013,7 @@ fn strong_obs_bench(
                     crate::prelude::println!("observer start");
                     let mut cnt = 0;
                     for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
-                        strong_observer.strong_observe();
+                        let _ = strong_observer.strong_observe();
                         cnt += 1;
                     }
                     crate::prelude::println!("strong observed {} values", cnt);
@@ -744,6 +1045,86 @@ fn strong_obs_bench(
             .cpu_affinity(cpu_set)
             .spawn();
         }
+    }
+}
+
+fn strong_obs_bench<Q: ConsumableOQueue<u64>>(
+    input: &OQueueNewBenchmarkInput,
+    q: &Arc<Q>,
+    completed: &Arc<AtomicUsize>,
+) {
+    assert!(
+        input.n_threads % 2 == 0,
+        "weak_obs_bench: bench.n_threads must be even (got {})",
+        input.n_threads
+    );
+    let n_threads_per_type: usize = input.n_threads / 2;
+    let barrier = Arc::new(AtomicUsize::new(input.n_threads));
+
+    // Start all producers
+    for tid in 0..n_threads_per_type {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(tid + 1).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let producer = q.attach_value_producer().unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    producer.produce(0);
+                }
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
+    }
+
+    // Start all consumers
+    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 1).unwrap());
+    ThreadOptions::new({
+        let completed = completed.clone();
+        let consumer = q.attach_consumer().unwrap();
+        let barrier = barrier.clone();
+        move || {
+            barrier.fetch_sub(1, Ordering::Acquire);
+            while barrier.load(Ordering::Relaxed) > 0 {}
+            for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                let _ = consumer.consume();
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+        }
+    })
+    .cpu_affinity(cpu_set)
+    .spawn();
+
+    // Start all strong observers
+    for tid in 0..(n_threads_per_type.wrapping_sub(1)) {
+        let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+        cpu_set.add(ostd::cpu::CpuId::try_from(n_threads_per_type + 2 + tid).unwrap());
+        ThreadOptions::new({
+            let completed = completed.clone();
+            let strong_observer = q
+                .attach_strong_observer(ObservationQuery::new(|v: &u64| *v))
+                .unwrap();
+            let barrier = barrier.clone();
+            move || {
+                barrier.fetch_sub(1, Ordering::Acquire);
+                while barrier.load(Ordering::Relaxed) > 0 {}
+                let mut cnt = 0;
+                for _ in 0..(2 * N_MESSAGES_PER_THREAD) {
+                    let _ = strong_observer.strong_observe();
+                    cnt += 1;
+                }
+                crate::prelude::println!("strong observed {} values", cnt);
+                completed.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .cpu_affinity(cpu_set)
+        .spawn();
     }
 }
 
@@ -793,13 +1174,13 @@ impl OQueueBenchmark {
 
 impl Benchmark for OQueueBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
-        let karg = get_kernel_cmd_line().unwrap();
+        let karg = get_kernel_cmd_line().expect("no kernel command line");
         self.input = Some(OQueueBenchmarkInput {
             n_threads,
             n_messages: N_MESSAGES_PER_THREAD * n_threads,
             q_type: karg
                 .get_module_arg_by_name::<String>("bench", "q_type")
-                .unwrap(),
+                .expect("missing bench.q_type=... on kernel command line"),
         });
     }
 
@@ -1026,23 +1407,98 @@ impl Benchmark for OQueueScalingBenchmark {
     }
 }
 
+struct OQueueNewBenchmark {
+    name: String,
+    test_type: NewBenchType,
+    input: Option<OQueueNewBenchmarkInput>,
+}
+
+struct OQueueNewBenchmarkInput {
+    pub n_threads: usize,
+}
+
+enum NewBenchType {
+    Produce,
+    Consume,
+    Mixed,
+    WeakObs,
+    StrongObs,
+}
+
+impl OQueueNewBenchmark {
+    fn new(name: &str, test_type: NewBenchType) -> Box<Self> {
+        Box::new(Self {
+            name: name.to_string(),
+            input: None,
+            test_type,
+        })
+    }
+
+    fn get_ref_oq(&self) -> OQueueRef<u64> {
+        OQueueRef::new_anonymous(2 << 20)
+    }
+
+    fn get_consumable_oq(&self) -> ConsumableOQueueRef<u64> {
+        ConsumableOQueueRef::new_anonymous(2 << 20)
+    }
+}
+
+impl Benchmark for OQueueNewBenchmark {
+    fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
+        let _karg = get_kernel_cmd_line().expect("no kernel command line");
+        self.input = Some(OQueueNewBenchmarkInput { n_threads });
+    }
+
+    fn run(&self, completed: Arc<AtomicUsize>) {
+        let input = self.input.as_ref().unwrap();
+        match self.test_type {
+            NewBenchType::Produce => {
+                let q = Arc::new(self.get_ref_oq());
+                produce_bench(input, &q, &completed);
+            }
+            NewBenchType::Consume => {
+                let q = Arc::new(self.get_consumable_oq());
+                consume_bench(input, &q, &completed);
+            }
+            NewBenchType::Mixed => {
+                let q = Arc::new(self.get_consumable_oq());
+                mixed_bench_new(input, &q, &completed);
+            }
+            NewBenchType::WeakObs => {
+                let q = Arc::new(self.get_consumable_oq());
+                weak_obs_bench(input, &q, &completed);
+            }
+            NewBenchType::StrongObs => {
+                let q = Arc::new(self.get_consumable_oq());
+                strong_obs_bench(input, &q, &completed);
+            }
+        }
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueBenchmark::new(
-        &produce_bench,
-        "oqueue::produce_bench",
+        &produce_bench_legacy,
+        "oqueue::produce_bench_legacy",
     ));
     bc.register_benchmark(OQueueBenchmark::new(
-        &consume_bench,
-        "oqueue::consume_bench",
-    ));
-    bc.register_benchmark(OQueueBenchmark::new(&mixed_bench, "oqueue::mixed_bench"));
-    bc.register_benchmark(OQueueBenchmark::new(
-        &weak_obs_bench,
-        "oqueue::weak_obs_bench",
+        &consume_bench_legacy,
+        "oqueue::consume_bench_legacy",
     ));
     bc.register_benchmark(OQueueBenchmark::new(
-        &strong_obs_bench,
-        "oqueue::strong_obs_bench",
+        &mixed_bench_legacy,
+        "oqueue::mixed_bench_legacy",
+    ));
+    bc.register_benchmark(OQueueBenchmark::new(
+        &weak_obs_bench_legacy,
+        "oqueue::weak_obs_bench_legacy",
+    ));
+    bc.register_benchmark(OQueueBenchmark::new(
+        &strong_obs_bench_legacy,
+        "oqueue::strong_obs_bench_legacy",
     ));
 
     bc.register_benchmark(OQueueScalingBenchmark::new(
@@ -1056,5 +1512,25 @@ pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueScalingBenchmark::new(
         "oqueue_scaling::weak_obs",
         OQueueScalingBenchmarkType::WeakObserver,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::produce_bench",
+        NewBenchType::Produce,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::consume_bench",
+        NewBenchType::Consume,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::mixed_bench",
+        NewBenchType::Mixed,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::weak_obs_bench",
+        NewBenchType::WeakObs,
+    ));
+    bc.register_benchmark(OQueueNewBenchmark::new(
+        "oqueue::strong_obs_bench",
+        NewBenchType::StrongObs,
     ));
 }
