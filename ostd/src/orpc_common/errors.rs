@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Error module for ORPC
 
-use alloc::string::{String, ToString};
+use alloc::{
+    format,
+    string::{String, ToString},
+};
 use core::any::Any;
 
 use ostd_macros::ostd_error;
 use snafu::Snafu;
 
-use crate::prelude::Box;
+use crate::{panic::CaughtPanic, prelude::Box, stack_info::StackInfo};
 
 /// An error during an RPC call: failure via panic and the server not running.
 ///
@@ -23,7 +26,7 @@ pub enum RPCError {
     /// it cannot be, then the string will be a generic error message.
     #[snafu(display("{message} ({context})"))]
     Panic {
-        /// message associated with this panic
+        /// The formatted panic message, including source file and line.
         message: String,
     },
     /// The server does not exist or is not running. This can happen when a server already crashed or has been shutdown.
@@ -32,14 +35,27 @@ pub enum RPCError {
 }
 
 /// Convert a payload to a string if possible. This simply performs downcasts.
-fn payload_as_str(payload: &dyn Any) -> Option<&str> {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        Some(s)
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        Some(s)
-    } else {
-        None
-    }
+fn payload_as_caught_panic(payload: Box<dyn Any + Send + 'static>) -> Option<CaughtPanic> {
+    // Attempt downcasts to 4 different types: &str, String, CaughtPanic, ostd_test::PanicInfo
+    let payload = payload
+        .downcast::<&str>()
+        .map(|s| CaughtPanic {
+            message: s.to_string(),
+            context: None,
+        })
+        .or_else(|payload| {
+            payload.downcast::<String>().map(|s| CaughtPanic {
+                message: *s,
+                context: None,
+            })
+        })
+        .or_else(|payload| payload.downcast::<CaughtPanic>().map(|c| *c))
+        .or_else(|payload| {
+            payload
+                .downcast::<ostd_test::PanicInfo>()
+                .map(|c| (*c).into())
+        });
+    payload.ok()
 }
 
 impl RPCError {
@@ -47,14 +63,22 @@ impl RPCError {
     ///
     /// This take ownership of the payload to allow it to be implemented allocation free in as many cases as possible.
     /// This is important since allocating on an error path can cause issues.
-    pub fn from_panic(payload: Box<dyn Any>) -> Self {
-        // TODO(#72): The `to_string` call could potentially allocate which could be an issue on the panic path. A better way
-        // to do this may be needed.
-        PanicSnafu {
-            message: payload_as_str(payload.as_ref())
-                .unwrap_or("Non-string panic payload")
-                .to_string(),
+    pub fn from_panic(payload: Box<dyn Any + Send + 'static>) -> Self {
+        let panic = payload_as_caught_panic(payload).unwrap_or_else(|| CaughtPanic {
+            message: "[unknown panic payload]".to_string(),
+            context: None,
+        });
+        let (message, context) = if let Some(context) = panic.context {
+            (panic.message, context)
+        } else {
+            (
+                format!("{} (with error conversion context)", panic.message),
+                StackInfo::new(0),
+            )
+        };
+        RPCError::Panic {
+            message,
+            context: Box::new(context),
         }
-        .build()
     }
 }

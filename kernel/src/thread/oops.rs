@@ -11,25 +11,25 @@
 //! to make Rust panics as a general exception handling mechanism. Handling
 //! exceptions with [`Result`] is more idiomatic.
 
-use alloc::{
-    boxed::Box,
-    format,
-    string::{String, ToString},
-    sync::Arc,
-};
+use alloc::{boxed::Box, format, string::String, sync::Arc};
 use core::{
     result::Result,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ostd::{cpu::PinCurrentCpu, panic, task::disable_preempt};
+use ostd::{
+    panic::{self, CaughtPanic},
+    stack_info::{Location, StackInfo},
+    task::disable_preempt,
+};
 
 use super::Thread;
 
-// TODO: Control the kernel commandline parsing from the kernel crate.
-// In Linux it can be dynamically changed by writing to
-// `/proc/sys/kernel/panic`.
-static PANIC_ON_OOPS: AtomicBool = AtomicBool::new(true);
+// TODO: Control the kernel commandline parsing from the kernel crate. In Linux it can be
+// dynamically changed by writing to `/proc/sys/kernel/panic`.
+/// If true, then the kernel will abort if any part of the system panics. Otherwise, the panic will
+/// unwind and only abort if it is not caught.
+static ABORT_ON_PANIC: AtomicBool = AtomicBool::new(false);
 
 /// The kernel "oops" information.
 pub struct OopsInfo {
@@ -47,7 +47,7 @@ pub struct OopsInfo {
 ///
 /// If the kernel is configured to panic on oops, this function will not return
 /// when a oops happens.
-pub fn catch_panics_as_oops<F, R>(f: F) -> Result<R, OopsInfo>
+pub fn catch_panics_as_oops<F, R>(f: F) -> Result<R, CaughtPanic>
 where
     F: FnOnce() -> R,
 {
@@ -56,9 +56,9 @@ where
     match result {
         Ok(result) => Ok(result),
         Err(err) => {
-            let info = err.downcast::<OopsInfo>().unwrap();
+            let caught_panic = err.downcast::<CaughtPanic>().unwrap();
 
-            log::error!("Oops! {}", info.message);
+            log::error!("Oops! {}", caught_panic);
 
             let count = OOPS_COUNT.fetch_add(1, Ordering::Relaxed);
             if count >= MAX_OOPS_COUNT {
@@ -67,7 +67,7 @@ where
                 panic::abort();
             }
 
-            Err(*info)
+            Err(*caught_panic)
         }
     }
 }
@@ -84,41 +84,37 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     let message = info.message();
 
     if let Some(thread) = Thread::current() {
-        let panic_on_oops = PANIC_ON_OOPS.load(Ordering::Relaxed);
-        if !panic_on_oops && info.can_unwind() {
-            // TODO: eliminate the need for heap allocation.
-            let message = if let Some(location) = info.location() {
-                format!("{} at {}:{}", message, location.file(), location.line())
-            } else {
-                message.to_string()
-            };
-            // Raise the panic and expect it to be caught.
-            panic::begin_panic(Box::new(OopsInfo { message, thread }));
+        let abort_on_panic = ABORT_ON_PANIC.load(Ordering::Relaxed);
+        if !abort_on_panic && info.can_unwind() {
+            // TODO(arthurp): This state capture involves memory allocation. So OOM panics will
+            // probably need to abort. This could be changed to use a special reserved pool of
+            // memory to allow at least some OOM panics to be unwound.
+
+            // skip 3 frames: this function, __ostd_panic_handler, rust_begin_unwind
+            let mut stack_info = StackInfo::new(3);
+            stack_info.location = info.location().map(|l| Location::from_location(l));
+
+            // Raise the panic and expect it to be caught. If this returns, then the catch_unwind is
+            // broken or missing.
+            let r = panic::begin_panic(Box::new(ostd::panic::CaughtPanic {
+                message: format!("{}", message),
+                context: Some(stack_info),
+            }));
         }
     }
 
     let preempt_guard = disable_preempt();
     let thread = Thread::current();
-    let cpu = preempt_guard.current_cpu();
+    let context = StackInfo::new(1);
 
     // Halt the system if the panic is not caught.
-    if let Some(location) = info.location() {
-        log::error!(
-            "Uncaught panic:\n\t{}\n\tat {}:{}\n\ton CPU {} by thread {:?}",
-            message,
-            location.file(),
-            location.line(),
-            cpu.as_usize(),
-            thread,
-        );
-    } else {
-        log::error!(
-            "Uncaught panic:\n\t{}\n\ton CPU {} by thread {:?}",
-            message,
-            cpu.as_usize(),
-            thread,
-        );
-    }
+
+    log::error!(
+        "Uncaught panic:\n\t{}\n\t{}\n\tby thread {:?}",
+        message,
+        context,
+        thread,
+    );
 
     if info.can_unwind() {
         panic::print_stack_trace();
