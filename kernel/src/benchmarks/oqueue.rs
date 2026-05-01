@@ -441,13 +441,17 @@ fn spawn_bench_thread<F>(
     });
 }
 
+struct BenchThreadConfig {
+    pub n_threads: usize,
+    pub n_messages: usize,
+    pub barrier: Arc<AtomicUsize>,
+    pub completed: Arc<AtomicUsize>,
+    pub label: &'static str,
+    pub cpu_offset: usize,
+}
+
 fn run_bench_threads<Setup, Work, Done>(
-    n_threads: usize,
-    n_messages: usize,
-    barrier: Arc<AtomicUsize>,
-    completed: Arc<AtomicUsize>,
-    label: &'static str,
-    cpu_offset: usize,
+    config: BenchThreadConfig,
     mut setup: Setup,
     on_complete: Done,
 ) where
@@ -456,16 +460,17 @@ fn run_bench_threads<Setup, Work, Done>(
     Done: Fn() + Send + Sync + 'static,
 {
     let on_complete = Arc::new(on_complete);
-    for tid in 0..n_threads {
+    for tid in 0..config.n_threads {
         let mut work = setup();
-        let barrier = barrier.clone();
+        let barrier = config.barrier.clone();
+        let completed = config.completed.clone();
         let on_complete = on_complete.clone();
-        let completed = completed.clone();
+        let n_messages = config.n_messages;
         spawn_bench_thread(
-            tid + cpu_offset,
+            tid + config.cpu_offset,
             barrier,
             completed,
-            label,
+            config.label,
             true,
             move || {
                 for _ in 0..n_messages {
@@ -484,12 +489,14 @@ fn produce_bench_legacy(
 ) {
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        barrier,
-        completed.clone(),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_producer().unwrap();
             move || producer.produce(0)
@@ -505,12 +512,14 @@ fn produce_bench<Q: OtherOQueue<u64>>(
 ) {
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        barrier,
-        completed.clone(),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_ref_producer().unwrap();
             move || producer.produce_ref(&0u64)
@@ -532,12 +541,14 @@ fn consume_bench_legacy(
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        barrier,
-        Arc::new(AtomicUsize::new(0)),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier,
+            completed: Arc::new(AtomicUsize::new(0)),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_producer().unwrap();
             move || {
@@ -561,12 +572,14 @@ fn consume_bench_legacy(
 
     let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        consume_barrier,
-        completed.clone(),
-        "consumer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: consume_barrier,
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: 1,
+        },
         || {
             let consumer = q.attach_consumer().unwrap();
             move || {
@@ -583,7 +596,7 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
     completed: &Arc<AtomicUsize>,
 ) {
     // Attach consumers first so the queue knows to retain messages
-    let consumers: Vec<_> = (0..input.n_threads)
+    let _consumers: Vec<_> = (0..input.n_threads)
         .map(|_| q.attach_consumer().unwrap())
         .collect();
 
@@ -593,12 +606,14 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
 
     println!("Populating queue");
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        produce_barrier,
-        Arc::new(AtomicUsize::new(0)),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: produce_barrier,
+            completed: Arc::new(AtomicUsize::new(0)),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_value_producer().unwrap();
             move || {
@@ -621,12 +636,14 @@ fn consume_bench<Q: ConsumableOQueue<u64>>(
 
     let consume_barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        input.n_threads,
-        N_MESSAGES_PER_THREAD,
-        consume_barrier,
-        completed.clone(),
-        "consumer",
-        1,
+        BenchThreadConfig {
+            n_threads: input.n_threads,
+            n_messages: N_MESSAGES_PER_THREAD,
+            barrier: consume_barrier,
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: 1,
+        },
         || {
             let consumer = q.attach_consumer().unwrap();
             move || {
@@ -652,26 +669,32 @@ fn mixed_bench_legacy(
 
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
     run_bench_threads(
-        n_threads_per_type,
-        2 * N_MESSAGES_PER_THREAD,
-        barrier.clone(),
-        completed.clone(),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_producer().unwrap();
-            move || producer.produce(0)
+            move || {
+                producer.produce(0);
+            }
         },
         || {},
     );
 
     run_bench_threads(
-        n_threads_per_type,
-        2 * N_MESSAGES_PER_THREAD,
-        barrier.clone(),
-        completed.clone(),
-        "consumer",
-        n_threads_per_type + 1,
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: n_threads_per_type + 1,
+        },
         || {
             let consumer = q.attach_consumer().unwrap();
             move || {
@@ -697,26 +720,32 @@ fn mixed_bench_new<Q: ConsumableOQueue<u64>>(
     let barrier = Arc::new(AtomicUsize::new(input.n_threads));
 
     run_bench_threads(
-        n_threads_per_type,
-        2 * N_MESSAGES_PER_THREAD,
-        barrier.clone(),
-        completed.clone(),
-        "producer",
-        1,
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "producer",
+            cpu_offset: 1,
+        },
         || {
             let producer = q.attach_value_producer().unwrap();
-            move || producer.produce(0)
+            move || {
+                producer.produce(0);
+            }
         },
         || {},
     );
 
     run_bench_threads(
-        n_threads_per_type,
-        2 * N_MESSAGES_PER_THREAD,
-        barrier.clone(),
-        completed.clone(),
-        "consumer",
-        n_threads_per_type + 1, // offset so consumers go on different CPUs than producers
+        BenchThreadConfig {
+            n_threads: n_threads_per_type,
+            n_messages: 2 * N_MESSAGES_PER_THREAD,
+            barrier: barrier.clone(),
+            completed: completed.clone(),
+            label: "consumer",
+            cpu_offset: n_threads_per_type + 1,
+        },
         || {
             let consumer = q.attach_consumer().unwrap();
             move || {
@@ -1168,7 +1197,6 @@ impl Benchmark for OQueueBenchmark {
 
 enum OQueueScalingBenchmarkType {
     Consumer,
-    ConsumerNew,
     StrongObserver,
     WeakObserver,
 }
@@ -1387,7 +1415,6 @@ struct OQueueNewBenchmark {
 
 struct OQueueNewBenchmarkInput {
     pub n_threads: usize,
-    pub n_messages: usize,
 }
 
 enum NewBenchType {
@@ -1418,10 +1445,9 @@ impl OQueueNewBenchmark {
 
 impl Benchmark for OQueueNewBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
-        let karg = get_kernel_cmd_line().expect("no kernel command line");
+        let _karg = get_kernel_cmd_line().expect("no kernel command line");
         self.input = Some(OQueueNewBenchmarkInput {
             n_threads,
-            n_messages: N_MESSAGES_PER_THREAD * n_threads,
         });
     }
 
