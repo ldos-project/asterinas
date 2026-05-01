@@ -1446,9 +1446,7 @@ impl OQueueNewBenchmark {
 impl Benchmark for OQueueNewBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
         let _karg = get_kernel_cmd_line().expect("no kernel command line");
-        self.input = Some(OQueueNewBenchmarkInput {
-            n_threads,
-        });
+        self.input = Some(OQueueNewBenchmarkInput { n_threads });
     }
 
     fn run(&self, completed: Arc<AtomicUsize>) {
