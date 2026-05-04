@@ -25,7 +25,7 @@ pub mod utils;
 use aster_block::BlockDevice;
 #[cfg(not(baseline_asterinas))]
 #[expect(unused_imports)]
-use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
+use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallLinnOSPlusPolicy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 
@@ -181,11 +181,11 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     setup_data_capture(&members, RAID_MEMBER_NAMES);
 
     // Clone members for Heimdall before they are consumed by the selection policy / RAID init.
-    #[cfg(not(baseline_asterinas))]
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "heimdall", raid_selection = "heimdalllinnosplus")))]
     let members_for_heimdall = members.clone();
 
     // Initialize Heimdall device performance monitor
-    #[cfg(not(baseline_asterinas))]
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "heimdall", raid_selection = "heimdalllinnosplus")))]
     let heimdall = {
         use aster_virtio::device::block::server_traits::BlockIOObservable;
         use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
@@ -234,7 +234,7 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     info!("[raid] creating selection policy");
 
     // Shared weak observer setup for all observer-based policies (LinnOS, LinnOS Plus, Decision Tree)
-    #[cfg(all(not(baseline_asterinas), any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree")))]
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree", raid_selection = "heimdalllinnosplus")))]
     let observers = {
         use aster_virtio::device::block::server_traits::BlockIOObservable;
         use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
@@ -270,8 +270,12 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     #[cfg(all(not(baseline_asterinas), raid_selection = "heimdall"))]
     let selection_policy = HeimdallRoundRobinPolicy::new(members.clone(), heimdall).unwrap();
 
+    // Heimdall + LinnOS Plus Policy
+    #[cfg(all(not(baseline_asterinas), raid_selection = "heimdalllinnosplus"))]
+    let selection_policy = HeimdallLinnOSPlusPolicy::new(members.clone(), heimdall, observers).unwrap();
+
     // Round Robin Policy (explicit or default when no raid_selection is specified)
-    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree", raid_selection = "heimdall")))))]
+    #[cfg(all(not(baseline_asterinas), any(raid_selection = "roundrobin", not(any(raid_selection = "linnos", raid_selection = "linnos_plus", raid_selection = "decision_tree", raid_selection = "heimdall", raid_selection = "heimdalllinnosplus")))))]
     let selection_policy = RoundRobinPolicy::new(members.clone()).unwrap();
 
     // Initialize and Register RAID-1 device

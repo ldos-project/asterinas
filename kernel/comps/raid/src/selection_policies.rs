@@ -562,3 +562,174 @@ impl SelectionPolicy for LinnOSPlusPolicy {
         }
     }
 }
+
+/// Heimdall + LinnOS Plus combined selection policy.
+///
+/// For each candidate device (round-robin order), first checks Heimdall's
+/// asynchronous prediction. If Heimdall says "fast", a LinnOS Plus neural
+/// network inference is performed as a second gate. Only if both predict
+/// "fast" is the device selected. If no device passes both checks, falls
+/// back to round-robin.
+#[orpc_server]
+pub struct HeimdallLinnOSPlusPolicy {
+    read_cursor: AtomicUsize,
+    members: Vec<Arc<dyn BlockDevice>>,
+    heimdall: Arc<Heimdall>,
+    observers: Vec<Mutex<ostd::orpc::oqueue::WeakObserver<BlockDeviceCompletionStats>>>,
+    hidden1_weights: Vec<[[f32; 8]; 31]>,
+    hidden1_biases: Vec<[f32; 8]>,
+    hidden2_weights: Vec<[[f32; 8]; 8]>,
+    hidden2_biases: Vec<[f32; 8]>,
+    output_weights: Vec<[[f32; 2]; 8]>,
+    output_biases: Vec<[f32; 2]>,
+}
+
+impl core::fmt::Debug for HeimdallLinnOSPlusPolicy {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HeimdallLinnOSPlusPolicy")
+            .field("read_cursor", &self.read_cursor)
+            .field("members", &self.members)
+            .field(
+                "observers",
+                &format_args!("[{} observers]", self.observers.len()),
+            )
+            .finish()
+    }
+}
+
+impl HeimdallLinnOSPlusPolicy {
+    pub fn new(
+        members: Vec<Arc<dyn BlockDevice>>,
+        heimdall: Arc<Heimdall>,
+        observers: Vec<Mutex<ostd::orpc::oqueue::WeakObserver<BlockDeviceCompletionStats>>>,
+    ) -> Result<Arc<Self>, Error> {
+        use crate::linnos_plus_weights::{
+            HIDDEN1_BIASES, HIDDEN1_WEIGHTS, HIDDEN2_BIASES, HIDDEN2_WEIGHTS, OUTPUT_BIASES,
+            OUTPUT_WEIGHTS,
+        };
+
+        let num_devices = members.len();
+
+        let hidden1_weights: Vec<[[f32; 8]; 31]> =
+            (0..num_devices).map(|i| *HIDDEN1_WEIGHTS[i]).collect();
+        let hidden1_biases: Vec<[f32; 8]> =
+            (0..num_devices).map(|i| *HIDDEN1_BIASES[i]).collect();
+        let hidden2_weights: Vec<[[f32; 8]; 8]> =
+            (0..num_devices).map(|i| *HIDDEN2_WEIGHTS[i]).collect();
+        let hidden2_biases: Vec<[f32; 8]> =
+            (0..num_devices).map(|i| *HIDDEN2_BIASES[i]).collect();
+        let output_weights: Vec<[[f32; 2]; 8]> =
+            (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
+        let output_biases: Vec<[f32; 2]> =
+            (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
+
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            read_cursor: AtomicUsize::new(0),
+            members,
+            heimdall,
+            observers,
+            hidden1_weights,
+            hidden1_biases,
+            hidden2_weights,
+            hidden2_biases,
+            output_weights,
+            output_biases,
+        });
+
+        Ok(server)
+    }
+}
+
+impl SelectionPolicy for HeimdallLinnOSPlusPolicy {
+    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+        let num_devices = self.members.len();
+        let start_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
+        let num_pages = submitted.num_pages();
+
+        // Try each device once, starting from the round-robin cursor.
+        for offset in 0..num_devices {
+            let device_idx = (start_idx + offset) % num_devices;
+
+            // First gate: Heimdall asynchronous prediction.
+            if self.heimdall.is_device_fast(device_idx) {
+                return Ok(self.members[device_idx].clone());
+            }
+
+            // Second gate: LinnOS Plus neural network inference.
+            let observer = self.observers[device_idx].lock();
+            let completion_trace = observer
+                .weak_observe_recent(4)
+                .expect("Failed to observe completion trace");
+
+            // Build the 31-element input feature vector (same as LinnOS Plus)
+            let mut input = [0.0f32; 31];
+
+            let current_outstanding = num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
+            input[0] = ((current_outstanding / 100) % 10) as f32;
+            input[1] = ((current_outstanding / 10) % 10) as f32;
+            input[2] = (current_outstanding % 10) as f32;
+
+            for (i, trace_entry) in completion_trace.iter().enumerate().take(4) {
+                let Some(trace_entry) = trace_entry else {
+                    continue;
+                };
+                let outstanding = trace_entry.outstanding_pages as usize;
+                let latency_us = trace_entry.latency_us as usize;
+                let base = 3 + i * 7;
+
+                input[base] = ((outstanding / 100) % 10) as f32;
+                input[base + 1] = ((outstanding / 10) % 10) as f32;
+                input[base + 2] = (outstanding % 10) as f32;
+
+                input[base + 3] = ((latency_us / 1000) % 10) as f32;
+                input[base + 4] = ((latency_us / 100) % 10) as f32;
+                input[base + 5] = ((latency_us / 10) % 10) as f32;
+                input[base + 6] = (latency_us % 10) as f32;
+            }
+
+            // Hidden layer 1: input (31) x hidden1_weights (31x8) + bias (8) -> hidden1_out (8)
+            let h1_weights = &self.hidden1_weights[device_idx];
+            let h1_bias = &self.hidden1_biases[device_idx];
+            let mut hidden1_out = [0.0f32; 8];
+            for j in 0..8 {
+                let mut sum = h1_bias[j];
+                for i in 0..31 {
+                    sum += input[i] * h1_weights[i][j];
+                }
+                hidden1_out[j] = if sum > 0.0 { sum } else { 0.0 };
+            }
+
+            // Hidden layer 2: hidden1_out (8) x hidden2_weights (8x8) + bias (8) -> hidden2_out (8)
+            let h2_weights = &self.hidden2_weights[device_idx];
+            let h2_bias = &self.hidden2_biases[device_idx];
+            let mut hidden2_out = [0.0f32; 8];
+            for j in 0..8 {
+                let mut sum = h2_bias[j];
+                for i in 0..8 {
+                    sum += hidden1_out[i] * h2_weights[i][j];
+                }
+                hidden2_out[j] = if sum > 0.0 { sum } else { 0.0 };
+            }
+
+            // Output layer: hidden2_out (8) x output_weights (8x2) + bias (2) -> output (2)
+            let out_weights = &self.output_weights[device_idx];
+            let out_bias = &self.output_biases[device_idx];
+            let mut output = [out_bias[0], out_bias[1]];
+            for k in 0..2 {
+                for j in 0..8 {
+                    output[k] += hidden2_out[j] * out_weights[j][k];
+                }
+            }
+
+            // Argmax: output[0] < output[1] means fast, otherwise slow
+            if output[0] < output[1] {
+                return Ok(self.members[device_idx].clone());
+            }
+        }
+
+        // All devices failed both checks — fall back to round-robin.
+        let fallback_idx = start_idx % num_devices;
+        Ok(self.members[fallback_idx].clone())
+    }
+}
