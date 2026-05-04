@@ -135,7 +135,8 @@ $(INITRAMFS)/usr/local:
 	@mkdir -p $@
 	@cp -r /usr/local/nginx $@
 	@cp -r /usr/local/redis $@
-	@cp -r /usr/local/memcached $@
+	@mkdir -p $@/memcached/bin
+	@cp -L $$(which memcached) $@/memcached/bin/memcached
 
 .PHONY: $(INITRAMFS)/test
 $(INITRAMFS)/test:
