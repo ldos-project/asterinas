@@ -2,13 +2,17 @@
 
 //! Panic support.
 
-use core::ffi::c_void;
+use alloc::string::String;
+use core::{ffi::c_void, fmt::Display};
 
 pub use unwinding::panic::{begin_panic, catch_unwind};
 
 use crate::{
     arch::qemu::{QemuExitCode, exit_qemu},
+    cpu::CpuId,
     early_print, early_println,
+    stack_info::StackInfo,
+    stacktrace::CapturedStackTrace,
     sync::SpinLock,
 };
 
@@ -20,6 +24,45 @@ use unwinding::abi::{
     _Unwind_Backtrace, _Unwind_FindEnclosingFunction, _Unwind_GetGR, _Unwind_GetIP, UnwindContext,
     UnwindReasonCode,
 };
+
+/// A panic payload that carries a human-readable message and context information at the panic site.
+#[derive(Debug, Clone)]
+pub struct CaughtPanic {
+    /// The formatted panic message. This does not include the file and line information as that is
+    /// in the context below.
+    pub message: String,
+    /// Stack trace captured at the panic site.
+    pub context: Option<StackInfo>,
+}
+
+impl From<ostd_test::PanicInfo> for CaughtPanic {
+    fn from(value: ostd_test::PanicInfo) -> Self {
+        Self {
+            message: value.message,
+            context: Some(StackInfo {
+                stack_trace: CapturedStackTrace::empty(),
+                task_id: None,
+                cpu_id: CpuId::current_racy(),
+                server_id: None,
+                location: Some(crate::stack_info::Location {
+                    file: value.file.into(),
+                    line: value.line as u32,
+                    column: value.col as u32,
+                }),
+            }),
+        }
+    }
+}
+
+impl Display for CaughtPanic {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(context) = &self.context {
+            f.write_fmt(format_args!("Panic: {} ({})", self.message, context))
+        } else {
+            f.write_fmt(format_args!("Panic: {} (no context)", self.message))
+        }
+    }
+}
 
 /// The default panic handler for OSTD based kernels.
 ///

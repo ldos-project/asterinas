@@ -6,7 +6,7 @@ use crate::util::{get_kernel_crate, new_command_checked_exists};
 
 pub const COMMON_CARGO_ARGS: &[&str] = &[
     "-Zbuild-std=core,alloc,compiler_builtins",
-    "-Zbuild-std-features=compiler-builtins-mem",
+    "-Zbuild-std-features=compiler-builtins-mem,panic-unwind",
 ];
 
 pub const DEFAULT_TARGET_RELPATH: &str = "osdk";
