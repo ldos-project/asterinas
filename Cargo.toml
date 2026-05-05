@@ -91,10 +91,13 @@ while_let_loop = "allow"
 snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
 
 [profile.dev]
+# WARNING: This setting does not apply to no_std code. That code is forced to use unwind by osdk
+# passing `-C panic=unwind` to ructc.
 panic = "unwind"
 
 [profile.release]
 lto = "thin"
+# WARNING: See above
 panic = "unwind"
 
 # Release profile configuration with Link Time Optimization (LTO) enabled.
@@ -107,6 +110,7 @@ panic = "unwind"
 inherits = "release"
 lto = true
 # lto can only be enabled when panic strategy is abort
+# TODO(arthurp): See `panic = "unwind"` notes above. This may break LTO.
 panic = "abort"
 # set codegen-units as the smallest number
 codegen-units = 1
