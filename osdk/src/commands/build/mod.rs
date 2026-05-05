@@ -214,8 +214,14 @@ fn build_kernel_elf(
         &rustc_linker_script_arg,
         "-C relocation-model=static",
         "-C relro-level=off",
-        // Even if we disabled unwinding on panic, we need to specify this to show backtraces.
-        "-C force-unwind-tables=yes",
+        // OSDK kernels always support unwinding on panic. Ideally, it would be optional, however
+        // this has to be forced because the underlying no_std target will force the panic mode to
+        // abort.
+        //
+        // NOTE: This is a difference from upstream Asterinas because ORPC uses catch_unwind to
+        // enable failure isolation between servers. Without this, that isolation will work
+        // *sometimes*, but not always.
+        "-C panic=unwind",
         // This is to let rustc know that "cfg(ktest)" is our well-known configuration.
         // See the [Rust Blog](https://blog.rust-lang.org/2024/05/06/check-cfg.html) for details.
         "--check-cfg cfg(ktest)",
