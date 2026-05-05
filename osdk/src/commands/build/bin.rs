@@ -217,7 +217,7 @@ fn install_setup_with_arch(
         SetupInstallArch::Other(path) => path.to_str().unwrap(),
     });
     cmd.arg("-Zbuild-std=core,alloc,compiler_builtins");
-    cmd.arg("-Zbuild-std-features=compiler-builtins-mem");
+    cmd.arg("-Zbuild-std-features=compiler-builtins-mem,panic-unwind");
     // Specify the build target directory to avoid cargo running
     // into a deadlock reading the workspace files.
     cmd.arg("--target-dir").arg(target_dir.as_os_str());
