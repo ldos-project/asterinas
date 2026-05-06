@@ -9,6 +9,7 @@ edition = "2024"
 component = { path = "../../libs/comp-sys/component" }
 aster-logger = { path = "../logger" }
 aster-block = { path = "../block" }
+aster-time = { path = "../time" }
 ostd = { path = "../../../ostd" }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
 minicbor = { version = "2.2", default-features = false, features = ["derive", "alloc"] }

@@ -47,7 +47,13 @@ pub(crate) fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevic
                 virtio_block_device.handle_requests();
             }
         };
-        crate::ThreadOptions::new(task_fn).spawn();
+        // Elevate to RealTime 50 so these I/O threads are not starved by other RealTime threads.
+        crate::ThreadOptions::new(task_fn)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None },
+            })
+            .spawn();
         Ok(device)
     } else {
         return_errno_with_message!(Errno::ENOENT, "Device does not exist")
@@ -76,26 +82,42 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
+    // single disk benchmark
+    // let nvme_device_name = "raid0";
+    // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
+    //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
+    //     let target_path = FsPath::try_from("/raid1").unwrap();
+    //     self::rootfs::mount_fs_at(nvme_fs, &target_path).unwrap();
+    //     info!("[kernel] Mounted NVMe fs at {:?} ", target_path);
+    // } else {
+    //     error!("[kernel] Failed to start NVMe block device '{}'", nvme_device_name);
+    // }
+    // return;
+
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-        let raid_fs = Ext2::open(raid).unwrap();
-        let target_path = FsPath::try_from("/raid1").unwrap();
-        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
-            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+
+        match Ext2::open(raid) {
+            Ok(raid_fs) => {
+                let target_path = FsPath::try_from("/raid1").unwrap();
+                self::rootfs::mount_fs_at(raid_fs, &target_path).unwrap();
+                info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+            }
+            Err(err) => {
+                error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+            }
         }
-        info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
     } else {
         error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
     }
 }
 
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
-    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
-    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
+    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
@@ -104,10 +126,13 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
 
     // Start the RAID-1's underlying member devices.
-    for &name in RAID_MEMBER_NAMES {
+    for (index, &name) in RAID_MEMBER_NAMES.iter().enumerate() {
         match start_block_device(name) {
             Ok(device) => {
                 info!("[raid] member '{}' online", name);
+                if let Some(virtio_dev) = device.downcast_ref::<VirtIoBlockDevice>() {
+                    virtio_dev.set_device_index(index as u64);
+                }
                 members.push(device);
             }
             Err(err) => {
@@ -119,6 +144,9 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
             }
         }
     }
+
+    // #[cfg(not(baseline_asterinas))]
+    setup_data_capture(&members, RAID_MEMBER_NAMES);
 
     #[cfg(not(baseline_asterinas))]
     info!("[raid] creating selection policy");
@@ -147,11 +175,123 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     };
 
-    crate::ThreadOptions::new(task_fn).spawn();
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
         raid_device_name
     );
     Ok(())
+}
+
+/// Set up data capture for the RAID-1 member devices' bio completion stats.
+///
+/// This starts the capture block device and uses the legacy `DataCaptureDevice` /
+/// `DataCaptureFile` server to observe each member's `bio_completion_oqueue` and write the
+/// serialized data to disk.
+#[cfg(not(baseline_asterinas))]
+fn setup_data_capture(
+    members: &[Arc<dyn BlockDevice>],
+    member_names: &[&str],
+) {
+    use aster_block::{SECTOR_SIZE, bio::BlockDeviceCompletionStats};
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+    use mariposa_data_capture::{
+        DataCaptureDevice as _, DataCaptureDeviceServer, DataCaptureFile as _, FileDescriptor,
+        ObserverRegistration,
+    };
+    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+
+    // Start the capture block device
+    // let capture_dev = match start_block_device("capture") {
+    //     Ok(dev) => dev,
+    //     Err(e) => {
+    //         error!("[capture] failed to start capture device: {:?}", e);
+    //         return;
+    //     }
+    // };
+    let device_name = "capture";
+    let capture_dev = aster_block::get_device(device_name).unwrap_or_else(|| {
+        panic!("[capture] failed to get capture device '{}'", device_name);
+    });
+    let cloned_device = capture_dev.clone();
+    let task_fn = move || {
+        info!("[capture] spawn the virt-io-block thread for the capturing device");
+        let virtio_block_device = cloned_device.downcast_ref::<VirtIoBlockDevice>().unwrap();
+        loop {
+            virtio_block_device.handle_requests();
+        }
+    };
+    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
+        rt_prio: 50.try_into().unwrap(), 
+        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
+    }).spawn();
+
+
+    // Display the capture device backend info
+    let capture_size = capture_dev.metadata().nr_sectors * SECTOR_SIZE;
+    info!(
+        "[capture] capture device online, size = {} bytes",
+        capture_size
+    );
+
+    // Create the data capture device and file
+    let capture_device = DataCaptureDeviceServer::new(capture_dev.clone());
+    let capture_path = ostd::path!(data_capture.bio_completion);
+    let capture_file = match capture_device.new_file(FileDescriptor { length: 65536, path: capture_path.clone() }) {  // 512MB * 1024 * 1024 / 2 / 4096  (using half of the space, and number of pages here)
+        Ok(builder) => builder.build::<BlockDeviceCompletionStats>(),
+        Err(e) => {
+            error!("[capture] failed to create capture file: {:?}", e);
+            return;
+        }
+    };
+
+    // Attach a strong observer to each RAID member's bio_completion_oqueue
+    // and register it directly with the capture file.
+    for (member, &name) in members.iter().zip(member_names.iter()) {  // (member, name)
+        let virtio_dev = member.downcast_ref::<VirtIoBlockDevice>().unwrap();
+        let oqueue = virtio_dev.bio_completion_oqueue();
+        let observer_path = capture_path.append(&ostd::path!({name}));
+        match oqueue.attach_strong_observer(ObservationQuery::identity()) {
+            Ok(observer) => {
+                let registration = ObserverRegistration { path: observer_path, observer };
+                if let Err(e) = capture_file.register_observer(registration) {
+                    error!("[capture] failed to register observer for '{}': {:?}", name, e);
+                } else {
+                    info!("[capture] attached observer to '{}'", name);
+                }
+            }
+            Err(e) => {
+                error!("[capture] failed to attach observer to '{}': {:?}", name, e);
+            }
+        }
+    }
+
+    // Enable capturing
+    if let Err(e) = capture_file.start() {
+        error!("[capture] failed to enable capturing: {:?}", e);
+    }
+
+    // Spawn a timer task that sends TimedFlush every 10 seconds to trigger
+    // a flush if data has been idle for that long.
+    let capture_file_for_timer = capture_file.clone();
+    crate::ThreadOptions::new(move || {
+        use core::time::Duration;
+        use ostd::timer::Jiffies;
+        loop {
+            let target = Jiffies::elapsed().as_duration() + Duration::from_secs(5);
+            while Jiffies::elapsed().as_duration() < target {
+                ostd::task::Task::yield_now();
+            }
+            if let Err(e) = capture_file_for_timer.timed_flush() {
+                log::error!("[capture] timed_flush failed: {:?}", e);
+            }
+        }
+    })
+    .spawn();
+
+    info!("[capture] data capture enabled for bio completion stats");
 }
