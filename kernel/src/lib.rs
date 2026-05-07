@@ -166,6 +166,8 @@ fn init_thread() {
     let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
     set_kernel_cmd_line(karg.clone());
 
+    thread::oops::configure();
+
     let huge_mapping_enabled = karg
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
         .unwrap_or(false);
