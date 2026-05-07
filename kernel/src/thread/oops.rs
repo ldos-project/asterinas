@@ -24,12 +24,30 @@ use ostd::{
 };
 
 use super::Thread;
+use crate::kcmdline::get_kernel_cmd_line;
 
 // TODO: Control the kernel commandline parsing from the kernel crate. In Linux it can be
 // dynamically changed by writing to `/proc/sys/kernel/panic`.
 /// If true, then the kernel will abort if any part of the system panics. Otherwise, the panic will
 /// unwind and only abort if it is not caught.
 static ABORT_ON_PANIC: AtomicBool = AtomicBool::new(false);
+
+/// If abort-on-panic is true, then the kernel will abort if any part of the system panics (even
+/// inside an ORPC server). Otherwise, the panic will unwind and only abort if it is not caught.
+/// This defaults to `false`.
+pub fn set_abort_on_panic(v: bool) {
+    ABORT_ON_PANIC.store(v, Ordering::SeqCst);
+}
+
+/// Configure the panic system. It will work before this is called. This just configures it based on
+/// any user options.
+pub(crate) fn configure() {
+    set_abort_on_panic(
+        get_kernel_cmd_line()
+            .and_then(|k| k.get_module_arg_by_name("kernel", "abort_on_panic"))
+            .unwrap_or(false),
+    );
+}
 
 /// The kernel "oops" information.
 pub struct OopsInfo {
