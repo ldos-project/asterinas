@@ -19,6 +19,31 @@ OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
+PHYSICAL_RAID=${PHYSICAL_RAID:-"off"}
+
+# Configure RAID drive sources. With PHYSICAL_RAID=on/true, pass real NVMe
+# partitions through to the guest. Otherwise, fall back to 1GB ext2 image
+# files so the script works on machines (e.g. CI runners) that don't have
+# the expected physical disks.
+if [ "$PHYSICAL_RAID" = "on" ] || [ "$PHYSICAL_RAID" = "true" ]; then
+    RAID_DRIVE_R0_ARG="-drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1,cache=directsync"
+    RAID_DRIVE_R1_ARG="-drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1,cache=directsync"
+    RAID_DRIVE_R2_ARG="-drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1,cache=directsync"
+else
+    RAID_IMG_DIR="./test/build"
+    mkdir -p "$RAID_IMG_DIR"
+    for i in 0 1 2; do
+        RAID_IMG="$RAID_IMG_DIR/raid${i}.img"
+        if [ ! -f "$RAID_IMG" ]; then
+            echo "[$1] Creating 1GB ext2 image $RAID_IMG" 1>&2
+            truncate -s 1G "$RAID_IMG"
+            mkfs.ext2 -q -F "$RAID_IMG"
+        fi
+    done
+    RAID_DRIVE_R0_ARG="-drive if=none,format=raw,id=r0,file=$RAID_IMG_DIR/raid0.img,cache=writeback"
+    RAID_DRIVE_R1_ARG="-drive if=none,format=raw,id=r1,file=$RAID_IMG_DIR/raid1.img,cache=writeback"
+    RAID_DRIVE_R2_ARG="-drive if=none,format=raw,id=r2,file=$RAID_IMG_DIR/raid2.img,cache=writeback"
+fi
 
 SSH_RAND_PORT=${SSH_PORT:-61541}
 NGINX_RAND_PORT=${NGINX_PORT:-8080}
@@ -91,9 +116,9 @@ COMMON_QEMU_ARGS="\
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
     -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
     -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
-    -drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1,cache=directsync \
-    -drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1,cache=directsync \
-    -drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1,cache=directsync \
+    $RAID_DRIVE_R0_ARG \
+    $RAID_DRIVE_R1_ARG \
+    $RAID_DRIVE_R2_ARG \
     -drive if=none,format=raw,id=cap0,file=./dataset/capture.raw,cache=writeback \
 "
 
