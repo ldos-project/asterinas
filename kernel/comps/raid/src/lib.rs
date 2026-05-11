@@ -283,8 +283,6 @@ impl Raid1Device {
             let status =
                 self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
             parent.complete(status);
-            // let status = BioStatus::Complete;
-            // parent.complete(status);
         }
     }
 
