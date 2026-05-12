@@ -78,6 +78,6 @@ pub enum VirtioDeviceError {
 
 impl From<QueueError> for VirtioDeviceError {
     fn from(_: QueueError) -> Self {
-        QueueUnknownErrorSnafu.build()
+        QueueUnknownSnafu.build()
     }
 }

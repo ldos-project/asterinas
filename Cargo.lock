@@ -354,6 +354,7 @@ dependencies = [
  "int-to-c-enum",
  "log",
  "ostd",
+ "snafu",
  "spin",
  "tdx-guest",
  "typeflags-util",

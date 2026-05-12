@@ -24,7 +24,7 @@ use ostd::{
 
 use super::{InputConfigSelect, QUEUE_EVENT, QUEUE_STATUS, VirtioInputConfig, VirtioInputEvent};
 use crate::{
-    device::{QueueUnknownErrorSnafu, VirtioDeviceError},
+    device::{QueueUnknownSnafu, VirtioDeviceError},
     dma_buf::DmaBuf,
     queue::VirtQueue,
     transport::VirtioTransport,
@@ -100,7 +100,7 @@ impl InputDevice {
                     assert_eq!(value, i as u16);
                 }
                 Err(_) => {
-                    return Err(QueueUnknownErrorSnafu.build());
+                    return Err(QueueUnknownSnafu.build());
                 }
             }
         }

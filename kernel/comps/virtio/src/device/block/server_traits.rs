@@ -2,7 +2,7 @@
 
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
-    oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef},
+    oqueue::{ConsumableOQueueRef, OQueueRef},
     orpc_trait,
 };
 
