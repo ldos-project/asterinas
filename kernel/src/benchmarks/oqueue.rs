@@ -828,13 +828,13 @@ fn weak_observer_bench_legacy(
                 n_messages: 2 * N_MESSAGES_PER_THREAD,
                 barrier: barrier.clone(),
                 completed: completed.clone(),
-                label: "weak_observer",
+                label: "consumer",
                 cpu_offset: n_threads_per_type + 2,
             },
             || {
-                let weak_observer = q.attach_consumer().unwrap();
+                let consumer = q.attach_consumer().unwrap();
                 move || {
-                    let _ = weak_observer.consume();
+                    let _ = consumer.consume();
                 }
             },
             || {},
@@ -1159,6 +1159,11 @@ impl Benchmark for OQueueScalingBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
         self.n_threads = n_threads;
     }
+    // large number of producers pushing a fixed # of msgs with:
+    //  1 consumer + 0 strong observer + 0 weak observer
+    //  0 consumer + 1 strong observer + 0 weak observer
+    //  0 consumer + 0 strong observer + 1 weak observer
+    // measure producer throughput (and latency?)
 
     fn run(&self, completed: Arc<AtomicUsize>) {
         let n_threads = self.n_threads;
