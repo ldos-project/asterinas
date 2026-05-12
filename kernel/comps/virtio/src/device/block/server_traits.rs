@@ -2,24 +2,9 @@
 
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::orpc::{
-    errors::RPCError,
-    oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueError, OQueueRef},
+    oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef},
     orpc_trait,
 };
-
-use crate::device::VirtioDeviceError;
-
-impl From<RPCError> for VirtioDeviceError {
-    fn from(value: RPCError) -> Self {
-        VirtioDeviceError::RPCError(value)
-    }
-}
-
-impl From<OQueueError> for VirtioDeviceError {
-    fn from(value: OQueueError) -> Self {
-        VirtioDeviceError::OQueueError(value)
-    }
-}
 
 #[orpc_trait]
 pub trait BlockIOObservable {
