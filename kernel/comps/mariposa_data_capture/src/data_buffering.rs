@@ -126,7 +126,7 @@ impl ChunkingWriteWrapper {
         let mut writer = bio_segment.writer().expect("segment direction known");
         let n_written = writer.write(&mut raw_data.into());
         writer.fill(0xffu8);
-        let _ = self
+        let waiter = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
         waiter.wait();

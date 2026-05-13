@@ -119,7 +119,6 @@ COMMON_QEMU_ARGS="\
     $RAID_DRIVE_R0_ARG \
     $RAID_DRIVE_R1_ARG \
     $RAID_DRIVE_R2_ARG \
-    -drive if=none,format=raw,id=cap0,file=./dataset/capture.raw,cache=writeback \
 "
 
 if [ "$1" = "iommu" ]; then
@@ -145,7 +144,6 @@ QEMU_ARGS="\
     -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=d1,serial=capture_legacy,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-    -device virtio-blk-pci,bus=pcie.0,addr=0xd,drive=cap0,serial=capture_raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
     -device virtconsole,chardev=mux \
@@ -163,7 +161,6 @@ MICROVM_QEMU_ARGS="\
     -device virtio-blk-device,drive=r1,serial=raid1 \
     -device virtio-blk-device,drive=d0,serial=capture \
     -device virtio-blk-device,drive=d1,serial=capture_legacy \
-    -device virtio-blk-device,drive=cap0,serial=capture_raid1 \
     -device virtio-keyboard-device \
     -device virtio-net-device,netdev=net01 \
     -device virtio-serial-device \

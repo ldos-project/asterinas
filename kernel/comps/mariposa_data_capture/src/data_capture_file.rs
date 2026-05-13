@@ -145,22 +145,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
-                    DataCaptureFileCommand::FlushAll => {
-                        data_buf_handler.flush_all()?;
-                    }
-                    DataCaptureFileCommand::TimedFlush => {
-                        if need_flush {
-                            if let Some(last_us) = latest_data_observed_us {
-                                let now_us = read_monotonic_time().as_micros() as u64;
-                                if now_us.saturating_sub(last_us) > 5000000 {
-                                    log::info!("[capture] Timed flush triggered after {} seconds of inactivity", (now_us - last_us) as f64 / 1_000_000.0);
-                                    data_buf_handler.flush_all()?;
-                                    need_flush = false;
-                                    log::info!("[capture] Timed flush completed");
-                                }
-                            }
-                        }
-                    }
                     DataCaptureFileCommand::Stop => {
                         data_buf_handler.sync()?;
                         self.server
@@ -199,12 +183,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         data_buf_handler.write_value(&v);
                         latest_data_observed_us = Some(read_monotonic_time().as_micros() as u64);
                         need_flush = true;
-                        // data_buf_handler.flush_if_needed()?;
-                        if data_buf_handler.data_buf.len() % (32 * 1024) == 0 {  // 32 * 1024
-                            log::info!("Captured Data from OQueue to Capture Buffer, size of buffer: {}, capacity: {}",
-                                data_buf_handler.data_buf.len(),
-                                data_buf_handler.data_buf.data.capacity());
-                        }
                         if data_buf_handler.current_bid == self.end_bid {
                             log::warn!("Data capture ran out of space.");
                         }
