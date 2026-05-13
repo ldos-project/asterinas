@@ -13,36 +13,44 @@
 #  - VSOCK: "off" or "on";
 #  - SMP: number of CPUs;
 #  - MEM: amount of memory, e.g. "8G";
-#  - VNC_PORT: VNC port, default is "42".
+#  - VNC_PORT: VNC port, default is "42";
+#  - RAID_DEVICES: comma-separated list of three block devices for RAID, e.g.
+#    "/dev/sda,/dev/sdb,/dev/sdc"; if unset or invalid, image files are used.
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
-PHYSICAL_RAID=${PHYSICAL_RAID:-"off"}
-
-# Configure RAID drive sources. With PHYSICAL_RAID=on/true, pass real NVMe
-# partitions through to the guest. Otherwise, fall back to 1GB ext2 image
-# files so the script works on machines (e.g. CI runners) that don't have
-# the expected physical disks.
-if [ "$PHYSICAL_RAID" = "on" ] || [ "$PHYSICAL_RAID" = "true" ]; then
-    RAID_DRIVE_R0_ARG="-drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1,cache=directsync"
-    RAID_DRIVE_R1_ARG="-drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1,cache=directsync"
-    RAID_DRIVE_R2_ARG="-drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1,cache=directsync"
+# Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
+# exactly three existing block devices (e.g.
+# RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
+# If unset or any device path is invalid, 1GB ext2 image files are used instead.
+IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "${RAID_DEVICES:-}"
+if [ -n "$RAID_DEV_0" ] && [ -n "$RAID_DEV_1" ] && [ -n "$RAID_DEV_2" ] && \
+   [ -z "$RAID_DEV_EXTRA" ] && \
+   [ -e "$RAID_DEV_0" ] && [ -e "$RAID_DEV_1" ] && [ -e "$RAID_DEV_2" ]; then
+    RAID_CACHE="directsync"
 else
+    if [ -n "$RAID_DEVICES" ]; then
+        echo "[$1] Warning: RAID_DEVICES='$RAID_DEVICES' is invalid or a device does not exist; falling back to image files." 1>&2
+    fi
     RAID_IMG_DIR="./test/build"
     mkdir -p "$RAID_IMG_DIR"
-    for i in 0 1 2; do
-        RAID_IMG="$RAID_IMG_DIR/raid${i}.img"
+    RAID_DEV_0="$RAID_IMG_DIR/raid0.img"
+    if [ ! -f "$RAID_DEV_0" ]; then
+        echo "[$1] Creating 1GB ext2 image $RAID_DEV_0" 1>&2
+        truncate -s 1G "$RAID_DEV_0"
+        mkfs.ext2 -q -F "$RAID_DEV_0"
+    fi
+    RAID_DEV_1="$RAID_IMG_DIR/raid1.img"
+    RAID_DEV_2="$RAID_IMG_DIR/raid2.img"
+    for RAID_IMG in "$RAID_DEV_1" "$RAID_DEV_2"; do
         if [ ! -f "$RAID_IMG" ]; then
-            echo "[$1] Creating 1GB ext2 image $RAID_IMG" 1>&2
-            truncate -s 1G "$RAID_IMG"
-            mkfs.ext2 -q -F "$RAID_IMG"
+            echo "[$1] Copying $RAID_DEV_0 to $RAID_IMG" 1>&2
+            cp "$RAID_DEV_0" "$RAID_IMG"
         fi
     done
-    RAID_DRIVE_R0_ARG="-drive if=none,format=raw,id=r0,file=$RAID_IMG_DIR/raid0.img,cache=writeback"
-    RAID_DRIVE_R1_ARG="-drive if=none,format=raw,id=r1,file=$RAID_IMG_DIR/raid1.img,cache=writeback"
-    RAID_DRIVE_R2_ARG="-drive if=none,format=raw,id=r2,file=$RAID_IMG_DIR/raid2.img,cache=writeback"
+    RAID_CACHE="writeback"
 fi
 
 SSH_RAND_PORT=${SSH_PORT:-61541}
@@ -116,9 +124,9 @@ COMMON_QEMU_ARGS="\
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
     -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
     -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
-    $RAID_DRIVE_R0_ARG \
-    $RAID_DRIVE_R1_ARG \
-    $RAID_DRIVE_R2_ARG \
+    -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
 "
 
 if [ "$1" = "iommu" ]; then
