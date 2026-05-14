@@ -49,15 +49,13 @@ use crate::{
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
 pub trait Server: Any + Sync + Send + 'static {
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because generated code must
-    /// use it.
-    ///
-    /// Get a reference to the struct implementing all the fundamental server operations. This is effectively the base
-    /// class pointer of this server.
-    #[doc(hidden)]
+    /// Get a reference to the struct exposing all the fundamental server operations. This is
+    /// effectively the base class pointer of this server.
     fn orpc_server_base(&self) -> &ServerBase;
 }
 
+/// The next server ID to assign. This starts at 1, to allow the ID to be stored in
+/// [`NonZeroUsize`].
 static NEXT_SERVER_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// The information and state included in every server. The name comes form it being the "base class" state for all
@@ -97,7 +95,7 @@ impl ServerBase {
     ///
     /// Returns true if the server was aborted.
     #[doc(hidden)]
-    pub fn is_aborted(&self) -> bool {
+    fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::Relaxed)
     }
 
@@ -106,7 +104,7 @@ impl ServerBase {
     ///
     /// Abort a server.
     #[doc(hidden)]
-    pub fn abort(&self, _payload: &impl Display) {
+    fn abort(&self, _payload: &impl Display) {
         self.aborted.store(true, Ordering::SeqCst);
         // Wake up all the threads in the server. This assumes that all threads have an abort point
         let server_threads = self.server_threads.lock();
@@ -116,7 +114,7 @@ impl ServerBase {
     }
 
     /// Attack a task to this server.
-    pub fn attach_task(&self) {
+    fn attach_task(&self) {
         let mut server_threads = self.server_threads.lock();
         server_threads.push(Task::current().unwrap().cloned());
     }
@@ -124,7 +122,7 @@ impl ServerBase {
     /// Check if the server has aborted and panic if it has. This should be called periodically from all server threads
     /// to guarantee that servers will crash fully if any part of them crashes. (This is analogous to a cancelation
     /// point in pthreads.)
-    pub fn abort_point(&self) {
+    fn abort_point(&self) {
         if self.is_aborted() {
             panic!("Server aborted in another thread");
         }
@@ -135,12 +133,14 @@ impl ServerBase {
         self.weak_this.upgrade()
     }
 
-    /// **INTERNAL** User code should never call this directly, however it cannot be private because macro generated
-    /// code must use it.
+    /// Call a function in the context of this server.
     ///
-    /// Call a function in the context of this server. This is used to implement method calls on
-    /// servers and similar things.
-    #[doc(hidden)]
+    /// This is used to implement method calls on servers and similar things. It should be used in
+    /// user code, to transition into server code from within a callback without having to create a
+    /// new method.
+    ///
+    /// This is public, but should be considered an escape hatch and only used when other framework
+    /// tools do not provide what is required.
     pub fn call_in_context<T, E>(&self, f: impl FnOnce() -> Result<T, E>) -> Result<T, E>
     where
         RPCError: Into<E>,

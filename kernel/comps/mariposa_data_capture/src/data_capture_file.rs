@@ -230,7 +230,8 @@ impl DataCaptureFileBuilder {
         // generally do, but this build function is required and can't be on a server (due to the
         // need to take a type parameter) and it's body should run in the context of the manager
         // server.
-        Server::orpc_server_base(self.server.as_ref())
+        self.server
+            .orpc_server_base()
             .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
                 let command_oqueue =
                     ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));

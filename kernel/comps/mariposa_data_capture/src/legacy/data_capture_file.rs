@@ -197,7 +197,8 @@ impl DataCaptureFileBuilder {
     where
         T: Copy + Send + Serialize + 'static,
     {
-        Server::orpc_server_base(self.server.as_ref())
+        self.server
+            .orpc_server_base()
             .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
                 let command_queue = LockingQueue::new(8);
                 let server = new_server!(|_| DataCaptureFileServer {
