@@ -24,16 +24,23 @@ NETDEV=${NETDEV:-"user"}
 # Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
 # exactly three existing block devices (e.g.
 # RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
-# If unset or any device path is invalid, 1GB ext2 image files are used instead.
-IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "${RAID_DEVICES:-}"
-if [ -n "$RAID_DEV_0" ] && [ -n "$RAID_DEV_1" ] && [ -n "$RAID_DEV_2" ] && \
-   [ -z "$RAID_DEV_EXTRA" ] && \
-   [ -e "$RAID_DEV_0" ] && [ -e "$RAID_DEV_1" ] && [ -e "$RAID_DEV_2" ]; then
+# If this variable is unset, fallback to use three disk images. 
+# Else if any of the path is invalid, will throw an error and not launching QEMU. 
+if [ -n "${RAID_DEVICES:-}" ]; then
+    IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "$RAID_DEVICES"
+    if [ -z "$RAID_DEV_0" ] || [ -z "$RAID_DEV_1" ] || [ -z "$RAID_DEV_2" ] || [ -n "$RAID_DEV_EXTRA" ]; then
+        echo "[$1] Error: RAID_DEVICES='$RAID_DEVICES' must be exactly three comma-separated paths." 1>&2
+        exit 1
+    fi
+    for RAID_DEV in "$RAID_DEV_0" "$RAID_DEV_1" "$RAID_DEV_2"; do
+        if [ ! -e "$RAID_DEV" ]; then
+            echo "[$1] Error: RAID member device '$RAID_DEV' does not exist." 1>&2
+            exit 1
+        fi
+    done
     RAID_CACHE="directsync"
 else
-    if [ -n "$RAID_DEVICES" ]; then
-        echo "[$1] Warning: RAID_DEVICES='$RAID_DEVICES' is invalid or a device does not exist; falling back to image files." 1>&2
-    fi
+    echo "[$1] No RAID_DEVICES specified, using disk images instead." 1>&2
     RAID_IMG_DIR="./test/build"
     mkdir -p "$RAID_IMG_DIR"
     RAID_DEV_0="$RAID_IMG_DIR/raid0.img"
@@ -53,7 +60,7 @@ else
     RAID_CACHE="writeback"
 fi
 
-SSH_RAND_PORT=${SSH_PORT:-61541}
+SSH_RAND_PORT=${SSH_PORT:-22}
 NGINX_RAND_PORT=${NGINX_PORT:-8080}
 REDIS_RAND_PORT=${REDIS_PORT:-6379}
 IPERF_RAND_PORT=${IPERF_PORT:-5201}
