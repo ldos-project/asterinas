@@ -3,6 +3,9 @@
 use alloc::{boxed::Box, sync::Weak};
 use binary_serde::BinarySerde;
 use core::fmt::Display;
+use core::time::{
+    Duration
+};
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
@@ -26,11 +29,11 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*, request_queue::BioRequestSingle
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone, Copy, Default, BinarySerde)]
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request in microseconds.
-    pub latency_us: u64,
+    pub latency_us: Duration,
     /// The number of outstanding requests at completion time.
     pub outstanding_requests: u64,
     /// The index of the device that produced this stat.
@@ -149,7 +152,7 @@ impl Bio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
-            submission_time_us: None,
+            submission_time: None,
             #[cfg(not(baseline_asterinas))]
             bio_request_single_queue: None,
             #[cfg(not(baseline_asterinas))]
@@ -333,7 +336,7 @@ pub struct SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
-    submission_time_us: Option<u64>,
+    submission_time: Option<Duration>,
 
     #[cfg(not(baseline_asterinas))]
     bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
@@ -348,7 +351,7 @@ impl core::fmt::Debug for SubmittedBio {
         let d = d.field("bio_inner", &self.bio_inner);
         #[cfg(not(baseline_asterinas))]
         let d = d
-            .field("submission_time_us", &self.submission_time_us)
+            .field("submission_time", &self.submission_time)
             .field("bio_request_single_queue", &self.bio_request_single_queue)
             .field(
                 "reply_handle",
@@ -400,8 +403,8 @@ impl SubmittedBio {
         }
     }
 
-    pub fn submission_time_us(&self) -> Option<u64> {
-        self.submission_time_us
+    pub fn submission_time(&self) -> Option<Duration> {
+        self.submission_time
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -421,7 +424,7 @@ impl SubmittedBio {
     ) {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
-        self.submission_time_us = Some(read_monotonic_time().as_micros() as u64);
+        self.submission_time = Some(read_monotonic_time());
         self.device_index = Some(device_index);
     }
 
@@ -431,8 +434,7 @@ impl SubmittedBio {
             .as_ref()
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
-                latency_us: read_monotonic_time().as_micros() as u64
-                    - self.submission_time_us.unwrap(),
+                latency_us: read_monotonic_time() - self.submission_time.unwrap(),
                 outstanding_requests: self.num_outstanding_requests().unwrap_or(0) as u64,
                 device_index: self.device_index.unwrap_or(u64::MAX),
             });
