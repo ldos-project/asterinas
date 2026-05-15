@@ -21,8 +21,6 @@
 use alloc::{string::ToString as _, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicBool};
 
-use aster_time::read_monotonic_time;
-
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
 use ostd::{
     new_server,
@@ -120,9 +118,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
         // paths are no longer collected even if more OQueues are attached.
         let mut paths = Some(Vec::default());
         let mut block_handler = BlockOnMany::new();
-        // Tracks whether unflushed data exists and when the most recent value was observed.
-        let mut need_flush = false;
-        let mut latest_data_observed_us: Option<u64> = None;
 
         loop {
             let blockers = [(&self.command_consumer) as &dyn Blocker]
@@ -163,14 +158,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
             for o in &observers {
                 // We can't skip the try_strong_observe calls when not `capturing` because that
                 // would leave the values in the OQueues and block them.
-                let mut drain_count = 0usize;
-                while let Ok(Some(v)) = {
-                    // Disable IRQs while holding the OQueue's SpinLock inside
-                    // try_strong_observe to prevent deadlock with the IRQ handler
-                    // that produces to the same OQueue (bio completion stats).
-                    let _irq_guard = ostd::trap::irq::disable_local();
-                    o.try_strong_observe()
-                } {
+                while let Ok(Some(v)) = o.try_strong_observe() {
                     if started {
                         if paths.is_some() {
                             data_buf_handler.write_header::<T>(
@@ -181,8 +169,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         }
 
                         data_buf_handler.write_value(&v);
-                        latest_data_observed_us = Some(read_monotonic_time().as_micros() as u64);
-                        need_flush = true;
+                        data_buf_handler.flush_if_needed()?;
                         if data_buf_handler.current_bid == self.end_bid {
                             log::warn!("Data capture ran out of space.");
                         }
