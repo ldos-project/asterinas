@@ -48,9 +48,7 @@ pub enum VirtioDeviceType {
 pub enum VirtioDeviceError {
     /// queues amount do not match the requirement
     /// first element is actual value, second element is expect value
-    #[snafu(display(
-        "Queues amount mismatch: actual={actual}, expected={expected} ({context})"
-    ))]
+    #[snafu(display("Queues amount mismatch: actual={actual}, expected={expected} ({context})"))]
     QueuesAmountDoNotMatch { actual: u16, expected: u16 },
     /// unknown error of queue
     #[snafu(display("Queue unknown error ({context})"))]

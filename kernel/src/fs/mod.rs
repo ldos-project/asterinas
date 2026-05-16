@@ -51,7 +51,9 @@ pub(crate) fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevic
         crate::ThreadOptions::new(task_fn)
             .sched_policy(crate::sched::SchedPolicy::RealTime {
                 rt_prio: 50.try_into().unwrap(),
-                rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None },
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                    base_slice_factor: None,
+                },
             })
             .spawn();
         Ok(device)
@@ -82,25 +84,12 @@ pub fn lazy_init() {
     //     info!("[kernel] Mount ExFat fs at {:?} ", target_path);
     // }
 
-    // single disk benchmark
-    // let nvme_device_name = "raid0";
-    // if let Ok(block_device_nvme) = start_block_device(nvme_device_name) {
-    //     let nvme_fs = Ext2::open(block_device_nvme).unwrap();
-    //     let target_path = FsPath::try_from("/raid1").unwrap();
-    //     self::rootfs::mount_fs_at(nvme_fs, &target_path).unwrap();
-    //     info!("[kernel] Mounted NVMe fs at {:?} ", target_path);
-    // } else {
-    //     error!("[kernel] Failed to start NVMe block device '{}'", nvme_device_name);
-    // }
-    // return;
-
     info!("[raid] initializing RAID-1 device: {:?}", raid1_device_name);
     if let Err(err) = setup_raid1_device(raid1_device_name) {
         error!("[raid] failed to setup RAID-1 device: {:?}", err);
     }
 
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-
         match Ext2::open(raid) {
             Ok(raid_fs) => {
                 let target_path = FsPath::try_from("/raid1").unwrap();
@@ -172,10 +161,14 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     };
 
-    crate::ThreadOptions::new(task_fn).sched_policy(crate::sched::SchedPolicy::RealTime { 
-        rt_prio: 50.try_into().unwrap(), 
-        rt_policy: crate::sched::RealTimePolicy::RoundRobin { base_slice_factor: None }, 
-    }).spawn();
+    crate::ThreadOptions::new(task_fn)
+        .sched_policy(crate::sched::SchedPolicy::RealTime {
+            rt_prio: 50.try_into().unwrap(),
+            rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                base_slice_factor: None,
+            },
+        })
+        .spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",

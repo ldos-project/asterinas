@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Weak};
-use binary_serde::BinarySerde;
-use core::fmt::Display;
-use core::time::{
-    Duration
-};
+use core::{fmt::Display, time::Duration};
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;

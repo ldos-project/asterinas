@@ -2,7 +2,7 @@
 
 use alloc::{
     boxed::Box,
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     string::{String, ToString},
     sync::Arc,
     vec,
@@ -286,7 +286,6 @@ impl DeviceInner {
 
     /// Handles the irq issued from the device
     fn handle_irq(&self) {
-        // info!("Virtio block device handle irq");
         // When we enter the IRQs handling function,
         // IRQs have already been disabled,
         // so there is no need to call `disable_irq`.

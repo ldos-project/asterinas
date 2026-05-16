@@ -28,10 +28,9 @@ pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
-use ostd::task::scheduler::info;
-use core::{cmp, ops::Range};
 #[cfg(baseline_asterinas)]
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{cmp, ops::Range};
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta,
@@ -155,7 +154,6 @@ impl Raid1Device {
     /// Dispatches a request by type. The RAID-1 device accepts the same BIOs as
     /// any `BlockDevice` and applies RAID semantics underneath.
     fn process_request(&self, request: BioRequest) {
-        // log::info!("Raid1Device process request, type: {:?}", request.type_());
         match request.type_() {
             BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
@@ -185,7 +183,9 @@ impl Raid1Device {
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
             // Baseline Asterinas should use round robin policy
-            let member = self.members[self.read_cursor.fetch_add(1, Ordering::Relaxed) % self.members.len()].clone();
+            let member = self.members
+                [self.read_cursor.fetch_add(1, Ordering::Relaxed) % self.members.len()]
+            .clone();
             let child = Bio::new(
                 BioType::Read,
                 parent.sid_range().start,
@@ -228,7 +228,6 @@ impl Raid1Device {
             );
             match child.submit(&*member) {
                 Ok(waiter) => pending.push((parent, waiter)),
-                // Err(_) => parent.complete(BioStatus::IoError),
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
             }
         }
@@ -244,7 +243,6 @@ impl Raid1Device {
             parent.complete(status);
         }
     }
-
 
     /// Processes read requests asynchronously.
     ///
