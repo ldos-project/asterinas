@@ -2,7 +2,9 @@
 
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{errors::RPCError, legacy_oqueue::OQueueAttachError};
+use ostd::orpc::{errors::RPCError, oqueue::OQueueError};
+use ostd::ostd_error;
+use snafu::Snafu;
 
 use crate::queue::QueueError;
 
@@ -40,25 +42,40 @@ pub enum VirtioDeviceType {
     Memory = 24,
 }
 
-#[derive(Debug)]
+#[ostd_error]
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
 pub enum VirtioDeviceError {
     /// queues amount do not match the requirement
     /// first element is actual value, second element is expect value
-    QueuesAmountDoNotMatch(u16, u16),
+    #[snafu(display("Queues amount mismatch: actual={actual}, expected={expected} ({context})"))]
+    QueuesAmountDoNotMatch { actual: u16, expected: u16 },
     /// unknown error of queue
+    #[snafu(display("Queue unknown error ({context})"))]
     QueueUnknownError,
     /// The input virtio capability list contains invalid element
+    #[snafu(display("Capability list error ({context})"))]
     CapabilityListError,
     /// The ORPC Errors
     #[cfg(not(baseline_asterinas))]
-    RPCError(RPCError),
-    /// The OQueue attachment errors
+    #[snafu(transparent)]
+    #[ostd(context(source))]
+    RPCError {
+        /// Source ORPC error
+        source: RPCError,
+    },
+    /// The OQueue errors
     #[cfg(not(baseline_asterinas))]
-    OQueueAttachError(OQueueAttachError),
+    #[snafu(transparent)]
+    #[ostd(context(source))]
+    OQueueError {
+        /// Source OQueue error
+        source: OQueueError,
+    },
 }
 
 impl From<QueueError> for VirtioDeviceError {
     fn from(_: QueueError) -> Self {
-        VirtioDeviceError::QueueUnknownError
+        QueueUnknownSnafu.build()
     }
 }

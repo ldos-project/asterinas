@@ -28,6 +28,8 @@ pub mod selection_policies;
 pub mod server_traits;
 
 use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
+#[cfg(baseline_asterinas)]
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, ops::Range};
 
 use aster_block::{
@@ -54,6 +56,9 @@ pub struct Raid1Device {
 
     /// Basic capacity limits for the logical device (min across members).
     metadata: BlockDeviceMeta,
+
+    /// A cursor for selecting the next member for read operations (round-robin).
+    read_cursor: AtomicUsize,
 }
 
 #[cfg(not(baseline_asterinas))]
@@ -98,6 +103,7 @@ impl Raid1Device {
             members,
             queue,
             metadata,
+            read_cursor: AtomicUsize::new(0),
         });
 
         aster_block::register_device(name.to_owned(), device.clone());
@@ -176,7 +182,10 @@ impl Raid1Device {
     #[cfg(baseline_asterinas)]
     fn process_read(&self, request: BioRequest) {
         for parent in request.bios() {
-            let member = self.members[0].clone();
+            // Baseline Asterinas should use round robin policy
+            let member = self.members
+                [self.read_cursor.fetch_add(1, Ordering::Relaxed) % self.members.len()]
+            .clone();
             let child = Bio::new(
                 BioType::Read,
                 parent.sid_range().start,
@@ -219,7 +228,6 @@ impl Raid1Device {
             );
             match child.submit(&*member) {
                 Ok(waiter) => pending.push((parent, waiter)),
-                // Err(_) => parent.complete(BioStatus::IoError),
                 Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
             }
         }

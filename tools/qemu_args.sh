@@ -13,12 +13,52 @@
 #  - VSOCK: "off" or "on";
 #  - SMP: number of CPUs;
 #  - MEM: amount of memory, e.g. "8G";
-#  - VNC_PORT: VNC port, default is "42".
+#  - VNC_PORT: VNC port, default is "42";
+#  - RAID_DEVICES: comma-separated list of three block devices for RAID, e.g.
+#    "/dev/sda,/dev/sdb,/dev/sdc"; if unset or invalid, image files are used.
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
+# Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
+# exactly three existing block devices (e.g.
+# RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
+# If this variable is unset, fallback to use three disk images. 
+# Else if any of the path is invalid, will throw an error and not launching QEMU. 
+if [ -n "${RAID_DEVICES:-}" ]; then
+    IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "$RAID_DEVICES"
+    if [ -z "$RAID_DEV_0" ] || [ -z "$RAID_DEV_1" ] || [ -z "$RAID_DEV_2" ] || [ -n "$RAID_DEV_EXTRA" ]; then
+        echo "[$1] Error: RAID_DEVICES='$RAID_DEVICES' must be exactly three comma-separated paths." 1>&2
+        exit 1
+    fi
+    for RAID_DEV in "$RAID_DEV_0" "$RAID_DEV_1" "$RAID_DEV_2"; do
+        if [ ! -e "$RAID_DEV" ]; then
+            echo "[$1] Error: RAID member device '$RAID_DEV' does not exist." 1>&2
+            exit 1
+        fi
+    done
+    RAID_CACHE="directsync"
+else
+    echo "[$1] No RAID_DEVICES specified, using disk images instead." 1>&2
+    RAID_IMG_DIR="./test/build"
+    mkdir -p "$RAID_IMG_DIR"
+    RAID_DEV_0="$RAID_IMG_DIR/raid0.img"
+    if [ ! -f "$RAID_DEV_0" ]; then
+        echo "[$1] Creating 1GB ext2 image $RAID_DEV_0" 1>&2
+        truncate -s 1G "$RAID_DEV_0"
+        mkfs.ext2 -q -F "$RAID_DEV_0"
+    fi
+    RAID_DEV_1="$RAID_IMG_DIR/raid1.img"
+    RAID_DEV_2="$RAID_IMG_DIR/raid2.img"
+    for RAID_IMG in "$RAID_DEV_1" "$RAID_DEV_2"; do
+        if [ ! -f "$RAID_IMG" ]; then
+            echo "[$1] Copying $RAID_DEV_0 to $RAID_IMG" 1>&2
+            cp "$RAID_DEV_0" "$RAID_IMG"
+        fi
+    done
+    RAID_CACHE="writeback"
+fi
 
 SSH_RAND_PORT=${SSH_PORT:-22}
 NGINX_RAND_PORT=${NGINX_PORT:-8080}
@@ -89,10 +129,11 @@ COMMON_QEMU_ARGS="\
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive if=none,format=raw,id=x0,file=./test/build/ext2.img \
     -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
-    -drive if=none,format=raw,id=r0,file=./test/build/raid1_0.img,cache=directsync \
-    -drive if=none,format=raw,id=r1,file=./test/build/raid1_1.img,cache=directsync \
     -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
     -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
+    -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
 "
 
 if [ "$1" = "iommu" ]; then
@@ -115,8 +156,9 @@ QEMU_ARGS="\
     -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=r0,serial=raid0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-    -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-    -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=d1,serial=capture_legacy,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+    -device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=d1,serial=capture_legacy,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
     -device virtconsole,chardev=mux \

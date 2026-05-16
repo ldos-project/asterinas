@@ -47,7 +47,15 @@ pub(crate) fn start_block_device(device_name: &str) -> Result<Arc<dyn BlockDevic
                 virtio_block_device.handle_requests();
             }
         };
-        crate::ThreadOptions::new(task_fn).spawn();
+        // Elevate to RealTime 50 so these I/O threads are not starved by other RealTime threads.
+        crate::ThreadOptions::new(task_fn)
+            .sched_policy(crate::sched::SchedPolicy::RealTime {
+                rt_prio: 50.try_into().unwrap(),
+                rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                    base_slice_factor: None,
+                },
+            })
+            .spawn();
         Ok(device)
     } else {
         return_errno_with_message!(Errno::ENOENT, "Device does not exist")
@@ -82,20 +90,23 @@ pub fn lazy_init() {
     }
 
     if let Some(raid) = aster_block::get_device(raid1_device_name) {
-        let raid_fs = Ext2::open(raid).unwrap();
-        let target_path = FsPath::try_from("/raid1").unwrap();
-        if let Err(err) = self::rootfs::mount_fs_at(raid_fs, &target_path) {
-            error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+        match Ext2::open(raid) {
+            Ok(raid_fs) => {
+                let target_path = FsPath::try_from("/raid1").unwrap();
+                self::rootfs::mount_fs_at(raid_fs, &target_path).unwrap();
+                info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
+            }
+            Err(err) => {
+                error!("[raid] failed to mount RAID-1 at /raid1: {:?}", err);
+            }
         }
-        info!("[kernel] Mounted RAID-1 at {:?} ", target_path);
     } else {
         error!("[raid] failed to get RAID-1 device: {:?}", Errno::ENOENT);
     }
 }
 
 fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
-    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1"];
-    // const RAID_MEMBER_NAMES: &[&str] = &["raid0"];
+    const RAID_MEMBER_NAMES: &[&str] = &["raid0", "raid1", "raid2"];
     info!(
         "[raid] initializing RAID-1 '{}' with members {:?}",
         raid_device_name, RAID_MEMBER_NAMES
@@ -104,10 +115,13 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
     let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
 
     // Start the RAID-1's underlying member devices.
-    for &name in RAID_MEMBER_NAMES {
+    for (index, &name) in RAID_MEMBER_NAMES.iter().enumerate() {
         match start_block_device(name) {
             Ok(device) => {
                 info!("[raid] member '{}' online", name);
+                if let Some(virtio_dev) = device.downcast_ref::<VirtIoBlockDevice>() {
+                    virtio_dev.set_device_index(index as u64);
+                }
                 members.push(device);
             }
             Err(err) => {
@@ -147,7 +161,14 @@ fn setup_raid1_device(raid_device_name: &str) -> Result<()> {
         }
     };
 
-    crate::ThreadOptions::new(task_fn).spawn();
+    crate::ThreadOptions::new(task_fn)
+        .sched_policy(crate::sched::SchedPolicy::RealTime {
+            rt_prio: 50.try_into().unwrap(),
+            rt_policy: crate::sched::RealTimePolicy::RoundRobin {
+                base_slice_factor: None,
+            },
+        })
+        .spawn();
 
     info!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
