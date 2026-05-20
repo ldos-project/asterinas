@@ -161,15 +161,19 @@ impl<D: DirOps + 'static> Inode for ProcDir<D> {
             self.parent().unwrap_or(self.this())
         } else {
             let mut cached_children = self.cached_children.write();
-            if let Some((_, inode)) = cached_children
+            if self.common.is_volatile() {
+                drop(cached_children);
+                self.inner.lookup_child(self.this.clone(), name)?
+            } else if let Some((_, inode)) = cached_children
                 .iter()
-                .find(|(child_name, inode)| child_name.as_str() == name)
+                .find(|(child_name, _)| child_name.as_str() == name)
             {
                 return Ok(inode.clone());
+            } else {
+                let inode = self.inner.lookup_child(self.this.clone(), name)?;
+                cached_children.put((String::from(name), inode.clone()));
+                inode
             }
-            let inode = self.inner.lookup_child(self.this.clone(), name)?;
-            cached_children.put((String::from(name), inode.clone()));
-            inode
         };
         Ok(inode)
     }

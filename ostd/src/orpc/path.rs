@@ -123,6 +123,11 @@ impl Path {
         )
     }
 
+    /// Iterate over this path's components.
+    pub fn components(&self) -> impl Iterator<Item = &PathComponent> {
+        self.components.iter()
+    }
+
     #[cfg(ktest)]
     /// Create an arbitrary path to use for testing.
     pub fn test() -> Path {

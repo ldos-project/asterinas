@@ -233,6 +233,7 @@ dependencies = [
  "log",
  "lru",
  "mariposa_data_capture",
+ "mariposa_oqueue_procfs",
  "no_std_io2",
  "osdk-frame-allocator",
  "osdk-heap-allocator",
@@ -1155,6 +1156,20 @@ dependencies = [
  "aster-block",
  "aster-logger",
  "component",
+ "log",
+ "minicbor",
+ "minicbor-serde",
+ "ostd",
+ "serde",
+ "snafu",
+]
+
+[[package]]
+name = "mariposa_oqueue_procfs"
+version = "0.1.0"
+dependencies = [
+ "component",
+ "hashbrown 0.14.5",
  "log",
  "minicbor",
  "minicbor-serde",

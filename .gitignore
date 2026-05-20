@@ -38,3 +38,7 @@ aster-nix-profile-*.svg
 
 # Python files
 __pycache__
+
+# Coding Agent Workspace
+agent_workspace/
+

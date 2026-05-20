@@ -24,6 +24,7 @@ members = [
     "kernel/comps/systree",
     "kernel/comps/logger",
     "kernel/comps/mariposa_data_capture",
+    "kernel/comps/mariposa_oqueue_procfs",
     "kernel/comps/mlsdisk",
     "kernel/comps/time",
     "kernel/comps/virtio",

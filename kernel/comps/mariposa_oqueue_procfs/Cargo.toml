@@ -1,0 +1,17 @@
+[package]
+name = "mariposa_oqueue_procfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+component = { path = "../../libs/comp-sys/component" }
+ostd = { path = "../../../ostd" }
+hashbrown = "0.14"
+log = "0.4"
+minicbor = { version = "2.2", default-features = false, features = ["derive", "alloc"] }
+minicbor-serde = { version = "0.6", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+snafu = { workspace = true }
+
+[lints]
+workspace = true

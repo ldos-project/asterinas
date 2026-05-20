@@ -32,6 +32,8 @@ mod cpuinfo;
 mod filesystems;
 mod loadavg;
 mod meminfo;
+#[cfg(feature = "oqueue_procfs")]
+mod oqueues;
 mod pid;
 mod self_;
 mod sys;
@@ -124,6 +126,13 @@ impl DirOps for RootDirOps {
     fn lookup_child(&self, this_ptr: Weak<dyn Inode>, name: &str) -> Result<Arc<dyn Inode>> {
         let child = if name == "self" {
             SelfSymOps::new_inode(this_ptr.clone())
+        } else if cfg!(feature = "oqueue_procfs") && name == "oqueues" {
+            #[cfg(feature = "oqueue_procfs")]
+            {
+                oqueues::OqueuesDirOps::new_root(this_ptr.clone())
+            }
+            #[cfg(not(feature = "oqueue_procfs"))]
+            unreachable!()
         } else if name == "sys" {
             SysDirOps::new_inode(this_ptr.clone())
         } else if name == "thread-self" {
@@ -155,6 +164,10 @@ impl DirOps for RootDirOps {
         };
         let mut cached_children = this.cached_children().write();
         cached_children.put_entry_if_not_found("self", || SelfSymOps::new_inode(this_ptr.clone()));
+        #[cfg(feature = "oqueue_procfs")]
+        cached_children.put_entry_if_not_found("oqueues", || {
+            oqueues::OqueuesDirOps::new_root(this_ptr.clone())
+        });
         cached_children.put_entry_if_not_found("thread-self", || {
             ThreadSelfSymOps::new_inode(this_ptr.clone())
         });

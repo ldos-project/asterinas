@@ -96,6 +96,24 @@ pub mod vm;
 mod benchmarks;
 pub static INITPROC: Once<Arc<Process>> = Once::new();
 
+#[cfg(not(baseline_asterinas))]
+#[derive(Debug, Clone, Copy, Serialize)]
+struct KernelSchedulingEvent {
+    timestamp: Instant,
+    task: TaskId,
+    kind: SchedulingEventKind,
+}
+
+#[cfg(not(baseline_asterinas))]
+fn project_scheduling_event(event: &SchedulingEvent) -> KernelSchedulingEvent {
+    let context = EventContext::new();
+    KernelSchedulingEvent {
+        timestamp: context.timestamp,
+        kind: event.kind,
+        task: TaskId::new(&event.task),
+    }
+}
+
 #[ostd::main]
 #[controlled]
 pub fn main() {
@@ -246,13 +264,6 @@ fn init_thread() {
         .unwrap_or(false)
     {
         if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(scheduler.events)) {
-            #[derive(Debug, Clone, Copy, Serialize)]
-            struct KernelSchedulingEvent {
-                timestamp: Instant,
-                task: TaskId,
-                kind: SchedulingEventKind,
-            }
-
             let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
                 mariposa_data_capture::FileDescriptor {
                     path: path!(scheduler.events),
@@ -264,14 +275,7 @@ fn init_thread() {
                 capture_file.register_observer(ObserverRegistration {
                     path: path!(scheduler.events),
                     observer: oqueue
-                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
-                            let context = EventContext::new();
-                            KernelSchedulingEvent {
-                                timestamp: context.timestamp,
-                                kind: e.kind,
-                                task: TaskId::new(&e.task),
-                            }
-                        }))
+                        .attach_strong_observer(ObservationQuery::new(project_scheduling_event))
                         .unwrap(),
                 })
             );
@@ -279,6 +283,16 @@ fn init_thread() {
         } else {
             error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")
         }
+    }
+
+    #[cfg(all(feature = "oqueue_procfs", not(baseline_asterinas)))]
+    if lookup_by_path::<SchedulingEvent>(&path!(scheduler.events)).is_some() {
+        mariposa_oqueue_procfs::register_oqueue::<SchedulingEvent, KernelSchedulingEvent>(
+            path!(scheduler.events),
+            project_scheduling_event,
+        );
+    } else {
+        error!("Could not find scheduler.events OQueue; not exposing it under /proc/oqueues.")
     }
 
     // Wait till initproc become zombie.
