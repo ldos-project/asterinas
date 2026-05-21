@@ -123,6 +123,7 @@ mod test {
 
     // Generate a simulated exfat file system
     fn load_exfat() -> Arc<ExfatFS> {
+        crate::init_for_ktest();
         let segment = new_vm_segment_from_image();
         let disk = ExfatMemoryDisk::new(segment);
         let mount_option = ExfatMountOptions::default();

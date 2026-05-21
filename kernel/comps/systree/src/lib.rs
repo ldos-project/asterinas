@@ -49,11 +49,6 @@ fn init() -> core::result::Result<(), ComponentInitError> {
     Ok(())
 }
 
-#[cfg(ktest)]
-pub fn init_for_ktest() {
-    SINGLETON.call_once(|| Arc::new(SysTree::new()));
-}
-
 /// Returns a reference to the global SysTree instance. Panics if not initialized. (Asterinas specific)
 pub fn singleton() -> &'static Arc<SysTree> {
     SINGLETON.get().expect("SysTree not initialized")
