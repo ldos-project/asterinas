@@ -68,7 +68,8 @@ prepare_ycsb() {
     fi
 
     if [ ! -d "$YCSB_PATH" ]; then
-      git clone https://github.com/brianfrankcooper/YCSB --depth=1 $YCSB_PATH
+      # Use custom fork of YCSB with delete support
+      git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
 
       # Build
       pushd $YCSB_PATH
