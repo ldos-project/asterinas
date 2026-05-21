@@ -33,6 +33,7 @@ use ostd::{
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
+use serde::Serialize;
 
 use self::{
     interval_set::{Interval, IntervalSet},
@@ -190,7 +191,7 @@ impl<R> Vmar<R> {
 
 // TODO(aneesh) can this just be PageFaultInfo directly?
 /// Notification message to inform policies about a page fault
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize)]
 pub struct PageFaultOQueueMessage {
     /// Opaque identifier for which vm_space the fault corresponds to
     pub vm_space_id: u64,
@@ -210,8 +211,8 @@ pub mod oqueues {
     use crate::{Clock, time::clocks::MonotonicRawClock};
 
     // TODO(aneesh): Move this somewhere more generic
-    #[derive(Clone, Copy)]
-    pub struct ObservableEvent<T> {
+    #[derive(Clone, Copy, Serialize)]
+    pub struct ObservableEvent<T: Serialize> {
         pub event: T,
         pub timestamp: Duration,
     }
@@ -246,8 +247,8 @@ pub fn init() {
     #[cfg(not(baseline_asterinas))]
     {
         // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
-        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }
 }
 

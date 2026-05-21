@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
+use serde::Serialize;
 use core::time::Duration;
 
 use aster_time::Instant;
@@ -18,7 +19,7 @@ use snafu::Whatever;
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[expect(dead_code)]
 struct DtlbMisses {
     timestamp: Instant,
@@ -32,7 +33,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
+    pub dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {
