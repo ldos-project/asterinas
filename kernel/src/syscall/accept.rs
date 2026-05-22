@@ -22,12 +22,7 @@ pub fn sys_accept(
     debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
-    #[cfg(not(baseline_asterinas))]
-    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
-        fd: fd,
-        is_close: 0,
-        timestamp: MonotonicRawClock::get().read_time().as_nanos(),
-    })?;
+
     Ok(SyscallReturn::Return(fd as _))
 }
 
@@ -46,12 +41,6 @@ pub fn sys_accept4(
     );
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
-    #[cfg(not(baseline_asterinas))]
-    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
-        fd: fd,
-        is_close: 0,
-        timestamp: MonotonicRawClock::get().read_time().as_nanos(),
-    })?;
 
     Ok(SyscallReturn::Return(fd as _))
 }
@@ -93,6 +82,13 @@ fn do_accept(
         let mut file_table_locked = file_table.unwrap().write();
         file_table_locked.insert(connected_socket, fd_flags)
     };
+
+    #[cfg(not(baseline_asterinas))]
+    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
+        fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time(),
+    })?;
 
     Ok(fd)
 }

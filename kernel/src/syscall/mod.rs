@@ -2,12 +2,14 @@
 
 //! System call handlers.
 
+use core::time::Duration;
+
 use alloc::sync::Arc;
 
 pub use clock_gettime::ClockId;
 use ostd::{
     cpu::context::UserContext,
-    orpc::legacy_oqueue::{OQueue, ringbuffer::MPMCOQueue},
+    orpc::legacy_oqueue::ringbuffer::MPMCOQueue,
 };
 use serde::Serialize;
 use spin::Once;
@@ -400,7 +402,7 @@ macro_rules! log_syscall_entry {
 pub struct SocketOQueueMessage {
     fd: i32,
     is_close: u8,
-    timestamp: u128,
+    timestamp: Duration,
 }
 
 static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
