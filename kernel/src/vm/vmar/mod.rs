@@ -246,7 +246,7 @@ pub mod oqueues {
 pub fn init() {
     #[cfg(not(baseline_asterinas))]
     {
-        // Only support a single strong observer for now - hugepaged.
+        // Supports two strong observers for now - hugepaged and data collection.
         oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
         oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }

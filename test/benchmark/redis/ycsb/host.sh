@@ -31,29 +31,30 @@ FIELDLENGTH=4096
 
 
 ./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
-  -p recordcount=4096\
-  -p fieldcount=1\
-  -p fieldlength=$FIELDLENGTH\
-  -p minfieldlength=4096\
-  -p insertstart=0\
+  -p recordcount=4096 \
+  -p fieldcount=1 \
+  -p fieldlength=$FIELDLENGTH \
+  -p minfieldlength=4096 \
+  -p insertstart=0 \
   -p fieldlengthdistribution=uniform
 
+# Run many times to stress memory allocation
 for _ in $(seq 1 4096); do
   ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
-    -p operationcount=4096\
-    -p recordcount=4096\
-    -p workload=site.ycsb.workloads.CoreWorkload\
-    -p readproportion=0.05\
-    -p updateproportion=0.00\
-    -p scanproportion=0.00\
-    -p insertproportion=0.00\
-    -p readmodifywriteproportion=0.00\
-    -p scanproportion=0.00\
-    -p deleteproportion=0.95\
-    -p threadcount=16\
-    -p fieldcount=1\
-    -p fieldlength=$FIELDLENGTH\
-    -p minfieldlength=4096\
+    -p operationcount=4096 \
+    -p recordcount=4096 \
+    -p workload=site.ycsb.workloads.CoreWorkload \
+    -p readproportion=0.05 \
+    -p updateproportion=0.00 \
+    -p scanproportion=0.00 \
+    -p insertproportion=0.00 \
+    -p readmodifywriteproportion=0.00 \
+    -p scanproportion=0.00 \
+    -p deleteproportion=0.95 \
+    -p threadcount=16 \
+    -p fieldcount=1 \
+    -p fieldlength=$FIELDLENGTH \
+    -p minfieldlength=4096 \
     -p fieldlengthdistribution=uniform
 done
 

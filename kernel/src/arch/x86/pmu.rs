@@ -33,7 +33,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    pub dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
+    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {
