@@ -618,6 +618,9 @@ impl Sub<usize> for Cursor {
     type Output = Cursor;
 
     fn sub(self, rhs: usize) -> Self::Output {
+        /// Using wrapping_sub in the case of Cursor underflow. 
+        /// Assumes the Cursor would never reaches the larger end of usize
+        /// More Details see [PR #228](https://github.com/ldos-project/asterinas/pull/228)
         Cursor(self.0.wrapping_sub(rhs))
     }
 }
