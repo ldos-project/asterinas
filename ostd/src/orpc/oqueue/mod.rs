@@ -616,11 +616,17 @@ impl Add<usize> for Cursor {
 
 impl Sub<usize> for Cursor {
     type Output = Cursor;
-
+    
+    /// Subtracts `rhs` from this cursor using wrapping arithmetic.
+    ///
+    /// This intentionally uses `wrapping_sub` so that cursor underflow wraps
+    /// instead of panicking or saturating. This is safe under the assumption that
+    /// `Cursor` values never reach the larger end of `usize`, which takes impractically
+    /// amount of time. 
+    ///
+    /// See PR #228 for the design rationale:
+    /// <https://github.com/ldos-project/asterinas/pull/228>
     fn sub(self, rhs: usize) -> Self::Output {
-        /// Using wrapping_sub in the case of Cursor underflow. 
-        /// Assumes the Cursor would never reaches the larger end of usize
-        /// More Details see [PR #228](https://github.com/ldos-project/asterinas/pull/228)
         Cursor(self.0.wrapping_sub(rhs))
     }
 }
