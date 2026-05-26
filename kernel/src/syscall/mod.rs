@@ -396,23 +396,26 @@ macro_rules! log_syscall_entry {
     };
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub struct SocketOQueueMessage {
-    fd: i32,
-    is_close: u8,
-    timestamp: Duration,
-}
+#[cfg(not(baseline_asterinas))]
+pub mod oqueue {
+    #[derive(Clone, Copy, Serialize)]
+    pub struct SocketOQueueMessage {
+        pub fd: i32,
+        pub is_close: u8,
+        pub timestamp: Duration,
+    }
 
-static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
+    static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
 
-pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
-    SOCKET_OQUEUE.wait().clone()
+    pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
+        SOCKET_OQUEUE.wait().clone()
+    }
 }
 
 pub(super) fn init() {
     uname::init();
     #[cfg(not(baseline_asterinas))]
     {
-        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+        ::oqueue::SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }
 }

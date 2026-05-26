@@ -32,7 +32,7 @@ pub fn sys_close(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
 
     if file.as_socket_or_err().is_ok() {
         #[cfg(not(baseline_asterinas))]
-        super::get_socket_oqueue().produce(super::SocketOQueueMessage {
+        super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
             fd,
             is_close: 1,
             timestamp: MonotonicRawClock::get().read_time(),

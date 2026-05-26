@@ -85,7 +85,7 @@ fn do_accept(
     };
 
     #[cfg(not(baseline_asterinas))]
-    super::get_socket_oqueue().produce(super::SocketOQueueMessage {
+    super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
         fd,
         is_close: 0,
         timestamp: MonotonicRawClock::get().read_time(),
