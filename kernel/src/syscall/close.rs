@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bitflags::bitflags;
-use ostd::{orpc::legacy_oqueue::OQueue, sync::RwArc};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueue;
+use ostd::sync::RwArc;
 
 use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]

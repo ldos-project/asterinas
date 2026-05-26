@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#[cfg(not(baseline_asterinas))]
 use ostd::orpc::legacy_oqueue::OQueue;
 
 use super::SyscallReturn;

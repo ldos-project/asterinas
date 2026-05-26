@@ -2,15 +2,11 @@
 
 //! System call handlers.
 
+use alloc::sync::Arc;
 use core::time::Duration;
 
-use alloc::sync::Arc;
-
 pub use clock_gettime::ClockId;
-use ostd::{
-    cpu::context::UserContext,
-    orpc::legacy_oqueue::ringbuffer::MPMCOQueue,
-};
+use ostd::{cpu::context::UserContext, orpc::legacy_oqueue::ringbuffer::MPMCOQueue};
 use serde::Serialize;
 use spin::Once;
 pub use timer_create::create_timer;
