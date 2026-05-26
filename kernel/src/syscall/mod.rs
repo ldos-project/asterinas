@@ -2,15 +2,8 @@
 
 //! System call handlers.
 
-use alloc::sync::Arc;
-use core::time::Duration;
-
 pub use clock_gettime::ClockId;
 use ostd::cpu::context::UserContext;
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
-use serde::Serialize;
-use spin::Once;
 pub use timer_create::create_timer;
 
 use crate::{context::Context, cpu::LinuxAbi, prelude::*};
@@ -398,6 +391,13 @@ macro_rules! log_syscall_entry {
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueue {
+    use alloc::sync::Arc;
+    use core::time::Duration;
+
+    use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use serde::Serialize;
+    use spin::Once;
+
     #[derive(Clone, Copy, Serialize)]
     pub struct SocketOQueueMessage {
         pub fd: i32,
