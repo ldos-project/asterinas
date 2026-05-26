@@ -31,8 +31,6 @@ use static_assertions::assert_obj_safe;
 
 use crate::{
     orpc::{
-        errors::RPCError,
-        framework::CurrentServer,
         oqueue::{
             Cursor, InlineStrongObserver, OQueueError, ObservationQuery, ResourceUnavailableSnafu,
             single_thread_ring_buffer::RingBuffer,
@@ -173,7 +171,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         f: impl Fn(&T) + Send + 'static,
     ) -> Result<InlineStrongObserver, super::OQueueError> {
         let mut inner = self.inner.lock();
-        let key = inner.inline_strong_observers.insert(wrap_closure_ref(f));
+        let key = inner.inline_strong_observers.insert(Box::new(f));
         Ok(super::InlineStrongObserver {
             oqueue: self.clone(),
             inline_observer_id: key,
@@ -219,13 +217,13 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
 
         // Register the actual handler
-        let key = inner
-            .inline_strong_observers
-            .insert(wrap_closure_ref(move |v| {
+        let key = inner.inline_strong_observers.insert(Box::new(
+            (move |v| {
                 if let Some(v) = query.call(v) {
                     f(&v)
                 }
-            }));
+            }),
+        ));
 
         Ok(key)
     }
@@ -253,26 +251,6 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         super::AnyOQueueRef {
             inner: self.clone(),
         }
-    }
-}
-
-/// Wrap a closure to run in the context of the current server if there is one.
-fn wrap_closure_ref<T: ?Sized + 'static>(
-    f: impl Fn(&T) + Send + 'static,
-) -> Box<dyn Fn(&T) + Send> {
-    // TODO(arthurp): Capturing the current server into the closure is really part of ORPC and so
-    // shouldn't be here in the OQueue implementation. It also forces this overhead on every
-    // closure.
-    if let Some(s) = CurrentServer::current_cloned() {
-        let f: Box<dyn Fn(&T) + Send + 'static> = Box::new(move |v| {
-            let _ = s.orpc_server_base().call_in_context::<_, RPCError>(|| {
-                f(v);
-                Ok(())
-            });
-        });
-        f
-    } else {
-        Box::new(f)
     }
 }
 

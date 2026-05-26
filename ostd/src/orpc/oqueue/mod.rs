@@ -119,7 +119,8 @@ pub trait OQueueBase<T: ?Sized> {
         U: Copy + Send + 'static;
 
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
-    /// value.
+    /// value. This function does not run in the context of any server. If the function should, it
+    /// should use [`crate::orpc::framework::ServerBase::call_in_context`].
     ///
     /// Note: This is different from [`StrongObserver::strong_observe_inline`] because this
     /// observes the entire message without requiring a filter.
@@ -449,7 +450,9 @@ impl<T: Send + 'static> Consumer<T> {
         self.oqueue.try_consume()
     }
 
-    /// Register a function to be called by the OQueue to observe each message.
+    /// Register a function to be called by the OQueue to observe each message. This function does
+    /// not run in the context of any server. If the function should, it should use
+    /// [`crate::orpc::framework::ServerBase::call_in_context`].
     ///
     /// This consumes `self`, because the messages will now be consumed via a different mechanism.
     /// This will return an error if switching to inline is impossible or meaningless, for example
@@ -565,7 +568,9 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
         }
     }
 
-    /// Register a function to be called by the OQueue to observe each message.
+    /// Register a function to be called by the OQueue to observe each message. This function does
+    /// not run in the context of any server. If the function should, it should use
+    /// [`crate::orpc::framework::ServerBase::call_in_context`].
     ///
     /// This consumes `self`, because the messages will now be observed via a different mechanism.
     /// This will return an error if switching to inline is impossible.
