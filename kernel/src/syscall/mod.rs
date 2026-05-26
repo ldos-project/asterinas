@@ -407,6 +407,10 @@ pub mod oqueue {
 
     static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
 
+    pub fn init() {
+        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+    }
+
     pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
         SOCKET_OQUEUE.wait().clone()
     }
@@ -415,7 +419,5 @@ pub mod oqueue {
 pub(super) fn init() {
     uname::init();
     #[cfg(not(baseline_asterinas))]
-    {
-        ::oqueue::SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
-    }
+    oqueue::init();
 }
