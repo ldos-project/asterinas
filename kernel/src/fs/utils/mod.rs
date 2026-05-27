@@ -41,8 +41,6 @@ mod page_cache;
 #[path = "page_cache_baseline.rs"]
 pub(super) mod page_cache;
 #[cfg(not(baseline_asterinas))]
-mod page_cache_logger;
-#[cfg(not(baseline_asterinas))]
 mod page_prefetch;
 mod random_test;
 mod range_lock;

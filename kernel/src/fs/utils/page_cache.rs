@@ -14,6 +14,7 @@ use core::{
 use align_ext::AlignExt;
 use aster_rights::Full;
 use lru::LruCache;
+use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, UFrame, VmIo},
@@ -22,6 +23,7 @@ use ostd::{
         legacy_oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
         orpc_impl, orpc_server,
     },
+    path,
     task::Task,
 };
 use snafu::OptionExt;
@@ -33,12 +35,9 @@ use crate::{
             self, AsyncReadRequest, AsyncWriteRequest, CacheState, PageCache as _,
             PageCacheReadInfo, PageHandle, PageIOObservable, PageStore,
         },
-        utils::{
-            page_cache_logger::PageCacheLogger,
-            page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
-        },
+        utils::page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
     },
-    kcmdline,
+    kcmdline, new_legacy_data_capture_file,
     prelude::*,
     vm::vmo::{Pager, Vmo, VmoFlags, VmoOptions, get_page_idx_range},
 };
@@ -88,10 +87,10 @@ fn get_prefetch_policy() -> PrefetchPolicy {
 }
 
 /// Retrieves whether cache hits and misses should be logged based on the kernel command-line argument
-/// "page_cache.log_hits_misses". The options are: `true` or `false`.
-fn get_log_hits_misses() -> bool {
+/// "page_cache.capture_accesses". The options are: `true` or `false`.
+fn get_capture_accesses() -> bool {
     kcmdline::get_kernel_cmd_line()
-        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "log_hits_misses"))
+        .and_then(|cl| cl.get_module_arg_by_name("page_cache", "capture_accesses"))
         .unwrap_or(false)
 }
 
@@ -134,6 +133,12 @@ impl PageCache {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Returns an identifier for this cache instance, matching the `cache_id` field in
+    /// `PageCacheReadInfo` events.
+    pub fn cache_id(&self) -> usize {
+        Arc::as_ptr(&self.manager) as usize
     }
 
     /// Returns the Vmo object.
@@ -510,7 +515,6 @@ impl PageCacheManagerInner {
 }
 
 impl PageCacheManager {
-    #[track_caller]
     pub fn spawn(backend: Weak<dyn PageStore>, policy: PrefetchPolicy) -> Result<Arc<Self>> {
         let policy = if Task::current().is_none() {
             PrefetchPolicy::None
@@ -550,8 +554,25 @@ impl PageCacheManager {
                     let mut inner = server.inner.lock();
                     let inner = inner.deref_mut();
 
+                    let cache_pages = inner.pages.len() as u64;
+
                     // If the page is not in the cache, issue a request.
                     if inner.pages.get(&idx).is_none() {
+                        if inner.page_cache_read_info_producer.is_none() {
+                            inner.page_cache_read_info_producer =
+                                Some(server.page_cache_read_info_oqueue().attach_producer()?);
+                        }
+                        inner
+                            .page_cache_read_info_producer
+                            .as_ref()
+                            .unwrap()
+                            .produce(PageCacheReadInfo::new(
+                                idx as u64,
+                                CacheState::Prefetch,
+                                server.as_ref() as *const _ as usize,
+                                server.backend()?.npages()? as u64,
+                                cache_pages,
+                            ));
                         inner.outstanding_requests.request_async(
                             &mut inner.pages,
                             &server.backend()?,
@@ -564,8 +585,27 @@ impl PageCacheManager {
         });
 
         // TODO(arthurp, #120): This is never shutdown even if the cache is.
-        if get_log_hits_misses() {
-            PageCacheLogger::spawn(server.page_cache_read_info_oqueue())?;
+        if get_capture_accesses() {
+            static PAGE_CACHE_LOG_FILE: Mutex<Option<Arc<dyn DataCaptureFile<PageCacheReadInfo>>>> =
+                Mutex::new(None);
+
+            let file = {
+                let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
+                if file_guard.is_none() {
+                    *file_guard = Some(new_legacy_data_capture_file(FileDescriptor {
+                        length: 200 * 1024 * 1024,
+                        path: path!(page_cache.read_info),
+                    }));
+                }
+                file_guard.as_ref().unwrap().clone()
+            };
+
+            file.register_observer(mariposa_data_capture::legacy::ObserverRegistration {
+                observer: server
+                    .page_cache_read_info_oqueue()
+                    .attach_strong_observer()?,
+            })?;
+            file.start()?;
         }
 
         if policy != PrefetchPolicy::Builtin && policy != PrefetchPolicy::None {
@@ -596,29 +636,16 @@ impl PageCacheManager {
         let page_idx_range = get_page_idx_range(&range);
 
         let mut consumers = Vec::new();
-        // TODO(arthurp): This locks the entire cache. That's probably a performance problem.
-        {
-            let mut inner = self.inner.lock();
-            let pages = &mut inner.pages;
-            let backend = self.backend()?;
-            let backend_npages = backend.npages()?;
-            for idx in page_idx_range.start..page_idx_range.end {
-                if let Some(page) = pages.peek(&idx) {
-                    if page.load_state() == PageState::Dirty && idx < backend_npages {
-                        let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
-                        backend.write_page_async(AsyncWriteRequest {
-                            handle: PageHandle {
-                                idx,
-                                frame: page.clone(),
-                            },
-                            reply_handle: Some(reply_handle),
-                        })?;
-                        consumers.push(reply_consumer);
-                    }
-                }
+        let mut inner = self.inner.lock();
+        let pages = &mut inner.pages;
+        let backend = self.backend()?;
+        for idx in page_idx_range.start..page_idx_range.end {
+            if let Some(reply_consumer) = flush_page(pages, &backend, idx)? {
+                consumers.push(reply_consumer);
             }
         }
 
+        // TODO(arthurp): This waits for the flush with the lock held.
         for consumer in consumers {
             let PageHandle { idx: _, frame } = consumer.consume();
             frame.store_state(PageState::UpToDate);
@@ -635,8 +662,8 @@ impl PageCacheManager {
 
         let frame = {
             let backend = self.backend()?;
-            let mut inner = self.inner.lock();
-            let inner = inner.deref_mut();
+            let mut inner_guard = self.inner.lock();
+            let inner = inner_guard.deref_mut();
 
             // Lazily initialize page_cache_read_info_producer
             if inner.page_cache_read_info_producer.is_none() {
@@ -654,15 +681,20 @@ impl PageCacheManager {
             // 1. The requested page is ready for read in page cache.
             // 2. The requested page is currently being read (generally due to a prefetch).
             // 3. The requested page is on disk, need a sync read operation here.
+            let store_size = backend.npages()? as u64;
+            let cache_pages = inner.pages.len() as u64;
             let frame = if let Some(page) = inner.pages.get(&idx) {
                 // Cond 1 & 2.
                 if let PageState::Uninit = page.load_state() {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx,
-                        cache_state: CacheState::Pending,
-                    });
+                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                        idx as u64,
+                        CacheState::Pending,
+                        self as *const _ as usize,
+                        store_size,
+                        cache_pages,
+                    ));
                     assert!(inner.outstanding_requests.has_requests());
                     inner
                         .outstanding_requests
@@ -670,18 +702,24 @@ impl PageCacheManager {
                     inner.pages.get(&idx).context(UNREACHABLE_SNAFU)?.clone()
                 } else {
                     // Cond 1.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo {
-                        idx,
-                        cache_state: CacheState::Hit,
-                    });
+                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                        idx as u64,
+                        CacheState::Hit,
+                        self as *const _ as usize,
+                        store_size,
+                        cache_pages,
+                    ));
                     page.clone()
                 }
             } else {
                 // Cond 3.
-                page_cache_read_info_producer.produce(PageCacheReadInfo {
-                    idx,
-                    cache_state: CacheState::Miss,
-                });
+                page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                    idx as u64,
+                    CacheState::Miss,
+                    self as *const _ as usize,
+                    store_size,
+                    cache_pages,
+                ));
                 // Conducts the sync read operation.
                 let page = if idx < backend.npages()? {
                     let page = CachePage::alloc_uninit()?;
@@ -708,6 +746,33 @@ impl PageCacheManager {
         self.page_reads_reply_oqueue().produce(idx)?;
 
         Ok(frame.into())
+    }
+}
+
+/// Start the flush of a page to storage.
+///
+/// This places the reply consumer into `consumers`. The caller should wait on it appropriately.
+fn flush_page(
+    pages: &mut LruCache<usize, Frame<CachePageMeta>>,
+    backend: &Arc<dyn PageStore>,
+    idx: usize,
+) -> Result<Option<Box<dyn Consumer<PageHandle>>>> {
+    let backend_npages = backend.npages()?;
+    if let Some(page) = pages.peek(&idx)
+        && page.load_state() == PageState::Dirty
+    {
+        assert!(idx < backend_npages);
+        let (reply_handle, reply_consumer) = ReplyQueue::new_pair()?;
+        backend.write_page_async(AsyncWriteRequest {
+            handle: PageHandle {
+                idx,
+                frame: page.clone(),
+            },
+            reply_handle: Some(reply_handle),
+        })?;
+        Ok(Some(reply_consumer))
+    } else {
+        Ok(None)
     }
 }
 
