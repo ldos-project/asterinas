@@ -389,6 +389,35 @@ macro_rules! log_syscall_entry {
     };
 }
 
+#[cfg(not(baseline_asterinas))]
+pub mod oqueue {
+    use alloc::sync::Arc;
+    use core::time::Duration;
+
+    use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use serde::Serialize;
+    use spin::Once;
+
+    #[derive(Clone, Copy, Serialize)]
+    pub struct SocketOQueueMessage {
+        pub fd: i32,
+        pub is_close: u8,
+        pub timestamp: Duration,
+    }
+
+    static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
+
+    pub fn init() {
+        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+    }
+
+    pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
+        SOCKET_OQUEUE.wait().clone()
+    }
+}
+
 pub(super) fn init() {
     uname::init();
+    #[cfg(not(baseline_asterinas))]
+    oqueue::init();
 }

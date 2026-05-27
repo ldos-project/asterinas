@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueue;
 
 use super::SyscallReturn;
+#[cfg(not(baseline_asterinas))]
+use crate::time::clocks::MonotonicRawClock;
 use crate::{
     fs::{
         file_table::{FdFlags, FileDesc, get_file_fast},
@@ -19,6 +23,7 @@ pub fn sys_accept(
     debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
+
     Ok(SyscallReturn::Return(fd as _))
 }
 
@@ -37,6 +42,7 @@ pub fn sys_accept4(
     );
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
+
     Ok(SyscallReturn::Return(fd as _))
 }
 
@@ -77,6 +83,13 @@ fn do_accept(
         let mut file_table_locked = file_table.unwrap().write();
         file_table_locked.insert(connected_socket, fd_flags)
     };
+
+    #[cfg(not(baseline_asterinas))]
+    super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+        fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time(),
+    })?;
 
     Ok(fd)
 }

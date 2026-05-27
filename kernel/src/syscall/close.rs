@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bitflags::bitflags;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::legacy_oqueue::OQueue;
 use ostd::sync::RwArc;
 
 use super::SyscallReturn;
+#[cfg(not(baseline_asterinas))]
+use crate::time::clocks::MonotonicRawClock;
 use crate::{
     fs::file_table::{FdFlags, FileDesc},
     prelude::*,
@@ -25,6 +29,15 @@ pub fn sys_close(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
         let _ = file_table_locked.get_file(fd)?;
         file_table_locked.close_file(fd).unwrap()
     };
+
+    if file.as_socket_or_err().is_ok() {
+        #[cfg(not(baseline_asterinas))]
+        super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+            fd,
+            is_close: 1,
+            timestamp: MonotonicRawClock::get().read_time(),
+        })?;
+    }
 
     // Cleanup work needs to be done in the `Drop` impl.
     //
