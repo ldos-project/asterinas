@@ -11,7 +11,7 @@ use ostd::orpc::{
 };
 use snafu::Whatever;
 
-use super::{promote_hugepages, vmar::PageFaultOQueueMessage};
+use super::{promote_hugepages, vmar::oqueues::PageFaultOQueueMessage};
 use crate::{process::Process, util::timer::TimerServer, vm::vmar};
 
 #[orpc_trait]

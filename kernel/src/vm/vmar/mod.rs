@@ -33,7 +33,6 @@ use ostd::{
     sync::RwMutexReadGuard,
     task::disable_preempt,
 };
-use serde::Serialize;
 
 use self::{
     interval_set::{Interval, IntervalSet},
@@ -189,26 +188,26 @@ impl<R> Vmar<R> {
     }
 }
 
-// TODO(aneesh) can this just be PageFaultInfo directly?
-/// Notification message to inform policies about a page fault
-#[derive(Clone, Copy, Serialize)]
-pub struct PageFaultOQueueMessage {
-    /// Opaque identifier for which vm_space the fault corresponds to
-    pub vm_space_id: u64,
-    /// The fault information provided to the page fault handler
-    pub fault_info: PageFaultInfo,
-}
-
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
     use alloc::sync::Arc;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
     use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use serde::Serialize;
     use spin::Once;
 
-    use super::PageFaultOQueueMessage;
     use crate::{Clock, time::clocks::MonotonicRawClock};
+
+    // TODO(aneesh) can this just be PageFaultInfo directly?
+    /// Notification message to inform policies about a page fault
+    #[derive(Clone, Copy, Serialize)]
+    pub struct PageFaultOQueueMessage {
+        /// Opaque identifier for which vm_space the fault corresponds to
+        pub vm_space_id: u64,
+        /// The fault information provided to the page fault handler
+        pub fault_info: super::PageFaultInfo,
+    }
 
     // TODO(aneesh): Move this somewhere more generic
     #[derive(Clone, Copy, Serialize)]
@@ -217,7 +216,7 @@ pub mod oqueues {
         pub timestamp: Duration,
     }
 
-    impl<T> ObservableEvent<T> {
+    impl<T: Serialize> ObservableEvent<T> {
         pub fn new(event: T) -> Self {
             Self {
                 event,
@@ -267,7 +266,7 @@ pub(super) struct Vmar_ {
 
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
+    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<oqueues::PageFaultOQueueMessage>>,
 }
 
 struct VmarInner {
@@ -662,7 +661,7 @@ impl Vmar_ {
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
                 self.page_fault_oqueue_producer
-                    .produce(oqueues::ObservableEvent::new(PageFaultOQueueMessage {
+                    .produce(oqueues::ObservableEvent::new(oqueues::PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
                     }))?;

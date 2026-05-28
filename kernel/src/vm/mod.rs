@@ -27,7 +27,7 @@ use ostd::{
     mm::{FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame, UntypedMem, page_size},
     task::disable_preempt,
 };
-use vmar::{PageFaultOQueueMessage, RssType};
+use vmar::RssType;
 
 use crate::{
     INITPROC, Vec,
@@ -35,6 +35,8 @@ use crate::{
 };
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
+#[cfg(not(baseline_asterinas))]
+use vmar::oqueues::PageFaultOQueueMessage;
 
 pub mod page_fault_handler;
 pub mod perms;
@@ -108,6 +110,7 @@ pub fn num_anon_hugepages() -> i32 {
     count
 }
 
+#[cfg(not(baseline_asterinas))]
 fn promote_hugepages(
     proc: &Arc<Process>,
     fault_hint: Option<PageFaultOQueueMessage>,
