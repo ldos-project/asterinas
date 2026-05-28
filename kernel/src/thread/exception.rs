@@ -4,6 +4,7 @@
 
 use aster_rights::Full;
 use ostd::cpu::context::{CpuExceptionInfo, UserContext};
+use serde::Serialize;
 
 use crate::{
     current_userspace,
@@ -17,7 +18,7 @@ use crate::{
 /// `From<CpuExceptionInfo>` should be implemented for this struct.
 /// If `CpuExceptionInfo` is a page fault, `try_from` should return `Ok(PageFaultInfo)`,
 /// or `Err(())` (no error information) otherwise.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize)]
 pub struct PageFaultInfo {
     /// The virtual address where a page fault occurred.
     pub address: Vaddr,

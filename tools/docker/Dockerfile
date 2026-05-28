@@ -24,6 +24,9 @@ RUN apt update && apt-get install -y --no-install-recommends \
     unzip \
     zip
 
+# Install netcat for clean shutdown of benchmarks
+# see test/benchmark/redis/ycsb/host.sh for example usage
+RUN apt-get install -y --no-install -recommends netcat-openbsd
 
 #= Install linux-modules for vdso and linux config =================================
 # TODO: This is very wasteful and maybe fragile. We should have our own custom vDSO.

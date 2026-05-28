@@ -13,13 +13,13 @@ use ostd::{
     },
     path,
 };
+use serde::Serialize;
 use snafu::Whatever;
 
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy)]
-#[expect(dead_code)]
+#[derive(Debug, Clone, Copy, Serialize)]
 struct DtlbMisses {
     timestamp: Instant,
     miss_l1_tlb: u64,

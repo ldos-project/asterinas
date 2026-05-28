@@ -3,9 +3,11 @@
 use aster_rights::Rights;
 use bitflags::bitflags;
 use ostd::mm::PageFlags;
+use serde::Serialize;
 
 bitflags! {
     /// The memory access permissions of memory mappings.
+    #[derive(Serialize)]
     pub struct VmPerms: u32 {
         /// Readable.
         const READ    = 1 << 0;
