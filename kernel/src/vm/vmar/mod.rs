@@ -266,7 +266,8 @@ pub(super) struct Vmar_ {
 
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<oqueues::PageFaultOQueueMessage>>,
+    page_fault_oqueue_producer:
+        OQueueRef<oqueues::ObservableEvent<oqueues::PageFaultOQueueMessage>>,
 }
 
 struct VmarInner {
@@ -661,10 +662,12 @@ impl Vmar_ {
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
                 self.page_fault_oqueue_producer
-                    .produce(oqueues::ObservableEvent::new(oqueues::PageFaultOQueueMessage {
-                        vm_space_id: self.vm_space.id(),
-                        fault_info: *page_fault_info,
-                    }))?;
+                    .produce(oqueues::ObservableEvent::new(
+                        oqueues::PageFaultOQueueMessage {
+                            vm_space_id: self.vm_space.id(),
+                            fault_info: *page_fault_info,
+                        },
+                    ))?;
             }
             return res;
         }
