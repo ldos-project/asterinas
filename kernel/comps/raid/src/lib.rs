@@ -23,6 +23,14 @@ extern crate alloc;
 #[cfg(not(baseline_asterinas))]
 pub mod linnos_weights;
 #[cfg(not(baseline_asterinas))]
+pub mod linnos_plus_weights;
+#[cfg(not(baseline_asterinas))]
+pub mod decision_tree_predictions;
+#[cfg(not(baseline_asterinas))]
+pub mod heimdall;
+#[cfg(not(baseline_asterinas))]
+pub mod heimdall_weights;
+#[cfg(not(baseline_asterinas))]
 pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
 pub mod server_traits;
@@ -156,7 +164,7 @@ impl Raid1Device {
     fn process_request(&self, request: BioRequest) {
         match request.type_() {
             BioType::Read => self.process_read_async(request),
-            BioType::Write => self.process_write(request),
+            BioType::Write => self.process_write_async(request),
             BioType::Flush => self.process_flush(request),
             BioType::Discard => self.process_discard(request),
         }
@@ -215,15 +223,15 @@ impl Raid1Device {
     #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
         // Submit all children first to overlap device I/O.
-        let mut pending: alloc::vec::Vec<(&SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
+        let mut pending: alloc::vec::Vec<(SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
-        for parent in request.bios() {
-            let member = self.selection_policy.select_block_device(parent).unwrap();
+        for mut parent in request.into_bios() {
+            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
                 parent.sid_range().start,
-                Self::clone_segments(parent),
+                Self::clone_segments(&parent),
                 None,
             );
             match child.submit(&*member) {
@@ -250,9 +258,9 @@ impl Raid1Device {
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.    
     fn process_read_async(&self, request: BioRequest) {
-        for parent in request.into_bios() {
+        for mut parent in request.into_bios() {
             #[cfg(not(baseline_asterinas))]
-            let member = self.selection_policy.select_block_device(&parent).unwrap();
+            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
 
             #[cfg(baseline_asterinas)]
             let member = self.members[0].clone();
@@ -282,12 +290,75 @@ impl Raid1Device {
 
     /// Processes write requests by fanning out to all mirrors and aggregating
     /// the results (all must succeed).
+    #[expect(dead_code)]
     fn process_write(&self, request: BioRequest) {
         for parent in request.bios() {
             // Submit the same write to all members.
             let status =
                 self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
             parent.complete(status);
+        }
+    }
+
+    /// Processes write requests asynchronously by fanning out to all mirrors.
+    ///
+    /// Each child BIO carries a callback that atomically decrements a shared
+    /// counter. The last callback to fire (or the dispatch thread on submission
+    /// failure) completes the parent. Any failed member marks the write as
+    /// `IoError`; all members must succeed for `Complete` to be reported.
+    fn process_write_async(&self, request: BioRequest) {
+        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use ostd::sync::{LocalIrqDisabled, SpinLock};
+
+        for parent in request.into_bios() {
+            let n = self.members.len();
+            let remaining = Arc::new(AtomicUsize::new(n));
+            let had_error = Arc::new(AtomicBool::new(false));
+
+            // Extract before moving parent into the guard.
+            let start_sid = parent.sid_range().start;
+            let segments = parent.segments().to_vec();
+            let guard = Arc::new(SpinLock::<_, LocalIrqDisabled>::new(Some(ParentGuard::new(parent))));
+
+            for member in &self.members {
+                let remaining_cb = remaining.clone();
+                let had_error_cb = had_error.clone();
+                let guard_cb = guard.clone();
+                let remaining_err = remaining.clone();
+                let had_error_err = had_error.clone();
+                let guard_err = guard.clone();
+                let member = member.clone();
+
+                let child = Bio::new_with_closure(
+                    BioType::Write,
+                    start_sid,
+                    segments.clone(),
+                    move |child_bio: &SubmittedBio| {
+                        if child_bio.status() != BioStatus::Complete {
+                            had_error_cb.store(true, Ordering::Release);
+                        }
+                        if remaining_cb.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            let status = if had_error_cb.load(Ordering::Acquire) {
+                                BioStatus::IoError
+                            } else {
+                                BioStatus::Complete
+                            };
+                            if let Some(g) = guard_cb.lock().take() {
+                                g.complete(status);
+                            }
+                        }
+                    },
+                );
+
+                if member.submit(child).is_err() {
+                    had_error_err.store(true, Ordering::Release);
+                    if remaining_err.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        if let Some(g) = guard_err.lock().take() {
+                            g.complete(BioStatus::IoError);
+                        }
+                    }
+                }
+            }
         }
     }
 
