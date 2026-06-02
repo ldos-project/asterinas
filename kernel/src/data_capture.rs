@@ -10,10 +10,13 @@ use ostd::{
     ignore_err, new_server,
     orpc::{
         framework::{notifier::Notifier as _, spawn_thread},
+        oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_type},
         orpc_server,
+        path::Path,
     },
     sync::Mutex,
 };
+use serde::Serialize;
 
 use crate::{fs, kcmdline, util::timer::TimerServer};
 
@@ -149,4 +152,50 @@ pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
         }
     }));
     ret
+}
+
+/// Capture data from all OQueues of a given type.
+///
+/// This encapsulates the idea that there may be a bunch of OQueues with the same type that
+/// represent the same kind of event for different entities. For example, the I/O operations for
+/// different disks.
+///
+/// The `query` argument is a function which creates `ObservationQuery`s. This additional level of
+/// indirection is needed because `ObservationQuery` is not `Clone`.
+///
+/// There is no way to put the path of the actual source OQueue into the output file via the query.
+/// This is because `Path` is not `Copy`, so it can't go in the event. (see
+/// https://github.com/ldos-project/asterinas/issues/232)
+pub fn new_data_capture_data_file_by_type<
+    T: Send + 'static,
+    E: Copy + Sync + Send + Serialize + 'static,
+>(
+    capture_path: Path,
+    length: usize,
+    query: impl Fn() -> ObservationQuery<T, E>,
+) {
+    let oqueues = lookup_by_type::<T>();
+    if !oqueues.is_empty() {
+        let capture_file = new_data_capture_file::<E>(mariposa_data_capture::FileDescriptor {
+            path: capture_path.clone(),
+            length,
+        });
+
+        for oqueue in oqueues {
+            let Some(oqueue_path) = oqueue.path().cloned() else {
+                log::warn!(
+                    "Found anonymous OQueue while collecting OQueues for {}. Not capturing.",
+                    capture_path
+                );
+                continue;
+            };
+            ignore_err!(capture_file.register_observer(
+                mariposa_data_capture::ObserverRegistration {
+                    observer: oqueue.attach_strong_observer(query()).unwrap(),
+                    path: oqueue_path,
+                }
+            ));
+        }
+        ignore_err!(capture_file.start());
+    }
 }
