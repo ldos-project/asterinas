@@ -184,7 +184,15 @@ impl aster_block::BlockDevice for BlockDevice {
 
         let mut bio = bio;
         let device_index = self.device.device_index.load(Ordering::Relaxed);
-        bio.prepare_enqueue(reply_handle, self.queue.clone(), device_index);
+        bio.prepare_enqueue(
+            reply_handle,
+            self.queue.clone(),
+            if device_index == u64::MAX {
+                None
+            } else {
+                Some(device_index)
+            },
+        );
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())

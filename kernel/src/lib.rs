@@ -23,13 +23,14 @@
 #![feature(closure_track_caller)]
 #![register_tool(component_access_control)]
 
+use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-#[cfg(not(baseline_asterinas))]
-mod data_capture;
 pub mod event;
 use aster_time::Instant;
 #[cfg(not(baseline_asterinas))]
-pub use data_capture::{new_data_capture_file, new_legacy_data_capture_file};
+pub use data_capture::{
+    new_data_capture_data_file_by_type, new_data_capture_file, new_legacy_data_capture_file,
+};
 use kcmdline::KCmdlineArg;
 #[cfg(not(baseline_asterinas))]
 use mariposa_data_capture::ObserverRegistration;
@@ -73,6 +74,8 @@ pub mod arch;
 pub mod arch;
 pub mod context;
 pub mod cpu;
+#[cfg(not(baseline_asterinas))]
+mod data_capture;
 pub mod device;
 pub mod driver;
 pub mod error;
@@ -296,6 +299,45 @@ fn init_thread() {
         } else {
             error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")
         }
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    if karg
+        .get_module_arg_by_name("io", "capture_block_io")
+        .unwrap_or(false)
+    {
+        #[derive(Clone, Copy, Serialize)]
+        struct SubmittedBioEvent {
+            byte_range: (usize, usize),
+            timestamp: Option<Instant>,
+            context: EventContext,
+        }
+        new_data_capture_data_file_by_type(path!(io.block.submitted), 500 * 1024 * 1024, || {
+            ObservationQuery::new(|e: &SubmittedBio| {
+                let sid_range = e.sid_range();
+                let context = EventContext::new();
+                SubmittedBioEvent {
+                    byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
+                    timestamp: e.submission_time().map(|t| t.into()),
+                    context,
+                }
+            })
+        });
+
+        #[derive(Clone, Copy, Serialize)]
+        struct BlockDeviceCompletionEvent {
+            stats: BlockDeviceCompletionStats,
+            context: EventContext,
+        }
+        new_data_capture_data_file_by_type(path!(io.block.completion), 500 * 1024 * 1024, || {
+            ObservationQuery::new(|stats| {
+                let context = EventContext::new();
+                BlockDeviceCompletionEvent {
+                    stats: *stats,
+                    context,
+                }
+            })
+        });
     }
 
     // Wait till initproc become zombie.
