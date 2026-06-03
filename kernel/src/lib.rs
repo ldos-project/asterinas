@@ -25,12 +25,12 @@
 
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-#[cfg(not(baseline_asterinas))]
-mod data_capture;
 pub mod event;
 use aster_time::Instant;
 #[cfg(not(baseline_asterinas))]
-pub use data_capture::{new_data_capture_file, new_legacy_data_capture_file};
+pub use data_capture::{
+    new_data_capture_data_file_by_type, new_data_capture_file, new_legacy_data_capture_file,
+};
 use kcmdline::KCmdlineArg;
 #[cfg(not(baseline_asterinas))]
 use mariposa_data_capture::ObserverRegistration;
@@ -52,7 +52,6 @@ use serde::Serialize;
 use spin::Once;
 
 use crate::{
-    data_capture::new_data_capture_data_file_by_type,
     event::{EventContext, TaskId},
     kcmdline::set_kernel_cmd_line,
     prelude::*,
@@ -75,6 +74,8 @@ pub mod arch;
 pub mod arch;
 pub mod context;
 pub mod cpu;
+#[cfg(not(baseline_asterinas))]
+mod data_capture;
 pub mod device;
 pub mod driver;
 pub mod error;
@@ -300,6 +301,7 @@ fn init_thread() {
         }
     }
 
+    #[cfg(not(baseline_asterinas))]
     if karg
         .get_module_arg_by_name("io", "capture_block_io")
         .unwrap_or(false)
