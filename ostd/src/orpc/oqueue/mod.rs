@@ -76,7 +76,10 @@ pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
 use crate::{
-    orpc::{path::Path, sync::Blocker},
+    orpc::{
+        path::{Path, StaticPath},
+        sync::Blocker,
+    },
     sync::WakerKey,
 };
 
@@ -169,6 +172,22 @@ pub trait OQueueBase<T: ?Sized> {
     /// Erase the kind of OQueue. This will not allow additional operations to succeed. It
     /// simply makes the checks dynamic.
     fn as_any_oqueue(&self) -> AnyOQueueRef<T>;
+}
+
+#[cfg(not(baseline_asterinas))]
+#[doc(hidden)]
+pub fn trace_structured_data_with_len<T: ?Sized + Send + 'static>(
+    path: StaticPath,
+    value: &T,
+    length: usize,
+    producer: &'static spin::Once<RefProducer<T>>,
+) {
+    let producer = producer.call_once(|| {
+        let oqueue = OQueueRef::<T>::new(length, Path::Static(path));
+        oqueue.attach_ref_producer().unwrap()
+    });
+
+    producer.produce_ref(value);
 }
 
 /// An OQueue for communication which support producing by value and consumers.
@@ -771,7 +790,13 @@ mod test {
     use core::assert_matches;
 
     use super::*;
-    use crate::{orpc::oqueue::generic_test, prelude::*, sync::SpinLock};
+    use crate::{
+        orpc::oqueue::{generic_test, registry},
+        prelude::*,
+        static_path,
+        sync::SpinLock,
+        trace_structured_data,
+    };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Message {
@@ -906,6 +931,56 @@ mod test {
         let observed = observer.weak_observe_recent(1).unwrap();
 
         assert_eq!(observed, vec![Some(12)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_default_length() {
+        fn produce(value: u32) {
+            trace_structured_data!({ ostd.oqueue.trace_structured_data.path }, u32, value);
+        }
+
+        let path: StaticPath = static_path!(ostd.oqueue.trace_structured_data.path);
+
+        produce(10);
+
+        let queue =
+            registry::lookup_by_path::<u32>(&path.into()).expect("expected OQueue to exist");
+        let observer = queue
+            .attach_weak_observer(2, ObservationQuery::identity())
+            .unwrap();
+
+        produce(11);
+        produce(12);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(11u32), Some(12u32)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_explicit_length() {
+        fn produce(value: u32) {
+            trace_structured_data!({ostd.oqueue.trace_structured_data_len.static}, u32, value, length = 1);
+        }
+
+        let path: StaticPath = static_path!(ostd.oqueue.trace_structured_data_len.static);
+
+        produce(20);
+
+        let queue =
+            registry::lookup_by_path::<u32>(&path.into()).expect("expected OQueue to exist");
+        let observer = queue
+            .attach_weak_observer(2, ObservationQuery::identity())
+            .unwrap();
+
+        produce(21);
+        produce(22);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(21u32), Some(22u32)]);
     }
 
     #[ktest]
