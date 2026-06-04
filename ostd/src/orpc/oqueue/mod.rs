@@ -148,6 +148,26 @@ pub trait OQueueBase<T: ?Sized> {
     fn as_any_oqueue(&self) -> AnyOQueueRef<T>;
 }
 
+#[cfg(not(baseline_asterinas))]
+#[doc(hidden)]
+pub use spin::Once;
+
+#[cfg(not(baseline_asterinas))]
+#[doc(hidden)]
+pub fn trace_structured_data_with_len<T: ?Sized + Send + 'static>(
+    path: &'static Path,
+    value: &T,
+    length: usize,
+    producer: &'static spin::Once<RefProducer<T>>,
+) {
+    let producer = producer.call_once(|| {
+        let oqueue = OQueueRef::<T>::new(length, path.clone());
+        oqueue.attach_ref_producer().unwrap()
+    });
+
+    producer.produce_ref(value);
+}
+
 /// An OQueue for communication which support producing by value and consumers.
 pub trait ConsumableOQueue<T>: OQueueBase<T>
 where
@@ -714,7 +734,12 @@ mod test {
     use core::assert_matches;
 
     use super::*;
-    use crate::{orpc::oqueue::generic_test, prelude::*};
+    use crate::{
+        orpc::oqueue::{generic_test, registry},
+        path,
+        prelude::*,
+        trace_structured_data,
+    };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Message {
@@ -849,6 +874,60 @@ mod test {
         let observed = observer.weak_observe_recent(1).unwrap();
 
         assert_eq!(observed, vec![Some(12)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_default_length() {
+        fn produce(path: &'static Path, value: u32) {
+            trace_structured_data!(path, u32, value);
+        }
+
+        let path_ref: &'static Path = Box::leak(Box::new(path!(
+            ostd.oqueue.trace_structured_data.explicit[unique]
+        )));
+
+        produce(path_ref, 10);
+        assert!(registry::lookup_by_path::<u32>(path_ref).is_some());
+
+        let queue = registry::lookup_by_path::<u32>(path_ref).unwrap();
+        let observer = queue
+            .attach_weak_observer(2, ObservationQuery::identity())
+            .unwrap();
+
+        produce(path_ref, 11);
+        produce(path_ref, 12);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(11u32), Some(12u32)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_explicit_length() {
+        fn produce(path: &'static Path, value: u32) {
+            trace_structured_data!(path, u32, value, 1);
+        }
+
+        let path_ref: &'static Path = Box::leak(Box::new(path!(
+            ostd.oqueue.trace_structured_data.explicit[unique]
+        )));
+
+        produce(path_ref, 20);
+        assert!(registry::lookup_by_path::<u32>(path_ref).is_some());
+
+        let queue = registry::lookup_by_path::<u32>(path_ref).unwrap();
+        let observer = queue
+            .attach_weak_observer(2, ObservationQuery::identity())
+            .unwrap();
+
+        produce(path_ref, 21);
+        produce(path_ref, 22);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(21u32), Some(22u32)]);
     }
 
     #[ktest]
