@@ -2,11 +2,12 @@ name: Publish AsterNixOS
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths: 
-      - VERSION
+  # TODO(arthurp): Enable once we have infrastructure.
+  # push:
+  #   branches:
+  #     - main
+  #   paths: 
+  #     - VERSION
 
 jobs:
   push-cachix:

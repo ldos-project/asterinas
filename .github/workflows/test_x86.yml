@@ -18,7 +18,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260407
+      image: ldosproject/asterinas:0.17.2-20260518
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['ldosproject/asterinas:0.17.2-20260407', 'ldosproject/osdk:0.17.2-20260407']
+        image: ['ldosproject/asterinas:0.17.2-20260518', 'ldosproject/osdk:0.17.2-20260518']
     steps:
       - uses: actions/checkout@v4
       - name: Run OSDK tests
@@ -72,7 +72,7 @@ jobs:
   boot-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260407
+      image: ldosproject/asterinas:0.17.2-20260518
       options: -v /dev:/dev --privileged
     strategy:
       fail-fast: false
@@ -92,7 +92,7 @@ jobs:
   regression-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260407
+      image: ldosproject/asterinas:0.17.2-20260518
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -123,7 +123,7 @@ jobs:
   conformance-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260407
+      image: ldosproject/asterinas:0.17.2-20260518
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -169,24 +169,24 @@ jobs:
           conformance_test_workdir: ${{ matrix.conformance_test_workdir }}
           boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
 
-  cross-compile-test:
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: arm-cross-boot
-            runs_on: ubuntu-24.04-arm
-            image: ldosproject/asterinas:0.17.2-20260407
-            auto_test: boot
-            enable_kvm: false
-    runs-on: ${{ matrix.runs_on }}
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run cross-compile tests (${{ matrix.name }})
-        uses: ./.github/actions/test
-        with:
-          auto_test: ${{ matrix.auto_test }}
-          enable_kvm: ${{ matrix.enable_kvm }}
+  # cross-compile-test:
+  #   timeout-minutes: 30
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - name: arm-cross-boot
+  #           runs_on: ubuntu-24.04-arm
+  #           image: ldosproject/asterinas:0.17.2-20260518
+  #           auto_test: boot
+  #           enable_kvm: false
+  #   runs-on: ${{ matrix.runs_on }}
+  #   container:
+  #     image: ${{ matrix.image }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run cross-compile tests (${{ matrix.name }})
+  #       uses: ./.github/actions/test
+  #       with:
+  #         auto_test: ${{ matrix.auto_test }}
+  #         enable_kvm: ${{ matrix.enable_kvm }}

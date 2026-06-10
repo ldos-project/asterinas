@@ -1,8 +1,9 @@
 name: Close stale issues and PRs
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 1" # Runs on every Monday
+  # TODO(arthurp): Decide if we want this.
+  # schedule:
+  #   - cron: "0 0 * * 1" # Runs on every Monday
 
 jobs:
   stale:

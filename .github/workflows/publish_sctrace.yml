@@ -2,15 +2,16 @@ name: Publish sctrace
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - VERSION
-      - tools/sctrace/**
-  push:
-    branches:
-      - main
-    paths:
-      - VERSION
+  # TODO(arthurp): Enable if/when we decide to push our own version of this.
+  # pull_request:
+  #   paths:
+  #     - VERSION
+  #     - tools/sctrace/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - VERSION
 
 jobs:
   publish:

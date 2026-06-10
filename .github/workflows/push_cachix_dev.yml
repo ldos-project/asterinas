@@ -2,16 +2,17 @@ name: Push packages to AsterNixOS's development cache on Cachix
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/push_cachix_pkgs.yml
-      - distro/**
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/push_cachix_pkgs.yml
-      - distro/**
+  # TODO(arthurp): Once we have this setup
+  # pull_request:
+  #   paths:
+  #     - .github/workflows/push_cachix_pkgs.yml
+  #     - distro/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - .github/workflows/push_cachix_pkgs.yml
+  #     - distro/**
 
 jobs:
   push-pkgs:

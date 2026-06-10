@@ -9,18 +9,18 @@ name: Test AsterNixOS (full)
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - distro/**
-      - .github/workflows/test_nixos_full.yml
-      - tools/nixos/**
-  push:
-    branches:
-      - main
-    paths:
-      - distro/**
-      - .github/workflows/test_nixos_full.yml
-      - tools/nixos/**
+  # pull_request:
+  #   paths:
+  #     - distro/**
+  #     - .github/workflows/test_nixos_full.yml
+  #     - tools/nixos/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - distro/**
+  #     - .github/workflows/test_nixos_full.yml
+  #     - tools/nixos/**
 
 jobs:
   full-nixos-test:

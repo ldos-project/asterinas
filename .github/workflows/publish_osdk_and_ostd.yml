@@ -2,16 +2,17 @@ name: Publish OSDK and OSTD
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - VERSION
-      - ostd/**
-      - osdk/**
-  push:
-    branches:
-      - main
-    paths: 
-      - VERSION
+  # TODO(arthurp): When if we have crates.io setup
+  # pull_request:
+  #   paths:
+  #     - VERSION
+  #     - ostd/**
+  #     - osdk/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - VERSION
 
 jobs:
   publish:
