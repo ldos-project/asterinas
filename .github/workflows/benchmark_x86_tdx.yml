@@ -108,7 +108,7 @@ jobs:
       max-parallel: 1
     timeout-minutes: 60
     container: 
-      image: ldosproject/asterinas:0.17.2-20260407
+      image: ldosproject/asterinas:0.17.2-20260518
       options: -v /dev:/dev --privileged
 
     steps:

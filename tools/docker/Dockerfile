@@ -14,43 +14,46 @@ ARG DEBIAN_FRONTEND=noninteractive
 FROM build-base AS build-linux
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    linux-modules-6.17.0-35-generic
-    # fakeroot \
-    # build-essential \
-    # ncurses-dev \
-    # xz-utils \
-    # libssl-dev \
-    # bc \
-    # flex \
-    # libelf-dev \
-    # bison \
+    linux-modules-6.17.0-35-generic \
+    fakeroot \
+    build-essential \
+    ncurses-dev \
+    xz-utils \
+    libssl-dev \
+    bc \
+    flex \
+    libelf-dev \
+    bison
 
-# WORKDIR /tmp
+WORKDIR /tmp
 
-# RUN wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.105.tar.xz && \
-#     echo "01b537650332d2852722a626169cf7e5e798d11f9b578171b477868555f5e44f  linux-5.15.105.tar.xz" | sha256sum -c - 
+RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.2.10.tar.xz && \
+    echo "57c562c3cd2753f232549cab05c8ad770ed848ae86401619c7581bdffaeea4fe  linux-6.2.10.tar.xz" | sha256sum -c - 
 
-# RUN tar xf linux-5.15.105.tar.xz
+RUN tar xf linux-6.2.10.tar.xz
 
-# WORKDIR /tmp/linux-5.15.105
+WORKDIR /tmp/linux-6.2.10
 
-# # NOTE: This MAY pull the default configuration the linux-modules-6.8.0-60-generic package above.
-# RUN make defconfig && \
-#     scripts/config --disable SYSTEM_REVOCATION_KEYS && \
-#     scripts/config --disable SYSTEM_TRUSTED_KEYS && \
-#     scripts/config --enable EXT2_FS && \
-#     scripts/config --enable VIRTIO_PCI && \
-#     scripts/config --enable VIRTIO_MMIO && \
-#     scripts/config --enable VIRTIO_NET && \
-#     scripts/config --enable VIRTIO_BLK && \
-#     make olddefconfig
+# NOTE: This MAY pull the default configuration the linux-modules-6.17.0-35-generic package above.
+RUN make defconfig && \
+    scripts/config --disable SYSTEM_REVOCATION_KEYS && \
+    scripts/config --disable SYSTEM_TRUSTED_KEYS && \
+    scripts/config --enable EXT2_FS && \
+    scripts/config --enable VIRTIO_PCI && \
+    scripts/config --enable VIRTIO_MMIO && \
+    scripts/config --enable VIRTIO_NET && \
+    scripts/config --enable VIRTIO_BLK && \
+    make olddefconfig
 
-# RUN make -j $(nproc) bzImage
+# KCFLAGS=-Wno-array-bounds is needed because of a problem in a random network driver which causes a
+# warning with -Werror on this specific compiler version.
+RUN make -j $(nproc) KCFLAGS=-Wno-array-bounds bzImage arch/x86/entry/vdso
 
-RUN mkdir /opt/linux_binary_cache && \
-    cp /usr/lib/modules/6.17.0-35-generic/vdso/vdso64.so /opt/linux_binary_cache/vdso64.so
-    # cp arch/x86/boot/bzImage /opt/linux_binary_cache/vmlinuz && \
-    # cp .config /opt/linux_binary_cache/vmlinuz.config
+# TODO(arthurp): This does not include the riscv vDSO
+RUN mkdir -p /opt/linux_binary_cache && \
+    cp -v arch/x86/entry/vdso/vdso64.so /opt/linux_binary_cache/vdso_x86_64.so && \
+    cp -v arch/x86/boot/bzImage /opt/linux_binary_cache/vmlinuz && \
+    cp -v .config /opt/linux_binary_cache/vmlinuz.config
 
 #= Build syscall test =========================================================
 

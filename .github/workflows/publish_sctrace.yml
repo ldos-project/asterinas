@@ -16,7 +16,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    container: ldosproject/asterinas:0.17.2-20260407
+    container: ldosproject/asterinas:0.17.2-20260518
     steps:
       - uses: actions/checkout@v4
 

@@ -1,3 +1,8 @@
+**Note:** The LDOS project is not currently working on kata integration 
+and has not actually created the repositories and images discussed here.
+If you want to use kata, please reach out to us and we will discuss
+expanding our support for kata.
+
 # Using Asterinas as a Kata Guest Kernel
 
 This guide explains how to use Asterinas
@@ -16,7 +21,7 @@ It reduces the risk that a compromised workload can affect
 the host or other containers.
 
 This guide uses the
-[Asterinas fork of Kata Containers](https://github.com/asterinas/kata-containers),
+[Asterinas fork of Kata Containers](https://github.com/ldos-project/kata-containers),
 which carries Asterinas-specific patches, helper scripts,
 and configuration for building, installing, and testing Kata
 with Asterinas as the guest kernel.
@@ -48,8 +53,8 @@ Then make sure the user running Docker can access
 
 Use one of the Docker images below to enter an environment
 that can run Asterinas-powered Kata containers.
-End users should use the prebuilt `asterinas/kata` image.
-Kernel developers should use the `asterinas/asterinas` image
+End users should use the prebuilt `ldosproject/kata` image.
+Kernel developers should use the `ldosproject/asterinas` image
 with source mounts.
 
 ### Step 2.1: Prepare Docker arguments
@@ -84,14 +89,14 @@ These Docker arguments apply to both end users and kernel developers.
 
 #### For end users
 
-Run an `asterinas/kata` Docker container
+Run an `ldosproject/kata` Docker container
 to enter an environment with Kata and Asterinas preinstalled:
 
 ```bash
 docker run -it \
     "${KATA_DOCKER_ARGS[@]}" \
     -w /root/kata-containers \
-    asterinas/kata:0.17.2-20260407
+    ldosproject/kata:0.17.2-20260518
 ```
 
 The Docker image includes Kata, the Asterinas guest kernel,
@@ -105,7 +110,7 @@ continue with [Step 3: Start a Kata workload](#step-3-start-a-kata-workload).
 #### For kernel developers
 
 Clone the Asterinas fork of Kata Containers,
-then run an `asterinas/asterinas` Docker container
+then run an `ldosproject/asterinas` Docker container
 with both source trees mounted:
 
 ```bash
@@ -113,7 +118,7 @@ with both source trees mounted:
 ASTERINAS_SRC=$HOME/asterinas
 
 # Clones the Asterinas fork of kata-containers locally as well.
-cd $HOME && git clone https://github.com/asterinas/kata-containers.git
+cd $HOME && git clone https://github.com/ldos-project/kata-containers.git
 KATA_SRC=$HOME/kata-containers
 
 docker run -it \
@@ -121,7 +126,7 @@ docker run -it \
     -v "${ASTERINAS_SRC}:/root/asterinas" \
     -v "${KATA_SRC}:/root/kata-containers" \
     -w /root/kata-containers \
-    asterinas/asterinas:0.17.2-20260407
+    ldosproject/asterinas:0.17.2-20260518
 ```
 
 This setup lets you rebuild the kernel
@@ -135,7 +140,7 @@ so the `tools/kata/` helper scripts are available
 at the relative paths used below.
 
 Install the Kata dependencies and configuration
-after entering the `asterinas/asterinas` image:
+after entering the `ldosproject/asterinas` image:
 
 ```bash
 tools/kata/kata_env.sh install
@@ -195,7 +200,7 @@ cat /etc/alpine-release
 ```
 
 The `/proc/cmdline` output should contain the Asterinas kernel image path.
-For the prebuilt `asterinas/kata` image,
+For the prebuilt `ldosproject/kata` image,
 look for:
 
 ```text
@@ -227,7 +232,7 @@ This step is for the kernel-developer setup only:
 it requires the Asterinas source tree,
 so it assumes you entered the Kata-ready environment through the
 [For kernel developers](#for-kernel-developers) setup in Step 2.2.
-It is not available from the prebuilt `asterinas/kata` image.
+It is not available from the prebuilt `ldosproject/kata` image.
 
 Build the kernel first:
 
