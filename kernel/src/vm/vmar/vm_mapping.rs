@@ -500,13 +500,11 @@ impl VmMapping {
                     } else {
                         let new_frame = duplicate_frame(&frame)?;
                         prop.flags |= new_flags;
-                        let n_pages = (new_frame.size() / PAGE_SIZE) as isize;
 
                         cursor.unmap(PAGE_SIZE);
                         cursor.jump(va.start).unwrap();
                         cursor.map(new_frame.into(), prop);
 
-                        rss_delta.add(self.rss_type(), n_pages);
                         // FIXME: Linux re-classifies the page from `File` to `Anon` in RSS,
                         // when a COW on a file-backed mapping happens.
                         // We currently do not support this re-classification,

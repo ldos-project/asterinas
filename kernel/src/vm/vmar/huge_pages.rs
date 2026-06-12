@@ -24,6 +24,7 @@ pub fn set_huge_mapping_enabled(value: bool) {
 static MAP_HUGE_PRESERVE_ON_DONTNEED: AtomicBool = AtomicBool::new(false);
 
 /// Returns true if huge page mappings should be preserved when a MADV_DONTNEED is issued.
+#[expect(unused)]
 pub fn huge_mapping_preserve_on_dontneed() -> bool {
     MAP_HUGE_PRESERVE_ON_DONTNEED.load(Ordering::Relaxed)
 }

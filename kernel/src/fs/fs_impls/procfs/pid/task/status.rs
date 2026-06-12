@@ -153,10 +153,13 @@ impl FileOps for StatusFileOps {
             let anon = vmar_ref.get_rss_counter(RssType::Anon) * (PAGE_SIZE / 1024);
             let file = vmar_ref.get_rss_counter(RssType::File) * (PAGE_SIZE / 1024);
             let rss = anon + file;
+            let anon_hwm = vmar_ref.get_rss_hwm_counter(RssType::Anon) * (PAGE_SIZE / 1024);
+            let file_hwm = vmar_ref.get_rss_hwm_counter(RssType::File) * (PAGE_SIZE / 1024);
+            let rss_hwm = anon_hwm + file_hwm;
             writeln!(
                 printer,
-                "VmSize:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
-                vsize, rss, anon, file
+                "VmSize:\t{} kB\nVmHWM:\t{} \nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
+                vsize, rss_hwm, rss, anon, file
             )?;
         }
 

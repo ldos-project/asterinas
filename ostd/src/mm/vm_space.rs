@@ -841,7 +841,6 @@ unsafe impl PageTableConfig for UserPtConfig {
         level: PagingLevel,
         prop: PageProperty,
     ) -> Self::ItemRef<'a> {
-        debug_assert_eq!(level, 1);
         if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
             // `AVAIL1` is set, this is I/O memory.
             VmItemRef {

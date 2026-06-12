@@ -336,6 +336,9 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     let huge_mapping_preserve_on_dontneed = karg
         .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")
         .unwrap_or(false);
+    if huge_mapping_preserve_on_dontneed {
+        error!("vm.huge_mapping_preserve_on_dontneed=true is not currently honored.")
+    }
     set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
 
     #[cfg(not(baseline_asterinas))]

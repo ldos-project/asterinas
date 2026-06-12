@@ -284,7 +284,10 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
 
         // FIXME: Maintain the `self.barrier_va.contains(self.va)` invariant:
         // <https://github.com/asterinas/asterinas/pull/2613>.
-        if self.va == self.barrier_va.end {
+        // NOTE(arthurp): LDOS added handling for `va >= end` here because split_if_mapped_huge_all
+        // creates such cursors. This should be reevaluated if upstream changes how this invariant
+        // is handled.
+        if self.va >= self.barrier_va.end {
             while self.level < self.guard_level {
                 self.pop_level();
             }
