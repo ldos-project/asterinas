@@ -1,5 +1,3 @@
-# RFC Overview
-
-The Asterinas RFC process is intended to provide a consistent, transparent, structured path for the community to make "big" decisions. For example, the RFC process can be used to evolve the project roadmap and the system architecture.
-
-For more details, see the [RFC-0001 RFC process](0001-rfc-process.md).
+The upstream Asterinas project has a formal RFC process. The Mariposa project does not
+currently have one and would be separate anyway. If the Mariposa project becomes independently
+active we may introduce our own RFC process. Until then, this directory is empty.
