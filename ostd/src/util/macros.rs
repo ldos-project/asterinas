@@ -46,3 +46,34 @@ macro_rules! ptr_null_of {
         }
     };
 }
+
+#[cfg(not(baseline_asterinas))]
+#[macro_export]
+/// Emits structured trace data into a callsite-local observation OQueue.
+///
+/// The macro accepts `path, Type, value` and optionally a queue length as the fourth argument.
+/// The default queue length is 1024.
+macro_rules! trace_structured_data {
+    ($path:expr, $ty:ty, $value:expr $(,)?) => {{
+        static PRODUCER: $crate::orpc::oqueue::Once<$crate::orpc::oqueue::RefProducer<$ty>> =
+            $crate::orpc::oqueue::Once::new();
+
+        let path: &'static $crate::orpc::path::Path = ($path).into();
+        $crate::orpc::oqueue::trace_structured_data_with_len(path, &($value), 1024, &PRODUCER)
+    }};
+
+    ($path:expr, $ty:ty, $value:expr, $length:expr $(,)?) => {{
+        static PRODUCER: $crate::orpc::oqueue::Once<$crate::orpc::oqueue::RefProducer<$ty>> =
+            $crate::orpc::oqueue::Once::new();
+
+        let path: &'static $crate::orpc::path::Path = ($path).into();
+        $crate::orpc::oqueue::trace_structured_data_with_len(path, &($value), $length, &PRODUCER)
+    }};
+}
+
+#[cfg(baseline_asterinas)]
+#[macro_export]
+/// Is a no-op
+macro_rules! trace_structured_data {
+    ($($_arg:tt)*) => {};
+}
