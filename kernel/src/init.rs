@@ -243,22 +243,24 @@ fn first_kthread() {
                 },
             );
 
-            ignore_err!(
-                capture_file.register_observer(ObserverRegistration {
-                    path: path!(scheduler.events),
-                    observer: oqueue
-                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
-                            let context = EventContext::new();
-                            KernelSchedulingEvent {
-                                timestamp: context.timestamp,
-                                kind: e.kind,
-                                task: TaskId::new(&e.task),
-                            }
-                        }))
-                        .unwrap(),
-                })
-            );
-            ignore_err!(capture_file.start());
+            if let Some(capture_file) = capture_file {
+                ignore_err!(
+                    capture_file.register_observer(ObserverRegistration {
+                        path: path!(scheduler.events),
+                        observer: oqueue
+                            .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
+                                let context = EventContext::new();
+                                KernelSchedulingEvent {
+                                    timestamp: context.timestamp,
+                                    kind: e.kind,
+                                    task: TaskId::new(&e.task),
+                                }
+                            }))
+                            .unwrap(),
+                    })
+                );
+                ignore_err!(capture_file.start());
+            }
         } else {
             error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")
         }
