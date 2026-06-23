@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(grep -Eia --line-buffered \"panic|exception|page fault|cannot|no such|not found|welcome|asterinas|# |\\\\\\\\$ |login|sh:|init|started|booted\")"
+    ]
+  }
+}
