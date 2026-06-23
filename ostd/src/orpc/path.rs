@@ -282,6 +282,16 @@ macro_rules! path {
     }};
 }
 
+/// Similar to path! Creates a new [`Path`] from `.` delimited literal but only returns a safe
+/// static reference to it.
+#[macro_export]
+macro_rules! static_path {
+    ($($part:tt)*) => {{
+        let path = Box::leak(Box::new(path!($($part)*)));
+        path as &'static $crate::orpc::path::Path
+    }};
+}
+
 /// Internal macro for parsing path components.
 ///
 /// Arguments are: [output list...] @ { remaining unparsed tokens }
@@ -434,6 +444,12 @@ mod test {
     }
 
     #[ktest]
+    fn test_static_path_display() {
+        let path: &'static Path = static_path!(a.b[3].j);
+        assert_eq!(path.to_string(), "a.b[3].j");
+    }
+
+    #[ktest]
     fn test_path_pattern_display() {
         let pattern = path_pattern!(*[*].d[*].f);
         assert_eq!(pattern.to_string(), "*[*].d[*].f");
@@ -507,9 +523,31 @@ mod test {
     }
 
     #[ktest]
+    fn test_static_path_pattern_matching() {
+        let pattern = path_pattern!(a.b[*].d);
+
+        assert!(pattern.matches(static_path!(a.b[3].d)));
+        assert!(!pattern.matches(static_path!(a.c[3].d)));
+        let pattern = path_pattern!(a.*[3].d);
+        assert!(pattern.matches(static_path!(a.b[3].d)));
+        assert!(pattern.matches(static_path!(a.c[3].d)));
+        assert!(!pattern.matches(static_path!(a.b[2].d)));
+        assert!(!pattern.matches(static_path!(a.b[3].e)));
+    }
+
+    #[ktest]
     fn test_path_pattern_prefix_matching() {
         let pattern = path_pattern!(a.*[3]);
         let path = path!(a.b[3].d[2]);
+        let suffix = pattern.matches_prefix(&path);
+        assert!(suffix.is_some());
+        assert_eq!(suffix.unwrap(), path!(d[2]));
+    }
+
+    #[ktest]
+    fn test_static_path_pattern_prefix_matching() {
+        let pattern = path_pattern!(a.*[3]);
+        let path: &'static Path = static_path!(a.b[3].d[2]);
         let suffix = pattern.matches_prefix(&path);
         assert!(suffix.is_some());
         assert_eq!(suffix.unwrap(), path!(d[2]));
@@ -522,6 +560,15 @@ mod test {
         let prefix = pattern.matches_suffix(&path);
         assert!(prefix.is_some());
         assert_eq!(prefix.unwrap(), path!(a.x[1]));
+    }
+
+    #[ktest]
+    fn test_static_path_pattern_suffix_matching() {
+        let pattern = path_pattern!(b[*].d);
+        let path: &'static Path = static_path!(a.x[1].b[3].d);
+        let prefix = pattern.matches_suffix(&path);
+        assert!(prefix.is_some());
+        assert_eq!(prefix.unwrap(), *static_path!(a.x[1]));
     }
 
     #[ktest]
@@ -539,8 +586,31 @@ mod test {
     }
 
     #[ktest]
+    fn test_static_path_concat() {
+
+        // We intentionally want to see if we can concatenate paths into a static path
+        let path1 = path!(a.b[1]);
+        let path2 = path!(c.d[2]);
+        let concatenated = path1.append(&path2);
+        assert_eq!(concatenated, *static_path!(a.b[1].c.d[2]));
+
+        // Test with empty paths
+        let empty = static_path!();
+        assert_eq!(path1.append(&empty), *static_path!(a.b[1]));
+        assert_eq!(empty.append(&path2), *static_path!(c.d[2]));
+        assert_eq!(empty.append(&empty), *static_path!());
+    }
+
+    #[ktest]
     fn test_unique_index() {
         let paths: [_; 2] = array::from_fn(|_| path!(a.b[unique]));
+        assert_ne!(paths[0], paths[1]);
+        assert!(path_pattern!(a.b[*]).matches(&paths[0]));
+    }
+
+    #[ktest]
+    fn test_static_path_unique_index() {
+        let paths: [_; 2] = array::from_fn(|_| static_path!(a.b[unique]));
         assert_ne!(paths[0], paths[1]);
         assert!(path_pattern!(a.b[*]).matches(&paths[0]));
     }
@@ -549,6 +619,12 @@ mod test {
     fn test_dynamic_index() {
         let index = 42;
         assert_eq!(path!(a[{ index }].b[{ 1 + 2 }]), path!(a[42].b[3]));
+    }
+
+    #[ktest]
+    fn test_dynamic_index_for_static_path() {
+        let index = 42;
+        assert_eq!(static_path!(a[{ index }].b[{ 1 + 2 }]), static_path!(a[42].b[3]));
     }
 
     #[ktest]
@@ -567,6 +643,15 @@ mod test {
         let x = path!({name_a}.{name_b});
         assert_eq!(x, path!(a.b));
         assert_eq!(path!({name_a}[1].{name_b}[2]), path!(a[1].b[2]));
+    }
+
+    #[ktest]
+    fn test_dynamic_name_for_static_path() {
+        let name_a = "a";
+        let name_b = "b".to_owned();
+        let x = static_path!({name_a}.{name_b});
+        assert_eq!(x, static_path!(a.b));
+        assert_eq!(static_path!({name_a}[1].{name_b}[2]), static_path!(a[1].b[2]));
     }
 
     #[ktest]
