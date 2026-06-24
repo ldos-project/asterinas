@@ -21,9 +21,6 @@ qemu.log
 # packet dump file
 virtio-net.pcap
 
-# nvim config file
-.nvim.lua
-
 # vscode launch config file
 .vscode/launch.json
 .vscode/launch.bak
