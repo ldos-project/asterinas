@@ -380,8 +380,8 @@ pub fn handle_user_signal(
                 size_of::<ucontext_t>(),
                 align_of::<ucontext_t>(),
             );
-    ucontext
-        .uc_mcontext
+            ucontext
+                .uc_mcontext
                 .set_fpu_context_addr(fpu_context_addr as _);
 
             const UC_FP_XSTATE: u64 = 1 << 0;
@@ -410,9 +410,9 @@ pub fn handle_user_signal(
             // TODO: Set the flags in the context structure.
             // Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L805>
             let fpu_context_addr = (ucontext_addr as usize) + size_of::<ucontext_t>();
-    } else {
+        } else {
             compile_error!("unsupported target");
-    }
+        }
     }
 
     user_space.write_bytes(fpu_context_addr as _, fpu_context_bytes)?;

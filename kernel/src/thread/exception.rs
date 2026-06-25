@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// We can't handle most exceptions, just send self a fault signal before return to user space.
-pub(super) fn handle_exception(ctx: &Context, context: &UserContext, exception: CpuException) {
+pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception: CpuException) {
     debug!("handle exception: {:#x?}", exception);
 
     if let Ok(page_fault_info) = PageFaultInfo::try_from(&exception) {
@@ -26,7 +26,7 @@ pub(super) fn handle_exception(ctx: &Context, context: &UserContext, exception: 
 
     // We cannot handle most exceptions. Send a fault signal to the current thread before returning
     // to user space.
-    generate_fault_signal(exception, ctx, context);
+    generate_fault_signal(exception, ctx, user_ctx);
 }
 
 /// Handles the page fault occurs in the VMAR.

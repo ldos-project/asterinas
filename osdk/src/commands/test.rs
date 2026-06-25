@@ -106,7 +106,6 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
     // Build the kernel with the given base crate
     let default_bundle_directory = osdk_output_directory.join(&current_crate.name);
     let dir_guard = DirGuard::change_dir(&target_crate_dir);
-
     let bundle = do_cached_build(
         default_bundle_directory,
         &osdk_output_directory,

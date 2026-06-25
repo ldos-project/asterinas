@@ -13,7 +13,6 @@ use ostd::{
     sync::SpinLock,
 };
 use snafu::OptionExt as _;
-// use snafu::Op
 
 /// Allocator for dynamically-allocated CPU-local objects.
 struct CpuLocalAllocator<const ITEM_SIZE: usize> {

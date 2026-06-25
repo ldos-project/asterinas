@@ -11,8 +11,6 @@ use super::WaitQueue;
 use crate::stack_info::StackInfo;
 
 /// A mutex with waitqueue.
-///
-///
 pub struct Mutex<T: ?Sized> {
     lock: AtomicBool,
     queue: WaitQueue,

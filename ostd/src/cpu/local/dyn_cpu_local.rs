@@ -165,7 +165,7 @@ impl<const ITEM_SIZE: usize> DynCpuLocalChunk<ITEM_SIZE> {
         self.bitmap.set(index, true);
         // SAFETY:
         //  - `index` refers to an available position in the chunk
-        // for allocating a new CPU-local object.
+        //    for allocating a new CPU-local object.
         //  - We have checked the size and alignment requirement
         //    for `T` above.
         unsafe {

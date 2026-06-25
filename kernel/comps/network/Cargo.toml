@@ -12,7 +12,6 @@ bitvec.workspace = true
 component.workspace = true
 ostd.workspace = true
 ostd-pod.workspace = true
-snafu.workspace = true
 spin.workspace = true
 zerocopy.workspace = true
 

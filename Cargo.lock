@@ -278,7 +278,6 @@ dependencies = [
  "component",
  "ostd",
  "ostd-pod",
- "snafu",
  "spin",
  "zerocopy",
 ]

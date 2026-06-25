@@ -83,7 +83,7 @@ bitflags::bitflags! {
 
         /// Ignore PAT, 1 if the scalable-mode PASID-table entry is not
         /// used for effective memory-type determination.
-        const IGNORE_PAT =     1 << 6;
+        const IGNORE_PAT =      1 << 6;
 
         /// Extended Memory Type, ignored by hardware when the
         /// Extended Memory Type Enable (EMTE) field is Clear.

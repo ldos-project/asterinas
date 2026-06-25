@@ -12,12 +12,6 @@ path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[target.'cfg(target_os = "none")'.dependencies]
-no_std_io2 = { version = "0.9.3", default-features = false }
-
-[target.'cfg(not(target_os = "none"))'.dependencies]
-no_std_io2 = { version = "0.9.3", default-features = false }
-
 [dependencies]
 cfg-if.workspace = true
 libflate.workspace = true

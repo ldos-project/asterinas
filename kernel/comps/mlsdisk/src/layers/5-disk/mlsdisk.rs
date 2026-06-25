@@ -16,10 +16,7 @@ use core::{
 };
 
 use device_id::DeviceId;
-use ostd::{
-    ignore_err,
-    mm::{HasSize, VmIo},
-};
+use ostd::mm::{HasSize, VmIo};
 use ostd_pod::{FromZeros, Pod};
 
 use super::{
@@ -107,7 +104,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             let mut base = start_offset % BLOCK_SIZE;
             bio.segments().iter().for_each(|seg| {
                 let offset = seg.nbytes();
-                ignore_err!(seg.write_bytes(0, &buf.as_slice()[base..base + offset]));
+                let _ = seg.write_bytes(0, &buf.as_slice()[base..base + offset]);
                 base += offset;
             });
             BioStatus::Complete
@@ -134,7 +131,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
 
             bio.segments().iter().for_each(|seg| {
                 let offset = seg.nbytes();
-                ignore_err!(seg.read_bytes(0, &mut buf.as_mut_slice()[base..base + offset]));
+                let _ = seg.read_bytes(0, &mut buf.as_mut_slice()[base..base + offset]);
                 base += offset;
             });
 
