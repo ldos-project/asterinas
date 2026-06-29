@@ -10,7 +10,7 @@ let
   commonBuild = dir: callPackage ./common.nix (commonArgs // { inherit dir; });
 
   subDirs =
-    [ "device" "fs" "hello_world" "io" "ipc" "memory" "process" "security" ];
+    [ "device" "fs" "hello_world" "io" "ipc" "memory" "process" "security" "raid1"];
 
   tdxAttest = callPackage ./tdx-attest.nix { };
 
