@@ -2,22 +2,20 @@
 
 use int_to_c_enum::TryFromInt;
 
-use super::RawSocketOption;
+use super::{RawSocketOption, SocketOption, impl_raw_socket_option};
 use crate::{
-    impl_raw_socket_option,
-    net::socket::ip::options::{Hdrincl, Tos, Ttl},
+    net::socket::ip::options::{Hdrincl, Recverr, Tos, Ttl},
     prelude::*,
-    util::net::options::SocketOption,
 };
 
 /// Socket options for IP socket.
 ///
 /// The raw definitions can be found at:
-/// https://elixir.bootlin.com/linux/v6.0.19/source/include/uapi/linux/in.h#L94
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+/// <https://elixir.bootlin.com/linux/v6.0.19/source/include/uapi/linux/in.h#L94>.
 #[expect(non_camel_case_types)]
 #[expect(clippy::upper_case_acronyms)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub enum CIpOptionName {
     TOS = 1,
     TTL = 2,
@@ -72,6 +70,7 @@ pub fn new_ip_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CIpOptionName::TOS => Ok(Box::new(Tos::new())),
         CIpOptionName::TTL => Ok(Box::new(Ttl::new())),
         CIpOptionName::HDRINCL => Ok(Box::new(Hdrincl::new())),
+        CIpOptionName::RECVERR => Ok(Box::new(Recverr::new())),
         _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported ip level option"),
     }
 }
@@ -79,3 +78,4 @@ pub fn new_ip_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
 impl_raw_socket_option!(Ttl);
 impl_raw_socket_option!(Tos);
 impl_raw_socket_option!(Hdrincl);
+impl_raw_socket_option!(Recverr);

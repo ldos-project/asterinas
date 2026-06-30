@@ -11,7 +11,6 @@ use core::{
 
 use super::{super::sync::select_legacy, *};
 use crate::{
-    arch::timer::TIMER_FREQ,
     orpc::legacy_oqueue::locking::LockingQueue,
     prelude::Vec,
     sync::{Mutex, WaitQueue},

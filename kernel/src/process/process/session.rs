@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{Pgid, Process, ProcessGroup, Sid, Terminal};
+use super::{BOOTSTRAP_SID, Pgid, Process, ProcessGroup, Sid, Terminal};
 use crate::prelude::*;
 
 /// A session.
@@ -20,7 +20,7 @@ pub struct Session {
 }
 
 struct Inner {
-    process_groups: BTreeMap<Pgid, Arc<ProcessGroup>>,
+    process_groups: BTreeMap<Pgid, Weak<ProcessGroup>>,
     terminal: Option<Arc<dyn Terminal>>,
 }
 
@@ -32,31 +32,36 @@ impl Session {
     ///
     /// The caller needs to ensure that the process does not belong to other process group or other
     /// session.
-    pub(in crate::process) fn new_pair(process: Arc<Process>) -> (Arc<Self>, Arc<ProcessGroup>) {
-        let mut process_group = None;
+    pub(super) fn new_pair(process: &Arc<Process>) -> (Arc<Self>, Arc<ProcessGroup>) {
+        let session = Self::new_empty(process.pid());
+        let process_group = ProcessGroup::new(process, session.clone());
+        session.lock().insert_process_group(&process_group);
 
-        let session = Arc::new_cyclic(|weak_session| {
-            let group = ProcessGroup::new(process, weak_session.clone());
-            process_group = Some(group.clone());
+        (session, process_group)
+    }
 
-            let pgid = group.pgid();
+    /// Creates the bootstrap session/process-group pair for the init process.
+    ///
+    /// The caller needs to ensure that the process is the init process
+    /// and does not belong to other process group or other session.
+    pub(super) fn new_bootstrap_pair(process: &Arc<Process>) -> (Arc<Self>, Arc<ProcessGroup>) {
+        debug_assert!(process.is_init_process());
 
-            let inner = {
-                let mut process_groups = BTreeMap::new();
-                process_groups.insert(pgid, group);
-                Inner {
-                    process_groups,
-                    terminal: None,
-                }
-            };
+        let session = Self::new_empty(BOOTSTRAP_SID);
+        let process_group = ProcessGroup::new_bootstrap(process, session.clone());
+        session.lock().insert_process_group(&process_group);
 
-            Self {
-                sid: pgid,
-                inner: Mutex::new(inner),
-            }
-        });
+        (session, process_group)
+    }
 
-        (session, process_group.unwrap())
+    fn new_empty(sid: Sid) -> Arc<Self> {
+        Arc::new(Self {
+            sid,
+            inner: Mutex::new(Inner {
+                process_groups: BTreeMap::new(),
+                terminal: None,
+            }),
+        })
     }
 
     /// Returns the session identifier.
@@ -70,7 +75,7 @@ impl Session {
     }
 
     /// Acquires a lock on the session.
-    pub fn lock(&self) -> SessionGuard {
+    pub fn lock(&self) -> SessionGuard<'_> {
         SessionGuard {
             inner: self.inner.lock(),
         }
@@ -104,11 +109,11 @@ impl SessionGuard<'_> {
     ///
     /// The caller needs to ensure that the process group didn't previously belong to the session,
     /// but now does.
-    pub(in crate::process) fn insert_process_group(&mut self, process_group: Arc<ProcessGroup>) {
+    pub(in crate::process) fn insert_process_group(&mut self, process_group: &Arc<ProcessGroup>) {
         let old_process_group = self
             .inner
             .process_groups
-            .insert(process_group.pgid(), process_group);
+            .insert(process_group.pgid(), Arc::downgrade(process_group));
         debug_assert!(old_process_group.is_none());
     }
 

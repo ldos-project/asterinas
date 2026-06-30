@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
-    fs::file_table::{FdFlags, FileDesc},
-    net::socket::unix::UnixStreamSocket,
+    fs::file::{
+        FileLike,
+        file_table::{FdFlags, RawFileDesc},
+    },
+    net::socket::unix::{UnixDatagramSocket, UnixStreamSocket},
     prelude::*,
     util::net::{CSocketAddrFamily, Protocol, SOCK_TYPE_MASK, SockFlags, SockType},
 };
@@ -19,20 +24,32 @@ pub fn sys_socketpair(
     let sock_type = SockType::try_from(type_ & SOCK_TYPE_MASK)?;
     let sock_flags = SockFlags::from_bits_truncate(type_ & !SOCK_TYPE_MASK);
     let protocol = Protocol::try_from(protocol)?;
-
     debug!(
         "domain = {:?}, sock_type = {:?}, sock_flags = {:?}, protocol = {:?}",
         domain, sock_type, sock_flags, protocol
     );
-    // TODO: deal with all sock_flags and protocol
+
+    macro_rules! file_pair {
+        ($expr:expr) => {{
+            let (socket_a, socket_b) = $expr;
+            (socket_a as Arc<dyn FileLike>, socket_b as Arc<dyn FileLike>)
+        }};
+    }
+
     let nonblocking = sock_flags.contains(SockFlags::SOCK_NONBLOCK);
     let (socket_a, socket_b) = match (domain, sock_type) {
         (CSocketAddrFamily::AF_UNIX, SockType::SOCK_STREAM) => {
-            UnixStreamSocket::new_pair(nonblocking)
+            file_pair!(UnixStreamSocket::new_pair(nonblocking, false))
+        }
+        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_SEQPACKET) => {
+            file_pair!(UnixStreamSocket::new_pair(nonblocking, true))
+        }
+        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_RAW | SockType::SOCK_DGRAM) => {
+            file_pair!(UnixDatagramSocket::new_pair(nonblocking))
         }
         _ => return_errno_with_message!(
             Errno::EAFNOSUPPORT,
-            "cannot create socket pair for this family"
+            "creating a socket pair for this family is not supported"
         ),
     };
 
@@ -46,13 +63,13 @@ pub fn sys_socketpair(
         };
         let fd_a = file_table_locked.insert(socket_a, fd_flags);
         let fd_b = file_table_locked.insert(socket_b, fd_flags);
-        SocketFds(fd_a, fd_b)
+        SocketFds(fd_a.into(), fd_b.into())
     };
-
     ctx.user_space().write_val(sv, &socket_fds)?;
+
     Ok(SyscallReturn::Return(0))
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
-struct SocketFds(FileDesc, FileDesc);
+#[derive(Clone, Copy, Debug, Pod)]
+struct SocketFds(RawFileDesc, RawFileDesc);

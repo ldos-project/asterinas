@@ -1,18 +1,16 @@
 [package]
 name = "aster-framebuffer"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ostd = { path = "../../../ostd" }
-component = { path = "../../libs/comp-sys/component" }
-aster-console = { path = "../console" }
-aster-keyboard ={ path = "../keyboard" }
-log = "0.4"
-spin = "0.9.4"
-font8x8 = { version = "0.2.5", default-features = false, features = [ "unicode" ] }
+aster-console.workspace = true
+aster-input.workspace = true
+component.workspace = true
+ostd.workspace = true
+spin.workspace = true
 
 [lints]
 workspace = true

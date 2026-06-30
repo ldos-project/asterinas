@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
-
-use log::warn;
-use ostd::bus::pci::{
-    capability::vendor::CapabilityVndrData,
-    cfg_space::{Bar, MemoryBar},
-    common_device::BarManager,
+use aster_pci::{
+    capability::vendor::CapabilityVndrData, cfg_space::BarAccess, common_device::BarManager,
 };
+use ostd::{io::IoMem, warn};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
 #[expect(clippy::enum_variant_names)]
+#[repr(u8)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum VirtioPciCpabilityType {
     CommonCfg = 1,
     NotifyCfg = 2,
@@ -20,18 +16,18 @@ pub enum VirtioPciCpabilityType {
     PciCfg = 5,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct VirtioPciCapabilityData {
     cfg_type: VirtioPciCpabilityType,
     offset: u32,
     length: u32,
     option: Option<u32>,
-    memory_bar: Option<Arc<MemoryBar>>,
+    memory_bar: Option<IoMem>,
 }
 
 impl VirtioPciCapabilityData {
-    pub fn memory_bar(&self) -> &Option<Arc<MemoryBar>> {
-        &self.memory_bar
+    pub fn memory_bar(&self) -> Option<&IoMem> {
+        self.memory_bar.as_ref()
     }
 
     pub fn offset(&self) -> u32 {
@@ -50,7 +46,7 @@ impl VirtioPciCapabilityData {
         self.option
     }
 
-    pub(super) fn new(bar_manager: &BarManager, vendor_cap: CapabilityVndrData) -> Self {
+    pub(super) fn new(bar_manager: &mut BarManager, vendor_cap: CapabilityVndrData) -> Self {
         let cfg_type = vendor_cap.read8(3).unwrap();
         let cfg_type = match cfg_type {
             1 => VirtioPciCpabilityType::CommonCfg,
@@ -58,35 +54,42 @@ impl VirtioPciCapabilityData {
             3 => VirtioPciCpabilityType::IsrCfg,
             4 => VirtioPciCpabilityType::DeviceCfg,
             5 => VirtioPciCpabilityType::PciCfg,
-            _ => panic!("Unsupported virtio capability type:{:?}", cfg_type),
+            _ => panic!("Unsupported virtio capability type: {:?}", cfg_type),
         };
-        let bar = vendor_cap.read8(4).unwrap();
-        let capability_length = vendor_cap.read8(2).unwrap();
+
         let offset = vendor_cap.read32(8).unwrap();
         let length = vendor_cap.read32(12).unwrap();
+
+        let capability_length = vendor_cap.read8(2).unwrap();
         let option = if capability_length > 0x10 {
             Some(vendor_cap.read32(16).unwrap())
         } else {
             None
         };
 
-        let mut memory_bar = None;
-        if let Some(bar) = bar_manager.bar(bar) {
-            match bar {
-                Bar::Memory(memory) => {
-                    memory_bar = Some(memory);
+        let bar = vendor_cap.read8(4).unwrap();
+        let memory_bar = if let Some(bar) = bar_manager.bar_mut(bar) {
+            match bar.acquire() {
+                Ok(BarAccess::Memory(io_mem)) => Some(io_mem),
+                Ok(BarAccess::Io) => {
+                    warn!("I/O BAR is not supported");
+                    None
                 }
-                Bar::Io(_) => {
-                    warn!("`Bar::Io` is not supported")
+                Err(err) => {
+                    warn!("BAR is not available: {:?}", err);
+                    None
                 }
             }
+        } else {
+            None
         };
+
         Self {
             cfg_type,
             offset,
             length,
             option,
-            memory_bar: memory_bar.cloned(),
+            memory_bar,
         }
     }
 }

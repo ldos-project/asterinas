@@ -2,7 +2,7 @@
 
 //! The RISC-V boot module defines the entrypoints of Asterinas.
 
-pub mod smp;
+pub(crate) mod smp;
 
 use core::arch::global_asm;
 
@@ -18,7 +18,7 @@ use crate::{
     mm::paddr_to_vaddr,
 };
 
-global_asm!(include_str!("boot.S"));
+global_asm!(include_str!("bsp_boot.S"));
 
 /// The Flattened Device Tree of the platform.
 pub static DEVICE_TREE: Once<Fdt> = Once::new();
@@ -32,9 +32,7 @@ fn parse_kernel_commandline() -> &'static str {
 }
 
 fn parse_initramfs() -> Option<&'static [u8]> {
-    let Some((start, end)) = parse_initramfs_range() else {
-        return None;
-    };
+    let (start, end) = parse_initramfs_range()?;
 
     let base_va = paddr_to_vaddr(start);
     let length = end - start;
@@ -106,16 +104,31 @@ fn parse_initramfs_range() -> Option<(usize, usize)> {
     Some((initrd_start, initrd_end))
 }
 
+static mut BOOTSTRAP_HART_ID: u32 = u32::MAX;
+
 /// The entry point of the Rust code portion of Asterinas.
+///
+/// `BOOTSTRAP_HART_ID` is initialized to be `hart_id` and accessible after calling this.
+///
+/// # Safety
+///
+/// - This function must be called only once at a proper timing in the BSP's boot assembly code.
+/// - The caller must follow C calling conventions and put the right arguments in registers.
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
-pub extern "C" fn riscv_boot(_hart_id: usize, device_tree_paddr: usize) -> ! {
+unsafe extern "C" fn riscv_boot(hart_id: usize, device_tree_paddr: usize) -> ! {
     early_println!("Enter riscv_boot");
+
+    // We will only write it once. Other processors will only read it.
+    // SAFETY: We don't create Rust references, so there are no aliasing problems. Other processors
+    // have not been booted yet, so there are no data races.
+    unsafe { BOOTSTRAP_HART_ID = hart_id as u32 };
 
     let device_tree_ptr = paddr_to_vaddr(device_tree_paddr) as *const u8;
     let fdt = unsafe { fdt::Fdt::from_ptr(device_tree_ptr).unwrap() };
     DEVICE_TREE.call_once(|| fdt);
 
-    use crate::boot::{EARLY_INFO, EarlyBootInfo, call_ostd_main};
+    use crate::boot::{EARLY_INFO, EarlyBootInfo, start_kernel};
 
     EARLY_INFO.call_once(|| EarlyBootInfo {
         bootloader_name: parse_bootloader_name(),
@@ -126,5 +139,7 @@ pub extern "C" fn riscv_boot(_hart_id: usize, device_tree_paddr: usize) -> ! {
         memory_regions: parse_memory_regions(),
     });
 
-    call_ostd_main();
+    // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it
+    // once after setting up necessary resources.
+    unsafe { start_kernel() };
 }

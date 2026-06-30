@@ -6,6 +6,7 @@ use alloc::{
     alloc::{alloc, handle_alloc_error},
     borrow::ToOwned,
     boxed::Box,
+    string::ToString as _,
     sync::{Arc, Weak},
 };
 use core::{
@@ -20,6 +21,7 @@ use core::{
 
 use crossbeam_utils::CachePadded;
 use ostd::{
+    info,
     orpc::{
         legacy_oqueue::{
             Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
@@ -402,7 +404,7 @@ fn spawn_on_cpu<F>(cpu_idx: usize, f: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    let mut cpu_set = ostd::cpu::set::CpuSet::new_empty();
+    let mut cpu_set = ostd::cpu::CpuSet::new_empty();
     cpu_set.add(ostd::cpu::CpuId::try_from(cpu_idx).unwrap());
     ThreadOptions::new(f).cpu_affinity(cpu_set).spawn();
 }
@@ -661,7 +663,7 @@ fn mixed_bench_legacy(
 ) {
     // number of threads MUST be even because an equal number of producers and consumers are created
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "mixed_bench_legacy: bench.n_threads must be even (got {})",
         input.n_threads
     );
@@ -712,7 +714,7 @@ fn mixed_bench<Q: ConsumableOQueue<u64>>(
 ) {
     // number of threads MUST be even because an equal number of producers and consumers are created
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "mixed_bench: bench.n_threads must be even (got {})",
         input.n_threads
     );
@@ -762,7 +764,7 @@ fn weak_observer_bench_legacy(
     completed: &Arc<AtomicUsize>,
 ) {
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "weak_observer_bench_legacy: bench.n_threads must be even (got {})",
         input.n_threads
     );
@@ -848,7 +850,7 @@ fn weak_observer_bench<Q: ConsumableOQueue<u64>>(
     completed: &Arc<AtomicUsize>,
 ) {
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "weak_observer_bench: bench.n_threads must be even (got {})",
         input.n_threads
     );
@@ -916,7 +918,7 @@ fn strong_observer_bench_legacy(
     completed: &Arc<AtomicUsize>,
 ) {
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "strong_observer_bench_legacy: bench.n_threads must be even (got {})",
         input.n_threads
     );
@@ -1003,7 +1005,7 @@ fn strong_observer_bench<Q: ConsumableOQueue<u64>>(
     completed: &Arc<AtomicUsize>,
 ) {
     assert!(
-        input.n_threads % 2 == 0,
+        input.n_threads.is_multiple_of(2),
         "strong_observer_bench: bench.n_threads must be even (got {})",
         input.n_threads
     );

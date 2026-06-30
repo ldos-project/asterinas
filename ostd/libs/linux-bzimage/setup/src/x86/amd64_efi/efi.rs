@@ -12,8 +12,9 @@ use crate::x86::amd64_efi::alloc::alloc_pages;
 
 pub(super) const PAGE_SIZE: u64 = 4096;
 
-#[unsafe(export_name = "main_efi_common64")]
-extern "sysv64" fn main_efi_common64(
+/// SAFETY: The name does not collide with other symbols.
+#[unsafe(no_mangle)]
+unsafe extern "sysv64" fn main_efi_common64(
     handle: Handle,
     system_table: *const SystemTable,
     boot_params_ptr: *mut BootParams,
@@ -45,7 +46,7 @@ extern "sysv64" fn main_efi_common64(
 
 fn allocate_boot_params() -> &'static mut BootParams {
     let boot_params = {
-        let bytes = alloc_pages(AllocateType::AnyPages, core::mem::size_of::<BootParams>());
+        let bytes = alloc_pages(AllocateType::AnyPages, size_of::<BootParams>());
         bytes.write_filled(0);
         // SAFETY: Zero initialization gives a valid representation for `BootParams`.
         unsafe { &mut *bytes.as_mut_ptr().cast::<BootParams>() }
@@ -63,22 +64,24 @@ fn efi_phase_boot(boot_params: &mut BootParams) {
     );
 
     // Load the command line if it is not loaded.
-    if boot_params.hdr.cmd_line_ptr == 0 && boot_params.ext_cmd_line_ptr == 0 {
-        if let Some(cmdline) = load_cmdline() {
-            boot_params.hdr.cmd_line_ptr = cmdline.as_ptr().addr().try_into().unwrap();
-            boot_params.ext_cmd_line_ptr = 0;
-            boot_params.hdr.cmdline_size = (cmdline.count_bytes() + 1).try_into().unwrap();
-        }
+    if boot_params.hdr.cmd_line_ptr == 0
+        && boot_params.ext_cmd_line_ptr == 0
+        && let Some(cmdline) = load_cmdline()
+    {
+        boot_params.hdr.cmd_line_ptr = cmdline.as_ptr().addr().try_into().unwrap();
+        boot_params.ext_cmd_line_ptr = 0;
+        boot_params.hdr.cmdline_size = (cmdline.count_bytes() + 1).try_into().unwrap();
     }
 
     // Load the init ramdisk if it is not loaded.
-    if boot_params.hdr.ramdisk_image == 0 && boot_params.ext_ramdisk_image == 0 {
-        if let Some(initrd) = load_initrd() {
-            boot_params.hdr.ramdisk_image = initrd.as_ptr().addr().try_into().unwrap();
-            boot_params.ext_ramdisk_image = 0;
-            boot_params.hdr.ramdisk_size = initrd.len().try_into().unwrap();
-            boot_params.ext_ramdisk_size = 0;
-        }
+    if boot_params.hdr.ramdisk_image == 0
+        && boot_params.ext_ramdisk_image == 0
+        && let Some(initrd) = load_initrd()
+    {
+        boot_params.hdr.ramdisk_image = initrd.as_ptr().addr().try_into().unwrap();
+        boot_params.ext_ramdisk_image = 0;
+        boot_params.hdr.ramdisk_size = initrd.len().try_into().unwrap();
+        boot_params.ext_ramdisk_size = 0;
     }
 
     // Fill the boot params with the RSDP address if it is not provided.
@@ -112,7 +115,9 @@ fn load_cmdline() -> Option<&'static CStr> {
         return None;
     };
 
-    if load_options.len() % 2 != 0 || load_options.iter().skip(1).step_by(2).any(|c| *c != 0) {
+    if !load_options.len().is_multiple_of(2)
+        || load_options.iter().skip(1).step_by(2).any(|c| *c != 0)
+    {
         uefi::println!("[EFI stub] Warning: The cmdline contains non-ASCII characters!");
         return None;
     }
@@ -245,14 +250,36 @@ fn find_rsdp_addr() -> Option<*const ()> {
 }
 
 fn fill_screen_info(screen_info: &mut linux_boot_params::ScreenInfo) {
-    use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
+    use uefi::{
+        boot::{OpenProtocolAttributes, OpenProtocolParams, open_protocol},
+        proto::console::gop::{GraphicsOutput, PixelFormat},
+    };
 
     let Ok(handle) = uefi::boot::get_handle_for_protocol::<GraphicsOutput>() else {
         uefi::println!("[EFI stub] Warning: Failed to locate the graphics handle!");
         return;
     };
 
-    let Ok(mut protocol) = open_protocol_exclusive::<GraphicsOutput>(handle) else {
+    // We don't use `open_protocol_exclusive` here for `GraphicsOutput` because it may disconnect
+    // the console.
+    //
+    // UEFI Specification, 7.3.9 EFI_BOOT_SERVICES.OpenProtocol():
+    //   EXCLUSIVE [..] If any drivers have the protocol interface opened with an attribute of
+    //   BY_DRIVER, then an attempt will be made to remove them by calling the driver's Stop()
+    //   function.
+    //
+    // SAFETY: No one will change the graphics mode at this point. It is safe to query it through
+    // shared access.
+    let Ok(mut protocol) = (unsafe {
+        open_protocol::<GraphicsOutput>(
+            OpenProtocolParams {
+                handle,
+                agent: uefi::boot::image_handle(),
+                controller: None,
+            },
+            OpenProtocolAttributes::GetProtocol,
+        )
+    }) else {
         uefi::println!("[EFI stub] Warning: Failed to open the graphics protocol!");
         return;
     };

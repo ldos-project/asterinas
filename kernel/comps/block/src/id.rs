@@ -5,7 +5,7 @@ use core::{
     ops::{Add, Sub},
 };
 
-use ostd::{Pod, const_assert};
+use ostd::const_assert;
 
 /// The block index used in the filesystem.
 pub type Bid = BlockId<BLOCK_SIZE>;
@@ -45,7 +45,7 @@ const_assert!(BLOCK_SIZE / SECTOR_SIZE >= 1);
 /// Currently, the block size is expressed in `u16`. We choose `u16` because
 /// it is reasonably large to represent the common block size used in practice.
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Pod)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Pod)]
 pub struct BlockId<const N: u16>(u64);
 
 impl<const N: u16> BlockId<N> {

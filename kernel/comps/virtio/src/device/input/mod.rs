@@ -27,24 +27,28 @@
 //
 
 pub mod device;
+
 use aster_util::safe_ptr::SafePtr;
-use ostd::{Pod, io::IoMem};
+use ostd::io::IoMem;
 
 use crate::transport::VirtioTransport;
 
 pub const DEVICE_NAME: &str = "Virtio-Input";
 
-/// Select value used for [`device::InputDevice::query_config_select()`].
+/// Select value used for `device::InputDevice::select_config`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum InputConfigSelect {
+#[derive(Clone, Copy, Debug)]
+enum InputConfigSelect {
     /// Invalid configuration selection.
+    #[expect(dead_code)]
     Unset = 0x00,
     /// Returns the name of the device, subsel is zero.
     IdName = 0x01,
     /// Returns the serial number of the device, subsel is zero.
+    #[expect(dead_code)]
     IdSerial = 0x02,
     /// Returns ID information of the device, subsel is zero.
+    #[expect(dead_code)]
     IdDevids = 0x03,
     /// Returns input properties of the device, subsel is zero.
     /// Individual bits in the bitmap correspond to INPUT_PROP_* constants used
@@ -58,12 +62,13 @@ pub enum InputConfigSelect {
     EvBits = 0x11,
     /// subsel specifies the absolute axis using ABS_* constants in the underlying
     /// evdev implementation. Information about the axis will be returned.
+    #[expect(dead_code)]
     AbsInfo = 0x12,
 }
 
-#[derive(Debug, Clone, Copy, Pod)]
 #[repr(C)]
-pub struct VirtioInputConfig {
+#[derive(Clone, Copy, Debug, Pod)]
+struct VirtioInputConfig {
     /// write only
     select: u8,
     /// write only
@@ -82,9 +87,9 @@ impl VirtioInputConfig {
     }
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod)]
 #[expect(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
 struct AbsInfo {
     min: u32,
     max: u32,
@@ -93,21 +98,11 @@ struct AbsInfo {
     res: u32,
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod)]
-#[expect(dead_code)]
-struct DevIds {
-    bustype: u16,
-    vendor: u16,
-    product: u16,
-    version: u16,
-}
-
 /// Both queues use the same `virtio_input_event` struct. `type`, `code` and `value`
 /// are filled according to the Linux input layer (evdev) interface.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
-pub struct VirtioInputEvent {
+struct VirtioInputEvent {
     /// Event type.
     pub event_type: u16,
     /// Event code.

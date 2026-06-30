@@ -3,238 +3,247 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        exfat::{ExfatFS, ExfatMountOptions},
-        ext2::Ext2,
-        fs_resolver::{AT_FDCWD, FsPath},
-        overlayfs::OverlayFS,
-        path::Dentry,
-        utils::{FileSystem, InodeType},
+        file::InodeType,
+        vfs::{
+            file_system::{FileSystem, FsFlags},
+            path::{AT_FDCWD, EmptyPathStr, FsPath, MountPropType, Path, PerMountFlags},
+            registry::{FsCreationCtx, FsType},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-/// The `data` argument is interpreted by the different filesystems.
-/// Typically it is a string of comma-separated options understood by
-/// this filesystem. The current implementation only considers the case
-/// where it is `NULL`. Because it should be interpreted by the specific filesystems.
 pub fn sys_mount(
-    devname_addr: Vaddr,
-    dirname_addr: Vaddr,
-    fstype_addr: Vaddr,
+    src_name_addr: Vaddr,
+    dst_name_addr: Vaddr,
+    fs_type_addr: Vaddr,
     flags: u64,
-    data: Vaddr,
+    // The `data` argument is interpreted by the different filesystems.
+    // Typically it is a string of comma-separated options understood by
+    // this filesystem. The current implementation only considers the case
+    // where it is `NULL`. Because it should be interpreted by the specific filesystems.
+    data_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let user_space = ctx.user_space();
-    let devname = user_space.read_cstring(devname_addr, MAX_FILENAME_LEN)?;
-    let dirname = user_space.read_cstring(dirname_addr, MAX_FILENAME_LEN)?;
+    let dst_name = ctx
+        .user_space()
+        .read_cstring(dst_name_addr, MAX_FILENAME_LEN)?;
     let mount_flags = MountFlags::from_bits_truncate(flags as u32);
     debug!(
-        "devname = {:?}, dirname = {:?}, fstype = 0x{:x}, flags = {:?}, data = 0x{:x}",
-        devname, dirname, fstype_addr, mount_flags, data,
+        "src_name_addr = 0x{:x}, dst_name = {:?}, fstype = 0x{:x}, flags = {:?}, data_addr = 0x{:x}",
+        src_name_addr, dst_name, fs_type_addr, mount_flags, data_addr,
     );
 
-    let dst_dentry = {
-        let dirname = dirname.to_string_lossy();
-        if dirname.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "dirname is empty");
-        }
-        let fs_path = FsPath::new(AT_FDCWD, dirname.as_ref())?;
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
+    let dst_path = {
+        let dst_name = dst_name.to_string_lossy();
+        let fs_path = FsPath::from_fd_at(AT_FDCWD, &dst_name, EmptyPathStr::Reject)?;
+        ctx.thread_local
+            .borrow_fs()
+            .resolver()
+            .read()
+            .lookup(&fs_path)?
+            .get_top_path()
     };
 
     if mount_flags.contains(MountFlags::MS_REMOUNT) && mount_flags.contains(MountFlags::MS_BIND) {
-        do_reconfigure_mnt()?;
+        // If `MS_BIND` is specified, only the mount flags are changed.
+        do_remount_mnt(&dst_path, mount_flags, ctx)?;
     } else if mount_flags.contains(MountFlags::MS_REMOUNT) {
-        do_remount()?;
+        do_remount_mnt_and_fs(&dst_path, mount_flags, data_addr, ctx)?;
     } else if mount_flags.contains(MountFlags::MS_BIND) {
         do_bind_mount(
-            devname,
-            dst_dentry,
+            src_name_addr,
+            dst_path,
             mount_flags.contains(MountFlags::MS_REC),
             ctx,
         )?;
-    } else if mount_flags.contains(MountFlags::MS_SHARED)
-        | mount_flags.contains(MountFlags::MS_PRIVATE)
-        | mount_flags.contains(MountFlags::MS_SLAVE)
-        | mount_flags.contains(MountFlags::MS_UNBINDABLE)
-    {
-        do_change_type()?;
+    } else if mount_flags.intersects(MS_PROPAGATION) {
+        do_change_type(dst_path, mount_flags, ctx)?;
     } else if mount_flags.contains(MountFlags::MS_MOVE) {
-        do_move_mount_old(devname, dst_dentry, ctx)?;
+        do_move_mount_old(src_name_addr, dst_path, ctx)?;
     } else {
-        do_new_mount(devname, fstype_addr, dst_dentry, data, ctx)?;
+        do_new_mount(
+            src_name_addr,
+            mount_flags,
+            fs_type_addr,
+            dst_path,
+            data_addr,
+            ctx,
+        )?;
     }
 
     Ok(SyscallReturn::Return(0))
 }
 
-fn do_reconfigure_mnt() -> Result<()> {
-    return_errno_with_message!(Errno::EINVAL, "do_reconfigure_mnt is not supported");
+/// Remounts the mount with new flags.
+fn do_remount_mnt(path: &Path, flags: MountFlags, ctx: &Context) -> Result<()> {
+    let per_mount_flags = PerMountFlags::from(flags);
+
+    path.remount(per_mount_flags, None, None, ctx)
 }
 
-fn do_remount() -> Result<()> {
-    return_errno_with_message!(Errno::EINVAL, "do_remount is not supported");
+/// Remounts the filesystem with new flags and data.
+fn do_remount_mnt_and_fs(
+    path: &Path,
+    flags: MountFlags,
+    data_addr: Vaddr,
+    ctx: &Context,
+) -> Result<()> {
+    let per_mount_flags = PerMountFlags::from(flags);
+    let fs_flags = FsFlags::from(flags);
+    let data = if data_addr == 0 {
+        None
+    } else {
+        Some(ctx.user_space().read_cstring(data_addr, MAX_FILENAME_LEN)?)
+    };
+
+    path.remount(per_mount_flags, Some(fs_flags), data, ctx)
 }
 
-/// Bind a mount to a dst location.
+/// Binds a mount to a dst location.
 ///
 /// If recursive is true, then bind the mount recursively.
 /// Such as use user command `mount --rbind src dst`.
 fn do_bind_mount(
-    src_name: CString,
-    dst_dentry: Dentry,
+    src_name_addr: Vaddr,
+    dst_path: Path,
     recursive: bool,
     ctx: &Context,
 ) -> Result<()> {
-    let src_dentry = {
+    let src_path = {
+        let src_name = ctx
+            .user_space()
+            .read_cstring(src_name_addr, MAX_FILENAME_LEN)?;
         let src_name = src_name.to_string_lossy();
-        if src_name.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "src_name is empty");
-        }
-        let fs_path = FsPath::new(AT_FDCWD, src_name.as_ref())?;
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
+        let fs_path = FsPath::from_fd_at(AT_FDCWD, &src_name, EmptyPathStr::Reject)?;
+        ctx.thread_local
+            .borrow_fs()
+            .resolver()
+            .read()
+            .lookup(&fs_path)?
     };
 
-    if src_dentry.type_() != InodeType::Dir {
-        return_errno_with_message!(Errno::ENOTDIR, "src_name must be directory");
-    };
-
-    src_dentry.bind_mount_to(&dst_dentry, recursive)?;
+    src_path.bind_mount_to(&dst_path, recursive, ctx)?;
     Ok(())
 }
 
-fn do_change_type() -> Result<()> {
-    return_errno_with_message!(Errno::EINVAL, "do_change_type is not supported");
-}
+// All valid propagation flags.
+const MS_PROPAGATION: MountFlags = MountFlags::MS_SHARED
+    .union(MountFlags::MS_PRIVATE)
+    .union(MountFlags::MS_SLAVE)
+    .union(MountFlags::MS_UNBINDABLE);
 
-/// Move a mount from src location to dst location.
-fn do_move_mount_old(src_name: CString, dst_dentry: Dentry, ctx: &Context) -> Result<()> {
-    let src_dentry = {
-        let src_name = src_name.to_string_lossy();
-        if src_name.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "src_name is empty");
-        }
-        let fs_path = FsPath::new(AT_FDCWD, src_name.as_ref())?;
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
-    };
+fn do_change_type(target_path: Path, flags: MountFlags, ctx: &Context) -> Result<()> {
+    // All flags that are allowed during a propagation change.
+    const ALLOWED_FLAGS: MountFlags = MS_PROPAGATION
+        .union(MountFlags::MS_REC)
+        .union(MountFlags::MS_SILENT);
 
-    if !src_dentry.is_root_of_mount() {
-        return_errno_with_message!(Errno::EINVAL, "src_name can not be moved");
-    };
-    if src_dentry.mount_node().parent().is_none() {
-        return_errno_with_message!(Errno::EINVAL, "src_name can not be moved");
+    if !(flags & !ALLOWED_FLAGS).is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "the mount propagation flags are unsupported");
     }
 
-    src_dentry.mount_node().graft_mount_node_tree(&dst_dentry)?;
+    let propagation_flags = flags & MS_PROPAGATION;
+    if propagation_flags.bits().count_ones() > 1 {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "mount flags includes more than one of MS_SHARED, MS_PRIVATE, MS_SLAVE, or MS_UNBINDABLE"
+        );
+    }
+
+    if flags.contains(MountFlags::MS_PRIVATE) {
+        let recursive = flags.contains(MountFlags::MS_REC);
+        target_path.set_mount_propagation(MountPropType::Private, recursive, ctx)?;
+        Ok(())
+    } else {
+        return_errno_with_message!(Errno::EINVAL, "the mount propagation type is unsupported");
+    }
+}
+
+/// Moves a mount from src location to dst location.
+fn do_move_mount_old(src_name_addr: Vaddr, dst_path: Path, ctx: &Context) -> Result<()> {
+    let src_path = {
+        let src_name = ctx
+            .user_space()
+            .read_cstring(src_name_addr, MAX_FILENAME_LEN)?;
+        let src_name = src_name.to_string_lossy();
+        let fs_path = FsPath::from_fd_at(AT_FDCWD, &src_name, EmptyPathStr::Reject)?;
+        ctx.thread_local
+            .borrow_fs()
+            .resolver()
+            .read()
+            .lookup(&fs_path)?
+    };
+
+    src_path.move_mount_to(&dst_path, ctx)?;
 
     Ok(())
 }
 
-/// Mount a new filesystem.
+/// Mounts a new filesystem.
 fn do_new_mount(
-    devname: CString,
-    fs_type: Vaddr,
-    target_dentry: Dentry,
-    data: Vaddr,
+    src_name_addr: Vaddr,
+    flags: MountFlags,
+    fs_type_addr: Vaddr,
+    target_path: Path,
+    data_addr: Vaddr,
     ctx: &Context,
 ) -> Result<()> {
-    if target_dentry.type_() != InodeType::Dir {
+    if target_path.type_() != InodeType::Dir {
         return_errno_with_message!(Errno::ENOTDIR, "mountpoint must be directory");
     };
 
-    let fs_type = ctx.user_space().read_cstring(fs_type, MAX_FILENAME_LEN)?;
-    if fs_type.is_empty() {
-        return_errno_with_message!(Errno::EINVAL, "fs_type is empty");
-    }
-    let fs = get_fs(fs_type, devname, data, ctx)?;
-    target_dentry.mount(fs)?;
+    let fs_type = {
+        let fs_type_cstr = ctx
+            .user_space()
+            .read_cstring(fs_type_addr, MAX_FILENAME_LEN)?;
+        if fs_type_cstr.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty file system type");
+        }
+
+        let fs_type_str = fs_type_cstr
+            .to_str()
+            .map_err(|_| Error::with_message(Errno::ENODEV, "invalid file system type"))?;
+        crate::fs::vfs::registry::look_up(fs_type_str).ok_or(Error::with_message(
+            Errno::ENODEV,
+            "the filesystem is not configured in the kernel",
+        ))?
+    };
+
+    let source = if src_name_addr == 0 {
+        None
+    } else {
+        let source = ctx
+            .user_space()
+            .read_cstring(src_name_addr, MAX_FILENAME_LEN)?
+            .to_string_lossy()
+            .into_owned();
+        Some(source)
+    };
+
+    let fs = open_fs(source.as_deref(), flags, fs_type, data_addr, ctx)?;
+    target_path.mount(fs, flags.into(), source, ctx)?;
     Ok(())
 }
 
-/// Get the filesystem by fs_type and devname.
-fn get_fs(
-    fs_type: CString,
-    devname: CString,
-    data: Vaddr,
+/// Gets the filesystem by fs_type and source.
+fn open_fs(
+    source: Option<&str>,
+    flags: MountFlags,
+    fs_type: &dyn FsType,
+    data_addr: Vaddr,
     ctx: &Context,
 ) -> Result<Arc<dyn FileSystem>> {
     let user_space = ctx.user_space();
-    let data = user_space.read_cstring(data, MAX_FILENAME_LEN)?;
-    let data = data.to_string_lossy();
+    let data = if data_addr == 0 {
+        None
+    } else {
+        Some(user_space.read_cstring(data_addr, MAX_FILENAME_LEN)?)
+    };
 
-    let fs_type = fs_type
-        .to_str()
-        .map_err(|_| Error::with_message(Errno::ENODEV, "Invalid file system type"))?;
-    match fs_type {
-        "ext2" => {
-            let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
-                Error::with_message(Errno::ENOENT, "device for ext2 does not exist"),
-            )?;
-            let ext2_fs = Ext2::open(device)?;
-            Ok(ext2_fs)
-        }
-        "exfat" => {
-            let device = aster_block::get_device(devname.to_str().unwrap()).ok_or(
-                Error::with_message(Errno::ENOENT, "device for exfat does not exist"),
-            )?;
-            let exfat_fs = ExfatFS::open(device, ExfatMountOptions::default())?;
-            Ok(exfat_fs)
-        }
-        "overlay" => {
-            let overlay_fs = create_overlayfs(data.as_ref(), ctx)?;
-            Ok(overlay_fs)
-        }
-        _ => return_errno_with_message!(Errno::EINVAL, "Invalid fs type"),
-    }
-}
-
-// TODO: Support read-only mount (no upper) and customized features
-fn create_overlayfs(data: &str, ctx: &Context) -> Result<Arc<OverlayFS>> {
-    let mut lower = Vec::new();
-    let mut upper = "";
-    let mut work = "";
-
-    for entry in data.split(',') {
-        let mut parts = entry.split('=');
-        match (parts.next(), parts.next()) {
-            // Handle lowerdir, split by ':'
-            (Some("upperdir"), Some(path)) => {
-                if path.is_empty() {
-                    return_errno_with_message!(Errno::ENOENT, "upperdir is empty");
-                }
-                upper = path;
-            }
-            (Some("lowerdir"), Some(paths)) => {
-                for path in paths.split(':') {
-                    if path.is_empty() {
-                        return_errno_with_message!(Errno::ENOENT, "lowerdir is empty");
-                    }
-                    lower.push(path);
-                }
-            }
-            (Some("workdir"), Some(path)) => {
-                if path.is_empty() {
-                    return_errno_with_message!(Errno::ENOENT, "workdir is empty");
-                }
-                work = path;
-            }
-            _ => (),
-        }
-    }
-
-    let fs = ctx.posix_thread.fs().resolver().read();
-
-    let upper = fs.lookup(&FsPath::new(AT_FDCWD, upper)?)?;
-    let lower = lower
-        .iter()
-        .map(|lower| fs.lookup(&FsPath::new(AT_FDCWD, lower).unwrap()).unwrap())
-        .collect();
-    let work = fs.lookup(&FsPath::new(AT_FDCWD, work)?)?;
-
-    let overlayfs = OverlayFS::new(upper, lower, work)?;
-    Ok(overlayfs)
+    let fs_creation_ctx = FsCreationCtx::new(source, flags.into(), data.as_deref(), ctx);
+    fs_type.create(&fs_creation_ctx)
 }
 
 bitflags! {
@@ -261,5 +270,19 @@ bitflags! {
         const MS_SHARED        =   1 << 20;      // Change to shared.
         const MS_RELATIME      =   1 << 21; 	 // Update atime relative to mtime/ctime.
         const MS_KERNMOUNT     =   1 << 22;      // This is a kern_mount call.
+        const MS_STRICTATIME   =   1 << 24; 	 // Always perform atime updates.
+        const MS_LAZYTIME      =   1 << 25; 	 // Update the on-disk [acm]times lazily.
+    }
+}
+
+impl From<MountFlags> for PerMountFlags {
+    fn from(flags: MountFlags) -> Self {
+        Self::from_bits_truncate(flags.bits())
+    }
+}
+
+impl From<MountFlags> for FsFlags {
+    fn from(flags: MountFlags) -> Self {
+        Self::from_bits_truncate(flags.bits())
     }
 }

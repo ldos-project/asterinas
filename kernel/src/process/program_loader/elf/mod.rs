@@ -2,5 +2,8 @@
 
 mod elf_file;
 mod load_elf;
+mod relocate;
 
-pub use load_elf::{ElfLoadInfo, load_elf_to_vm};
+pub(super) use elf_file::ElfHeaders;
+pub(in crate::process) use load_elf::ElfLoadInfo;
+pub(super) use load_elf::load_elf_to_vmar;

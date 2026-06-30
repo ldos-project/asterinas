@@ -11,7 +11,7 @@
 extern crate alloc;
 
 use ostd::{
-    arch::qemu::{QemuExitCode, exit_qemu},
+    power::{ExitCode, poweroff},
     prelude::println,
 };
 
@@ -34,5 +34,5 @@ fn main() {
 
     println!("Tests passed.");
 
-    exit_qemu(QemuExitCode::Success);
+    poweroff(ExitCode::Success);
 }

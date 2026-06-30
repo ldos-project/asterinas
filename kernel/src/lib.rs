@@ -6,58 +6,17 @@
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
+#![feature(associated_type_defaults)]
 #![feature(btree_cursors)]
 #![feature(debug_closure_helpers)]
-#![feature(extend_one)]
-#![feature(fn_traits)]
-#![feature(int_roundings)]
+#![feature(format_args_nl)]
 #![feature(linked_list_cursors)]
-#![feature(linked_list_remove)]
 #![feature(linked_list_retain)]
-#![feature(negative_impls)]
 #![feature(panic_can_unwind)]
 #![feature(register_tool)]
-#![feature(step_trait)]
-#![feature(trait_alias)]
-#![feature(associated_type_defaults)]
-#![feature(closure_track_caller)]
+#![feature(min_specialization)]
+#![feature(thin_box)]
 #![register_tool(component_access_control)]
-
-use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
-use aster_framebuffer::FRAMEBUFFER_CONSOLE;
-pub mod event;
-use aster_time::Instant;
-#[cfg(not(baseline_asterinas))]
-pub use data_capture::{
-    new_data_capture_data_file_by_type, new_data_capture_file, new_legacy_data_capture_file,
-};
-use kcmdline::KCmdlineArg;
-#[cfg(not(baseline_asterinas))]
-use mariposa_data_capture::ObserverRegistration;
-use ostd::{
-    arch::qemu::{QemuExitCode, exit_qemu},
-    boot::boot_info,
-    cpu::{CpuId, CpuSet},
-    ignore_err,
-    task::scheduler::{SchedulingEvent, SchedulingEventKind},
-};
-#[cfg(not(baseline_asterinas))]
-use ostd::{
-    orpc::oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_path},
-    path,
-};
-use process::{Process, spawn_init_process};
-use sched::SchedPolicy;
-use serde::Serialize;
-use spin::Once;
-
-use crate::{
-    event::{EventContext, TaskId},
-    kcmdline::set_kernel_cmd_line,
-    prelude::*,
-    thread::kernel_thread::ThreadOptions,
-    vm::vmar::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
-};
 
 extern crate alloc;
 extern crate lru;
@@ -65,79 +24,56 @@ extern crate lru;
 extern crate controlled;
 #[macro_use]
 extern crate getset;
+#[macro_use]
+extern crate ostd_pod;
 
-#[cfg(target_arch = "x86_64")]
-#[path = "arch/x86/mod.rs"]
-pub mod arch;
-#[cfg(target_arch = "riscv64")]
-#[path = "arch/riscv/mod.rs"]
-pub mod arch;
-pub mod context;
-pub mod cpu;
-#[cfg(not(baseline_asterinas))]
-mod data_capture;
-pub mod device;
-pub mod driver;
-pub mod error;
-pub mod events;
-pub mod fs;
-pub mod ipc;
-pub mod kcmdline;
-pub mod net;
-#[cfg(not(baseline_asterinas))]
-pub(crate) mod orpc_utils;
-pub mod prelude;
-mod process;
-mod sched;
-pub mod syscall;
-pub mod thread;
-pub mod time;
-mod util;
-pub(crate) mod vdso;
-pub mod vm;
-
-mod benchmarks;
-pub static INITPROC: Once<Arc<Process>> = Once::new();
-
-#[ostd::main]
-#[controlled]
-pub fn main() {
-    // CRITICAL: Initialize scheduler and ORPC BEFORE component initialization!
-    // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
-    // - ORPC spawn function must be injected, otherwise ORPC threads are created without
-    //   Thread association and are ignored by the ClassScheduler
-    thread::init();
-    sched::init();
-    #[cfg(not(baseline_asterinas))]
-    orpc_utils::init();
-
-    ostd::early_println!("[kernel] OSTD initialized. Preparing components.");
-    component::init_all(component::parse_metadata!()).unwrap();
-    init();
-
-    // Spawn all AP idle threads.
-    ostd::boot::smp::register_ap_entry(ap_init);
-
-    // Spawn the first kernel thread on BSP.
-    let mut affinity = CpuSet::new_empty();
-    affinity.add(CpuId::bsp());
-    ThreadOptions::new(init_thread)
-        .cpu_affinity(affinity)
-        .sched_policy(SchedPolicy::Idle)
-        .spawn();
+// Set this crate's log prefix for `ostd::log`.
+macro_rules! __log_prefix {
+    () => {
+        ""
+    };
 }
 
-pub fn init() {
-    util::random::init();
-    driver::init();
-    time::init();
-    #[cfg(target_arch = "x86_64")]
-    net::init();
-    fs::rootfs::init(boot_info().initramfs.expect("No initramfs found!")).unwrap();
-    device::init().unwrap();
-    syscall::init();
-    vdso::init();
-    process::init();
+#[cfg_attr(target_arch = "x86_64", path = "arch/x86/mod.rs")]
+#[cfg_attr(target_arch = "riscv64", path = "arch/riscv/mod.rs")]
+#[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
+mod arch;
+
+mod context;
+mod cpu;
+#[cfg(not(baseline_asterinas))]
+mod data_capture;
+mod device;
+mod driver;
+mod error;
+#[cfg(not(baseline_asterinas))]
+mod event;
+mod events;
+mod fs;
+mod init;
+mod ipc;
+mod net;
+#[cfg(not(baseline_asterinas))]
+mod orpc_utils;
+mod prelude;
+mod process;
+mod sched;
+mod security;
+mod syscall;
+mod thread;
+mod time;
+mod util;
+// TODO: Add vDSO support for other architectures.
+mod benchmarks;
+pub mod kcmdline;
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+mod vdso;
+mod vm;
+
+#[controlled]
+#[ostd::main]
+fn main() {
+    init::main();
 }
 
 #[cfg(ktest)]
@@ -149,225 +85,16 @@ pub fn init() {
 ///
 /// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/221): Something less ad-hoc.
 pub fn init_for_ktest() {
+    use spin::Once;
+
     pub static INITIALIZED: Once<()> = Once::new();
     INITIALIZED.call_once(|| {
-        component::init_all(component::parse_metadata!()).unwrap();
-        crate::time::init();
-        crate::vm::vmar::init();
-    });
-}
-
-fn ap_init() {
-    fn ap_idle_thread() {
-        log::info!(
-            "Kernel idle thread for CPU #{} started.",
-            // No races because `ap_idle_thread` runs on a certain AP.
-            CpuId::current_racy().as_usize(),
-        );
-
-        loop {
-            ostd::task::halt_cpu();
-        }
-    }
-
-    ThreadOptions::new(ap_idle_thread)
-        // No races because `ap_init` runs on a certain AP.
-        .cpu_affinity(CpuId::current_racy().into())
-        .sched_policy(SchedPolicy::Idle)
-        .spawn();
-}
-
-fn init_thread() {
-    println!("[kernel] Spawn init thread");
-    // Work queue should be initialized before interrupt is enabled,
-    // in case any irq handler uses work queue as bottom half
-    thread::work_queue::init();
-
-    let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
-    set_kernel_cmd_line(karg.clone());
-
-    thread::oops::configure();
-
-    let huge_mapping_enabled = karg
-        .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
-        .unwrap_or(false);
-    set_huge_mapping_enabled(huge_mapping_enabled);
-
-    let huge_mapping_preserve_on_dontneed = karg
-        .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")
-        .unwrap_or(false);
-    set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
-
-    #[cfg(not(baseline_asterinas))]
-    {
-        data_capture::start_capture_devices();
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    net::lazy_init();
-    fs::lazy_init();
-    ipc::init();
-
-    vm::vmar::init();
-
-    // driver::pci::virtio::block::block_device_test();
-    let thread = ThreadOptions::new(|| {
-        println!("[kernel] Hello world from kernel!");
-    })
-    .spawn();
-    thread.join();
-
-    print_banner();
-
-    // FIXME: CI fails due to suspected performance issues with the framebuffer console.
-    // Additionally, userspace program may render GUIs using the framebuffer,
-    // so we disable the framebuffer console here.
-    if let Some(console) = FRAMEBUFFER_CONSOLE.get() {
-        console.disable();
-    };
-
-    // Run benchmarks when bench.name is set in the kernel args
-    if karg.get_module_args("bench").is_some() {
-        benchmarks::BenchmarkHarness::run(&karg);
-        exit_qemu(QemuExitCode::Success);
-    }
-
-    let initproc = INITPROC.call_once(|| {
-        spawn_init_process(
-            karg.get_initproc_path().unwrap(),
-            karg.get_initproc_argv().to_vec(),
-            karg.get_initproc_envp().to_vec(),
+        component::init_all(
+            component::InitStage::Bootstrap,
+            component::parse_metadata!(),
         )
-        .expect("Run init process failed.")
+        .unwrap();
+        crate::time::init();
+        crate::vm::vmar::init_in_first_kthread();
     });
-
-    #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
-        .unwrap_or(false)
-    {
-        vm::hugepaged::HugepagedServer::spawn(initproc.clone());
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
-        .unwrap_or(false)
-    {
-        let pmu = arch::pmu::PmuServer::spawn();
-        pmu.reset();
-        pmu.start();
-    }
-
-    #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name::<bool>("scheduler", "capture_data")
-        .unwrap_or(false)
-    {
-        if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(scheduler.events)) {
-            #[derive(Debug, Clone, Copy, Serialize)]
-            struct KernelSchedulingEvent {
-                timestamp: Instant,
-                task: TaskId,
-                kind: SchedulingEventKind,
-            }
-
-            let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
-                mariposa_data_capture::FileDescriptor {
-                    path: path!(scheduler.events),
-                    length: 500 * 1024 * 1024,
-                },
-            );
-
-            ignore_err!(
-                capture_file.register_observer(ObserverRegistration {
-                    path: path!(scheduler.events),
-                    observer: oqueue
-                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
-                            let context = EventContext::new();
-                            KernelSchedulingEvent {
-                                timestamp: context.timestamp,
-                                kind: e.kind,
-                                task: TaskId::new(&e.task),
-                            }
-                        }))
-                        .unwrap(),
-                })
-            );
-            ignore_err!(capture_file.start());
-        } else {
-            error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")
-        }
-    }
-
-    #[cfg(not(baseline_asterinas))]
-    if karg
-        .get_module_arg_by_name("io", "capture_block_io")
-        .unwrap_or(false)
-    {
-        #[derive(Clone, Copy, Serialize)]
-        struct SubmittedBioEvent {
-            byte_range: (usize, usize),
-            timestamp: Option<Instant>,
-            context: EventContext,
-        }
-        new_data_capture_data_file_by_type(path!(io.block.submitted), 500 * 1024 * 1024, || {
-            ObservationQuery::new(|e: &SubmittedBio| {
-                let sid_range = e.sid_range();
-                let context = EventContext::new();
-                SubmittedBioEvent {
-                    byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
-                    timestamp: e.submission_time().map(|t| t.into()),
-                    context,
-                }
-            })
-        });
-
-        #[derive(Clone, Copy, Serialize)]
-        struct BlockDeviceCompletionEvent {
-            stats: BlockDeviceCompletionStats,
-            context: EventContext,
-        }
-        new_data_capture_data_file_by_type(path!(io.block.completion), 500 * 1024 * 1024, || {
-            ObservationQuery::new(|stats| {
-                let context = EventContext::new();
-                BlockDeviceCompletionEvent {
-                    stats: *stats,
-                    context,
-                }
-            })
-        });
-    }
-
-    // Wait till initproc become zombie.
-    while !initproc.status().is_zombie() {
-        ostd::task::halt_cpu();
-    }
-
-    #[cfg(not(baseline_asterinas))]
-    for f in data_capture::DATA_CAPTURE_FILE_FINALIZERS.lock().drain(..) {
-        f();
-    }
-
-    // TODO: exit via qemu isa debug device should not be the only way.
-    let exit_code = if initproc.status().exit_code() == 0 {
-        QemuExitCode::Success
-    } else {
-        QemuExitCode::Failed
-    };
-    exit_qemu(exit_code);
-}
-
-fn print_banner() {
-    println!("\x1B[36m");
-    println!(
-        r"
-   _   ___ _____ ___ ___ ___ _  _   _   ___
-  /_\ / __|_   _| __| _ \_ _| \| | /_\ / __|
- / _ \\__ \ | | | _||   /| || .` |/ _ \\__ \
-/_/ \_\___/ |_| |___|_|_\___|_|\_/_/ \_\___/
-"
-    );
-    println!("\x1B[0m");
 }

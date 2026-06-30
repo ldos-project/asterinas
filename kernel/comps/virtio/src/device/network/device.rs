@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{
-    boxed::Box, collections::linked_list::LinkedList, string::ToString, sync::Arc, vec::Vec,
-};
-use core::{fmt::Debug, mem::size_of};
+use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use core::fmt::Debug;
 
 use aster_bigtcp::device::{Checksum, DeviceCapabilities, Medium};
-use aster_network::{
-    AnyNetworkDevice, EthernetAddr, RX_BUFFER_POOL, RxBuffer, TxBuffer, VirtioNetError,
-};
-use aster_softirq::BottomHalfDisabled;
+use aster_network::{AnyNetworkDevice, EthernetAddr, NetError, RxBuffer, TxBuffer};
 use aster_util::slot_vec::SlotVec;
-use log::{debug, warn};
-use ostd::{mm::DmaStream, sync::SpinLock, trap::TrapFrame};
+use ostd::{arch::trap::TrapFrame, debug, sync::SpinLock, warn};
+use snafu::ResultExt as _;
 
 use super::{config::VirtioNetConfig, header::VirtioNetHdr};
 use crate::{
-    device::{VirtioDeviceError, network::config::NetworkFeatures},
-    queue::{QueueError, VirtQueue},
+    device::{
+        ResourceAllocSnafu, VirtioDeviceError,
+        network::{
+            buffer::{RX_BUFFER_POOL, TX_BUFFER_POOL},
+            config::NetworkFeatures,
+        },
+    },
+    queue::{self, VirtQueue},
     transport::{ConfigManager, VirtioTransport},
 };
 
@@ -33,6 +34,7 @@ pub struct NetworkDevice {
     header: VirtioNetHdr,
     tx_buffers: Vec<Option<TxBuffer>>,
     rx_buffers: SlotVec<RxBuffer>,
+    new_rx_buffer: Option<RxBuffer>,
     transport: Box<dyn VirtioTransport>,
     poll_stat: PollStatistics,
 }
@@ -60,7 +62,7 @@ impl NetworkDevice {
 
         if network_features != device_features {
             warn!(
-                "Virtio net contains unsupported device features: {:?}",
+                "unsupported device features: {:?}",
                 device_features.difference(supported_features)
             );
         }
@@ -69,7 +71,7 @@ impl NetworkDevice {
         network_features.bits()
     }
 
-    pub fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
+    pub(crate) fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioNetConfig::new_manager(transport.as_ref());
         let config = config_manager.read_config();
         debug!("virtio_net_config = {:?}", config);
@@ -81,20 +83,19 @@ impl NetworkDevice {
 
         let caps = init_caps(&features, &config);
 
-        let mut send_queue = VirtQueue::new(QUEUE_SEND, QUEUE_SIZE, transport.as_mut())
-            .expect("create send queue fails");
+        let mut send_queue = VirtQueue::new(QUEUE_SEND, QUEUE_SIZE, transport.as_mut())?;
         send_queue.disable_callback();
 
-        let mut recv_queue = VirtQueue::new(QUEUE_RECV, QUEUE_SIZE, transport.as_mut())
-            .expect("creating recv queue fails");
+        let mut recv_queue = VirtQueue::new(QUEUE_RECV, QUEUE_SIZE, transport.as_mut())?;
 
         let tx_buffers = (0..QUEUE_SIZE).map(|_| None).collect();
 
         let mut rx_buffers = SlotVec::new();
         for i in 0..QUEUE_SIZE {
             let rx_pool = RX_BUFFER_POOL.get().unwrap();
-            let rx_buffer = RxBuffer::new(size_of::<VirtioNetHdr>(), rx_pool);
-            let token = recv_queue.add_dma_buf(&[], &[&rx_buffer])?;
+            let rx_buffer =
+                RxBuffer::new(size_of::<VirtioNetHdr>(), rx_pool).context(ResourceAllocSnafu)?;
+            let token = recv_queue.add_output_bufs(&[&rx_buffer]).unwrap();
             assert_eq!(i, token);
             assert_eq!(rx_buffers.put(rx_buffer) as u16, i);
         }
@@ -113,6 +114,7 @@ impl NetworkDevice {
             header: VirtioNetHdr::default(),
             tx_buffers,
             rx_buffers,
+            new_rx_buffer: None,
             transport,
             poll_stat: PollStatistics::new(),
         };
@@ -153,11 +155,8 @@ impl NetworkDevice {
     }
 
     /// Adds a `RxBuffer` to the receive queue.
-    fn add_rx_buffer(&mut self, rx_buffer: RxBuffer) -> Result<(), VirtioNetError> {
-        let token = self
-            .recv_queue
-            .add_dma_buf(&[], &[&rx_buffer])
-            .map_err(queue_to_network_error)?;
+    fn add_rx_buffer(&mut self, rx_buffer: RxBuffer) -> Result<(), queue::AddBufsError> {
+        let token = self.recv_queue.add_output_bufs(&[&rx_buffer])?;
         assert!(self.rx_buffers.put_at(token as usize, rx_buffer).is_none());
 
         self.poll_stat.received_packet += 1;
@@ -172,34 +171,43 @@ impl NetworkDevice {
     }
 
     /// Receives a packet from network.
-    fn receive(&mut self) -> Result<RxBuffer, VirtioNetError> {
-        let (token, len) = self.recv_queue.pop_used().map_err(queue_to_network_error)?;
+    fn receive(&mut self) -> Result<RxBuffer, NetError> {
+        if self.new_rx_buffer.is_none() {
+            // FIXME: Ideally, we can reuse the returned buffer without creating new buffer.
+            // But this requires locking device to be compatible with smoltcp interface.
+            let rx_pool = RX_BUFFER_POOL.get().unwrap();
+            let new_rx_buffer = RxBuffer::new(size_of::<VirtioNetHdr>(), rx_pool)
+                .map_err(|_| NetError::NoMemory)?;
+
+            self.new_rx_buffer = Some(new_rx_buffer);
+        }
+
+        let (token, len) = self
+            .recv_queue
+            .pop_used_with_min_bytes(size_of::<VirtioNetHdr>())
+            .map_err(|_| NetError::NotReady)?;
         debug!("receive packet: token = {}, len = {}", token, len);
-        let mut rx_buffer = self
-            .rx_buffers
-            .remove(token as usize)
-            .ok_or(VirtioNetError::WrongToken)?;
-        rx_buffer.set_packet_len(len as usize - size_of::<VirtioNetHdr>());
-        // FIXME: Ideally, we can reuse the returned buffer without creating new buffer.
-        // But this requires locking device to be compatible with smoltcp interface.
-        let rx_pool = RX_BUFFER_POOL.get().unwrap();
-        let new_rx_buffer = RxBuffer::new(size_of::<VirtioNetHdr>(), rx_pool);
-        self.add_rx_buffer(new_rx_buffer)?;
+
+        let mut rx_buffer = self.rx_buffers.remove(token as usize).unwrap();
+        rx_buffer.set_payload_len(len as usize - size_of::<VirtioNetHdr>());
+
+        let new_rx_buffer = self.new_rx_buffer.take().unwrap();
+        self.add_rx_buffer(new_rx_buffer).unwrap();
+
         Ok(rx_buffer)
     }
 
     /// Sends a packet to network.
-    fn send(&mut self, packet: &[u8]) -> Result<(), VirtioNetError> {
+    fn send(&mut self, packet: &[u8]) -> Result<(), NetError> {
         if !self.can_send() {
-            return Err(VirtioNetError::Busy);
+            return Err(NetError::Busy);
         }
 
-        let tx_buffer = TxBuffer::new(&self.header, packet, &TX_BUFFER_POOL);
+        let tx_pool = TX_BUFFER_POOL.get().unwrap();
+        let tx_buffer =
+            TxBuffer::new(&self.header, packet, tx_pool).map_err(|_| NetError::NoMemory)?;
 
-        let token = self
-            .send_queue
-            .add_dma_buf(&[&tx_buffer], &[])
-            .map_err(queue_to_network_error)?;
+        let token = self.send_queue.add_input_bufs(&[&tx_buffer]).unwrap();
 
         self.poll_stat.sent_packet += 1;
 
@@ -263,15 +271,6 @@ impl NetworkDevice {
     }
 }
 
-fn queue_to_network_error(err: QueueError) -> VirtioNetError {
-    match err {
-        QueueError::NotReady => VirtioNetError::NotReady,
-        QueueError::WrongToken => VirtioNetError::WrongToken,
-        QueueError::BufferTooSmall => VirtioNetError::Busy,
-        _ => VirtioNetError::Unknown,
-    }
-}
-
 fn init_caps(features: &NetworkFeatures, config: &VirtioNetConfig) -> DeviceCapabilities {
     let mut caps = DeviceCapabilities::default();
 
@@ -328,11 +327,11 @@ impl AnyNetworkDevice for NetworkDevice {
         self.send_queue.available_desc() >= 1
     }
 
-    fn receive(&mut self) -> Result<RxBuffer, VirtioNetError> {
+    fn receive(&mut self) -> Result<RxBuffer, NetError> {
         self.receive()
     }
 
-    fn send(&mut self, packet: &[u8]) -> Result<(), VirtioNetError> {
+    fn send(&mut self, packet: &[u8]) -> Result<(), NetError> {
         self.send(packet)
     }
 
@@ -359,9 +358,6 @@ impl Debug for NetworkDevice {
             .finish()
     }
 }
-
-static TX_BUFFER_POOL: SpinLock<LinkedList<DmaStream>, BottomHalfDisabled> =
-    SpinLock::new(LinkedList::new());
 
 const QUEUE_RECV: u16 = 0;
 const QUEUE_SEND: u16 = 1;

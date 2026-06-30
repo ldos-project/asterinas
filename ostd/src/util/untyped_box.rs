@@ -167,19 +167,19 @@ mod test {
     use crate::prelude::*;
 
     #[ktest]
-    fn test_basic_allocation() {
+    fn basic_allocation() {
         let allocation = SliceAllocation::new::<u64>(5).unwrap();
         assert_eq!(allocation.len(), 5);
     }
 
     #[ktest]
-    fn test_zero_length_allocation() {
+    fn zero_length_allocation() {
         let allocation = SliceAllocation::new::<u64>(0).unwrap();
         assert_eq!(allocation.len(), 0);
     }
 
     #[ktest]
-    fn test_write_and_read_elements() {
+    fn write_and_read_elements() {
         let mut allocation = SliceAllocation::new::<u64>(2).unwrap();
 
         // Write values
@@ -196,7 +196,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_write_and_read_via_pointers() {
+    fn write_and_read_via_pointers() {
         let mut allocation = SliceAllocation::new::<i32>(2).unwrap();
 
         unsafe {
@@ -209,7 +209,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_layout_calculation() {
+    fn layout_calculation() {
         let allocation = SliceAllocation::new::<u64>(10).unwrap();
 
         let layout = allocation.layout();
@@ -226,7 +226,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_large_alignment_type() {
+    fn large_alignment_type() {
         let mut allocation = SliceAllocation::new::<Aligned64>(3).unwrap();
 
         unsafe {
@@ -255,7 +255,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_layout_calculation_large_alignment() {
+    fn layout_calculation_large_alignment() {
         let allocation = SliceAllocation::new::<Aligned64>(3).unwrap();
 
         // Verify layout

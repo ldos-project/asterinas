@@ -2,29 +2,29 @@
 
 //! The context that can be accessed from the current task, thread or process.
 
-use core::{cell::Ref, mem};
+use core::cell::Ref;
 
-use aster_rights::Full;
+use inherit_methods_macro::inherit_methods;
 use ostd::{
-    mm::{Fallible, Infallible, VmReader, VmWriter},
-    task::{CurrentTask, Task},
+    error::PageFaultSnafu,
+    mm::{Fallible, PodAtomic, VmIo, VmReader, VmWriter},
+    task::Task,
 };
 
 use crate::{
     prelude::*,
     process::{
-        Process,
+        Process, VmarSnapshot,
         posix_thread::{PosixThread, ThreadLocal},
     },
     thread::Thread,
-    util::{MultiRead, VmReaderArray},
-    vm::vmar::Vmar,
+    vm::vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, Vmar},
 };
 
 /// The context that can be accessed from the current POSIX thread.
 #[derive(Clone)]
 pub struct Context<'a> {
-    pub process: &'a Process,
+    pub process: Arc<Process>,
     pub thread_local: &'a ThreadLocal,
     pub posix_thread: &'a PosixThread,
     pub thread: &'a Thread,
@@ -33,26 +33,39 @@ pub struct Context<'a> {
 
 impl Context<'_> {
     /// Gets the userspace of the current task.
-    pub fn user_space(&self) -> CurrentUserSpace {
-        CurrentUserSpace(self.thread_local.root_vmar().borrow())
+    pub fn user_space(&self) -> CurrentUserSpace<'_> {
+        CurrentUserSpace(self.thread_local.vmar().borrow())
     }
 }
 
 /// The user's memory space of the current task.
 ///
 /// It provides methods to read from or write to the user space efficiently.
-pub struct CurrentUserSpace<'a>(Ref<'a, Option<Vmar<Full>>>);
+//
+// FIXME: With `impl VmIo for &CurrentUserSpace<'_>`, the Rust compiler seems to think that
+// `CurrentUserSpace` is a publicly exposed type, despite the fact that it is contained in a
+// private module and is never actually exposed. Consequently, it incorrectly suppresses many dead
+// code lints (for *lots of* types that are recursively reached via `CurrentUserSpace`'s APIs). As
+// a workaround, we mark the type as `pub(crate)`. We can restore it to `pub` once the compiler bug
+// is resolved.
+pub(crate) struct CurrentUserSpace<'a>(Ref<'a, Option<Arc<Vmar>>>);
 
 /// Gets the [`CurrentUserSpace`] from the current task.
 ///
 /// This is slower than [`Context::user_space`]. Don't use this getter
 /// If you get the access to the [`Context`].
-#[macro_export]
 macro_rules! current_userspace {
     () => {
-        $crate::context::CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
+        $crate::context::CurrentUserSpace::new(
+            $crate::process::posix_thread::AsThreadLocal::as_thread_local(
+                &ostd::task::Task::current().unwrap(),
+            )
+            .unwrap(),
+        )
     };
 }
+
+pub(crate) use current_userspace;
 
 impl<'a> CurrentUserSpace<'a> {
     /// Creates a new `CurrentUserSpace` from the current task.
@@ -61,242 +74,198 @@ impl<'a> CurrentUserSpace<'a> {
     ///
     /// Otherwise, you can use the `current_userspace` macro
     /// to obtain an instance of `CurrentUserSpace` if it will only be used once.
-    pub fn new(current_task: &'a CurrentTask) -> Self {
-        let thread_local = current_task.as_thread_local().unwrap();
-        let vmar_ref = thread_local.root_vmar().borrow();
+    pub fn new(thread_local: &'a ThreadLocal) -> Self {
+        let vmar_ref = thread_local.vmar().borrow();
         Self(vmar_ref)
     }
 
-    /// Returns the root `Vmar` of the current userspace.
+    /// Returns the `Vmar` of the current userspace.
     ///
     /// # Panics
     ///
     /// This method will panic if the current process has cleared its `Vmar`.
-    pub fn root_vmar(&self) -> &Vmar<Full> {
+    pub fn vmar(&self) -> &Vmar {
         self.0.as_ref().unwrap()
+    }
+
+    /// Takes a snapshot of the current VMAR identity.
+    pub fn vmar_snapshot(&self) -> VmarSnapshot {
+        VmarSnapshot::from(Arc::downgrade(self.0.as_ref().unwrap()))
+    }
+
+    /// Returns whether the VMAR is shared with other processes or threads.
+    pub fn is_vmar_shared(&self) -> bool {
+        // If the VMAR is not shared, its reference count should be exactly 2:
+        // one reference is held by `ThreadLocal` and the other by `ProcessVm` in `Process`.
+        Arc::strong_count(self.0.as_ref().unwrap()) > 2
     }
 
     /// Creates a reader to read data from the user space of the current task.
     ///
-    /// Returns `Err` if the `vaddr` and `len` do not represent a user space memory range.
+    /// Returns `Err` if `vaddr` and `len` do not represent a user space memory range.
     pub fn reader(&self, vaddr: Vaddr, len: usize) -> Result<VmReader<'_, Fallible>> {
-        Ok(self.root_vmar().vm_space().reader(vaddr, len)?)
+        // Do NOT attempt to call `check_vaddr_lowerbound` here.
+        //
+        // Linux has a **delayed buffer validation** behavior:
+        // The Linux kernel assumes that a given user-space pointer is valid until it attempts to access it.
+        // For example, the following invocation of the `read` system call with a `NULL` pointer as the buffer
+        //
+        // ```c
+        // read(fd, NULL, 1);
+        // ```
+        //
+        // will return 0 (rather than an error) if the file referred to by `fd` has zero length.
+        //
+        // Asterinas's system call entry points follow a pattern of converting user-space pointers to
+        // a reader/writer first and using the reader/writer later.
+        // So adding any pointer check here would break Asterinas's delayed buffer validation behavior.
+        Ok(self.vmar().vm_space().reader(vaddr, len)?)
     }
 
-    /// Creates a writer to write data into the user space.
+    /// Creates a writer to write data into the user space of the current task.
     ///
-    /// Returns `Err` if the `vaddr` and `len` do not represent a user space memory range.
+    /// Returns `Err` if `vaddr` and `len` do not represent a user space memory range.
     pub fn writer(&self, vaddr: Vaddr, len: usize) -> Result<VmWriter<'_, Fallible>> {
-        Ok(self.root_vmar().vm_space().writer(vaddr, len)?)
+        // Do NOT attempt to call `check_vaddr_lowerbound` here.
+        // See the comments in the `reader` method.
+        Ok(self.vmar().vm_space().writer(vaddr, len)?)
     }
 
-    /// Reads bytes into the destination `VmWriter` from the user space of the
-    /// current process.
+    /// Creates a reader/writer pair to read data from or write data into the user space
+    /// of the current task.
     ///
-    /// If the reading is completely successful, returns `Ok`. Otherwise, it
-    /// returns `Err`.
+    /// Returns `Err` if `vaddr` and `len` do not represent a user space memory range.
     ///
-    /// If the destination `VmWriter` (`dest`) is empty, this function still
-    /// checks if the current task and user space are available. If they are,
-    /// it returns `Ok`.
-    pub fn read_bytes(&self, src: Vaddr, dest: &mut VmWriter<'_, Infallible>) -> Result<()> {
-        let copy_len = dest.avail();
-
-        if copy_len > 0 {
-            check_vaddr(src)?;
-        }
-
-        let mut user_reader = self.reader(src, copy_len)?;
-        user_reader.read_fallible(dest).map_err(|err| err.0)?;
-        Ok(())
+    /// This method is semantically equivalent to calling [`Self::reader`] and [`Self::writer`]
+    /// separately, but it avoids double checking the validity of the memory region.
+    pub fn reader_writer(
+        &self,
+        vaddr: Vaddr,
+        len: usize,
+    ) -> Result<(VmReader<'_, Fallible>, VmWriter<'_, Fallible>)> {
+        // Do NOT attempt to call `check_vaddr_lowerbound` here.
+        // See the comments in the `reader` method.
+        Ok(self.vmar().vm_space().reader_writer(vaddr, len)?)
     }
 
-    /// Reads a value typed `Pod` from the user space of the current process.
-    pub fn read_val<T: Pod>(&self, src: Vaddr) -> Result<T> {
-        if core::mem::size_of::<T>() > 0 {
-            check_vaddr(src)?;
+    /// Atomically loads a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on an `align_of::<T>()`-byte boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    pub fn atomic_load<T: PodAtomic>(&self, vaddr: Vaddr) -> Result<T> {
+        if size_of::<T>() > 0 {
+            check_vaddr_lowerbound(vaddr)?;
         }
 
-        let mut user_reader = self.reader(src, core::mem::size_of::<T>())?;
-        Ok(user_reader.read_val()?)
+        let user_reader = self.reader(vaddr, size_of::<T>())?;
+        Ok(user_reader.atomic_load()?)
     }
 
-    /// Writes bytes from the source `VmReader` to the user space of the current
-    /// process.
+    /// Atomically updates a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
     ///
-    /// If the writing is completely successful, returns `Ok`. Otherwise, it
-    /// returns `Err`.
+    /// This method internally fetches the old value via [`atomic_load`], applies `op` to compute a
+    /// new value, and updates the value via [`atomic_compare_exchange`]. If the value changes
+    /// concurrently, this method will retry so the operation may be performed multiple times.
     ///
-    /// If the source `VmReader` (`src`) is empty, this function still checks if
-    /// the current task and user space are available. If they are, it returns
-    /// `Ok`.
-    pub fn write_bytes(&self, dest: Vaddr, src: &mut VmReader<'_, Infallible>) -> Result<()> {
-        let copy_len = src.remain();
-
-        if copy_len > 0 {
-            check_vaddr(dest)?;
+    /// If the update is completely successful, returns `Ok` with the old value (i.e., the value
+    /// _before_ applying `op`). Otherwise, it returns `Err`.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on an `align_of::<T>()`-byte boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    /// [`atomic_load`]: VmReader::atomic_load
+    /// [`atomic_compare_exchange`]: VmWriter::atomic_compare_exchange
+    pub fn atomic_fetch_update<T>(&self, vaddr: Vaddr, op: impl Fn(T) -> T) -> Result<T>
+    where
+        T: PodAtomic + Eq,
+    {
+        if size_of::<T>() > 0 {
+            check_vaddr_lowerbound(vaddr)?;
         }
 
-        let mut user_writer = self.writer(dest, copy_len)?;
-        user_writer.write_fallible(src).map_err(|err| err.0)?;
-        Ok(())
-    }
+        let (reader, writer) = self.reader_writer(vaddr, size_of::<T>())?;
 
-    /// Writes `val` to the user space of the current process.
-    pub fn write_val<T: Pod>(&self, dest: Vaddr, val: &T) -> Result<()> {
-        if core::mem::size_of::<T>() > 0 {
-            check_vaddr(dest)?;
+        let mut old_val = reader.atomic_load()?;
+        loop {
+            match writer.atomic_compare_exchange(&reader, old_val, op(old_val))? {
+                (_, true) => return Ok(old_val),
+                (cur_val, false) => old_val = cur_val,
+            }
         }
-
-        let mut user_writer = self.writer(dest, core::mem::size_of::<T>())?;
-        Ok(user_writer.write_val(val)?)
     }
 
     /// Reads a C string from the user space of the current process.
-    /// The length of the string should not exceed `max_len`,
-    /// including the final `\0` byte.
+    ///
+    /// The length of the string should not exceed `max_len`, including the final nul byte.
+    /// Otherwise, this method will fail with [`Errno::ENAMETOOLONG`].
+    ///
+    /// This method is commonly used to read a file name or path. In that case, when the nul byte
+    /// cannot be found within `max_len` bytes, the correct error code is [`Errno::ENAMETOOLONG`].
+    /// However, in other cases, the caller may want to fix the error code manually.
     pub fn read_cstring(&self, vaddr: Vaddr, max_len: usize) -> Result<CString> {
         if max_len > 0 {
-            check_vaddr(vaddr)?;
+            check_vaddr_lowerbound(vaddr)?;
         }
 
-        let mut user_reader = self.reader(vaddr, max_len)?;
-        user_reader.read_cstring()
-    }
-}
+        // Adjust `max_len` to ensure `vaddr + max_len` does not exceed `VMAR_CAP_ADDR`.
+        // If `vaddr` is outside user address space, `userspace_max_len` will be set to zero and
+        // further call to `self.reader` will return `EFAULT`.
+        let userspace_max_len = VMAR_CAP_ADDR.saturating_sub(vaddr).min(max_len);
 
-/// A trait providing the ability to read a C string from the user space.
-pub trait ReadCString {
-    /// Reads a C string from `self`.
-    ///
-    /// This method should read the bytes iteratively in `self` until
-    /// encountering the end of the reader or reading a `\0` (which is also
-    /// included in the final C String).
-    fn read_cstring(&mut self) -> Result<CString>;
-
-    /// Reads a C string from `self` with a maximum length of `max_len`.
-    ///
-    /// This method functions similarly to [`ReadCString::read_cstring`],
-    /// but imposes an additional limit on the length of the C string.
-    fn read_cstring_with_max_len(&mut self, max_len: usize) -> Result<CString>;
-}
-
-impl ReadCString for VmReader<'_, Fallible> {
-    fn read_cstring(&mut self) -> Result<CString> {
-        self.read_cstring_with_max_len(self.remain())
-    }
-
-    fn read_cstring_with_max_len(&mut self, max_len: usize) -> Result<CString> {
-        // This implementation is inspired by
-        // the `do_strncpy_from_user` function in Linux kernel.
-        // The original Linux implementation can be found at:
-        // <https://elixir.bootlin.com/linux/v6.0.9/source/lib/strncpy_from_user.c#L28>
-        let mut buffer: Vec<u8> = Vec::with_capacity(max_len);
-
-        if read_until_nul_byte(self, &mut buffer, max_len)? {
-            return Ok(CString::from_vec_with_nul(buffer).unwrap());
-        }
-
-        return_errno_with_message!(
-            Errno::EFAULT,
-            "no nul terminator is present before reaching the buffer limit"
-        );
-    }
-}
-
-impl ReadCString for VmReaderArray<'_> {
-    fn read_cstring(&mut self) -> Result<CString> {
-        self.read_cstring_with_max_len(self.sum_lens())
-    }
-
-    fn read_cstring_with_max_len(&mut self, max_len: usize) -> Result<CString> {
-        let mut buffer: Vec<u8> = Vec::with_capacity(max_len);
-
-        for reader in self.readers_mut() {
-            if read_until_nul_byte(reader, &mut buffer, max_len)? {
-                return Ok(CString::from_vec_with_nul(buffer).unwrap());
-            }
-        }
-
-        return_errno_with_message!(
-            Errno::EFAULT,
-            "no nul terminator is present before reaching the buffer limit"
-        );
-    }
-}
-
-/// Reads bytes from `reader` into `buffer` until a nul byte is found.
-///
-/// This method returns the following values:
-/// 1. `Ok(true)`: If a nul byte is found in the reader;
-/// 2. `Ok(false)`: If no nul byte is found and the `reader` is exhausted;
-/// 3. `Err(_)`: If an error occurs while reading from the `reader`.
-fn read_until_nul_byte(
-    reader: &mut VmReader,
-    buffer: &mut Vec<u8>,
-    max_len: usize,
-) -> Result<bool> {
-    macro_rules! read_one_byte_at_a_time_while {
-        ($cond:expr) => {
-            while $cond {
-                let byte = reader.read_val::<u8>()?;
-                buffer.push(byte);
-                if byte == 0 {
-                    return Ok(true);
-                }
-            }
-        };
-    }
-
-    // Handle the first few bytes to make `cur_addr` aligned with `size_of::<usize>`
-    read_one_byte_at_a_time_while!(
-        !is_addr_aligned(reader.cursor() as usize) && buffer.len() < max_len && reader.has_remain()
-    );
-
-    // Handle the rest of the bytes in bulk
-    let mut cloned_reader = reader.clone();
-    while (buffer.len() + mem::size_of::<usize>()) <= max_len {
-        let Ok(word) = cloned_reader.read_val::<usize>() else {
-            break;
-        };
-
-        if has_zero(word) {
-            for byte in word.to_ne_bytes() {
-                reader.skip(1);
-                buffer.push(byte);
-                if byte == 0 {
-                    return Ok(true);
-                }
-            }
-            unreachable!("The branch should never be reached unless `has_zero` has bugs.")
-        }
-
-        reader.skip(size_of::<usize>());
-        buffer.extend_from_slice(&word.to_ne_bytes());
-    }
-
-    // Handle the last few bytes that are not enough for a word
-    read_one_byte_at_a_time_while!(buffer.len() < max_len && reader.has_remain());
-
-    if buffer.len() >= max_len {
-        return_errno_with_message!(
-            Errno::EFAULT,
-            "no nul terminator is present before exceeding the maximum length"
-        );
+        let mut user_reader = self.reader(vaddr, userspace_max_len)?;
+        user_reader.read_cstring_until_nul(userspace_max_len)?
+            .ok_or_else(|| if userspace_max_len == max_len {
+                // There may be more bytes in the userspace, but the length limit has been reached.
+                Error::with_message(
+                    Errno::ENAMETOOLONG,
+                    "the C string does not end before reaching the maximum length"
+                )
     } else {
-        Ok(false)
+                // There cannot be any bytes in the userspace, but the C string still does not end.
+                // This is the Linux behavior in its `do_strncpy_from_user` implementation.
+                Error::with_message(
+                    Errno::EFAULT,
+                    "the C string does not end before reaching the maximum userspace virtual address"
+                )
+            })
     }
 }
 
-/// Determines whether the value contains a zero byte.
-///
-/// This magic algorithm is from the Linux `has_zero` function:
-/// <https://elixir.bootlin.com/linux/v6.0.9/source/include/asm-generic/word-at-a-time.h#L93>
-const fn has_zero(value: usize) -> bool {
-    const ONE_BITS: usize = usize::from_le_bytes([0x01; mem::size_of::<usize>()]);
-    const HIGH_BITS: usize = usize::from_le_bytes([0x80; mem::size_of::<usize>()]);
+impl VmIo for CurrentUserSpace<'_> {
+    fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()> {
+        let copy_len = writer.avail();
 
-    value.wrapping_sub(ONE_BITS) & !value & HIGH_BITS != 0
+        if copy_len > 0 {
+            check_vaddr_lowerbound(offset)?;
+        }
+
+        let mut user_reader = self.vmar().vm_space().reader(offset, copy_len)?;
+        user_reader.read_fallible(writer).map_err(|err| err.0)?;
+        Ok(())
+    }
+
+    fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()> {
+        let copy_len = reader.remain();
+
+        if copy_len > 0 {
+            check_vaddr_lowerbound(offset)?;
+        }
+
+        let mut user_writer = self.vmar().vm_space().writer(offset, copy_len)?;
+        user_writer.write_fallible(reader).map_err(|err| err.0)?;
+        Ok(())
+    }
+}
+
+#[inherit_methods(from = "(**self)")]
+impl VmIo for &CurrentUserSpace<'_> {
+    fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()>;
+    fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()>;
 }
 
 /// Checks if the user space pointer is below the lowest userspace address.
@@ -306,96 +275,44 @@ const fn has_zero(value: usize) -> bool {
 /// segmentation fault.
 ///
 /// If it is not checked here, a kernel page fault will happen and we would
-/// deny the access in the page fault handler either. It may save a page fault
+/// deny the access in the page fault handler anyway. It may save a page fault
 /// in some occasions. More importantly, double page faults may not be handled
 /// quite well on some platforms.
-fn check_vaddr(va: Vaddr) -> Result<()> {
-    if va < crate::vm::vmar::ROOT_VMAR_LOWEST_ADDR {
-        Err(Error::with_message(
-            Errno::EFAULT,
-            "Bad user space pointer specified",
-        ))
-    } else {
-        Ok(())
+fn check_vaddr_lowerbound(va: Vaddr) -> ostd::Result<()> {
+    if va < VMAR_LOWEST_ADDR {
+        return PageFaultSnafu.fail();
     }
+    Ok(())
 }
 
-/// Checks if the given address is aligned.
-const fn is_addr_aligned(addr: usize) -> bool {
-    (addr & (mem::size_of::<usize>() - 1)) == 0
+/// Returns the current process.
+///
+/// # Panics
+///
+/// This macro will panic if the current task is not associated with a process. For example, it will
+/// happen if the current task is a kernel thread.
+macro_rules! current {
+    () => {
+        $crate::process::Process::current().unwrap()
+    };
 }
 
-#[cfg(ktest)]
-mod test {
-    use ostd::prelude::*;
+pub(crate) use current;
 
-    use super::*;
-
-    fn init_buffer(cstrs: &[CString]) -> Vec<u8> {
-        let mut buffer = vec![255u8; 100];
-
-        let mut writer = VmWriter::from(buffer.as_mut_slice());
-
-        for cstr in cstrs {
-            writer.write(&mut VmReader::from(cstr.as_bytes_with_nul()));
-        }
-
-        buffer
-    }
-
-    #[ktest]
-    fn read_multiple_cstring() {
-        let strs = {
-            let str1 = CString::new("hello").unwrap();
-            let str2 = CString::new("world!").unwrap();
-            vec![str1, str2]
-        };
-
-        let buffer = init_buffer(&strs);
-
-        let mut reader = VmReader::from(buffer.as_slice()).to_fallible();
-        let read_str1 = reader.read_cstring().unwrap();
-        assert_eq!(read_str1, strs[0]);
-        let read_str2 = reader.read_cstring().unwrap();
-        assert_eq!(read_str2, strs[1]);
-
-        assert!(
-            reader
-                .read_cstring()
-                .is_err_and(|err| err.error() == Errno::EFAULT)
-        );
-    }
-
-    #[ktest]
-    fn read_cstring_from_multiread() {
-        let strs = {
-            let str1 = CString::new("hello").unwrap();
-            let str2 = CString::new("world!").unwrap();
-            let str3 = CString::new("asterinas").unwrap();
-            vec![str1, str2, str3]
-        };
-
-        let buffer = init_buffer(&strs);
-
-        let mut readers = {
-            let reader1 = VmReader::from(&buffer[0..20]).to_fallible();
-            let reader2 = VmReader::from(&buffer[20..40]).to_fallible();
-            let reader3 = VmReader::from(&buffer[40..60]).to_fallible();
-            VmReaderArray::new(vec![reader1, reader2, reader3].into_boxed_slice())
-        };
-
-        let multiread = &mut readers as &mut dyn MultiRead;
-        let read_str1 = multiread.read_cstring().unwrap();
-        assert_eq!(read_str1, strs[0]);
-        let read_str2 = multiread.read_cstring().unwrap();
-        assert_eq!(read_str2, strs[1]);
-        let read_str3 = multiread.read_cstring().unwrap();
-        assert_eq!(read_str3, strs[2]);
-
-        assert!(
-            multiread
-                .read_cstring()
-                .is_err_and(|err| err.error() == Errno::EFAULT)
-        );
-    }
+/// Returns the current thread.
+///
+/// # Panics
+///
+/// This macro will panic if the current task is not associated with a thread.
+///
+/// Except for unit tests, all tasks should be associated with threads. To write code that can be
+/// called directly in unit tests, consider using [`Thread::current`] instead.
+///
+/// [`Thread::current`]: crate::thread::Thread::current
+macro_rules! current_thread {
+    () => {
+        $crate::thread::Thread::current().expect("the current task is not associated with a thread")
+    };
 }
+
+pub(crate) use current_thread;

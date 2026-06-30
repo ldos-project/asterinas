@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd_pod::Pod;
+use ostd_pod::{FromZeros, IntoBytes, Pod};
 
 use super::{Iv, Key, Mac, VersionId};
 use crate::{
@@ -55,7 +55,7 @@ pub struct CryptoBlob<B> {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Pod)]
+#[derive(Clone, Copy, Pod)]
 struct Header {
     version: VersionId,
     mac: Mac,
@@ -64,7 +64,7 @@ struct Header {
 
 impl<B: BlockSet> CryptoBlob<B> {
     /// The size of the header of a crypto blob in bytes.
-    pub const HEADER_NBYTES: usize = core::mem::size_of::<Header>();
+    pub const HEADER_NBYTES: usize = size_of::<Header>();
 
     /// Opens an existing `CryptoBlob`.
     ///

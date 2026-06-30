@@ -1,33 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{Pid, ResourceType, rlimit::RawRLimit64},
+    process::{
+        Pid, Process, ResourceType,
+        credentials::capabilities::CapSet,
+        pid_table,
+        posix_thread::AsPosixThread,
+        rlimit::{RawRLimit64, SYSCTL_NR_OPEN},
+    },
 };
 
 pub fn sys_getrlimit(resource: u32, rlim_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    let resource = ResourceType::try_from(resource)?;
-    debug!("resource = {:?}, rlim_addr = 0x{:x}", resource, rlim_addr);
-    let resource_limits = ctx.process.resource_limits();
-    let rlimit = resource_limits.get_rlimit(resource);
-    let (cur, max) = rlimit.get_cur_and_max();
-    let rlimit_raw = RawRLimit64 { cur, max };
-    ctx.user_space().write_val(rlim_addr, &rlimit_raw)?;
+    let old_raw = do_prlimit64(&ctx.process, resource, None, ctx)?;
+    ctx.user_space().write_val(rlim_addr, &old_raw)?;
     Ok(SyscallReturn::Return(0))
 }
 
 pub fn sys_setrlimit(resource: u32, new_rlim_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    let resource = ResourceType::try_from(resource)?;
-    debug!(
-        "resource = {:?}, new_rlim_addr = 0x{:x}",
-        resource, new_rlim_addr
-    );
-    let new_raw: RawRLimit64 = ctx.user_space().read_val(new_rlim_addr)?;
-    let resource_limits = ctx.process.resource_limits();
-    resource_limits
-        .get_rlimit(resource)
-        .set_cur_and_max(new_raw.cur, new_raw.max)?;
+    let new_raw = ctx.user_space().read_val(new_rlim_addr)?;
+    do_prlimit64(&ctx.process, resource, Some(new_raw), ctx)?;
     Ok(SyscallReturn::Return(0))
 }
 
@@ -38,24 +33,99 @@ pub fn sys_prlimit64(
     old_rlim_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
+    let user_space = ctx.user_space();
+
+    let new_raw = if new_rlim_addr == 0 {
+        None
+    } else {
+        Some(user_space.read_val(new_rlim_addr)?)
+    };
+
+    let old_raw = if pid == 0 || pid == ctx.process.pid() {
+        do_prlimit64(&ctx.process, resource, new_raw, ctx)?
+    } else {
+        let target_process = pid_table::pid_table_mut().get_process(pid).ok_or_else(|| {
+            Error::with_message(Errno::ESRCH, "the target process does not exist")
+        })?;
+        // Check permissions
+        check_rlimit_perm(&target_process, ctx)?;
+        do_prlimit64(&target_process, resource, new_raw, ctx)?
+    };
+
+    if old_rlim_addr != 0 {
+        user_space.write_val(old_rlim_addr, &old_raw)?;
+    }
+
+    Ok(SyscallReturn::Return(0))
+}
+
+fn do_prlimit64(
+    target_process: &Process,
+    resource: u32,
+    new_raw: Option<RawRLimit64>,
+    ctx: &Context,
+) -> Result<RawRLimit64> {
     let resource = ResourceType::try_from(resource)?;
     debug!(
-        "pid = {}, resource = {:?}, new_rlim_addr = 0x{:x}, old_rlim_addr = 0x{:x}",
-        pid, resource, new_rlim_addr, old_rlim_addr
+        "pid = {}, resource = {:?}, new_raw = {:?}",
+        target_process.pid(),
+        resource,
+        new_raw,
     );
-    let resource_limits = ctx.process.resource_limits();
-    if old_rlim_addr != 0 {
-        let rlimit = resource_limits.get_rlimit(resource);
-        let (cur, max) = rlimit.get_cur_and_max();
-        let rlimit_raw = RawRLimit64 { cur, max };
-        ctx.user_space().write_val(old_rlim_addr, &rlimit_raw)?;
+
+    let rlimit = {
+        let resource_limits = target_process.resource_limits();
+        resource_limits.get_rlimit(resource)
+    };
+
+    let old_raw = if let Some(new_raw) = new_raw {
+        if resource == ResourceType::RLIMIT_NOFILE && new_raw.max > SYSCTL_NR_OPEN {
+            return_errno_with_message!(Errno::EPERM, "the new limit exceeds the system limit");
+        }
+        rlimit.set_raw_rlimit(new_raw, ctx)?
+    } else {
+        rlimit.get_raw_rlimit()
+    };
+
+    Ok(old_raw)
+}
+
+/// Checks whether the current process has permission to access
+/// the resource limits of the target process.
+// Reference: <https://man7.org/linux/man-pages/man2/prlimit.2.html>
+fn check_rlimit_perm(target_process: &Process, ctx: &Context) -> Result<()> {
+    if target_process
+        .user_ns()
+        .lock()
+        .check_cap(CapSet::SYS_RESOURCE, ctx.posix_thread)
+        .is_ok()
+    {
+        return Ok(());
     }
-    if new_rlim_addr != 0 {
-        let new_raw: RawRLimit64 = ctx.user_space().read_val(new_rlim_addr)?;
-        debug!("new_rlimit = {:?}", new_raw);
-        resource_limits
-            .get_rlimit(resource)
-            .set_cur_and_max(new_raw.cur, new_raw.max)?;
+
+    let (current_ruid, current_rgid) = {
+        let current_cred = ctx.posix_thread.credentials();
+        (current_cred.ruid(), current_cred.rgid())
+    };
+
+    let target_cred = target_process
+        .main_thread()
+        .as_posix_thread()
+        .unwrap()
+        .credentials();
+
+    if current_ruid == target_cred.ruid()
+        && current_ruid == target_cred.euid()
+        && current_ruid == target_cred.suid()
+        && current_rgid == target_cred.rgid()
+        && current_rgid == target_cred.egid()
+        && current_rgid == target_cred.sgid()
+    {
+        return Ok(());
     }
-    Ok(SyscallReturn::Return(0))
+
+    return_errno_with_message!(
+        Errno::EPERM,
+        "accessing the resource limits of the target process is not allowed"
+    )
 }

@@ -4,11 +4,11 @@ use core::{fmt::Debug, marker::PhantomData};
 
 use aster_rights::{Dup, Exec, Full, Read, Signal, TRightSet, TRights, Write};
 use aster_rights_proc::require;
-use inherit_methods_macro::inherit_methods;
 use ostd::{
-    Pod, Result,
-    mm::{Daddr, DmaStream, HasDaddr, HasPaddr, Paddr, PodOnce, VmIo, VmIoOnce},
+    Result,
+    mm::{Daddr, HasDaddr, HasPaddr, Paddr, PodOnce, VmIo, VmIoOnce, dma::DmaDirection},
 };
+use ostd_pod::Pod;
 
 /// Safe pointers.
 ///
@@ -172,15 +172,15 @@ impl<T, M> SafePtr<T, M> {
     }
 }
 
-impl<T, M: HasPaddr, R> SafePtr<T, M, R> {
-    pub fn paddr(&self) -> Paddr {
+impl<T, M: HasPaddr, R> HasPaddr for SafePtr<T, M, R> {
+    fn paddr(&self) -> Paddr {
         self.vm_obj.paddr() + self.offset
     }
 }
 
 // =============== Read and write methods ==============
 impl<T: Pod, M: VmIo, R: TRights> SafePtr<T, M, TRightSet<R>> {
-    /// Read the value from the pointer.
+    /// Reads the value from the pointer.
     ///
     /// # Access rights
     ///
@@ -190,7 +190,7 @@ impl<T: Pod, M: VmIo, R: TRights> SafePtr<T, M, TRightSet<R>> {
         self.vm_obj.read_val(self.offset)
     }
 
-    /// Read a slice of values from the pointer.
+    /// Reads a slice of values from the pointer.
     ///
     /// # Access rights
     ///
@@ -200,7 +200,7 @@ impl<T: Pod, M: VmIo, R: TRights> SafePtr<T, M, TRightSet<R>> {
         self.vm_obj.read_slice(self.offset, slice)
     }
 
-    /// Overwrite the value at the pointer.
+    /// Overwrites the value at the pointer.
     ///
     /// # Access rights
     ///
@@ -210,7 +210,7 @@ impl<T: Pod, M: VmIo, R: TRights> SafePtr<T, M, TRightSet<R>> {
         self.vm_obj.write_val(self.offset, val)
     }
 
-    /// Overwrite a slice of values at the pointer.
+    /// Overwrites a slice of values at the pointer.
     ///
     /// # Access rights
     ///
@@ -218,6 +218,29 @@ impl<T: Pod, M: VmIo, R: TRights> SafePtr<T, M, TRightSet<R>> {
     #[require(R > Write)]
     pub fn write_slice(&self, slice: &[T]) -> Result<()> {
         self.vm_obj.write_slice(self.offset, slice)
+    }
+
+    /// Copies the value from another pointer.
+    ///
+    /// # Errors
+    ///
+    /// This method will fail if
+    ///  - either pointer's underlying VM object is too short to hold `T` or
+    ///  - the memory copy between two pointers fails.
+    ///
+    /// # Access rights
+    ///
+    /// This method requires
+    ///  - the Write right for this pointer and
+    ///  - the Read right for another pointer.
+    #[require(R > Write)]
+    #[require(R1 > Read)]
+    pub fn copy_from<M1: VmIo, R1: TRights>(
+        &self,
+        ptr: &SafePtr<T, M1, TRightSet<R1>>,
+    ) -> Result<()> {
+        let val = ptr.vm_obj.read_val::<T>(ptr.offset)?;
+        self.vm_obj.write_val(self.offset, &val)
     }
 }
 
@@ -247,18 +270,18 @@ impl<T: PodOnce, M: VmIoOnce, R: TRights> SafePtr<T, M, TRightSet<R>> {
 // =============== Address-related methods ==============
 impl<T, M, R> SafePtr<T, M, R> {
     pub const fn is_aligned(&self) -> bool {
-        self.offset % core::mem::align_of::<T>() == 0
+        self.offset.is_multiple_of(align_of::<T>())
     }
 
     /// Increase the address in units of bytes occupied by the generic T.
     pub fn add(&mut self, count: usize) {
-        let offset = count * core::mem::size_of::<T>();
+        let offset = count * size_of::<T>();
         self.offset += offset;
     }
 
     /// Increase or decrease the address in units of bytes occupied by the generic T.
     pub fn offset(&mut self, count: isize) {
-        let offset = count * core::mem::size_of::<T>() as isize;
+        let offset = count * size_of::<T>() as isize;
         if count >= 0 {
             self.offset += offset as usize;
         } else {
@@ -359,17 +382,24 @@ impl<T, M: HasDaddr, R> HasDaddr for SafePtr<T, M, R> {
     }
 }
 
-impl<T, R> SafePtr<T, DmaStream, R> {
-    /// Synchronize the object in the streaming DMA mapping
-    pub fn sync(&self) -> Result<()> {
+impl<T, R, D: DmaDirection> SafePtr<T, ostd::mm::dma::DmaStream<D>, R> {
+    /// Synchronizes the slice of streaming DMA mapping from the device.
+    ///
+    /// The method will call [`ostd::mm::dma::DmaStream::sync_from_device`]
+    /// with the offset range of this pointer.
+    pub fn sync_from_device(&self) -> Result<()> {
         self.vm_obj
-            .sync(self.offset..self.offset + core::mem::size_of::<T>())
+            .sync_from_device(self.offset..self.offset + size_of::<T>())
     }
-}
 
-#[inherit_methods(from = "(*self)")]
-impl<T, R> SafePtr<T, &DmaStream, R> {
-    pub fn sync(&self) -> Result<()>;
+    /// Synchronizes the slice of streaming DMA mapping to the device.
+    ///
+    /// The method will call [`ostd::mm::dma::DmaStream::sync_to_device`]
+    /// with the offset range of this pointer.
+    pub fn sync_to_device(&self) -> Result<()> {
+        self.vm_obj
+            .sync_to_device(self.offset..self.offset + size_of::<T>())
+    }
 }
 
 #[require(R > Dup)]

@@ -8,7 +8,8 @@
  * Copyright (c) 2020 - 2024 Runji Wang
  *
  * We make the following new changes:
- * * Add the `trap_handler_table`.
+ * * Adjust some symbol names.
+ * * Disable FPU and U-mode memory access on traps.
  *
  * These changes are released under the following license:
  *
@@ -20,20 +21,24 @@
 #   LOAD
 #   STORE
 
-    .section .text
-    .global trap_entry
-    .balign 4
+.text
+
+.balign 4
+.global trap_entry
 trap_entry:
     # If coming from userspace, preserve the user stack pointer and load
     # the kernel stack pointer. If we came from the kernel, sscratch
     # will contain 0, and we should continue on the current stack.
     csrrw sp, sscratch, sp
-    bnez sp, trap_from_user
-trap_from_kernel:
+    bnez sp, _trap_from_user
+
+_trap_from_kernel:
     csrr sp, sscratch
     addi sp, sp, -34 * XLENB
     # sscratch = previous-sp, sp = kernel-sp
-trap_from_user:
+    # fallthrough
+
+_trap_from_user:
     # save general registers except sp(x2)
     STORE_SP x1, 1
     STORE_SP x3, 3
@@ -67,25 +72,25 @@ trap_from_user:
     STORE_SP x31, 31
 
     # save sp, sstatus, sepc
-    csrrw t0, sscratch, x0  # sscratch = 0 (kernel)
-    csrr t1, sstatus
+    csrrw t0, sscratch, x0                   # sscratch = 0 (kernel)
+    li t3, {SSTATUS_FS_MASK} | {SSTATUS_SUM} # disable FPU to prevent unexpected usage of floating point in kernel space
+                                             # disable U-mode memory access as it should be set on demand
+    csrrc t1, sstatus, t3
     csrr t2, sepc
-    STORE_SP t0, 2          # save sp
-    STORE_SP t1, 32         # save sstatus
-    STORE_SP t2, 33         # save sepc
+    STORE_SP t0, 2                           # save sp
+    STORE_SP t1, 32                          # save sstatus
+    STORE_SP t2, 33                          # save sepc
 
-    li t0, 3 << 13
-    or t1, t1, t0           # sstatus.FS = Dirty (3)
-    csrw sstatus, t1
+    andi t1, t1, 1 << 8                      # sstatus.SPP == 1
+    beqz t1, _end_trap_from_user
 
-    andi t1, t1, 1 << 8     # sstatus.SPP == 1
-    beqz t1, end_trap_from_user
-end_trap_from_kernel:
-    mv a0, sp               # first arg is TrapFrame
-    la ra, trap_return      # set return address
+_end_trap_from_kernel:
+    mv a0, sp                                # first arg is TrapFrame
+    lla ra, _trap_return                     # set return address
+.extern trap_handler
     j trap_handler
 
-end_trap_from_user:
+_end_trap_from_user:
     # load callee-saved registers
     LOAD_SP sp, 0
     LOAD_SP s0, 0
@@ -101,14 +106,14 @@ end_trap_from_user:
     LOAD_SP s10, 10
     LOAD_SP s11, 11
     LOAD_SP ra, 12
-    # not callee-saved, but is used to store mhartid
+    # not callee-saved, but is used to store the CPU-local storage's base address
     LOAD_SP gp, 13
     addi sp, sp, 14 * XLENB
 
     ret
 
 .global run_user
-run_user:
+run_user: # (regs: &mut RawUserContext)
     # save callee-saved registers
     addi sp, sp, -14 * XLENB
     STORE_SP s0, 0
@@ -124,7 +129,7 @@ run_user:
     STORE_SP s10, 10
     STORE_SP s11, 11
     STORE_SP ra, 12
-    # not callee-saved, but is used to store mhartid
+    # not callee-saved, but is used to store the CPU-local storage's base address
     STORE_SP gp, 13
 
     mv t0, sp
@@ -132,7 +137,7 @@ run_user:
     STORE_SP t0, 0          # save kernel-sp
     csrw sscratch, sp       # sscratch = bottom of trap frame
 
-trap_return:
+_trap_return:
     LOAD_SP t0, 32          # t0 = sstatus
     LOAD_SP t1, 33          # t1 = sepc
     csrw sstatus, t0        # load sstatus

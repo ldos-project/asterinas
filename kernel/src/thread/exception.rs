@@ -1,82 +1,86 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(unused_variables)]
-
-use aster_rights::Full;
-use ostd::cpu::context::{CpuExceptionInfo, UserContext};
-use serde::Serialize;
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+use ostd::arch::cpu::context::CpuException;
+#[cfg(target_arch = "loongarch64")]
+use ostd::arch::cpu::context::CpuExceptionInfo as CpuException;
+use ostd::{arch::cpu::context::UserContext, task::Task};
 
 use crate::{
-    current_userspace,
     prelude::*,
     process::signal::signals::fault::FaultSignal,
-    vm::{page_fault_handler::PageFaultHandler, perms::VmPerms, vmar::Vmar},
+    vm::vmar::{PageFaultInfo, Vmar},
 };
 
-/// Page fault information converted from [`CpuExceptionInfo`].
-///
-/// `From<CpuExceptionInfo>` should be implemented for this struct.
-/// If `CpuExceptionInfo` is a page fault, `try_from` should return `Ok(PageFaultInfo)`,
-/// or `Err(())` (no error information) otherwise.
-#[derive(Clone, Copy, Serialize)]
-pub struct PageFaultInfo {
-    /// The virtual address where a page fault occurred.
-    pub address: Vaddr,
-
-    /// The [`VmPerms`] required by the memory operation that causes page fault.
-    /// For example, a "store" operation may require `VmPerms::WRITE`.
-    pub required_perms: VmPerms,
-}
-
 /// We can't handle most exceptions, just send self a fault signal before return to user space.
-pub fn handle_exception(ctx: &Context, context: &UserContext) {
-    let trap_info = context.trap_information();
-    log_trap_info(trap_info);
+pub(super) fn handle_exception(ctx: &Context, user_ctx: &UserContext, exception: CpuException) {
+    debug!("handle exception: {:#x?}", exception);
 
-    if let Ok(page_fault_info) = PageFaultInfo::try_from(trap_info) {
+    if let Ok(page_fault_info) = PageFaultInfo::try_from(&exception) {
         let user_space = ctx.user_space();
-        let root_vmar = user_space.root_vmar();
-        if handle_page_fault_from_vmar(root_vmar, &page_fault_info).is_ok() {
+        let vmar = user_space.vmar();
+        if handle_page_fault_from_vmar(vmar, &page_fault_info).is_ok() {
             return;
         }
     }
 
-    generate_fault_signal(trap_info, ctx);
+    // We cannot handle most exceptions. Send a fault signal to the current thread before returning
+    // to user space.
+    generate_fault_signal(exception, ctx, user_ctx);
 }
 
-/// Handles the page fault occurs in the input `Vmar`.
+/// Handles the page fault occurs in the VMAR.
 fn handle_page_fault_from_vmar(
-    root_vmar: &Vmar<Full>,
+    vmar: &Vmar,
     page_fault_info: &PageFaultInfo,
 ) -> core::result::Result<(), ()> {
-    if let Err(e) = root_vmar.handle_page_fault(page_fault_info) {
+    if let Err(e) = vmar.handle_page_fault(page_fault_info) {
         warn!(
-            "page fault handler failed: addr: 0x{:x}, err: {:?}",
-            page_fault_info.address, e
+            "page fault handler failed: info: {:#x?}, err: {:?}",
+            page_fault_info, e
         );
         return Err(());
     }
     Ok(())
 }
 
-/// generate a fault signal for current process.
-fn generate_fault_signal(trap_info: &CpuExceptionInfo, ctx: &Context) {
-    let signal = FaultSignal::from(trap_info);
+/// A trait that converts CPU exceptions into fault signals.
+///
+/// This trait should be implemented by architecture-specific code for [`CpuException`].
+pub trait ToFaultSignal {
+    /// Converts a CPU exception into a fault signal.
+    ///
+    /// Returns `None` if the exception must be handled earlier and cannot be delivered as a signal.
+    ///
+    /// POSIX [requires] `SIGILL` and `SIGFPE` to report the address of the faulting instruction,
+    /// and `SIGSEGV` and `SIGBUS` to report the address of the faulting memory reference. Linux
+    /// behavior, however, is highly architecture-specific and does not always follow POSIX: for
+    /// some exceptions, it reports neither the expected code nor the expected address. Linux may
+    /// also attach an instruction address to `SIGTRAP`, but this behavior is not consistent across
+    /// architectures.
+    ///
+    /// [requires]: https://pubs.opengroup.org/onlinepubs/009695399/basedefs/signal.h.html
+    fn to_fault_signal(&self, user_ctx: &UserContext) -> Option<FaultSignal>;
+}
+
+/// Generates a fault signal for the current thread.
+fn generate_fault_signal(exception: CpuException, ctx: &Context, user_ctx: &UserContext) {
+    let Some(signal) = exception.to_fault_signal(user_ctx) else {
+        panic!("`{:?}` cannot be handled via signals", exception);
+    };
     ctx.posix_thread.enqueue_signal(Box::new(signal));
 }
 
-fn log_trap_info(trap_info: &CpuExceptionInfo) {
-    if let Ok(page_fault_info) = PageFaultInfo::try_from(trap_info) {
-        trace!(
-            "[Trap][PAGE_FAULT][page fault addr = 0x{:x}, err = {}]",
-            trap_info.page_fault_addr, trap_info.error_code
-        );
-    } else {
-        let exception = trap_info.cpu_exception();
-        trace!("[Trap][{exception:?}][err = {}]", trap_info.error_code)
-    }
-}
+pub(super) fn page_fault_handler(info: &CpuException) -> core::result::Result<(), ()> {
+    let task = Task::current().unwrap();
+    let thread_local = task.as_thread_local().unwrap();
 
-pub(super) fn page_fault_handler(info: &CpuExceptionInfo) -> core::result::Result<(), ()> {
-    handle_page_fault_from_vmar(current_userspace!().root_vmar(), &info.try_into().unwrap())
+    if thread_local.is_page_fault_disabled() {
+        // Do nothing if the page fault handler is disabled. This will typically cause the fallible
+        // memory operation to report `EFAULT` errors immediately.
+        return Err(());
+    }
+
+    let user_space = CurrentUserSpace::new(thread_local);
+    handle_page_fault_from_vmar(user_space.vmar(), &info.try_into().unwrap())
 }

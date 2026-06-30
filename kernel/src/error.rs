@@ -10,8 +10,9 @@ use snafu::Snafu;
 /// Error number.
 ///
 /// This should match the Linux error numbers as defined in `errno.h` and similar.
+#[expect(clippy::upper_case_acronyms)]
 #[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Errno {
     /// Operation not permitted
     EPERM = 1,
@@ -458,16 +459,6 @@ impl From<ostd::Error> for Error {
                 msg: None,
                 context,
             },
-            ostd::Error::MapAlreadyMappedVaddr { context } => Error {
-                errno: Errno::EINVAL,
-                msg: None,
-                context,
-            },
-            ostd::Error::KVirtAreaAllocError { context } => Error {
-                errno: Errno::ENOMEM,
-                msg: None,
-                context,
-            },
             ostd::Error::RPCError { source } => source.into(),
             #[cfg(not(baseline_asterinas))]
             ostd::Error::OQueueError { source } => source.into(),
@@ -480,6 +471,13 @@ impl From<(ostd::Error, usize)> for Error {
     #[track_caller]
     fn from(ostd_error: (ostd::Error, usize)) -> Self {
         Error::from(ostd_error.0)
+    }
+}
+
+impl From<(Error, usize)> for Error {
+    // Used in fallible remote process memory read/write API
+    fn from(err: (Error, usize)) -> Self {
+        err.0
     }
 }
 
@@ -634,29 +632,45 @@ impl From<aster_systree::Error> for Error {
     fn from(err: aster_systree::Error) -> Self {
         use aster_systree::Error::*;
         match err {
-            NodeNotFound(_) => Error::new(Errno::ENOENT),
-            InvalidNodeOperation(_) => Error::new(Errno::EINVAL),
+            NotFound => Error::new(Errno::ENOENT),
+            InvalidOperation => Error::new(Errno::EINVAL),
+            ResourceUnavailable => Error::new(Errno::EBUSY),
             AttributeError => Error::new(Errno::EIO),
             PermissionDenied => Error::new(Errno::EACCES),
             InternalError(msg) => Error::with_message(Errno::EIO, msg),
+            AlreadyExists => Error::new(Errno::EEXIST),
             Overflow => Error::new(Errno::EOVERFLOW),
+            PageFault => Error::new(Errno::EFAULT),
+            IsDead => Error::new(Errno::ENODEV),
         }
     }
 }
 
-#[macro_export]
+impl From<aster_util::printer::VmPrinterError> for Error {
+    fn from(value: aster_util::printer::VmPrinterError) -> Self {
+        match value {
+            aster_util::printer::VmPrinterError::PageFault => {
+                Error::with_message(Errno::EFAULT, "Page fault occurred during VmPrinter write")
+            }
+        }
+    }
+}
+
 macro_rules! return_errno {
     ($errno: expr) => {
         return Err($crate::error::Error::new($errno))
     };
 }
 
-#[macro_export]
+pub(crate) use return_errno;
+
 macro_rules! return_errno_with_message {
     ($errno: expr, $message: expr) => {
         return Err($crate::error::Error::with_message($errno, $message))
     };
 }
+
+pub(crate) use return_errno_with_message;
 
 #[cfg(ktest)]
 mod test {

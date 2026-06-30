@@ -1,0 +1,5 @@
+# TODO: Due to some FS bugs, they may trigger
+# "PosixError(errno=28 No space left on device)"
+# because too many files are created and deleted.
+InotifyTest.InotifyAndTargetDestructionDoNotDeadlock
+InotifyTest.InotifyAndTargetDestructionDoNotDeadlock_NoRandomSave

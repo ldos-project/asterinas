@@ -8,11 +8,11 @@
 //! The reference to the Linux PE header definition:
 //! <https://github.com/torvalds/linux/blob/master/include/linux/pe.h>
 
-use std::{mem::size_of, vec};
+use std::vec;
 
 use align_ext::AlignExt;
-use bytemuck::{Pod, Zeroable};
 use serde::Serialize;
+use zerocopy::IntoBytes;
 
 use crate::mapping::{LEGACY_SETUP_SEC_SIZE, SetupFileOffset, SetupVA};
 
@@ -23,8 +23,8 @@ const MZ_MAGIC: u16 = 0x5a4d; // "MZ"
 const PE_MAGIC: u32 = 0x00004550;
 
 // The `machine` field choices in PE header. Not exhaustive.
-#[derive(Serialize, Clone, Copy)]
 #[repr(u16)]
+#[derive(Clone, Copy, Serialize)]
 enum PeMachineType {
     Amd64 = 0x8664,
 }
@@ -50,8 +50,8 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Zeroable, Pod, Serialize, Clone, Copy)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Pod, Serialize)]
 struct PeHdr {
     magic: u32,        // PE magic
     machine: u16,      // machine type
@@ -67,14 +67,14 @@ struct PeHdr {
 const PE32PLUS_OPT_HDR_MAGIC: u16 = 0x020b;
 
 // The `subsys` field choices in the PE32+ optional header. Not exhaustive.
-#[derive(Serialize, Clone, Copy)]
 #[repr(u16)]
+#[derive(Clone, Copy, Serialize)]
 enum PeImageSubsystem {
     EfiApplication = 10,
 }
 
-#[derive(Zeroable, Pod, Serialize, Clone, Copy)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Pod, Serialize)]
 struct Pe32PlusOptHdr {
     magic: u16,          // file type
     ld_major: u8,        // linker major version
@@ -107,8 +107,8 @@ struct Pe32PlusOptHdr {
     data_dirs: u32,      // number of data dir entries
 }
 
-#[derive(Zeroable, Pod, Serialize, Clone, Copy)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Pod, Serialize)]
 struct Pe32PlusOptDataDirEnt {
     /// The RVA is the address of the table relative to the base address of the image when the table is loaded.
     rva: u32,
@@ -126,8 +126,8 @@ impl Pe32PlusOptDataDirEnt {
 /// The `data_dirs` number field in the PE32+ optional header is just an illusion that you can choose to have a
 /// subset of the data directories. The actual number of data directories is fixed to 16 and you can only ignore
 /// data directories at the end of the list. We ignore data directories after the 8th as what Linux do.
-#[derive(Zeroable, Pod, Serialize, Clone, Copy)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Pod, Serialize)]
 struct Pe32PlusOptDataDirs {
     export_table: Pe32PlusOptDataDirEnt,
     import_table: Pe32PlusOptDataDirEnt,
@@ -166,8 +166,8 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Zeroable, Pod, Serialize, Clone, Copy)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Pod, Serialize)]
 struct PeSectionHdr {
     name: [u8; 8],        // name or "/12\0" string tbl offset
     virtual_size: u32,    // size of loaded section in RAM
@@ -263,13 +263,13 @@ pub(crate) fn make_pe_coff_header(setup_elf: &[u8]) -> Vec<u8> {
 
     // Write the PE header
     pe_hdr.sections = sec_hdr_vec.len() as u16;
-    bin.extend_from_slice(bytemuck::bytes_of(&pe_hdr));
+    bin.extend_from_slice(pe_hdr.as_bytes());
     // Write the PE32+ optional header
-    bin.extend_from_slice(bytemuck::bytes_of(&pe_opt_hdr));
-    bin.extend_from_slice(bytemuck::bytes_of(&pe_opt_hdr_data_dirs));
+    bin.extend_from_slice(pe_opt_hdr.as_bytes());
+    bin.extend_from_slice(pe_opt_hdr_data_dirs.as_bytes());
     // Write the PE section headers
     for sec_hdr in sec_hdr_vec {
-        bin.extend_from_slice(bytemuck::bytes_of(&sec_hdr));
+        bin.extend_from_slice(sec_hdr.as_bytes());
     }
 
     bin

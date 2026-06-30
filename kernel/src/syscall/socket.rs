@@ -2,13 +2,13 @@
 
 use super::SyscallReturn;
 use crate::{
-    fs::{file_handle::FileLike, file_table::FdFlags},
+    fs::file::{FileLike, file_table::FdFlags},
     net::socket::{
         ip::{DatagramSocket, StreamSocket},
         netlink::{
             NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol, is_valid_protocol,
         },
-        unix::UnixStreamSocket,
+        unix::{UnixDatagramSocket, UnixStreamSocket},
         vsock::VsockStreamSocket,
     },
     prelude::*,
@@ -23,11 +23,17 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
         "domain = {:?}, sock_type = {:?}, sock_flags = {:?}",
         domain, sock_type, sock_flags
     );
+
     let is_nonblocking = sock_flags.contains(SockFlags::SOCK_NONBLOCK);
     let file_like = match (domain, sock_type) {
-        // FIXME: SOCK_SEQPACKET is added to run fcntl_test, not supported yet.
-        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_STREAM | SockType::SOCK_SEQPACKET) => {
-            UnixStreamSocket::new(is_nonblocking) as Arc<dyn FileLike>
+        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_STREAM) => {
+            UnixStreamSocket::new(is_nonblocking, false) as Arc<dyn FileLike>
+        }
+        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_SEQPACKET) => {
+            UnixStreamSocket::new(is_nonblocking, true) as Arc<dyn FileLike>
+        }
+        (CSocketAddrFamily::AF_UNIX, SockType::SOCK_RAW | SockType::SOCK_DGRAM) => {
+            UnixDatagramSocket::new(is_nonblocking) as Arc<dyn FileLike>
         }
         (CSocketAddrFamily::AF_INET, SockType::SOCK_STREAM) => {
             let protocol = Protocol::try_from(protocol)?;
@@ -77,10 +83,11 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
             }
         }
         (CSocketAddrFamily::AF_VSOCK, SockType::SOCK_STREAM) => {
-            Arc::new(VsockStreamSocket::new(is_nonblocking)?) as Arc<dyn FileLike>
+            VsockStreamSocket::new(is_nonblocking)? as Arc<dyn FileLike>
         }
         _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported domain"),
     };
+
     let fd = {
         let file_table = ctx.thread_local.borrow_file_table();
         let mut file_table_locked = file_table.unwrap().write();
@@ -91,5 +98,6 @@ pub fn sys_socket(domain: i32, type_: i32, protocol: i32, ctx: &Context) -> Resu
         };
         file_table_locked.insert(file_like, fd_flags)
     };
-    Ok(SyscallReturn::Return(fd as _))
+
+    Ok(SyscallReturn::Return(fd.into()))
 }

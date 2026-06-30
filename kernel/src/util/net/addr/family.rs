@@ -2,17 +2,17 @@
 
 use core::cmp::min;
 
-use ostd::task::Task;
+use ostd::{mm::VmIo, task::Task};
 
 use super::{ip::CSocketAddrInet, netlink::CSocketAddrNetlink, unix, vsock::CSocketAddrVm};
-use crate::{current_userspace, net::socket::util::SocketAddr, prelude::*};
+use crate::{context::current_userspace, net::socket::util::SocketAddr, prelude::*};
 
 /// Address family.
 ///
 /// See <https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/socket.h>.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt, PartialEq, Eq)]
 #[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
 pub enum CSocketAddrFamily {
     AF_UNSPEC = 0,
     /// Unix domain sockets
@@ -119,7 +119,7 @@ const ADDR_MAX_LEN: usize = 128;
 /// The size and layout of this structure is specified by RFC 3493. For details, see
 /// <https://datatracker.ietf.org/doc/html/rfc3493#section-3.10>.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 struct Storage {
     sa_family: u16,
     bytes: [u8; ADDR_MAX_LEN - 2],
@@ -145,17 +145,14 @@ pub fn read_socket_addr_from_user(addr: Vaddr, addr_len: usize) -> Result<Socket
     }
 
     let mut storage = Storage::new_zeroed();
-    current_userspace!().read_bytes(
-        addr,
-        &mut VmWriter::from(&mut storage.as_bytes_mut()[..addr_len]),
-    )?;
+    current_userspace!().read_bytes(addr, &mut storage.as_mut_bytes()[..addr_len])?;
 
     let result = match CSocketAddrFamily::try_from(storage.sa_family as i32) {
         Ok(CSocketAddrFamily::AF_INET) => {
             if addr_len < size_of::<CSocketAddrInet>() {
                 return_errno_with_message!(Errno::EINVAL, "the socket address length is too small");
             }
-            let (addr, port) = CSocketAddrInet::from_bytes(storage.as_bytes()).into();
+            let (addr, port) = CSocketAddrInet::from_first_bytes(storage.as_bytes()).into();
             SocketAddr::IPv4(addr, port)
         }
         Ok(CSocketAddrFamily::AF_UNIX) => {
@@ -166,14 +163,14 @@ pub fn read_socket_addr_from_user(addr: Vaddr, addr_len: usize) -> Result<Socket
             if addr_len < size_of::<CSocketAddrNetlink>() {
                 return_errno_with_message!(Errno::EINVAL, "the socket address length is too small");
             }
-            let addr = CSocketAddrNetlink::from_bytes(storage.as_bytes());
+            let addr = CSocketAddrNetlink::from_first_bytes(storage.as_bytes());
             SocketAddr::Netlink(addr.into())
         }
         Ok(CSocketAddrFamily::AF_VSOCK) => {
             if addr_len < size_of::<CSocketAddrVm>() {
                 return_errno_with_message!(Errno::EINVAL, "the socket address length is too small");
             }
-            let addr = CSocketAddrVm::from_bytes(storage.as_bytes());
+            let addr = CSocketAddrVm::from_first_bytes(storage.as_bytes());
             SocketAddr::Vsock(addr.into())
         }
         _ => {
@@ -209,13 +206,13 @@ pub fn write_socket_addr_to_user(
     max_len_ptr: Vaddr,
 ) -> Result<()> {
     let current_task = Task::current().unwrap();
-    let user_space = CurrentUserSpace::new(&current_task);
+    let user_space = CurrentUserSpace::new(current_task.as_thread_local().unwrap());
 
     let max_len = user_space.read_val::<i32>(max_len_ptr)?;
 
     let actual_len = write_socket_addr_with_max_len(socket_addr, dest, max_len)?;
 
-    user_space.write_val(max_len_ptr, &actual_len)
+    Ok(user_space.write_val(max_len_ptr, &actual_len)?)
 }
 
 /// Writes a socket address to the user space.
@@ -253,7 +250,7 @@ pub fn write_socket_addr_with_max_len(
         )?,
         SocketAddr::Unix(addr) => unix::into_c_bytes_and(addr, |bytes| {
             let written_len = min(bytes.len(), max_len as _);
-            current_userspace!().write_bytes(dest, &mut VmReader::from(&bytes[..written_len]))?;
+            current_userspace!().write_bytes(dest, &bytes[..written_len])?;
             Ok::<usize, Error>(bytes.len())
         })?,
         SocketAddr::Netlink(addr) => {
@@ -280,10 +277,7 @@ where
     let actual_len = size_of::<TCSockAddr>();
     let written_len = min(actual_len, max_len);
 
-    current_userspace!().write_bytes(
-        dest,
-        &mut VmReader::from(&c_socket_addr.as_bytes()[..written_len]),
-    )?;
+    current_userspace!().write_bytes(dest, &c_socket_addr.as_bytes()[..written_len])?;
 
     Ok(actual_len)
 }

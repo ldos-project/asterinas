@@ -4,19 +4,20 @@ use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{errors::RPCError, oqueue::OQueueError};
 use ostd::ostd_error;
-use snafu::Snafu;
+use snafu::{ResultExt as _, Snafu};
 
-use crate::queue::QueueError;
+use crate::{queue, transport::VirtioTransportError};
 
 pub mod block;
 pub mod console;
+pub mod entropy;
 pub mod input;
 pub mod network;
 pub mod socket;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromInt)]
 #[repr(u8)]
-pub enum VirtioDeviceType {
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
+pub(crate) enum VirtioDeviceType {
     Invalid = 0,
     Network = 1,
     Block = 2,
@@ -29,16 +30,16 @@ pub enum VirtioDeviceType {
     Transport9P = 9,
     Mac80211Wlan = 10,
     RprocSerial = 11,
-    VirtioCAIF = 12,
+    VirtioCaif = 12,
     MemoryBalloon = 13,
-    GPU = 16,
+    Gpu = 16,
     Timer = 17,
     Input = 18,
     Socket = 19,
     Crypto = 20,
     SignalDistribution = 21,
     Pstore = 22,
-    IOMMU = 23,
+    Iommu = 23,
     Memory = 24,
 }
 
@@ -46,16 +47,16 @@ pub enum VirtioDeviceType {
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum VirtioDeviceError {
-    /// queues amount do not match the requirement
-    /// first element is actual value, second element is expect value
-    #[snafu(display("Queues amount mismatch: actual={actual}, expected={expected} ({context})"))]
-    QueuesAmountDoNotMatch { actual: u16, expected: u16 },
-    /// unknown error of queue
-    #[snafu(display("Queue unknown error ({context})"))]
-    QueueUnknownError,
-    /// The input virtio capability list contains invalid element
-    #[snafu(display("Capability list error ({context})"))]
-    CapabilityListError,
+    #[snafu(transparent)]
+    Transport {
+        source: VirtioTransportError,
+    },
+    #[ostd(context(source))]
+    ResourceAlloc {
+        source: ostd::Error,
+    },
+    InvalidQueueArgs,
+    UnsupportedConfig,
     /// The ORPC Errors
     #[cfg(not(baseline_asterinas))]
     #[snafu(transparent)]
@@ -74,8 +75,13 @@ pub enum VirtioDeviceError {
     },
 }
 
-impl From<QueueError> for VirtioDeviceError {
-    fn from(_: QueueError) -> Self {
-        QueueUnknownSnafu.build()
+impl From<queue::CreationError> for VirtioDeviceError {
+    fn from(value: queue::CreationError) -> Self {
+        match value {
+            queue::CreationError::InvalidArgs => InvalidQueueArgsSnafu.build(),
+            queue::CreationError::ResourceAlloc(e) => {
+                Err::<(), _>(e).context(ResourceAllocSnafu).unwrap_err()
+            }
+        }
     }
 }

@@ -44,7 +44,7 @@ use crate::{
         memory_region::{MemoryRegion, MemoryRegionType},
         smp::PerApRawInfo,
     },
-    mm::{PAGE_SIZE, Paddr},
+    mm::{PAGE_SIZE, Paddr, paddr_to_vaddr},
     task::disable_preempt,
 };
 
@@ -77,7 +77,7 @@ pub(crate) fn count_processors() -> Option<u32> {
             matches!(e, MadtEntry::LocalX2Apic(e)
                 if e.x2apic_id == id && is_usable(e.flags))
         }) {
-            log::warn!(
+            crate::warn!(
                 "Firmware bug: In MADT, APIC ID {} is also listed as an x2APIC ID",
                 id,
             );
@@ -92,11 +92,11 @@ pub(crate) fn count_processors() -> Option<u32> {
         .entries()
         .filter(|e| match e {
             MadtEntry::LocalX2Apic(entry) => {
-                log::trace!("Found a local x2APIC entry in MADT: {:?}", entry);
+                crate::debug!("Found a local x2APIC entry in MADT: {:?}", entry);
                 is_usable(entry.flags)
             }
             MadtEntry::LocalApic(entry) => {
-                log::trace!("Found a local APIC entry in MADT: {:?}", entry);
+                crate::debug!("Found a local APIC entry in MADT: {:?}", entry);
                 is_usable(entry.flags) && !is_dup_apic(entry.apic_id as u32)
             }
             _ => false,
@@ -137,7 +137,7 @@ const AP_BOOT_START_PA: usize = 0x8000;
 
 /// The size of the AP boot code (the `.ap_boot` section).
 fn ap_boot_code_size() -> usize {
-    __ap_boot_end as usize - __ap_boot_start as usize
+    __ap_boot_end as *const () as usize - __ap_boot_start as *const () as usize
 }
 
 pub(super) fn reclaimable_memory_region() -> MemoryRegion {
@@ -152,8 +152,8 @@ pub(super) fn reclaimable_memory_region() -> MemoryRegion {
 ///
 /// The caller must ensure the memory region to be filled with AP boot code is valid to write.
 unsafe fn copy_ap_boot_code() {
-    let ap_boot_start = __ap_boot_start as usize as *const u8;
-    let len = __ap_boot_end as usize - __ap_boot_start as usize;
+    let ap_boot_start = __ap_boot_start as *const () as *const u8;
+    let len = __ap_boot_end as *const () as usize - __ap_boot_start as *const () as usize;
 
     // SAFETY:
     // 1. The source memory region is valid for reading because it's inside the kernel text.
@@ -172,7 +172,8 @@ unsafe fn copy_ap_boot_code() {
 
 /// # Safety
 ///
-/// The caller must ensure the pointer to be filled is valid to write.
+/// This function writes to the static mutable variable `__ap_boot_info_array_pointer`.
+/// The caller must ensure exclusive access to this variable.
 unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
     unsafe extern "C" {
         static mut __ap_boot_info_array_pointer: *const PerApRawInfo;
@@ -186,7 +187,8 @@ unsafe fn fill_boot_info_ptr(info_ptr: *const PerApRawInfo) {
 
 /// # Safety
 ///
-/// The caller must ensure the pointer to be filled is valid to write.
+/// This function writes to the static mutable variable `__boot_page_table_pointer`.
+/// The caller must ensure exclusive access to this variable.
 unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
     unsafe extern "C" {
         static mut __boot_page_table_pointer: u32;
@@ -196,8 +198,8 @@ unsafe fn fill_boot_pt_ptr(pt_ptr: Paddr) {
 
     // SAFETY: The safety is upheld by the caller.
     unsafe {
-        __boot_page_table_pointer = pt_ptr32;
-    }
+        *(paddr_to_vaddr(&raw mut __boot_page_table_pointer as Paddr) as *mut u32) = pt_ptr32
+    };
 }
 
 // The symbols are defined in the linker script.
@@ -223,12 +225,13 @@ unsafe fn wake_up_aps_via_mailbox(num_cpus: u32) {
         fn ap_boot_from_long_mode();
     }
 
-    let offset = ap_boot_from_long_mode as usize - ap_boot_from_real_mode as usize;
+    let offset =
+        ap_boot_from_long_mode as *const () as usize - ap_boot_from_real_mode as *const () as usize;
 
     let acpi_tables = get_acpi_tables().unwrap();
     for ap_num in 1..num_cpus {
         wakeup_aps(
-            &acpi_tables,
+            acpi_tables,
             AcpiMemoryHandler {},
             ap_num,
             (AP_BOOT_START_PA + offset) as u64,

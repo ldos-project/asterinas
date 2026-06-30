@@ -23,7 +23,7 @@
 //!    "alias XOR mutability" rule.
 //!
 //! The kind of a frame is determined by the type of its metadata. Untyped
-//! frames have its metadata type that implements the [`UntypedFrameMeta`]
+//! frames have its metadata type that implements the [`AnyUFrameMeta`]
 //! trait, while typed frames don't.
 //!
 //! Frames can have dedicated metadata, which is implemented in the [`meta`]
@@ -67,10 +67,9 @@ use meta::{AnyFrameMeta, GetFrameError, MetaSlot, REF_COUNT_UNUSED, mapping};
 pub use segment::Segment;
 use untyped::{AnyUFrameMeta, UFrame};
 
-use super::{PAGE_SIZE, PagingLevel, page_size};
 use crate::{
-    arch::mm::PagingConsts,
-    mm::{Paddr, Vaddr},
+    mm::{HasPaddr, HasSize, PAGE_SIZE, Paddr, PagingConsts, PagingLevel, Vaddr, page_size},
+    sync::RcuDrop,
 };
 
 static MAX_PADDR: AtomicUsize = AtomicUsize::new(0);
@@ -102,13 +101,13 @@ unsafe impl<M: AnyFrameMeta + ?Sized> Sync for Frame<M> {}
 
 impl<M: AnyFrameMeta + ?Sized> core::fmt::Debug for Frame<M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Frame({:#x})", self.start_paddr())
+        write!(f, "Frame({:#x})", self.paddr())
     }
 }
 
 impl<M: AnyFrameMeta + ?Sized> PartialEq for Frame<M> {
     fn eq(&self, other: &Self) -> bool {
-        self.start_paddr() == other.start_paddr()
+        self.paddr() == other.paddr()
     }
 }
 impl<M: AnyFrameMeta + ?Sized> Eq for Frame<M> {}
@@ -154,11 +153,6 @@ impl Frame<dyn AnyFrameMeta> {
 }
 
 impl<M: AnyFrameMeta + ?Sized> Frame<M> {
-    /// Gets the physical address of the start of the frame.
-    pub fn start_paddr(&self) -> Paddr {
-        self.slot().frame_paddr()
-    }
-
     /// Gets the map level of this page.
     ///
     /// This is the level of the page table entry that maps the frame,
@@ -172,12 +166,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
         self.slot().set_level(level);
     }
 
-    /// Gets the size of this page in bytes.
-    pub fn size(&self) -> usize {
-        page_size::<PagingConsts>(self.map_level())
-    }
-
-    /// Gets the dyncamically-typed metadata of this frame.
+    /// Gets the dynamically-typed metadata of this frame.
     ///
     /// If the type is known at compile time, use [`Frame::meta`] instead.
     pub fn dyn_meta(&self) -> &dyn AnyFrameMeta {
@@ -205,7 +194,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     /// Borrows a reference from the given frame.
     pub fn borrow(&self) -> FrameRef<'_, M> {
         // SAFETY: Both the lifetime and the type matches `self`.
-        unsafe { FrameRef::borrow_paddr(self.start_paddr()) }
+        unsafe { FrameRef::borrow_paddr(self.paddr()) }
     }
 
     /// Forgets the handle to the frame.
@@ -217,7 +206,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     /// data structures need to hold the frame handle such as the page table.
     pub(in crate::mm) fn into_raw(self) -> Paddr {
         let this = ManuallyDrop::new(self);
-        this.start_paddr()
+        this.paddr()
     }
 
     /// Restores a forgotten [`Frame`] from a physical address.
@@ -251,6 +240,18 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     }
 }
 
+impl<M: AnyFrameMeta + ?Sized> HasPaddr for Frame<M> {
+    fn paddr(&self) -> Paddr {
+        self.slot().frame_paddr()
+    }
+}
+
+impl<M: AnyFrameMeta + ?Sized> HasSize for Frame<M> {
+    fn size(&self) -> usize {
+        page_size::<PagingConsts>(self.map_level())
+    }
+}
+
 impl<M: AnyFrameMeta + ?Sized> Clone for Frame<M> {
     fn clone(&self) -> Self {
         // SAFETY: We have already held a reference to the frame.
@@ -276,7 +277,7 @@ impl<M: AnyFrameMeta + ?Sized> Drop for Frame<M> {
             // SAFETY: this is the last reference and is about to be dropped.
             unsafe { self.slot().drop_last_in_place() };
 
-            allocator::get_global_frame_allocator().dealloc(self.start_paddr(), PAGE_SIZE);
+            allocator::get_global_frame_allocator().dealloc(self.paddr(), PAGE_SIZE);
         }
     }
 }
@@ -298,10 +299,39 @@ impl<M: AnyFrameMeta> TryFrom<Frame<dyn AnyFrameMeta>> for Frame<M> {
     }
 }
 
-impl<M: AnyFrameMeta> From<Frame<M>> for Frame<dyn AnyFrameMeta> {
-    fn from(frame: Frame<M>) -> Self {
+impl Frame<dyn AnyFrameMeta> {
+    /// Converts a [`Frame`] with a specific metadata type into a
+    /// [`Frame<dyn AnyFrameMeta>`].
+    ///
+    /// This exists because:
+    ///
+    /// ```ignore
+    /// impl<M: AnyFrameMeta + ?Sized> From<Frame<M>> for Frame<dyn AnyFrameMeta>
+    /// ```
+    ///
+    /// will conflict with `impl<T> core::convert::From<T> for T` in crate `core`.
+    pub fn from_unsized<M: AnyFrameMeta + ?Sized>(frame: Frame<M>) -> Frame<dyn AnyFrameMeta> {
         // SAFETY: The metadata is coerceable and the struct is transmutable.
         unsafe { core::mem::transmute(frame) }
+    }
+
+    /// Converts an RCU-dropped [`Frame`] with a specific metadata type into a
+    /// RCU-dropped [`Frame<dyn AnyFrameMeta>`].
+    ///
+    /// See also [`Frame::from_unsized`] for the reason of why not implementing
+    /// [`From`] directly.
+    pub fn rcu_from_unsized<M: AnyFrameMeta + ?Sized>(frame: RcuDrop<Frame<M>>) -> RcuDrop<Self> {
+        // SAFETY: The resulting frame will be dropped after the RCU grace period.
+        let (frame, panic_guard) = unsafe { RcuDrop::into_inner(frame) };
+        let dyn_frame = Self::from_unsized(frame);
+        panic_guard.forget();
+        RcuDrop::new(dyn_frame)
+    }
+}
+
+impl<M: AnyFrameMeta> From<Frame<M>> for Frame<dyn AnyFrameMeta> {
+    fn from(frame: Frame<M>) -> Self {
+        Self::from_unsized(frame)
     }
 }
 
@@ -344,7 +374,7 @@ impl TryFrom<Frame<dyn AnyFrameMeta>> for UFrame {
 ///  1. The physical address must represent a valid frame;
 ///  2. The caller must have already held a reference to the frame.
 pub(in crate::mm) unsafe fn inc_frame_ref_count(paddr: Paddr) {
-    debug_assert!(paddr % PAGE_SIZE == 0);
+    debug_assert!(paddr.is_multiple_of(PAGE_SIZE));
     debug_assert!(paddr < max_paddr());
 
     let vaddr: Vaddr = mapping::frame_to_meta(paddr);

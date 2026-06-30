@@ -4,13 +4,17 @@ use alloc::borrow::Cow;
 
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_handle::FileLike,
-        file_table::{FileDesc, get_file_fast},
-        fs_resolver::{AT_FDCWD, FsPath},
-        path::Dentry,
-        utils::{
-            XATTR_NAME_MAX_LEN, XATTR_VALUE_MAX_LEN, XattrName, XattrNamespace, XattrSetFlags,
+        file::{
+            FileLike,
+            file_table::{RawFileDesc, get_file_fast},
+        },
+        vfs::{
+            path::{AT_FDCWD, EmptyPathStr, FsPath, Path},
+            xattr::{
+                XATTR_NAME_MAX_LEN, XATTR_VALUE_MAX_LEN, XattrName, XattrNamespace, XattrSetFlags,
+            },
         },
     },
     prelude::*,
@@ -67,7 +71,7 @@ pub fn sys_lsetxattr(
 }
 
 pub fn sys_fsetxattr(
-    fd: FileDesc,
+    raw_fd: RawFileDesc,
     name_ptr: Vaddr,
     value_ptr: Vaddr,
     value_len: usize,
@@ -75,7 +79,7 @@ pub fn sys_fsetxattr(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
     let user_space = ctx.user_space();
     setxattr(
@@ -113,8 +117,10 @@ fn setxattr(
     }
     let mut value_reader = user_space.reader(value_ptr, value_len)?;
 
-    let dentry = lookup_dentry_for_xattr(&file_ctx, ctx)?;
-    dentry.set_xattr(xattr_name, &mut value_reader, flags)
+    let path = lookup_path_for_xattr(&file_ctx, ctx)?;
+    path.set_xattr(xattr_name, &mut value_reader, flags)?;
+    fs::vfs::notify::on_attr_change(&path);
+    Ok(())
 }
 
 /// The context to describe the target file for xattr operations.
@@ -124,29 +130,30 @@ pub(super) enum XattrFileCtx<'a> {
     FileHandle(Cow<'a, Arc<dyn FileLike>>),
 }
 
-pub(super) fn lookup_dentry_for_xattr<'a>(
+pub(super) fn lookup_path_for_xattr<'a>(
     file_ctx: &'a XattrFileCtx<'a>,
     ctx: &'a Context,
-) -> Result<Cow<'a, Dentry>> {
-    let lookup_dentry_from_fs =
-        |path: &CString, ctx: &Context, symlink_no_follow: bool| -> Result<Cow<'_, Dentry>> {
+) -> Result<Cow<'a, Path>> {
+    let lookup_path_from_fs =
+        |path: &CString, ctx: &Context, symlink_no_follow: bool| -> Result<Cow<'_, Path>> {
             let path = path.to_string_lossy();
-            let fs_path = FsPath::new(AT_FDCWD, path.as_ref())?;
-            let fs = ctx.posix_thread.fs().resolver().read();
-            let dentry = if symlink_no_follow {
-                fs.lookup_no_follow(&fs_path)?
+            let fs_path = FsPath::from_fd_at(AT_FDCWD, &path, EmptyPathStr::Reject)?;
+            let fs_ref = ctx.thread_local.borrow_fs();
+            let path_resolver = fs_ref.resolver().read();
+            let path = if symlink_no_follow {
+                path_resolver.lookup_no_follow(&fs_path)?
             } else {
-                fs.lookup(&fs_path)?
+                path_resolver.lookup(&fs_path)?
             };
-            Ok(Cow::Owned(dentry))
+            Ok(Cow::Owned(path))
         };
 
     match file_ctx {
-        XattrFileCtx::Path(path) => lookup_dentry_from_fs(path, ctx, false),
-        XattrFileCtx::PathNoFollow(path) => lookup_dentry_from_fs(path, ctx, true),
+        XattrFileCtx::Path(path) => lookup_path_from_fs(path, ctx, false),
+        XattrFileCtx::PathNoFollow(path) => lookup_path_from_fs(path, ctx, true),
         XattrFileCtx::FileHandle(file) => {
-            let dentry = file.as_inode_or_err()?.dentry();
-            Ok(Cow::Borrowed(dentry))
+            let path = file.as_inode_handle_or_err()?.path();
+            Ok(Cow::Borrowed(path))
         }
     }
 }
@@ -155,17 +162,18 @@ pub(super) fn read_xattr_name_cstr_from_user(
     name_ptr: Vaddr,
     user_space: &CurrentUserSpace,
 ) -> Result<CString> {
-    let mut reader = user_space.reader(name_ptr, XATTR_NAME_MAX_LEN + 1)?;
-    reader.read_cstring().map_err(|e| {
-        if reader.remain() == 0 {
-            Error::with_message(Errno::ERANGE, "xattr name too long")
-        } else {
-            e
-        }
-    })
+    user_space
+        .read_cstring(name_ptr, XATTR_NAME_MAX_LEN + 1)
+        .map_err(|err| {
+            if err.error() == Errno::ENAMETOOLONG {
+                Error::with_message(Errno::ERANGE, "xattr name too long")
+            } else {
+                err
+            }
+        })
 }
 
-pub(super) fn parse_xattr_name(name_str: &str) -> Result<XattrName> {
+pub(super) fn parse_xattr_name(name_str: &str) -> Result<XattrName<'_>> {
     if name_str.is_empty() || name_str.len() > XATTR_NAME_MAX_LEN {
         return_errno_with_message!(Errno::ERANGE, "xattr name empty or too long");
     }

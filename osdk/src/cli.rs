@@ -8,8 +8,8 @@ use crate::{
     arch::Arch,
     commands::{
         execute_build_command, execute_debug_command, execute_enhance_log,
-        execute_forwarded_command, execute_forwarded_command_on_each_crate, execute_new_command,
-        execute_profile_command, execute_run_command, execute_test_command,
+        execute_forwarded_command, execute_new_command, execute_profile_command,
+        execute_run_command, execute_test_command,
     },
     config::{
         Config,
@@ -24,7 +24,11 @@ pub fn main() {
     let load_config = |common_args: &CommonArgs| {
         let manifest = TomlManifest::load();
         let scheme = manifest.get_scheme(common_args.scheme.as_ref());
-        Config::new(scheme, common_args)
+        let mut config = Config::new(scheme, common_args);
+        config
+            .build
+            .append_rustflags(&std::env::var("RUSTFLAGS").unwrap_or_default());
+        config
     };
 
     let cli = Cli::parse();
@@ -56,11 +60,9 @@ pub fn main() {
         OsdkSubcommand::Test(test_args) => {
             execute_test_command(&load_config(&test_args.common_args), test_args);
         }
-        OsdkSubcommand::Check(args) => {
-            execute_forwarded_command_on_each_crate("check", &args.args, true)
-        }
+        OsdkSubcommand::Check(args) => execute_forwarded_command("check", &args.args, args.ktests),
         OsdkSubcommand::Clippy(args) => {
-            execute_forwarded_command_on_each_crate("clippy", &args.args, true)
+            execute_forwarded_command("clippy", &args.args, args.ktests)
         }
         OsdkSubcommand::Doc(args) => execute_forwarded_command("doc", &args.args, false),
         OsdkSubcommand::EnhanceLog(args) => execute_enhance_log(args),
@@ -100,11 +102,23 @@ pub enum OsdkSubcommand {
     )]
     EnhanceLog(EnhanceLogArgs),
     #[command(about = "Check a local package and all of its dependencies for errors")]
-    Check(ForwardedArguments),
+    Check(KtestWithForwardedArguments),
     #[command(about = "Checks a package to catch common mistakes and improve your Rust code")]
-    Clippy(ForwardedArguments),
+    Clippy(KtestWithForwardedArguments),
     #[command(about = "Build a package's documentation")]
     Doc(ForwardedArguments),
+}
+
+#[derive(Debug, Parser)]
+pub struct KtestWithForwardedArguments {
+    #[arg(long, help = "Check all targets that have `ktest = true` set")]
+    pub ktests: bool,
+    #[arg(
+        help = "The full set of Cargo arguments",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -283,8 +297,8 @@ impl DebugProfileOutArgs {
     /// the default format is flame graph.
     pub fn format(&self) -> ProfileFormat {
         self.format.unwrap_or_else(|| {
-            if self.output.is_some() {
-                match self.output.as_ref().unwrap().extension() {
+            if let Some(output) = &self.output {
+                match output.extension() {
                     Some(ext) if ext == "folded" => ProfileFormat::Folded,
                     Some(ext) if ext == "json" => ProfileFormat::Json,
                     Some(ext) if ext == "svg" => ProfileFormat::FlameGraph,
@@ -370,7 +384,7 @@ pub struct TestArgs {
     pub common_args: CommonArgs,
 }
 
-#[derive(Debug, Args, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Args, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CargoArgs {
     #[arg(
         long,
@@ -416,7 +430,7 @@ impl CargoArgs {
     }
 }
 
-#[derive(Debug, Args)]
+#[derive(Args, Debug)]
 /// Common args used for build, run, test and debug subcommand
 pub struct CommonArgs {
     #[command(flatten)]
@@ -521,4 +535,6 @@ pub struct CommonArgs {
         global = true
     )]
     pub encoding: Option<PayloadEncoding>,
+    #[arg(long = "coverage", help = "Enable coverage", global = true)]
+    pub coverage: bool,
 }

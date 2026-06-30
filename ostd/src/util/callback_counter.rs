@@ -107,7 +107,7 @@ mod test {
     use super::*;
 
     #[ktest]
-    fn test_callback_counter_called_on_drop_when_zero() {
+    fn callback_counter_called_on_drop_when_zero() {
         let called = Arc::new(AtomicBool::new(false));
         let complete_fn = Box::new({
             let called = called.clone();
@@ -129,7 +129,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_callback_counter_decrements() {
+    fn callback_counter_decrements() {
         let called = Arc::new(AtomicBool::new(false));
         let complete_fn = Box::new({
             let called = called.clone();

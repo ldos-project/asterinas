@@ -68,7 +68,7 @@ pub fn orpc_server_macro_impl(
                     #(#named,)*
                     #[doc(hidden)]
                     #[doc = "The internal ORPC framework data associated with this server."]
-                    orpc_internal: #orpc_internal_struct_ident #type_generics
+                    #vis orpc_internal: #orpc_internal_struct_ident #type_generics
                 }
             }
         }
@@ -140,7 +140,7 @@ let server = Self::new_with(|orpc_internal, weak_this| Self {
         #[doc(hidden)]
         #[doc = #orpc_internal_struct_doc]
         #[allow(non_snake_case)]
-        struct #orpc_internal_struct_ident #generics {
+        #vis struct #orpc_internal_struct_ident #generics {
             base: ::ostd::orpc::framework::ServerBase,
             #(
                 #oqueue_fields,

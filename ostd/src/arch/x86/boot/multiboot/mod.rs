@@ -123,7 +123,7 @@ fn parse_memory_regions(mb1_info: &MultibootLegacyInfo) -> MemoryRegionArray {
 
 /// Representation of Multiboot Information according to specification.
 ///
-/// Ref:https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+/// Ref: <https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format>.
 ///
 ///```text
 ///         +-------------------+
@@ -171,8 +171,8 @@ fn parse_memory_regions(mb1_info: &MultibootLegacyInfo) -> MemoryRegionArray {
 ///         +-------------------+
 ///```
 ///
-#[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct MultibootLegacyInfo {
     /// Indicate whether the below field exists.
     flags: u32,
@@ -203,7 +203,7 @@ struct MultibootLegacyInfo {
     /// ```
     mods_addr: u32,
 
-    /// If flags[4] = 1, then the field starting at byte 28 are valid:
+    /// If flags\[4\] = 1, then the field starting at byte 28 are valid:
     /// ```text
     ///         +-------------------+
     /// 28      | tabsize           |
@@ -214,7 +214,7 @@ struct MultibootLegacyInfo {
     /// ```
     /// These indicate where the symbol table from kernel image can be found.
     ///
-    /// If flags[5] = 1, then the field starting at byte 28 are valid:
+    /// If flags\[5\] = 1, then the field starting at byte 28 are valid:
     /// ```text
     ///         +-------------------+
     /// 28      | num               |
@@ -257,8 +257,8 @@ impl MultibootLegacyInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct VbeTable {
     control_info: u32,
     mode_info: u32,
@@ -268,8 +268,8 @@ struct VbeTable {
     interface_len: u16,
 }
 
-#[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct FramebufferTable {
     addr: u64,
     pitch: u32,
@@ -338,7 +338,7 @@ impl MemoryEntry {
 }
 
 /// A memory entry iterator in the memory map header info region.
-#[derive(Debug, Copy, Clone)]
+#[derive(Clone, Copy, Debug)]
 struct MemoryEntryIter {
     cur_ptr: *const u8,
     region_end: *const u8,
@@ -362,14 +362,21 @@ impl Iterator for MemoryEntryIter {
     }
 }
 
-/// The entry point of Rust code called by inline asm.
+/// The entry point of the Rust code portion of Asterinas (with multiboot parameters).
+///
+/// # Safety
+///
+/// - This function must be called only once at a proper timing in the BSP's boot assembly code.
+/// - The caller must follow C calling conventions and put the right arguments in registers.
+/// - If this function is called, entry points of other boot protocols must never be called.
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn __multiboot_entry(boot_magic: u32, boot_params: u64) -> ! {
     assert_eq!(boot_magic, MULTIBOOT_ENTRY_MAGIC);
     let mb1_info =
         unsafe { &*(paddr_to_vaddr(boot_params as usize) as *const MultibootLegacyInfo) };
 
-    use crate::boot::{EARLY_INFO, EarlyBootInfo, call_ostd_main};
+    use crate::boot::{EARLY_INFO, EarlyBootInfo, start_kernel};
 
     EARLY_INFO.call_once(|| EarlyBootInfo {
         bootloader_name: parse_bootloader_name(mb1_info).unwrap_or("Unknown Multiboot Loader"),
@@ -380,5 +387,7 @@ unsafe extern "sysv64" fn __multiboot_entry(boot_magic: u32, boot_params: u64) -
         memory_regions: parse_memory_regions(mb1_info),
     });
 
-    call_ostd_main();
+    // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it
+    // once after setting up necessary resources.
+    unsafe { start_kernel() };
 }

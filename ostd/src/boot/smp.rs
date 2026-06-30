@@ -7,14 +7,15 @@ use alloc::{boxed::Box, collections::btree_map::BTreeMap, vec::Vec};
 use spin::Once;
 
 use crate::{
-    arch::{boot::smp::bringup_all_aps, irq::HwCpuId},
+    arch::irq::HwCpuId,
     mm::{
-        FrameAllocOptions, PAGE_SIZE,
+        FrameAllocOptions, HasPaddrRange, PAGE_SIZE,
         frame::{Segment, meta::KernelMeta},
         paddr_to_vaddr,
     },
     sync::SpinLock,
     task::Task,
+    util::id_set::Id,
 };
 
 static AP_BOOT_INFO: Once<ApBootInfo> = Once::new();
@@ -77,7 +78,7 @@ pub(crate) unsafe fn boot_all_aps() {
     if num_cpus == 1 {
         return;
     }
-    log::info!("Booting {} processors", num_cpus - 1);
+    crate::info!("Booting {} processors", num_cpus - 1);
 
     let mut per_ap_raw_info = Vec::with_capacity(num_cpus);
     let mut per_ap_info = Vec::with_capacity(num_cpus);
@@ -101,17 +102,17 @@ pub(crate) unsafe fn boot_all_aps() {
         per_ap_info: per_ap_info.into_boxed_slice(),
     });
 
-    log::info!("Booting all application processors...");
+    crate::info!("Booting all application processors...");
 
     let info_ptr = AP_BOOT_INFO.get().unwrap().per_ap_raw_info.as_ptr();
     let pt_ptr = crate::mm::page_table::boot_pt::with_borrow(|pt| pt.root_address()).unwrap();
     // SAFETY: It's the right time to boot APs (guaranteed by the caller) and
     // the arguments are valid to boot APs (generated above).
-    unsafe { bringup_all_aps(info_ptr, pt_ptr, num_cpus as u32) };
+    unsafe { crate::arch::boot::smp::bringup_all_aps(info_ptr, pt_ptr, num_cpus as u32) };
 
     wait_for_all_aps_started(num_cpus);
 
-    log::info!("All application processors started. The BSP continues to run.");
+    crate::info!("All application processors started. The BSP continues to run.");
 }
 
 static AP_LATE_ENTRY: Once<fn()> = Once::new();
@@ -124,15 +125,28 @@ pub fn register_ap_entry(entry: fn()) {
     AP_LATE_ENTRY.call_once(|| entry);
 }
 
+/// The AP's entry point of the Rust code portion of Asterinas.
+///
+/// # Safety
+///
+/// - This function must be called only once on each AP at a proper timing in the AP's boot
+///   assembly code, or via a thin Rust wrapper that does not access uninitialized AP states.
+/// - The caller must follow C calling conventions and put the right arguments in registers.
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
-fn ap_early_entry(cpu_id: u32) -> ! {
-    // SAFETY: `cpu_id` is the correct value of the CPU ID.
+pub(crate) unsafe extern "C" fn ap_early_entry(cpu_id: u32) -> ! {
+    // SAFETY:
+    // 1. We're in the boot context of an AP.
+    // 2. The CPU ID of the AP is correct.
     unsafe { crate::cpu::init_on_ap(cpu_id) };
 
     crate::arch::enable_cpu_features();
 
-    // SAFETY: This function is called in the boot context of the AP.
-    unsafe { crate::arch::trap::init() };
+    // SAFETY: This is called only once on this AP in the boot context.
+    unsafe { crate::arch::trap::init_on_cpu() };
+
+    // SAFETY: This function is only called once on this AP.
+    unsafe { crate::mm::kspace::activate_kernel_page_table() };
 
     // SAFETY: This function is only called once on this AP, after the BSP has
     // done the architecture-specific initialization.
@@ -140,15 +154,24 @@ fn ap_early_entry(cpu_id: u32) -> ! {
 
     crate::arch::irq::enable_local();
 
-    // SAFETY: This function is only called once on this AP.
-    unsafe { crate::mm::kspace::activate_kernel_page_table() };
+    // SAFETY:
+    // 1. The kernel page table is activated on this AP.
+    // 2. The function is called only once on this AP.
+    // 3. No remaining `with_borrow` invocations on this CPU from now on.
+    unsafe { crate::mm::page_table::boot_pt::dismiss() };
 
-    // Mark the AP as started.
+    crate::info!("Processor {} started. Spinning for tasks.", cpu_id);
+
+    // Mark the AP as started. The BSP will resume execution once all the APs
+    // have been marked as such.
+    //
+    // From here to the following `tlb_flush_all_excluding_global`, there is no
+    // TLB coherence because the BSP may not be able to send IPIs to flush the
+    // TLBs. Do not perform complex operations during this period.
     report_online_and_hw_cpu_id(cpu_id);
-
-    log::info!("Processor {} started. Spinning for tasks.", cpu_id);
-
     let ap_late_entry = AP_LATE_ENTRY.wait();
+    crate::arch::mm::tlb_flush_all_excluding_global();
+
     ap_late_entry();
 
     Task::yield_now();
@@ -179,6 +202,8 @@ fn wait_for_all_aps_started(num_cpus: usize) {
 /// # Panics
 ///
 /// This method will panic if it is called either before all APs have booted or more than once.
+///
+/// [`CpuId`]: crate::cpu::CpuId
 pub(crate) fn construct_hw_cpu_id_mapping() -> Box<[HwCpuId]> {
     let mut hw_cpu_id_map = HW_CPU_ID_MAP.lock();
     assert_eq!(hw_cpu_id_map.len(), crate::cpu::num_cpus());

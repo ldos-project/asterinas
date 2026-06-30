@@ -4,16 +4,18 @@ use alloc::{boxed::Box, fmt::Debug, string::ToString, sync::Arc, vec::Vec};
 use core::hint::spin_loop;
 
 use aster_console::{AnyConsoleDevice, ConsoleCallback};
-use log::debug;
+use aster_util::mem_obj_slice::Slice;
 use ostd::{
-    mm::{DmaDirection, DmaStream, DmaStreamSlice, FrameAllocOptions, VmReader},
+    arch::trap::TrapFrame,
+    debug,
+    mm::{VmReader, dma::DmaStream, io::util::HasVmReaderWriter},
     sync::{Rcu, SpinLock},
-    trap::TrapFrame,
 };
+use snafu::ResultExt as _;
 
 use super::{DEVICE_NAME, config::VirtioConsoleConfig};
 use crate::{
-    device::{VirtioDeviceError, console::config::ConsoleFeatures},
+    device::{ResourceAllocSnafu, VirtioDeviceError, console::config::ConsoleFeatures},
     queue::VirtQueue,
     transport::{ConfigManager, VirtioTransport},
 };
@@ -37,18 +39,17 @@ impl AnyConsoleDevice for ConsoleDevice {
         while reader.remain() > 0 {
             let mut writer = self.send_buffer.writer().unwrap();
             let len = writer.write(&mut reader);
-            self.send_buffer.sync(0..len).unwrap();
+            self.send_buffer.sync_to_device(0..len).unwrap();
 
-            let slice = DmaStreamSlice::new(&self.send_buffer, 0, len);
-            transmit_queue.add_dma_buf(&[&slice], &[]).unwrap();
+            let slice = Slice::new(&self.send_buffer, 0..len);
+            transmit_queue.add_input_bufs(&[&slice]).unwrap();
 
             if transmit_queue.should_notify() {
                 transmit_queue.notify();
             }
-            while !transmit_queue.can_pop() {
+            while transmit_queue.pop_used().is_err() {
                 spin_loop();
             }
-            transmit_queue.pop_used().unwrap();
         }
     }
 
@@ -78,33 +79,29 @@ impl Debug for ConsoleDevice {
 }
 
 impl ConsoleDevice {
-    pub fn negotiate_features(features: u64) -> u64 {
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
         let mut features = ConsoleFeatures::from_bits_truncate(features);
         // A virtio console device may have multiple ports, but we only use one port to communicate now.
         features.remove(ConsoleFeatures::VIRTIO_CONSOLE_F_MULTIPORT);
         features.bits()
     }
 
-    pub fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
+    pub(crate) fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioConsoleConfig::new_manager(transport.as_ref());
         debug!("virtio_console_config = {:?}", config_manager.read_config());
 
         const RECV0_QUEUE_INDEX: u16 = 0;
         const TRANSMIT0_QUEUE_INDEX: u16 = 1;
         let receive_queue =
-            SpinLock::new(VirtQueue::new(RECV0_QUEUE_INDEX, 2, transport.as_mut()).unwrap());
-        let transmit_queue =
-            SpinLock::new(VirtQueue::new(TRANSMIT0_QUEUE_INDEX, 2, transport.as_mut()).unwrap());
+            SpinLock::new(VirtQueue::new(RECV0_QUEUE_INDEX, 2, transport.as_mut())?);
+        let transmit_queue = SpinLock::new(VirtQueue::new(
+            TRANSMIT0_QUEUE_INDEX,
+            2,
+            transport.as_mut(),
+        )?);
 
-        let send_buffer = {
-            let segment = FrameAllocOptions::new().alloc_segment(1).unwrap();
-            DmaStream::map(segment.into(), DmaDirection::ToDevice, false).unwrap()
-        };
-
-        let receive_buffer = {
-            let segment = FrameAllocOptions::new().alloc_segment(1).unwrap();
-            DmaStream::map(segment.into(), DmaDirection::FromDevice, false).unwrap()
-        };
+        let send_buffer = DmaStream::alloc(1, false).context(ResourceAllocSnafu)?;
+        let receive_buffer = DmaStream::alloc(1, false).context(ResourceAllocSnafu)?;
 
         let device = Arc::new(Self {
             config_manager,
@@ -118,9 +115,10 @@ impl ConsoleDevice {
 
         device.activate_receive_buffer(&mut device.receive_queue.disable_irq().lock());
 
-        // Register irq callbacks
-        let mut transport = device.transport.disable_irq().lock();
+        // Register IRQ callbacks.
+        let mut transport = device.transport.lock();
         let handle_console_input = {
+            // FIXME: This callback captures a strong `Arc`, creating a reference cycle.
             let device = device.clone();
             move |_: &TrapFrame| device.handle_recv_irq()
         };
@@ -144,7 +142,9 @@ impl ConsoleDevice {
         let Ok((_, len)) = receive_queue.pop_used() else {
             return;
         };
-        self.receive_buffer.sync(0..len as usize).unwrap();
+        self.receive_buffer
+            .sync_from_device(0..len as usize)
+            .unwrap();
 
         let callbacks = self.callbacks.read();
         for callback in callbacks.get().iter() {
@@ -166,7 +166,7 @@ impl ConsoleDevice {
             //
             // For the QEMU bug, see details at
             // <https://lore.kernel.org/qemu-devel/20240707111940.232549-3-lrh2000@pku.edu.cn/T/#u>.
-            .add_dma_buf(&[], &[&DmaStreamSlice::new(&self.receive_buffer, 0, 1)])
+            .add_output_bufs(&[&Slice::new(&self.receive_buffer, 0..1)])
             .unwrap();
 
         if receive_queue.should_notify() {
@@ -176,5 +176,5 @@ impl ConsoleDevice {
 }
 
 fn config_space_change(_: &TrapFrame) {
-    debug!("Virtio-Console device configuration space change");
+    debug!("console device configuration space change");
 }

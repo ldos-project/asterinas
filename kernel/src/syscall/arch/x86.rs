@@ -12,7 +12,7 @@ use super::{
     capget::sys_capget,
     capset::sys_capset,
     chdir::{sys_chdir, sys_fchdir},
-    chmod::{sys_chmod, sys_fchmod, sys_fchmodat},
+    chmod::{sys_chmod, sys_fchmod, sys_fchmodat, sys_fchmodat2},
     chown::{sys_chown, sys_fchown, sys_fchownat, sys_lchown},
     chroot::sys_chroot,
     clock_gettime::sys_clock_gettime,
@@ -28,12 +28,14 @@ use super::{
     execve::{sys_execve, sys_execveat},
     exit::sys_exit,
     exit_group::sys_exit_group,
+    fadvise64::sys_fadvise64,
     fallocate::sys_fallocate,
     fcntl::sys_fcntl,
     flock::sys_flock,
     fork::{sys_fork, sys_vfork},
     fsync::{sys_fdatasync, sys_fsync},
     futex::sys_futex,
+    get_ioprio::sys_ioprio_get,
     get_priority::sys_get_priority,
     getcpu::sys_getcpu,
     getcwd::sys_getcwd,
@@ -59,6 +61,7 @@ use super::{
     getuid::sys_getuid,
     getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
     impl_syscall_nums_and_dispatch_fn,
+    inotify::{sys_inotify_add_watch, sys_inotify_init, sys_inotify_init1, sys_inotify_rm_watch},
     ioctl::sys_ioctl,
     kill::sys_kill,
     link::{sys_link, sys_linkat},
@@ -66,6 +69,7 @@ use super::{
     listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
     lseek::sys_lseek,
     madvise::sys_madvise,
+    memfd_create::sys_memfd_create,
     mkdir::{sys_mkdir, sys_mkdirat},
     mknod::{sys_mknod, sys_mknodat},
     mmap::sys_mmap,
@@ -77,7 +81,11 @@ use super::{
     nanosleep::{sys_clock_nanosleep, sys_nanosleep},
     open::{sys_creat, sys_open, sys_openat},
     pause::sys_pause,
+    pidfd_getfd::sys_pidfd_getfd,
+    pidfd_open::sys_pidfd_open,
+    pidfd_send_signal::sys_pidfd_send_signal,
     pipe::{sys_pipe, sys_pipe2},
+    pivot_root::sys_pivot_root,
     poll::sys_poll,
     ppoll::sys_ppoll,
     prctl::sys_prctl,
@@ -85,20 +93,23 @@ use super::{
     preadv::{sys_preadv, sys_preadv2, sys_readv},
     prlimit64::{sys_getrlimit, sys_prlimit64, sys_setrlimit},
     pselect6::sys_pselect6,
+    ptrace::sys_ptrace,
     pwrite64::sys_pwrite64,
     pwritev::{sys_pwritev, sys_pwritev2, sys_writev},
     read::sys_read,
     readlink::{sys_readlink, sys_readlinkat},
+    reboot::sys_reboot,
     recvfrom::sys_recvfrom,
     recvmsg::sys_recvmsg,
     removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
-    rename::{sys_rename, sys_renameat},
+    rename::{sys_rename, sys_renameat, sys_renameat2},
     rmdir::sys_rmdir,
     rt_sigaction::sys_rt_sigaction,
     rt_sigpending::sys_rt_sigpending,
     rt_sigprocmask::sys_rt_sigprocmask,
     rt_sigreturn::sys_rt_sigreturn,
     rt_sigsuspend::sys_rt_sigsuspend,
+    rt_sigtimedwait::sys_rt_sigtimedwait,
     sched_affinity::{sys_sched_getaffinity, sys_sched_setaffinity},
     sched_get_priority_max::sys_sched_get_priority_max,
     sched_get_priority_min::sys_sched_get_priority_min,
@@ -114,16 +125,21 @@ use super::{
     semget::sys_semget,
     semop::{sys_semop, sys_semtimedop},
     sendfile::sys_sendfile,
+    sendmmsg::sys_sendmmsg,
     sendmsg::sys_sendmsg,
     sendto::sys_sendto,
+    set_ioprio::sys_ioprio_set,
     set_priority::sys_set_priority,
     set_robust_list::sys_set_robust_list,
     set_tid_address::sys_set_tid_address,
+    setdomainname::sys_setdomainname,
     setfsgid::sys_setfsgid,
     setfsuid::sys_setfsuid,
     setgid::sys_setgid,
     setgroups::sys_setgroups,
+    sethostname::sys_sethostname,
     setitimer::{sys_getitimer, sys_setitimer},
+    setns::sys_setns,
     setpgid::sys_setpgid,
     setregid::sys_setregid,
     setresgid::sys_setresgid,
@@ -142,9 +158,9 @@ use super::{
     statfs::{sys_fstatfs, sys_statfs},
     statx::sys_statx,
     symlink::{sys_symlink, sys_symlinkat},
-    sync::sys_sync,
+    sync::{sys_sync, sys_syncfs},
     sysinfo::sys_sysinfo,
-    tgkill::sys_tgkill,
+    tgkill::{sys_tgkill, sys_tkill},
     time::sys_time,
     timer_create::{sys_timer_create, sys_timer_delete},
     timer_settime::{sys_timer_gettime, sys_timer_settime},
@@ -156,6 +172,7 @@ use super::{
     umount::sys_umount,
     uname::sys_uname,
     unlink::{sys_unlink, sys_unlinkat},
+    unshare::sys_unshare,
     utimens::{sys_futimesat, sys_utime, sys_utimensat, sys_utimes},
     wait4::sys_wait4,
     waitid::sys_waitid,
@@ -254,6 +271,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_GETRLIMIT = 97         => sys_getrlimit(args[..2]);
     SYS_GETRUSAGE = 98         => sys_getrusage(args[..2]);
     SYS_SYSINFO = 99           => sys_sysinfo(args[..1]);
+    SYS_PTRACE = 101           => sys_ptrace(args[..4]);
     SYS_GETUID = 102           => sys_getuid(args[..0]);
     SYS_GETGID = 104           => sys_getgid(args[..0]);
     SYS_SETUID = 105           => sys_setuid(args[..1]);
@@ -279,8 +297,9 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_CAPGET = 125           => sys_capget(args[..2]);
     SYS_CAPSET = 126           => sys_capset(args[..2]);
     SYS_RT_SIGPENDING = 127    => sys_rt_sigpending(args[..2]);
+    SYS_RT_SIGTIMEDWAIT = 128  => sys_rt_sigtimedwait(args[..4]);
     SYS_RT_SIGSUSPEND = 130    => sys_rt_sigsuspend(args[..2]);
-    SYS_SIGALTSTACK = 131      => sys_sigaltstack(args[..2]);
+    SYS_SIGALTSTACK = 131      => sys_sigaltstack(args[..2], &user_ctx);
     SYS_UTIME = 132            => sys_utime(args[..2]);
     SYS_MKNOD = 133            => sys_mknod(args[..3]);
     SYS_STATFS = 137           => sys_statfs(args[..2]);
@@ -293,13 +312,17 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SCHED_GETSCHEDULER = 145 => sys_sched_getscheduler(args[..1]);
     SYS_SCHED_GET_PRIORITY_MAX = 146 => sys_sched_get_priority_max(args[..1]);
     SYS_SCHED_GET_PRIORITY_MIN = 147 => sys_sched_get_priority_min(args[..1]);
+    SYS_PIVOT_ROOT = 155       => sys_pivot_root(args[..2]);
     SYS_PRCTL = 157            => sys_prctl(args[..5]);
     SYS_ARCH_PRCTL = 158       => sys_arch_prctl(args[..2], &mut user_ctx);
     SYS_SETRLIMIT = 160        => sys_setrlimit(args[..2]);
     SYS_CHROOT = 161           => sys_chroot(args[..1]);
     SYS_SYNC = 162             => sys_sync(args[..0]);
     SYS_MOUNT = 165            => sys_mount(args[..5]);
-    SYS_UMOUNT2 = 166           => sys_umount(args[..2]);
+    SYS_UMOUNT2 = 166          => sys_umount(args[..2]);
+    SYS_REBOOT = 169           => sys_reboot(args[..4]);
+    SYS_SETHOSTNAME = 170      => sys_sethostname(args[..2]);
+    SYS_SETDOMAINNAME = 171    => sys_setdomainname(args[..2]);
     SYS_GETTID = 186           => sys_gettid(args[..0]);
     SYS_SETXATTR = 188         => sys_setxattr(args[..5]);
     SYS_LSETXATTR = 189        => sys_lsetxattr(args[..5]);
@@ -313,6 +336,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_REMOVEXATTR = 197      => sys_removexattr(args[..2]);
     SYS_LREMOVEXATTR = 198     => sys_lremovexattr(args[..2]);
     SYS_FREMOVEXATTR = 199     => sys_fremovexattr(args[..2]);
+    SYS_TKILL = 200            => sys_tkill(args[..2]);
     SYS_TIME = 201             => sys_time(args[..1]);
     SYS_FUTEX = 202            => sys_futex(args[..6]);
     SYS_SCHED_SETAFFINITY = 203 => sys_sched_setaffinity(args[..3]);
@@ -321,6 +345,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_GETDENTS64 = 217       => sys_getdents64(args[..3]);
     SYS_SET_TID_ADDRESS = 218  => sys_set_tid_address(args[..1]);
     SYS_SEMTIMEDOP = 220       => sys_semtimedop(args[..4]);
+    SYS_FADVISE64 = 221        => sys_fadvise64(args[..4]);
     SYS_TIMER_CREATE = 222     => sys_timer_create(args[..3]);
     SYS_TIMER_SETTIME = 223    => sys_timer_settime(args[..4]);
     SYS_TIMER_GETTIME = 224    => sys_timer_gettime(args[..2]);
@@ -333,6 +358,11 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_TGKILL = 234           => sys_tgkill(args[..3]);
     SYS_UTIMES = 235           => sys_utimes(args[..2]);
     SYS_WAITID = 247           => sys_waitid(args[..5]);
+    SYS_IOPRIO_SET = 251       => sys_ioprio_set(args[..3]);
+    SYS_IOPRIO_GET = 252       => sys_ioprio_get(args[..2]);
+    SYS_INOTIFY_INIT = 253     => sys_inotify_init(args[..0]);
+    SYS_INOTIFY_ADD_WATCH = 254 => sys_inotify_add_watch(args[..3]);
+    SYS_INOTIFY_RM_WATCH = 255 => sys_inotify_rm_watch(args[..2]);
     SYS_OPENAT = 257           => sys_openat(args[..4]);
     SYS_MKDIRAT = 258          => sys_mkdirat(args[..3]);
     SYS_MKNODAT = 259          => sys_mknodat(args[..4]);
@@ -348,6 +378,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_FACCESSAT = 269        => sys_faccessat(args[..3]);
     SYS_PSELECT6 = 270         => sys_pselect6(args[..6]);
     SYS_PPOLL = 271            => sys_ppoll(args[..5]);
+    SYS_UNSHARE = 272          => sys_unshare(args[..1]);
     SYS_SET_ROBUST_LIST = 273  => sys_set_robust_list(args[..2]);
     SYS_UTIMENSAT = 280        => sys_utimensat(args[..4]);
     SYS_EPOLL_PWAIT = 281      => sys_epoll_pwait(args[..6]);
@@ -363,19 +394,29 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_EPOLL_CREATE1 = 291    => sys_epoll_create1(args[..1]);
     SYS_DUP3 = 292             => sys_dup3(args[..3]);
     SYS_PIPE2 = 293            => sys_pipe2(args[..2]);
-    SYS_PREADV = 295           => sys_preadv(args[..4]);
-    SYS_PWRITEV = 296          => sys_pwritev(args[..4]);
+    SYS_INOTIFY_INIT1 = 294     => sys_inotify_init1(args[..1]);
+    SYS_PREADV = 295           => sys_preadv(args[..5]);
+    SYS_PWRITEV = 296          => sys_pwritev(args[..5]);
     SYS_PRLIMIT64 = 302        => sys_prlimit64(args[..4]);
+    SYS_SYNCFS = 306           => sys_syncfs(args[..1]);
+    SYS_SENDMMSG = 307         => sys_sendmmsg(args[..4]);
+    SYS_SETNS = 308            => sys_setns(args[..2]);
     SYS_GETCPU = 309           => sys_getcpu(args[..3]);
     SYS_SCHED_SETATTR = 314    => sys_sched_setattr(args[..3]);
     SYS_SCHED_GETATTR = 315    => sys_sched_getattr(args[..4]);
+    SYS_RENAMEAT2 = 316        => sys_renameat2(args[..5]);
     SYS_GETRANDOM = 318        => sys_getrandom(args[..3]);
+    SYS_MEMFD_CREATE = 319     => sys_memfd_create(args[..2]);
     SYS_EXECVEAT = 322         => sys_execveat(args[..5], &mut user_ctx);
-    SYS_PREADV2 = 327          => sys_preadv2(args[..5]);
-    SYS_PWRITEV2 = 328         => sys_pwritev2(args[..5]);
+    SYS_PREADV2 = 327          => sys_preadv2(args[..6]);
+    SYS_PWRITEV2 = 328         => sys_pwritev2(args[..6]);
     SYS_STATX = 332            => sys_statx(args[..5]);
+    SYS_PIDFD_SEND_SIGNAL = 424 => sys_pidfd_send_signal(args[..4]);
+    SYS_PIDFD_OPEN = 434       => sys_pidfd_open(args[..2]);
     SYS_CLONE3 = 435           => sys_clone3(args[..2], &user_ctx);
     SYS_CLOSE_RANGE = 436      => sys_close_range(args[..3]);
+    SYS_PIDFD_GETFD = 438      => sys_pidfd_getfd(args[..3]);
     SYS_FACCESSAT2 = 439       => sys_faccessat2(args[..4]);
     SYS_EPOLL_PWAIT2 = 441     => sys_epoll_pwait2(args[..5]);
+    SYS_FCHMODAT2 = 452        => sys_fchmodat2(args[..4]);
 }

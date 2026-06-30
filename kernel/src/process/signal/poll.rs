@@ -11,7 +11,7 @@ use ostd::{
 };
 
 use crate::{
-    events::{IoEvents, Observer, Subject},
+    events::{IoEvents, Observer, SyncSubject},
     prelude::*,
     time::wait::TimeoutExt,
 };
@@ -38,7 +38,7 @@ const INV_STATE: isize = -1;
 
 struct PolleeInner {
     /// A subject which is monitored with pollers.
-    subject: Subject<IoEvents, IoEvents>,
+    subject: SyncSubject<IoEvents, IoEvents>,
     /// A state that describes how events are cached in the pollee.
     ///
     /// The meaning of this field depends on its value:
@@ -68,7 +68,7 @@ impl Pollee {
     /// Creates a new pollee.
     pub fn new() -> Self {
         let inner = PolleeInner {
-            subject: Subject::new(),
+            subject: SyncSubject::new(),
             state: AtomicIsize::new(INV_STATE),
         };
         Self {
@@ -349,7 +349,7 @@ pub trait Pollable {
     ///
     /// The user must ensure that a call to `try_op()` does not fail with `EAGAIN` when the
     /// interesting events occur. However, it is allowed to have spurious `EAGAIN` failures due to
-    /// race opitions where the events are consumed by another thread.
+    /// race options where the events are consumed by another thread.
     #[track_caller]
     fn wait_events<F, R>(
         &self,
@@ -398,7 +398,7 @@ mod test {
     use super::*;
 
     #[ktest]
-    fn test_notify_before() {
+    fn notify_before() {
         let pollee = Pollee::new();
 
         pollee.notify(IoEvents::OUT);
@@ -417,7 +417,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_notify_middle() {
+    fn notify_middle() {
         let pollee = Pollee::new();
 
         assert_eq!(
@@ -439,7 +439,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_notify_after() {
+    fn notify_after() {
         let pollee = Pollee::new();
 
         assert_eq!(
@@ -460,7 +460,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_nested_notify_before() {
+    fn nested_notify_before() {
         let pollee = Pollee::new();
 
         pollee.notify(IoEvents::OUT);
@@ -486,7 +486,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_nested_notify_between() {
+    fn nested_notify_between() {
         let pollee = Pollee::new();
 
         assert_eq!(
@@ -513,7 +513,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_nested_notify_inside() {
+    fn nested_notify_inside() {
         let pollee = Pollee::new();
 
         assert_eq!(

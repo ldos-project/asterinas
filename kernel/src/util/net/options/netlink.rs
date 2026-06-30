@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::RawSocketOption;
+use super::{RawSocketOption, SocketOption, impl_raw_sock_option_set_only};
 use crate::{
-    impl_raw_sock_option_set_only,
     net::socket::netlink::{AddMembership, DropMembership},
     prelude::*,
-    util::net::options::SocketOption,
 };
 
 /// Socket options for netlink socket.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/linux/netlink.h#L149>.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
 #[expect(non_camel_case_types)]
 #[expect(clippy::upper_case_acronyms)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub enum CNetlinkOptionName {
     ADD_MEMBERSHIP = 1,
     DROP_MEMBERSHIP = 2,

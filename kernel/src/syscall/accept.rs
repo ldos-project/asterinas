@@ -6,55 +6,51 @@ use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]
 use crate::time::clocks::MonotonicRawClock;
 use crate::{
-    fs::{
-        file_table::{FdFlags, FileDesc, get_file_fast},
-        utils::{CreationFlags, StatusFlags},
+    fs::file::{
+        CreationFlags, StatusFlags,
+        file_table::{FdFlags, RawFileDesc, get_file_fast},
     },
     prelude::*,
     util::net::write_socket_addr_to_user,
 };
 
 pub fn sys_accept(
-    sockfd: FileDesc,
+    sockfd: RawFileDesc,
     sockaddr_ptr: Vaddr,
     addrlen_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
 
-    let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
-
-    Ok(SyscallReturn::Return(fd as _))
+    do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)
 }
 
 pub fn sys_accept4(
-    sockfd: FileDesc,
+    sockfd: RawFileDesc,
     sockaddr_ptr: Vaddr,
     addrlen_ptr: Vaddr,
     flags: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    trace!("raw flags = 0x{:x}", flags);
+    debug!("raw flags = 0x{:x}", flags);
     let flags = Flags::from_bits_truncate(flags);
     debug!(
         "sockfd = {}, sockaddr_ptr = 0x{:x}, addrlen_ptr = 0x{:x}, flags = {:?}",
         sockfd, sockaddr_ptr, addrlen_ptr, flags
     );
 
-    let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)?;
-
-    Ok(SyscallReturn::Return(fd as _))
+    do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)
 }
 
 fn do_accept(
-    sockfd: FileDesc,
+    sockfd: RawFileDesc,
     sockaddr_ptr: Vaddr,
     addrlen_ptr: Vaddr,
     flags: Flags,
     ctx: &Context,
-) -> Result<FileDesc> {
+) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, sockfd);
+    let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;
 
     let (connected_socket, socket_addr) = {
@@ -91,7 +87,14 @@ fn do_accept(
         timestamp: MonotonicRawClock::get().read_time(),
     })?;
 
-    Ok(fd)
+    #[cfg(not(baseline_asterinas))]
+    super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+        fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time(),
+    })?;
+
+    Ok(SyscallReturn::Return(fd.into()))
 }
 
 bitflags! {

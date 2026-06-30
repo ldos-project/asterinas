@@ -34,17 +34,19 @@
 //! If the address width is (according to [`crate::arch::mm::PagingConsts`])
 //! 39 bits or 57 bits, the memory space just adjust proportionally.
 
+#![cfg_attr(target_arch = "loongarch64", expect(unused_imports))]
+
 pub(crate) mod kvirt_area;
 
 use core::ops::Range;
 
-use log::info;
 use spin::Once;
+
 #[cfg(ktest)]
 mod test;
 
 use super::{
-    Frame, Paddr, PagingConstsTrait, Vaddr,
+    Frame, HasSize, Paddr, PagingConstsTrait, Vaddr,
     frame::{
         Segment,
         meta::{AnyFrameMeta, MetaPageMeta, mapping},
@@ -55,20 +57,41 @@ use super::{
 use crate::{
     arch::mm::{PageTableEntry, PagingConsts},
     boot::memory_region::MemoryRegionType,
-    mm::{PagingLevel, page_table::largest_pages},
+    const_assert, info,
+    mm::{HasPaddr, PAGE_SIZE, PagingLevel, frame::FrameRef, page_table::largest_pages},
     task::disable_preempt,
 };
 
-/// The shortest supported address width is 39 bits. And the literal
-/// values are written for 48 bits address width. Adjust the values
-/// by arithmetic left shift.
-const ADDR_WIDTH_SHIFT: isize = PagingConsts::ADDRESS_WIDTH as isize - 48;
+// The shortest supported address width is 39 bits. So the literal
+// values are written for 39 bits address width and we adjust the values
+// by arithmetic left shift.
+const_assert!(PagingConsts::ADDRESS_WIDTH >= 39);
+const ADDR_WIDTH_SHIFT: usize = PagingConsts::ADDRESS_WIDTH - 39;
 
 /// Start of the kernel address space.
-/// This is the _lowest_ address of the x86-64's _high_ canonical addresses.
-pub const KERNEL_BASE_VADDR: Vaddr = 0xffff_8000_0000_0000 << ADDR_WIDTH_SHIFT;
+#[cfg(not(target_arch = "loongarch64"))]
+pub const KERNEL_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+#[cfg(target_arch = "loongarch64")]
+pub const KERNEL_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
 /// End of the kernel address space (non inclusive).
-pub const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000 << ADDR_WIDTH_SHIFT;
+pub const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000;
+
+/// The maximum virtual address of user space (non inclusive).
+///
+/// A typical way to reserve half of the address space for the kernel is
+/// to use the highest `ADDRESS_WIDTH`-bit virtual address space.
+///
+/// Also, the top page is not regarded as usable since it's a workaround
+/// for some x86_64 CPUs' bugs. See
+/// <https://github.com/torvalds/linux/blob/480e035fc4c714fb5536e64ab9db04fedc89e910/arch/x86/include/asm/page_64.h#L68-L78>
+/// for the rationale.
+pub const MAX_USERSPACE_VADDR: Vaddr = (0x0000_0040_0000_0000 << ADDR_WIDTH_SHIFT) - PAGE_SIZE;
+
+/// The kernel address space.
+///
+/// They are the high canonical addresses (i.e., the negative part of the
+/// address space, with the most significant bits in the addresses set).
+pub const KERNEL_VADDR_RANGE: Range<Vaddr> = KERNEL_BASE_VADDR..KERNEL_END_VADDR;
 
 /// The kernel code is linear mapped to this address.
 ///
@@ -80,21 +103,26 @@ pub fn kernel_loaded_offset() -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_8000_0000 << ADDR_WIDTH_SHIFT;
+const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_8000_0000;
 #[cfg(target_arch = "riscv64")]
-const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_0000_0000 << ADDR_WIDTH_SHIFT;
+const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_0000_0000;
+#[cfg(target_arch = "loongarch64")]
+const KERNEL_CODE_BASE_VADDR: usize = 0x9000_0000_0000_0000;
 
-const FRAME_METADATA_CAP_VADDR: Vaddr = 0xffff_e100_0000_0000 << ADDR_WIDTH_SHIFT;
-const FRAME_METADATA_BASE_VADDR: Vaddr = 0xffff_e000_0000_0000 << ADDR_WIDTH_SHIFT;
+const FRAME_METADATA_CAP_VADDR: Vaddr = 0xffff_fff0_8000_0000 << ADDR_WIDTH_SHIFT;
+const FRAME_METADATA_BASE_VADDR: Vaddr = 0xffff_fff0_0000_0000 << ADDR_WIDTH_SHIFT;
 pub(in crate::mm) const FRAME_METADATA_RANGE: Range<Vaddr> =
     FRAME_METADATA_BASE_VADDR..FRAME_METADATA_CAP_VADDR;
 
-const VMALLOC_BASE_VADDR: Vaddr = 0xffff_c000_0000_0000 << ADDR_WIDTH_SHIFT;
+const VMALLOC_BASE_VADDR: Vaddr = 0xffff_ffe0_0000_0000 << ADDR_WIDTH_SHIFT;
 pub const VMALLOC_VADDR_RANGE: Range<Vaddr> = VMALLOC_BASE_VADDR..FRAME_METADATA_BASE_VADDR;
 
 /// The base address of the linear mapping of all physical
 /// memory in the kernel address space.
-pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_8000_0000_0000 << ADDR_WIDTH_SHIFT;
+#[cfg(not(target_arch = "loongarch64"))]
+pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+#[cfg(target_arch = "loongarch64")]
+pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
 pub const LINEAR_MAPPING_VADDR_RANGE: Range<Vaddr> = LINEAR_MAPPING_BASE_VADDR..VMALLOC_BASE_VADDR;
 
 /// Convert physical address to virtual address using offset, only available inside `ostd`
@@ -107,13 +135,15 @@ pub fn paddr_to_vaddr(pa: Paddr) -> usize {
 ///
 /// It manages the kernel mapping of all address spaces by sharing the kernel part. And it
 /// is unlikely to be activated.
-pub static KERNEL_PAGE_TABLE: Once<PageTable<KernelPtConfig>> = Once::new();
+pub(super) static KERNEL_PAGE_TABLE: Once<PageTable<KernelPtConfig>> = Once::new();
 
 #[derive(Clone, Debug)]
-pub(crate) struct KernelPtConfig {}
+pub(super) struct KernelPtConfig {}
 
 // We use the first available PTE bit to mark the frame as tracked.
-// SAFETY: `item_into_raw` and `item_from_raw` are implemented correctly,
+// SAFETY: `item_raw_info`, `item_into_raw`, `item_from_raw`, and
+// `item_ref_from_raw` are correctly implemented with respect to the `Item` and
+// `ItemRef` types.
 unsafe impl PageTableConfig for KernelPtConfig {
     const TOP_LEVEL_INDEX_RANGE: Range<usize> = 256..512;
     const TOP_LEVEL_CAN_UNMAP: bool = false;
@@ -122,26 +152,27 @@ unsafe impl PageTableConfig for KernelPtConfig {
     type C = PagingConsts;
 
     type Item = MappedItem;
+    type ItemRef<'a> = MappedItemRef<'a>;
 
-    fn item_into_raw(item: Self::Item) -> (Paddr, PagingLevel, PageProperty) {
-        match item {
-            MappedItem::Tracked(frame, mut prop) => {
-                debug_assert!(!prop.flags.contains(PageFlags::AVAIL1));
-                prop.flags |= PageFlags::AVAIL1;
+    fn item_raw_info(item: &Self::Item) -> (Paddr, PagingLevel, PageProperty) {
+        match *item {
+            MappedItem::Tracked(ref frame, mut prop) => {
+                debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
+                prop.priv_flags |= PrivilegedPageFlags::AVAIL1;
                 let level = frame.map_level();
-                let paddr = frame.into_raw();
+                let paddr = frame.paddr();
                 (paddr, level, prop)
             }
-            MappedItem::Untracked(pa, level, mut prop) => {
-                debug_assert!(!prop.flags.contains(PageFlags::AVAIL1));
-                prop.flags -= PageFlags::AVAIL1;
-                (pa, level, prop)
+            MappedItem::Untracked(ref pa, ref level, mut prop) => {
+                debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
+                prop.priv_flags -= PrivilegedPageFlags::AVAIL1;
+                (*pa, *level, prop)
             }
         }
     }
 
     unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
-        if prop.flags.contains(PageFlags::AVAIL1) {
+        if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
             debug_assert_eq!(level, 1);
             // SAFETY: The caller ensures safety.
             let frame = unsafe { Frame::<dyn AnyFrameMeta>::from_raw(paddr) };
@@ -156,11 +187,35 @@ unsafe impl PageTableConfig for KernelPtConfig {
     }
 
     fn init_split_item_subpage(_item: Self::Item, _level: PagingLevel) {}
+
+    unsafe fn item_ref_from_raw<'a>(
+        paddr: Paddr,
+        level: PagingLevel,
+        prop: PageProperty,
+    ) -> Self::ItemRef<'a> {
+        if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
+            debug_assert_eq!(level, 1);
+            // SAFETY: The caller ensures that the frame outlives `'a` and that
+            // the type matches the frame.
+            let frame = unsafe { FrameRef::<dyn AnyFrameMeta>::borrow_paddr(paddr) };
+            MappedItemRef::Tracked(frame, prop)
+        } else {
+            MappedItemRef::Untracked(paddr, level, prop)
+        }
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MappedItem {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum MappedItem {
     Tracked(Frame<dyn AnyFrameMeta>, PageProperty),
+    Untracked(Paddr, PagingLevel, PageProperty),
+}
+
+#[derive(Debug)]
+pub(crate) enum MappedItemRef<'a> {
+    #[cfg_attr(not(ktest), expect(dead_code))]
+    Tracked(FrameRef<'a, dyn AnyFrameMeta>, PageProperty),
+    #[cfg_attr(not(ktest), expect(dead_code))]
     Untracked(Paddr, PagingLevel, PageProperty),
 }
 
@@ -179,6 +234,8 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
     let kpt = PageTable::<KernelPtConfig>::new_kernel_page_table();
     let preempt_guard = disable_preempt();
 
+    // In LoongArch64, we don't need to do linear mappings for the kernel because of DMW0.
+    #[cfg(not(target_arch = "loongarch64"))]
     // Do linear mappings for the kernel.
     {
         let max_paddr = crate::mm::frame::max_paddr();
@@ -191,8 +248,7 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
         let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, 0, max_paddr) {
             // SAFETY: we are doing the linear mapping for the kernel.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) }
-                .expect("Kernel linear address space is mapped twice");
+            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
         }
     }
 
@@ -214,11 +270,12 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
             largest_pages::<KernelPtConfig>(from.start, pa_range.start, pa_range.len())
         {
             // SAFETY: We are doing the metadata mappings for the kernel.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) }
-                .expect("Frame metadata address space is mapped twice");
+            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
         }
     }
 
+    // In LoongArch64, we don't need to do linear mappings for the kernel code because of DMW0.
+    #[cfg(not(target_arch = "loongarch64"))]
     // Map for the kernel code itself.
     // TODO: set separated permissions for each segments in the kernel.
     {
@@ -237,8 +294,7 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
         let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, region.base(), from.len()) {
             // SAFETY: we are doing the kernel code mapping.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) }
-                .expect("Kernel code mapped twice");
+            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
         }
     }
 
@@ -247,9 +303,12 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
 
 /// Activates the kernel page table.
 ///
+/// All address translation of symbols in the boot sections must be manually
+/// done from now on.
+///
 /// # Safety
 ///
-/// This function should only be called once per CPU.
+/// This function must only be called once per CPU.
 pub unsafe fn activate_kernel_page_table() {
     let kpt = KERNEL_PAGE_TABLE
         .get()
@@ -258,11 +317,5 @@ pub unsafe fn activate_kernel_page_table() {
     unsafe {
         kpt.first_activate_unchecked();
         crate::arch::mm::tlb_flush_all_including_global();
-    }
-
-    // SAFETY: the boot page table is OK to be dismissed now since
-    // the kernel page table is activated just now.
-    unsafe {
-        crate::mm::page_table::boot_pt::dismiss();
     }
 }

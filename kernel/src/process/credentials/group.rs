@@ -6,8 +6,8 @@ use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 
 use crate::prelude::*;
 
-#[derive(Debug, Clone, Copy, Pod, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Pod)]
 pub struct Gid(u32);
 
 impl Gid {
@@ -15,6 +15,14 @@ impl Gid {
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.15/source/include/linux/uidgid.h#L51>.
     pub const INVALID: Gid = Gid(u32::MAX);
+
+    /// The overflow GID, typically used to indicate that group mappings between namespaces fail.
+    ///
+    /// This is currently a constant (65534 is usually the "nobody" group), but it should be
+    /// configured via `/proc/sys/kernel/overflowgid`.
+    ///
+    /// Reference: <https://elixir.bootlin.com/linux/v6.15/source/kernel/sys.c#L167>.
+    pub const OVERFLOW: Gid = Self::new(65534);
 
     pub const fn new(gid: u32) -> Self {
         Self(gid)

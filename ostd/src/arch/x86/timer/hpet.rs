@@ -11,9 +11,12 @@ use volatile::{
 };
 
 use crate::{
-    arch::kernel::{IRQ_CHIP, MappedIrqLine, acpi::get_acpi_tables},
+    arch::{
+        irq::{IRQ_CHIP, MappedIrqLine},
+        kernel::acpi::get_acpi_tables,
+    },
+    irq::IrqLine,
     mm::paddr_to_vaddr,
-    trap::irq::IrqLine,
 };
 
 static HPET_INSTANCE: Once<Hpet> = Once::new();
@@ -27,8 +30,8 @@ const OFFSET_MAIN_COUNTER_VALUE_REGISTER: usize = 0x0F0;
 #[expect(dead_code)]
 const HPET_FREQ: usize = 1_000_000_000_000_000;
 
-#[derive(Debug)]
 #[repr(C)]
+#[derive(Debug)]
 struct HpetTimerRegister {
     configuration_and_capabilities_register: u32,
     timer_comparator_value_register: u32,
@@ -135,7 +138,7 @@ impl Hpet {
 pub fn init() -> Result<(), AcpiError> {
     let tables = get_acpi_tables().unwrap();
 
-    let hpet_info = HpetInfo::new(&tables)?;
+    let hpet_info = HpetInfo::new(tables)?;
     assert_ne!(hpet_info.base_address, 0, "HPET address should not be zero");
 
     let base = NonNull::new(paddr_to_vaddr(hpet_info.base_address) as *mut u8).unwrap();

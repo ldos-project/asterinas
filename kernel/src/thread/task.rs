@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use ostd::{
-    cpu::context::UserContext,
+    arch::cpu::context::UserContext,
+    mm::VmIo,
     sync::Waiter,
     task::{Task, TaskOptions},
     user::{ReturnReason, UserContextApi, UserMode},
@@ -9,12 +10,12 @@ use ostd::{
 
 use super::{Thread, oops};
 use crate::{
+    context::current_userspace,
     cpu::LinuxAbi,
-    current_userspace,
     prelude::*,
     process::{
-        posix_thread::{AsPosixThread, AsThreadLocal, ThreadLocal},
-        signal::handle_pending_signal,
+        posix_thread::{AsPosixThread, AsThreadLocal, FIRST_POSIX_TID, ThreadLocal},
+        signal::{HandlePendingSignal, PauseReason, handle_pending_signal},
     },
     syscall::handle_syscall,
     thread::{AsThread, exception::handle_exception},
@@ -23,11 +24,11 @@ use crate::{
 
 /// create new task with userspace and parent process
 pub fn create_new_user_task(
-    user_ctx: Arc<UserContext>,
+    user_ctx: Box<UserContext>,
     thread_ref: Arc<Thread>,
     thread_local: ThreadLocal,
 ) -> Task {
-    fn user_task_entry() {
+    let user_task_entry = move |user_ctx: UserContext| {
         let current_task = Task::current().unwrap();
         let current_thread = current_task.as_thread().unwrap();
         let current_posix_thread = current_thread.as_posix_thread().unwrap();
@@ -35,55 +36,56 @@ pub fn create_new_user_task(
         let current_process = current_posix_thread.process();
         let (stop_waiter, _) = Waiter::new_pair();
 
-        let user_ctx = current_task
-            .user_ctx()
-            .expect("user task should have user context");
-        let mut user_mode = UserMode::new(UserContext::clone(user_ctx));
+        let mut user_mode = UserMode::new(user_ctx);
+        user_mode.context_mut().activate_tls_pointer();
         debug!(
-            "[Task entry] rip = 0x{:x}",
-            user_mode.context().instruction_pointer()
-        );
-        debug!(
-            "[Task entry] rsp = 0x{:x}",
-            user_mode.context().stack_pointer()
-        );
-        debug!(
-            "[Task entry] rax = 0x{:x}",
-            user_mode.context().syscall_ret()
+            "task entry: rip = {:#x}, rsp = {:#x}, rax = {:#x}",
+            user_mode.context().instruction_pointer(),
+            user_mode.context().stack_pointer(),
+            user_mode.context().syscall_ret(),
         );
 
+        // The `clone` syscall may require the child process to write its thread TID to the
+        // specified address. Make sure that the store operation completes before we return control
+        // to user space in the child process.
         let child_tid_ptr = current_thread_local.set_child_tid().get();
-
-        // The `clone` syscall may require child process to write the thread pid to the specified address.
-        // Make sure the store operation completes before the clone call returns control to user space
-        // in the child process.
         if is_userspace_vaddr(child_tid_ptr) {
-            current_userspace!()
-                .write_val(child_tid_ptr, &current_posix_thread.tid())
-                .unwrap();
+            // At this point, we can do almost nothing if the address is not valid and the store
+            // operation fails. So we ignore the error here.
+            let _ = current_userspace!().write_val(child_tid_ptr, &current_posix_thread.tid());
         }
 
-        let has_kernel_event_fn = || current_posix_thread.has_pending();
-
         let ctx = Context {
-            process: current_process.as_ref(),
+            process: current_process,
             thread_local: current_thread_local,
             posix_thread: current_posix_thread,
             thread: current_thread.as_ref(),
             task: &current_task,
         };
 
+        let has_kernel_event_fn = || ctx.has_pending();
+
+        // The startup method is only executed when the first user thread starts up.
+        if ctx.posix_thread.tid() == FIRST_POSIX_TID {
+            crate::init::on_first_process_startup(&ctx);
+        }
+
         while !current_thread.is_exited() {
             // Execute the user code
+            ctx.thread_local.fpu().activate();
             let return_reason = user_mode.execute(has_kernel_event_fn);
+            ctx.thread_local.fpu().deactivate();
 
             // Handle user events
             let user_ctx = user_mode.context_mut();
-            let mut syscall_number = None;
+            let mut pre_syscall_ret = None;
             match return_reason {
-                ReturnReason::UserException => handle_exception(&ctx, user_ctx),
+                ReturnReason::UserException => {
+                    let exception = user_ctx.take_exception().unwrap();
+                    handle_exception(&ctx, user_ctx, exception)
+                }
                 ReturnReason::UserSyscall => {
-                    syscall_number = Some(user_ctx.syscall_num());
+                    pre_syscall_ret = Some(user_ctx.syscall_ret());
                     handle_syscall(&ctx, user_ctx);
                 }
                 ReturnReason::KernelEvent => {}
@@ -95,7 +97,7 @@ pub fn create_new_user_task(
             }
 
             // Handle signals
-            handle_pending_signal(user_ctx, &ctx, syscall_number);
+            handle_pending_signal(user_ctx, &ctx, pre_syscall_ret);
 
             // Handle signals while the thread is stopped
             // FIXME: Currently, we handle all signals when the process is stopped.
@@ -104,21 +106,26 @@ pub fn create_new_user_task(
             // Certain signals, such as SIGKILL, should be handled even if the process is stopped.
             // We need to further investigate Linux behavior regarding which signals should be handled
             // when the thread is stopped.
-            while !current_thread.is_exited() && current_process.is_stopped() {
-                let _ = stop_waiter.pause_until(|| (!current_process.is_stopped()).then_some(()));
+            while !current_thread.is_exited() && ctx.process.is_stopped() {
+                let _ = stop_waiter.pause_until_by(
+                    || (!ctx.process.is_stopped()).then_some(()),
+                    // We currently do not support ptrace.
+                    PauseReason::StopBySignal,
+                );
                 handle_pending_signal(user_ctx, &ctx, None);
             }
         }
-    }
+    };
 
-    TaskOptions::new(|| {
+    let user_task_func = move || user_task_entry(*user_ctx);
+
+    TaskOptions::new(move || {
         // TODO: If a kernel "oops" is caught, we should kill the entire
         // process rather than just ending the thread.
-        let _ = oops::catch_panics_as_oops(user_task_entry);
+        let _ = oops::catch_panics_as_oops(user_task_func);
     })
     .data(thread_ref)
     .local_data(thread_local)
-    .user_ctx(Some(user_ctx))
     .build()
     .expect("spawn task failed")
 }

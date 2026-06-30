@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::{
     SyscallReturn,
     sched_getattr::{LinuxSchedAttr, access_sched_attr_with},
@@ -12,10 +14,11 @@ pub fn sys_sched_setscheduler(
     addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let space = ctx.user_space();
-    let prio = space
-        .read_val(addr)
-        .map_err(|_| Error::new(Errno::EINVAL))?;
+    if addr == 0 {
+        return_errno_with_message!(Errno::EINVAL, "invalid user space address");
+    }
+
+    let prio = ctx.user_space().read_val(addr)?;
 
     let attr = LinuxSchedAttr {
         sched_policy: policy as u32,

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{marker::PhantomData, mem::ManuallyDrop, ops::Deref, ptr::NonNull};
+use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Deref, ptr::NonNull};
 
 use super::{
     Frame,
     meta::{AnyFrameMeta, MetaSlot},
 };
-use crate::{mm::Paddr, sync::non_null::NonNullPtr};
+use crate::{
+    mm::{HasPaddr, Paddr},
+    sync::non_null::NonNullPtr,
+};
 
 /// A struct that can work as `&'a Frame<M>`.
-#[derive(Debug)]
 pub struct FrameRef<'a, M: AnyFrameMeta + ?Sized> {
     inner: ManuallyDrop<Frame<M>>,
     _marker: PhantomData<&'a Frame<M>>,
@@ -41,6 +43,14 @@ impl<M: AnyFrameMeta + ?Sized> Deref for FrameRef<'_, M> {
     }
 }
 
+impl<M: AnyFrameMeta + ?Sized> Debug for FrameRef<'_, M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrameRef")
+            .field("paddr", &self.inner.paddr())
+            .finish()
+    }
+}
+
 // SAFETY: `Frame` is essentially a `*const MetaSlot` that could be used as a non-null
 // `*const` pointer.
 unsafe impl<M: AnyFrameMeta + ?Sized> NonNullPtr for Frame<M> {
@@ -51,7 +61,7 @@ unsafe impl<M: AnyFrameMeta + ?Sized> NonNullPtr for Frame<M> {
     where
         Self: 'a;
 
-    const ALIGN_BITS: u32 = core::mem::align_of::<MetaSlot>().trailing_zeros();
+    const ALIGN_BITS: u32 = align_of::<MetaSlot>().trailing_zeros();
 
     fn into_raw(self) -> NonNull<Self::Target> {
         let ptr = NonNull::new(self.ptr.cast_mut()).unwrap();

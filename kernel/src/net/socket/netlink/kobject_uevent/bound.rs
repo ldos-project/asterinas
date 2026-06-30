@@ -67,26 +67,17 @@ impl datagram_common::Bound for BoundNetlinkUevent {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let mut receive_queue = self.receive_queue.0.lock();
+        let mut receive_queue = self.receive_queue.lock();
 
-        let Some(response) = receive_queue.front() else {
-            return_errno_with_message!(Errno::EAGAIN, "nothing to receive");
-        };
+        receive_queue.dequeue_if(|response, response_len| {
+            let len = response_len.min(writer.sum_lens());
+            response.write_to(writer)?;
 
-        let len = {
-            let max_len = writer.sum_lens();
-            response.total_len().min(max_len)
-        };
+            let remote = *response.src_addr();
 
-        response.write_to(writer)?;
-
-        let remote = *response.src_addr();
-
-        if !flags.contains(SendRecvFlags::MSG_PEEK) {
-            receive_queue.pop_front().unwrap();
-        }
-
-        Ok((len, remote))
+            let should_dequeue = !flags.contains(SendRecvFlags::MSG_PEEK);
+            Ok((should_dequeue, (len, remote)))
+        })
     }
 
     fn check_io_events(&self) -> IoEvents {

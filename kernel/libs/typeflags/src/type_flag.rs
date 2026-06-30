@@ -37,7 +37,7 @@ impl Parse for TypeFlagDef {
         // read content inside brace
         let content;
         let _ = braced!(content in input);
-        let items = content.parse_terminated(TypeFlagItem::parse)?;
+        let items = Punctuated::parse_terminated_with(&content, TypeFlagItem::parse)?;
 
         let res = TypeFlagDef {
             attributes,
@@ -96,7 +96,7 @@ impl TypeFlagDef {
     }
 
     /// return the items iter
-    pub fn items_iter(&self) -> syn::punctuated::Iter<TypeFlagItem> {
+    pub fn items_iter(&self) -> syn::punctuated::Iter<'_, TypeFlagItem> {
         self.items.iter()
     }
 
@@ -129,7 +129,7 @@ impl TypeFlagItem {
         let ident = self.ident.clone();
         quote!(
             #(#attributes)*
-            #[derive(Copy, Clone, Debug)]
+            #[derive(Clone, Copy, Debug)]
             #vis struct #ident {}
         )
     }

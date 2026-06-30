@@ -3,15 +3,15 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
+        file::file_table::RawFileDesc,
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath, SplitPath},
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_unlinkat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_addr: Vaddr,
     flags: u32,
     ctx: &Context,
@@ -22,25 +22,24 @@ pub fn sys_unlinkat(
         return super::rmdir::sys_rmdirat(dirfd, path_addr, ctx);
     }
 
-    let path = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
-    debug!("dirfd = {}, path = {:?}", dirfd, path);
+    let path_name = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
+    debug!("dirfd = {}, path = {:?}", dirfd, path_name);
 
-    let (dir_dentry, name) = {
-        let path = path.to_string_lossy();
-        if path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
-        }
-        if path.ends_with('/') {
-            return_errno_with_message!(Errno::EISDIR, "unlink on directory");
-        }
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        ctx.posix_thread
-            .fs()
-            .resolver()
-            .read()
-            .lookup_dir_and_base_name(&fs_path)?
+    let path_name = path_name.to_string_lossy();
+    let (dir_path, name) = {
+        let (parent_path_name, target_name) = path_name.split_dirname_and_filename()?;
+        let fs_path = FsPath::from_fd_at(dirfd, parent_path_name, EmptyPathStr::Reject)?;
+        (
+            ctx.thread_local
+                .borrow_fs()
+                .resolver()
+                .read()
+                .lookup(&fs_path)?,
+            target_name,
+        )
     };
-    dir_dentry.unlink(&name)?;
+
+    dir_path.unlink(name)?;
     Ok(SyscallReturn::Return(0))
 }
 

@@ -10,7 +10,7 @@ use std::fmt::{self, Display, Formatter};
 /// element of the target triple, but akin to the "target_arch" cfg
 /// of Cargo:
 /// <https://doc.rust-lang.org/reference/conditional-compilation.html#target_arch>
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Arch {
     #[serde(rename = "aarch64")]
     Aarch64,
@@ -46,10 +46,10 @@ impl Arch {
     /// Get the target triple for the architecture.
     pub fn triple(&self) -> &'static str {
         match self {
-            Arch::Aarch64 => "aarch64-unknown-none",
-            Arch::RiscV64 => "riscv64gc-unknown-none-elf",
+            Arch::Aarch64 => "aarch64-unknown-none-softfloat",
+            Arch::RiscV64 => "riscv64imac-unknown-none-elf",
             Arch::X86_64 => "x86_64-unknown-none",
-            Arch::LoongArch64 => "loongarch64-unknown-none",
+            Arch::LoongArch64 => "loongarch64-unknown-none-softfloat",
         }
     }
 
@@ -79,7 +79,22 @@ impl Display for Arch {
 }
 
 /// Get the default architecture implied by the host rustc's default architecture.
+///
+/// If the environment variable `OSDK_TARGET_ARCH` is set, use it to determine the default
+/// architecture directly.
 pub fn get_default_arch() -> Arch {
+    if let Ok(arch) = std::env::var("OSDK_TARGET_ARCH") {
+        return match arch.as_str() {
+            "aarch64" => Arch::Aarch64,
+            "riscv64" => Arch::RiscV64,
+            "x86_64" => Arch::X86_64,
+            "loongarch64" => Arch::LoongArch64,
+            _ => panic!(
+                "The environment variable `OSDK_TARGET_ARCH` specifies an unsupported native architecture"
+            ),
+        };
+    };
+
     let output = crate::util::new_command_checked_exists("rustc")
         .arg("-vV")
         .output()

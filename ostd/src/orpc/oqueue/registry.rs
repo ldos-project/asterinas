@@ -164,7 +164,7 @@ mod test {
         ConsumableOQueueRef::<usize>::new(4, path.clone())
     }
 
-    #[ktest]
+    #[ktest(expect_redundant_test_prefix)]
     fn test_lookup_by_path() {
         let path = path!(test.queue[1]);
         let _queue = new_oqueue(&path);
@@ -173,7 +173,7 @@ mod test {
         assert!(lookup_by_path::<i32>(&path).is_none());
     }
 
-    #[ktest]
+    #[ktest(expect_redundant_test_prefix)]
     fn test_lookup_by_path_pattern() {
         let path1 = path!(a.b[1]);
         let path2 = path!(a.b[2]);
@@ -199,7 +199,7 @@ mod test {
         assert_eq!(results.len(), 1);
     }
 
-    #[ktest]
+    #[ktest(expect_redundant_test_prefix)]
     fn test_lookup_by_type() {
         let path1 = path!(x.y[1]);
         let path2 = path!(z.w[2]);
@@ -212,7 +212,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_nonexistent_lookup() {
+    fn nonexistent_lookup() {
         assert!(lookup_by_path::<usize>(&path!(nonexistent.path[1])).is_none());
         assert!(lookup_by_path_pattern::<usize>(&path_pattern!(nonexistent[*])).is_empty());
         assert!(lookup_by_type::<usize>().is_empty());

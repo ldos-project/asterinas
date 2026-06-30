@@ -5,7 +5,6 @@
 mod build;
 mod debug;
 mod enhance_log;
-mod gdb;
 mod new;
 mod profile;
 mod run;
@@ -18,11 +17,7 @@ pub use self::{
     test::execute_test_command,
 };
 
-use crate::{
-    arch::get_default_arch,
-    error_msg,
-    util::{DirGuard, get_current_crates},
-};
+use crate::{arch::get_default_arch, error_msg};
 
 /// Execute the forwarded cargo command with arguments.
 ///
@@ -45,29 +40,17 @@ pub fn execute_forwarded_command(subcommand: &str, args: &Vec<String>, cfg_ktest
 
     cargo.env("RUSTFLAGS", rustflags);
 
+    // When generating documentation via `cargo doc`, the `--check-cfg cfg(ktest)` flag
+    // must be specified in both `RUSTFLAGS` and `RUSTDOCFLAGS`.
+    if subcommand == "doc" {
+        let env_rustdocflags = std::env::var("RUSTDOCFLAGS").unwrap_or_default();
+        let rustdocflags = env_rustdocflags + " --check-cfg cfg(ktest)";
+        cargo.env("RUSTDOCFLAGS", rustdocflags);
+    }
+
     let status = cargo.status().expect("Failed to execute cargo");
     if !status.success() {
         error_msg!("Command {:?} failed with status: {:?}", cargo, status);
         std::process::exit(status.code().unwrap_or(1));
-    }
-}
-
-/// Execute the forwarded cargo command on each crate in the workspace.
-///
-/// It works like invoking [`execute_forwarded_command`] on each crate in the
-/// workspace, but it creates a base crate that depends on the target crate and
-/// executes the command on the base crate if a target crate is a kernel crate.
-///
-/// It invokes Cargo on the base crate only if the target crate is a kernel
-/// crate. Otherwise, it behaves just like [`execute_forwarded_command`].
-pub fn execute_forwarded_command_on_each_crate(
-    subcommand: &str,
-    args: &Vec<String>,
-    cfg_ktest: bool,
-) {
-    let target_crates = get_current_crates();
-    for target in target_crates {
-        let _dir_guard = DirGuard::change_dir(target.path);
-        execute_forwarded_command(subcommand, args, cfg_ktest);
     }
 }

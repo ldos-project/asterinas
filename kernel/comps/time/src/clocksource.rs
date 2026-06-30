@@ -17,9 +17,10 @@ use aster_util::coeff::Coeff;
 use ostd::sync::{LocalIrqDisabled, RwLock};
 use serde::Serialize;
 
-use crate::NANOS_PER_SECOND;
+const NANOS_PER_SECOND: u32 = 1_000_000_000;
 
 /// `ClockSource` is an abstraction for hardware-assisted timing mechanisms.
+///
 /// A `ClockSource` can be created based on any counter that operates at a stable frequency.
 /// Users are able to measure time by retrieving `Instant` from this source.
 ///
@@ -61,8 +62,9 @@ pub struct ClockSource {
 
 impl ClockSource {
     /// Creates a new `ClockSource` instance.
-    /// Require basic information of based time counter, including the function for reading cycles,
-    /// the frequency and the maximum delay seconds to update this `ClockSource`.
+    ///
+    /// This method requires basic information of the time counter, including the function for
+    /// reading cycles, the frequency, and the maximum delay seconds to update this `ClockSource`.
     /// The `ClockSource` also calculates a reliable `Coeff` based on the counter's frequency and
     /// the maximum delay seconds. This `Coeff` is used to convert the number of cycles into
     /// the duration of time that has passed for those cycles.
@@ -72,7 +74,7 @@ impl ClockSource {
         read_cycles: Arc<dyn Fn() -> u64 + Sync + Send>,
     ) -> Self {
         let base = ClockSourceBase::new(freq, max_delay_secs);
-        // Too big `max_delay_secs` will lead to a low resolution Coeff.
+        // Too big `max_delay_secs` will lead to a low resolution `Coeff`.
         debug_assert!(max_delay_secs < 600);
         let coeff = Coeff::new(NANOS_PER_SECOND as u64, freq, max_delay_secs * freq);
         Self {
@@ -110,7 +112,7 @@ impl ClockSource {
         if cycles <= max_cycles {
             self.coeff * cycles
         } else {
-            log::warn!(
+            ostd::warn!(
                 "The clock source becomes not reliable since an \
                 interval of {} cycles exceeds the maximum delay {}(s)",
                 cycles,
@@ -173,7 +175,7 @@ impl ClockSource {
 /// elapsed since a reference point (typically the system boot time).
 /// The [`Instant`] is expressed in seconds and the fractional part is
 /// expressed in nanoseconds.
-#[derive(Debug, Default, Copy, Clone, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct Instant {
     secs: u64,
     nanos: u32,
@@ -225,7 +227,7 @@ impl Add<Duration> for Instant {
 }
 
 /// The basic properties of `ClockSource`.
-#[derive(Debug, Copy, Clone)]
+#[derive(Clone, Copy, Debug)]
 struct ClockSourceBase {
     freq: u64,
     max_delay_secs: u64,

@@ -1,11 +1,11 @@
 # Accelerate OS development with Asterinas OSDK
 
 [![Crates.io](https://img.shields.io/crates/v/cargo-osdk.svg)](https://crates.io/crates/cargo-osdk)
-[![OSDK Test](https://github.com/asterinas/asterinas/actions/workflows/osdk_test.yml/badge.svg?event=push)](https://github.com/asterinas/asterinas/actions/workflows/osdk_test.yml)
+[![OSDK Test](https://github.com/ldos-project/asterinas/actions/workflows/osdk_test.yml/badge.svg?event=push)](https://github.com/ldos-project/asterinas/actions/workflows/osdk_test.yml)
 
 ### What is it?
 
-OSDK (short for Operating System Development Kit) is designed to simplify the development of Rust operating systems. It aims to streamline the process by leveraging the framekernel architecture, originally proposed by [Asterinas](https://github.com/asterinas/asterinas).
+OSDK (short for Operating System Development Kit) is designed to simplify the development of Rust operating systems. It aims to streamline the process by leveraging the framekernel architecture, originally proposed by [Asterinas](https://github.com/ldos-project/asterinas).
 
 `cargo-osdk` is a command-line tool that facilitates project management for those developed on the framekernel architecture. Much like Cargo for Rust projects, `cargo-osdk` enables building, running, and testing projects conveniently.
 
@@ -93,7 +93,7 @@ cargo osdk help <COMMAND>
 
 ### Contributing
 
-Asterinas OSDK is developed as a sub-project of [Asterinas](https://github.com/asterinas/asterinas). It shares the same repository and versioning rules with the kernel. Please contribute to OSDK according to the contribution guide of Asterinas.
+Asterinas OSDK is developed as a sub-project of [Asterinas](https://github.com/ldos-project/asterinas). It shares the same repository and versioning rules with the kernel. Please contribute to OSDK according to the contribution guide of Asterinas.
 
 #### Note for Visual Studio Code users
 

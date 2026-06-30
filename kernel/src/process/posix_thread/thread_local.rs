@@ -2,11 +2,18 @@
 
 use core::cell::{Cell, Ref, RefCell, RefMut};
 
-use aster_rights::Full;
-use ostd::{mm::Vaddr, sync::RwArc, task::CurrentTask};
+use ostd::{arch::cpu::context::FpuContext, mm::Vaddr, sync::RwArc, task::CurrentTask};
 
 use super::RobustListHead;
-use crate::{fs::file_table::FileTable, process::signal::SigStack, vm::vmar::Vmar};
+use crate::{
+    fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
+    prelude::*,
+    process::{
+        NsProxy, UserNamespace,
+        signal::{SigStack, sig_mask::SigMask},
+    },
+    vm::vmar::Vmar,
+};
 
 /// Local data for a POSIX thread.
 pub struct ThreadLocal {
@@ -16,39 +23,61 @@ pub struct ThreadLocal {
     clear_child_tid: Cell<Vaddr>,
 
     // Virtual memory address regions.
-    root_vmar: RefCell<Option<Vmar<Full>>>,
+    vmar: RefCell<Option<Arc<Vmar>>>,
+    page_fault_disabled: Cell<bool>,
 
     // Robust futexes.
     // https://man7.org/linux/man-pages/man2/get_robust_list.2.html
     robust_list: RefCell<Option<RobustListHead>>,
 
     // Files.
+    /// File table.
     file_table: RefCell<Option<RwArc<FileTable>>>,
+    /// File system.
+    fs: RefCell<Arc<ThreadFsInfo>>,
+
+    // User FPU context.
+    fpu_context: RefCell<FpuContext>,
+    fpu_state: Cell<FpuState>,
 
     // Signal.
-    /// `ucontext` address for the signal handler.
-    // FIXME: This field may be removed. For glibc applications with RESTORER flag set, the
-    // `sig_context` is always equals with RSP.
-    sig_context: Cell<Option<Vaddr>>,
     /// Stack address, size, and flags for the signal handler.
-    sig_stack: RefCell<Option<SigStack>>,
+    sig_stack: RefCell<SigStack>,
+    /// Saved signal mask. It will be restored either after the signal handler, or upon
+    /// return from the system call if there is no signal handler to run.
+    sig_mask_saved: Cell<Option<SigMask>>,
+
+    // Namespaces.
+    user_ns: RefCell<Arc<UserNamespace>>,
+    ns_proxy: RefCell<Option<Arc<NsProxy>>>,
 }
 
 impl ThreadLocal {
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         set_child_tid: Vaddr,
         clear_child_tid: Vaddr,
-        root_vmar: Vmar<Full>,
+        vmar: Arc<Vmar>,
         file_table: RwArc<FileTable>,
+        fs: Arc<ThreadFsInfo>,
+        fpu_context: FpuContext,
+        user_ns: Arc<UserNamespace>,
+        ns_proxy: Arc<NsProxy>,
     ) -> Self {
         Self {
             set_child_tid: Cell::new(set_child_tid),
             clear_child_tid: Cell::new(clear_child_tid),
-            root_vmar: RefCell::new(Some(root_vmar)),
+            vmar: RefCell::new(Some(vmar)),
+            page_fault_disabled: Cell::new(false),
             robust_list: RefCell::new(None),
             file_table: RefCell::new(Some(file_table)),
-            sig_context: Cell::new(None),
-            sig_stack: RefCell::new(None),
+            fs: RefCell::new(fs),
+            fpu_context: RefCell::new(fpu_context),
+            fpu_state: Cell::new(FpuState::Unloaded),
+            sig_stack: RefCell::new(SigStack::default()),
+            sig_mask_saved: Cell::new(None),
+            user_ns: RefCell::new(user_ns),
+            ns_proxy: RefCell::new(Some(ns_proxy)),
         }
     }
 
@@ -60,66 +89,233 @@ impl ThreadLocal {
         &self.clear_child_tid
     }
 
-    pub fn root_vmar(&self) -> &RefCell<Option<Vmar<Full>>> {
-        &self.root_vmar
+    pub fn vmar(&self) -> &RefCell<Option<Arc<Vmar>>> {
+        &self.vmar
+    }
+
+    /// Executes the closure with the page fault handler disabled.
+    ///
+    /// When page faults occur, the handler may attempt to load the page from the disk, which can break
+    /// the atomic mode. By using this method, the page fault handler will fail immediately, so
+    /// fallible memory operation will return [`Errno::EFAULT`] once it triggers a page fault.
+    ///
+    /// Usually, we should _not_ try to access the userspace memory while being in the atomic mode
+    /// (e.g., when holding a spin lock). If we must do so, this method is a last resort that disables
+    /// the handler instead.
+    ///
+    /// Note that the closure runs with different semantics of the fallible memory operation.
+    /// Therefore, if it fails with a [`Errno::EFAULT`], this method will return [`None`] and it is
+    /// the caller's responsibility to exit the atomic mode, handle the page fault, and retry. Do
+    /// _not_ use this method without adding code that explicitly handles the page fault!
+    pub fn with_page_fault_disabled<F, T>(&self, func: F) -> Option<Result<T>>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        let is_disabled = self.is_page_fault_disabled();
+        self.page_fault_disabled.set(true);
+
+        let result = func();
+
+        self.page_fault_disabled.set(is_disabled);
+
+        if result
+            .as_ref()
+            .is_err_and(|err| err.error() == Errno::EFAULT)
+        {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    pub fn is_page_fault_disabled(&self) -> bool {
+        self.page_fault_disabled.get()
     }
 
     pub fn robust_list(&self) -> &RefCell<Option<RobustListHead>> {
         &self.robust_list
     }
 
-    pub fn borrow_file_table(&self) -> FileTableRef {
-        FileTableRef(self.file_table.borrow())
+    pub fn borrow_file_table(&self) -> FileTableRef<'_> {
+        ThreadLocalOptionRef(self.file_table.borrow())
     }
 
-    pub fn borrow_file_table_mut(&self) -> FileTableRefMut {
-        FileTableRefMut(self.file_table.borrow_mut())
+    pub fn borrow_file_table_mut(&self) -> FileTableRefMut<'_> {
+        ThreadLocalOptionRefMut(self.file_table.borrow_mut())
     }
 
-    pub fn sig_context(&self) -> &Cell<Option<Vaddr>> {
-        &self.sig_context
+    pub fn borrow_fs(&self) -> Ref<'_, Arc<ThreadFsInfo>> {
+        self.fs.borrow()
     }
 
-    pub fn sig_stack(&self) -> &RefCell<Option<SigStack>> {
+    pub(in crate::process) fn borrow_fs_mut(&self) -> RefMut<'_, Arc<ThreadFsInfo>> {
+        self.fs.borrow_mut()
+    }
+
+    pub fn is_fs_shared(&self) -> bool {
+        // If the filesystem information is not shared, its reference count should be exactly 2:
+        // one reference is held by `ThreadLocal` and the other by `PosixThread`.
+        Arc::strong_count(&self.fs.borrow()) > 2
+    }
+
+    pub fn fpu(&self) -> ThreadFpu<'_> {
+        ThreadFpu(self)
+    }
+
+    pub fn sig_stack(&self) -> &RefCell<SigStack> {
         &self.sig_stack
+    }
+
+    pub(in crate::process) fn sig_mask_saved(&self) -> &Cell<Option<SigMask>> {
+        &self.sig_mask_saved
+    }
+
+    pub fn borrow_user_ns(&self) -> Ref<'_, Arc<UserNamespace>> {
+        self.user_ns.borrow()
+    }
+
+    pub fn borrow_ns_proxy(&self) -> NsProxyRef<'_> {
+        ThreadLocalOptionRef(self.ns_proxy.borrow())
+    }
+
+    pub(in crate::process) fn borrow_ns_proxy_mut(&self) -> NsProxyRefMut<'_> {
+        ThreadLocalOptionRefMut(self.ns_proxy.borrow_mut())
+    }
+}
+
+/// The current state of `ThreadFpu`.
+///
+/// - `Activated`: The FPU context is currently loaded onto the CPU and it must be loaded
+///   while the associated task is running. If preemption occurs in between, the context switch
+///   must load FPU context again.
+/// - `Loaded`: The FPU context is currently loaded onto the CPU. It may or may not still
+///   be loaded in CPU after a context switch.
+/// - `Unloaded`: The FPU context is not currently loaded onto the CPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FpuState {
+    Activated,
+    Loaded,
+    Unloaded,
+}
+
+/// The FPU information for the _current_ thread.
+///
+/// # Notes about kernel preemption
+///
+/// All the methods of `ThreadFpu` assume that preemption will not occur.
+/// This means that the FPU state will not change unexpectedly
+/// (e.g., changing from `Loaded` to `Unloaded`).
+///
+/// In the current architecture, this is always true because kernel
+/// preemption was never implemented. More importantly, we cannot implement
+/// kernel preemption without refactoring the `ThreadLocal` mechanism
+/// because `ThreadLocal` cannot be accessed in interrupt handlers for
+/// soundness reasons. But such access is necessary for the preempted
+/// schedule.
+///
+/// Therefore, we omit the preemption guards for better performance and
+/// defer preemption considerations to future work.
+pub struct ThreadFpu<'a>(&'a ThreadLocal);
+
+impl ThreadFpu<'_> {
+    pub fn activate(&self) {
+        match self.0.fpu_state.get() {
+            FpuState::Activated => return,
+            FpuState::Loaded => (),
+            FpuState::Unloaded => self.0.fpu_context.borrow_mut().load(),
+        }
+        self.0.fpu_state.set(FpuState::Activated);
+    }
+
+    pub fn deactivate(&self) {
+        if self.0.fpu_state.get() == FpuState::Activated {
+            self.0.fpu_state.set(FpuState::Loaded);
+        }
+    }
+
+    pub fn clone_context(&self) -> FpuContext {
+        match self.0.fpu_state.get() {
+            FpuState::Activated | FpuState::Loaded => {
+                let mut fpu_context = self.0.fpu_context.borrow_mut();
+                fpu_context.save();
+                fpu_context.clone()
+            }
+            FpuState::Unloaded => self.0.fpu_context.borrow().clone(),
+        }
+    }
+
+    pub fn set_context(&self, context: FpuContext) {
+        let _ = self.0.fpu_context.replace(context);
+        self.0.fpu_state.set(FpuState::Unloaded);
+    }
+
+    pub fn before_schedule(&self) {
+        match self.0.fpu_state.get() {
+            FpuState::Activated => {
+                self.0.fpu_context.borrow_mut().save();
+            }
+            FpuState::Loaded => {
+                self.0.fpu_context.borrow_mut().save();
+                self.0.fpu_state.set(FpuState::Unloaded);
+            }
+            FpuState::Unloaded => (),
+        }
+    }
+
+    pub fn after_schedule(&self) {
+        if self.0.fpu_state.get() == FpuState::Activated {
+            self.0.fpu_context.borrow_mut().load();
+        }
     }
 }
 
 /// An immutable, shared reference to the file table in [`ThreadLocal`].
-pub struct FileTableRef<'a>(Ref<'a, Option<RwArc<FileTable>>>);
+pub type FileTableRef<'a> = ThreadLocalOptionRef<'a, RwArc<FileTable>>;
 
-impl FileTableRef<'_> {
-    /// Unwraps and returns a reference to the file table.
+/// An immutable, shared reference to the `NsProxy` in [`ThreadLocal`].
+pub type NsProxyRef<'a> = ThreadLocalOptionRef<'a, Arc<NsProxy>>;
+
+/// An immutable, shared reference to thread-local data contained within a `RefCell<Option<..>>`.
+pub struct ThreadLocalOptionRef<'a, T>(Ref<'a, Option<T>>);
+
+impl<T> ThreadLocalOptionRef<'_, T> {
+    /// Unwraps and returns a reference to the data.
     ///
     /// # Panics
     ///
-    /// This method will panic if the thread has exited and the file table has been dropped.
-    pub fn unwrap(&self) -> &RwArc<FileTable> {
+    /// This method will panic if the thread has exited and the data has been dropped.
+    pub fn unwrap(&self) -> &T {
         self.0.as_ref().unwrap()
     }
 }
 
 /// A mutable, exclusive reference to the file table in [`ThreadLocal`].
-pub struct FileTableRefMut<'a>(RefMut<'a, Option<RwArc<FileTable>>>);
+pub type FileTableRefMut<'a> = ThreadLocalOptionRefMut<'a, RwArc<FileTable>>;
 
-impl FileTableRefMut<'_> {
-    /// Unwraps and returns a reference to the file table.
+/// A mutable, exclusive reference to the `NsProxy` in [`ThreadLocal`].
+pub(in crate::process) type NsProxyRefMut<'a> = ThreadLocalOptionRefMut<'a, Arc<NsProxy>>;
+
+/// A mutable, exclusive reference to thread-local data contained within a `RefCell<Option<..>>`.
+pub struct ThreadLocalOptionRefMut<'a, T>(RefMut<'a, Option<T>>);
+
+impl<T> ThreadLocalOptionRefMut<'_, T> {
+    /// Unwraps and returns a reference to the data.
     ///
     /// # Panics
     ///
-    /// This method will panic if the thread has exited and the file table has been dropped.
-    pub fn unwrap(&mut self) -> &mut RwArc<FileTable> {
+    /// This method will panic if the thread has exited and the data has been dropped.
+    pub fn unwrap(&mut self) -> &mut T {
         self.0.as_mut().unwrap()
     }
 
-    /// Removes the file table and drops it.
+    /// Removes the data and drops it.
     pub(super) fn remove(&mut self) {
         *self.0 = None;
     }
 
-    /// Replaces the file table with a new one, returning the old one.
-    pub fn replace(&mut self, new_table: Option<RwArc<FileTable>>) -> Option<RwArc<FileTable>> {
-        core::mem::replace(&mut *self.0, new_table)
+    /// Replaces the data with a new one, returning the old one.
+    pub(in crate::process) fn replace(&mut self, new: Option<T>) -> Option<T> {
+        core::mem::replace(&mut *self.0, new)
     }
 }
 

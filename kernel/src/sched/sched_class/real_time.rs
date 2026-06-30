@@ -7,6 +7,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed},
 };
 
+use aster_util::ranged_integer::RangedU8;
 use bitvec::{BitArr, bitarr};
 use ostd::{
     cpu::CpuId,
@@ -17,11 +18,11 @@ use ostd::{
 };
 
 use super::{CurrentRuntime, SchedAttr, SchedClassRq, time::base_slice_clocks};
-use crate::{sched::nice::RangedU8, thread::AsThread};
+use crate::thread::AsThread;
 
 pub type RealTimePriority = RangedU8<1, 99>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RealTimePolicy {
     Fifo,
     RoundRobin {
@@ -61,6 +62,8 @@ impl RealTimePolicy {
 /// - If the time slice is set, the thread is considered to be an RR
 ///   (round-robin) thread, and will be executed for the time slice, and
 ///   then it will be put back to the inactive array.
+///
+/// [`sched_clock`]: super::sched_clock
 #[derive(Debug)]
 pub struct RealTimeAttr {
     prio: AtomicU8,
@@ -121,12 +124,17 @@ impl PrioArray {
         let prio = iter.next()? as u8;
 
         let queue = &mut self.queue[usize::from(prio)];
-        let thread = queue.pop_front()?;
+        let thread = queue.pop_front().unwrap();
 
         if queue.is_empty() {
             self.map.set(usize::from(prio), false);
         }
         Some(thread)
+    }
+
+    fn peek_prio(&self) -> Option<u8> {
+        let prio = self.map.iter_ones().next()?;
+        Some(prio as u8)
     }
 }
 
@@ -214,12 +222,17 @@ impl SchedClassRq for RealTimeClassRq {
         let attr = &attr.real_time;
 
         match flags {
-            UpdateFlags::Tick | UpdateFlags::Wait => match attr.time_slice.load(Relaxed) {
-                0 => (self.inactive_array().map.iter_ones().next())
-                    .is_some_and(|prio| prio > usize::from(attr.prio.load(Relaxed))),
-                ts => ts <= rt.period_delta,
+            UpdateFlags::Tick | UpdateFlags::Yield => match attr.time_slice.load(Relaxed) {
+                0 => {
+                    self.active_array().peek_prio().is_some()
+                        || self
+                            .inactive_array()
+                            .peek_prio()
+                            .is_some_and(|prio| prio < attr.prio.load(Relaxed))
+                }
+                ts => ts <= rt.period_delta && !self.is_empty(),
             },
-            UpdateFlags::Yield => true,
+            UpdateFlags::Wait | UpdateFlags::Exit => !self.is_empty(),
         }
     }
 }

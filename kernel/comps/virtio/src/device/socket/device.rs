@@ -1,352 +1,174 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, string::ToString, sync::Arc, vec};
-use core::{fmt::Debug, hint::spin_loop, mem::size_of};
+//! The device object of virtio-vsock.
 
-use aster_network::{RxBuffer, TxBuffer};
-use aster_util::{field_ptr, slot_vec::SlotVec};
-use log::debug;
-use ostd::{Pod, mm::VmWriter, sync::SpinLock, trap::TrapFrame};
+use alloc::{boxed::Box, string::ToString, sync::Arc};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{
-    config::{VirtioVsockConfig, VsockFeatures},
-    connect::{ConnectionInfo, VsockEvent},
-    error::SocketError,
-    header::{VIRTIO_VSOCK_HDR_LEN, VirtioVsockHdr, VirtioVsockOp},
+use aster_softirq::BottomHalfDisabled;
+use ostd::{
+    arch::trap::TrapFrame,
+    debug,
+    sync::{SpinLock, SpinLockGuard},
 };
+use spin::Once;
+
 use crate::{
     device::{
         VirtioDeviceError,
         socket::{
-            buffer::{RX_BUFFER_POOL, TX_BUFFER_POOL},
-            handle_recv_irq, register_device,
+            DEVICE_NAME,
+            config::{VirtioVsockConfig, VsockFeatures},
+            header::VirtioVsockEventId,
+            queue::{EventQueue, RxQueue, TxQueue},
         },
     },
-    queue::{QueueError, VirtQueue},
-    transport::VirtioTransport,
+    transport::{ConfigManager, VirtioTransport},
 };
 
-const QUEUE_SIZE: u16 = 64;
-const QUEUE_RECV: u16 = 0;
-const QUEUE_SEND: u16 = 1;
-const QUEUE_EVENT: u16 = 2;
-
-/// Vsock device driver
+/// Socket devices, which facilitate data transfer between the guest and device without using the
+/// Ethernet or IP protocols.
 pub struct SocketDevice {
-    config: VirtioVsockConfig,
-    guest_cid: u64,
-
-    /// Virtqueue to receive packets.
-    send_queue: VirtQueue,
-    recv_queue: VirtQueue,
-    event_queue: VirtQueue,
-
-    rx_buffers: SlotVec<RxBuffer>,
-    transport: Box<dyn VirtioTransport>,
+    config_manager: ConfigManager<VirtioVsockConfig>,
+    guest_cid: AtomicU64,
+    tx_queue: SpinLock<TxQueue, BottomHalfDisabled>,
+    rx_queue: SpinLock<RxQueue, BottomHalfDisabled>,
+    rx_callback: Once<fn()>,
+    event_queue: SpinLock<EventQueue, BottomHalfDisabled>,
+    event_callback: Once<fn()>,
+    transport: SpinLock<Box<dyn VirtioTransport>>,
 }
 
 impl SocketDevice {
-    /// Create a new vsock device
-    pub fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
-        let virtio_vsock_config = VirtioVsockConfig::new(transport.as_mut());
-        debug!("virtio_vsock_config = {:?}", virtio_vsock_config);
-        let guest_cid = field_ptr!(&virtio_vsock_config, VirtioVsockConfig, guest_cid_low)
-            .read_once()
-            .unwrap() as u64
-            | ((field_ptr!(&virtio_vsock_config, VirtioVsockConfig, guest_cid_high)
-                .read_once()
-                .unwrap() as u64)
-                << 32);
+    /// Negotiates the subset of device features supported by this driver.
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        (VsockFeatures::from_bits_truncate(features) & VsockFeatures::supported_features()).bits()
+    }
 
-        let mut recv_queue = VirtQueue::new(QUEUE_RECV, QUEUE_SIZE, transport.as_mut())
-            .expect("creating recv queue fails");
-        let send_queue = VirtQueue::new(QUEUE_SEND, QUEUE_SIZE, transport.as_mut())
-            .expect("creating send queue fails");
-        let event_queue = VirtQueue::new(QUEUE_EVENT, QUEUE_SIZE, transport.as_mut())
-            .expect("creating event queue fails");
+    /// Initializes a virtio-vsock device from `transport` and registers it globally.
+    pub(crate) fn init(mut transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
+        let config_manager = VirtioVsockConfig::new_manager(transport.as_ref());
+        let guest_cid = VirtioVsockConfig::read_guest_cid(&config_manager);
 
-        // Allocate and add buffers for the RX queue.
-        let mut rx_buffers = SlotVec::new();
-        for i in 0..QUEUE_SIZE {
-            let rx_pool = RX_BUFFER_POOL.get().unwrap();
-            let rx_buffer = RxBuffer::new(size_of::<VirtioVsockHdr>(), rx_pool);
-            let token = recv_queue.add_dma_buf(&[], &[&rx_buffer])?;
-            assert_eq!(i, token);
-            assert_eq!(rx_buffers.put(rx_buffer) as u16, i);
-        }
+        let tx_queue = TxQueue::new(transport.as_mut())?;
+        let rx_queue = RxQueue::new(transport.as_mut())?;
+        let event_queue = EventQueue::new(transport.as_mut())?;
 
-        if recv_queue.should_notify() {
-            debug!("notify receive queue");
-            recv_queue.notify();
-        }
+        let device = Arc::new(Self {
+            config_manager,
+            guest_cid: AtomicU64::new(guest_cid),
+            tx_queue: SpinLock::new(tx_queue),
+            rx_queue: SpinLock::new(rx_queue),
+            rx_callback: Once::new(),
+            event_queue: SpinLock::new(event_queue),
+            event_callback: Once::new(),
+            transport: SpinLock::new(transport),
+        });
 
-        let mut device = Self {
-            config: virtio_vsock_config.read_once().unwrap(),
-            guest_cid,
-            send_queue,
-            recv_queue,
-            event_queue,
-            rx_buffers,
-            transport,
-        };
-
-        /// Interrupt handler if vsock device config space changes
-        fn config_space_change(_: &TrapFrame) {
-            debug!("vsock device config space change");
-        }
-
-        /// Interrupt handler if vsock device receives some packet.
-        fn handle_vsock_event(_: &TrapFrame) {
-            handle_recv_irq(super::DEVICE_NAME);
-        }
-        // FIXME: handle event virtqueue notification in live migration
-
-        device
-            .transport
+        let mut transport = device.transport.lock();
+        let weak_device = Arc::downgrade(&device);
+        transport
+            .register_queue_callback(
+                RxQueue::QUEUE_INDEX,
+                Box::new(move |_: &TrapFrame| super::schedule_rx(&weak_device)),
+                true,
+            )
+            .unwrap();
+        let weak_device = Arc::downgrade(&device);
+        transport
+            .register_queue_callback(
+                TxQueue::QUEUE_INDEX,
+                Box::new(move |_: &TrapFrame| super::schedule_tx(&weak_device)),
+                true,
+            )
+            .unwrap();
+        let weak_device = Arc::downgrade(&device);
+        transport
+            .register_queue_callback(
+                EventQueue::QUEUE_INDEX,
+                Box::new(move |_: &TrapFrame| super::schedule_event(&weak_device)),
+                true,
+            )
+            .unwrap();
+        transport
             .register_cfg_callback(Box::new(config_space_change))
             .unwrap();
-        device
-            .transport
-            .register_queue_callback(QUEUE_RECV, Box::new(handle_vsock_event), false)
-            .unwrap();
+        transport.finish_init();
+        drop(transport);
 
-        device.transport.finish_init();
+        // Reload the guest CID after initialization to prevent race conditions if the CID changes
+        // at the same time.
+        device.reload_guest_id();
 
-        register_device(
-            super::DEVICE_NAME.to_string(),
-            Arc::new(SpinLock::new(device)),
-        );
-
+        super::register_device(DEVICE_NAME.to_string(), device);
         Ok(())
     }
 
-    /// Return the CID which has been assigned to this guest.
+    /// Locks the transmit queue.
+    pub fn lock_tx(&self) -> SpinLockGuard<'_, TxQueue, BottomHalfDisabled> {
+        self.tx_queue.lock()
+    }
+
+    /// Locks the receive queue.
+    pub fn lock_rx(&self) -> SpinLockGuard<'_, RxQueue, BottomHalfDisabled> {
+        self.rx_queue.lock()
+    }
+
+    /// Returns the current guest CID reported by the device configuration space.
     pub fn guest_cid(&self) -> u64 {
-        self.guest_cid
+        self.guest_cid.load(Ordering::Relaxed)
     }
 
-    /// Send a connection request
-    pub fn request(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Request as u16,
-            ..connection_info.new_header(self.guest_cid)
-        };
-
-        self.send_packet_to_tx_queue(&header, &[])
+    /// Registers the callback invoked after a packet is received.
+    ///
+    /// The function may be called only once; subsequent calls take no effect.
+    pub fn init_rx_callback(&self, callback: fn()) {
+        self.rx_callback.call_once(|| callback);
     }
 
-    /// Send a response to peer, if peer start a sending request
-    pub fn response(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Response as u16,
-            ..connection_info.new_header(self.guest_cid)
-        };
-        self.send_packet_to_tx_queue(&header, &[])
+    pub(super) fn process_rx(&self) {
+        if let Some(callback) = self.rx_callback.get() {
+            (callback)();
+        }
     }
 
-    /// Send a shutdown request
-    pub fn shutdown(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Shutdown as u16,
-            ..connection_info.new_header(self.guest_cid)
-        };
-        self.send_packet_to_tx_queue(&header, &[])
+    /// Registers the callback invoked after a transport event is received.
+    ///
+    /// The function may be called only once; subsequent calls take no effect.
+    pub fn init_event_callback(&self, callback: fn()) {
+        self.event_callback.call_once(|| callback);
     }
 
-    /// Send a reset request to peer
-    pub fn reset(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Rst as u16,
-            ..connection_info.new_header(self.guest_cid)
+    pub(super) fn process_event(&self) {
+        let mut event_queue = self.event_queue.lock();
+
+        let Some(event_id) = event_queue.recv() else {
+            return;
         };
-        self.send_packet_to_tx_queue(&header, &[])
-    }
-
-    /// Request the peer to send the credit info to us
-    pub fn credit_request(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::CreditRequest as u16,
-            ..connection_info.new_header(self.guest_cid)
-        };
-        self.send_packet_to_tx_queue(&header, &[])
-    }
-
-    /// Tell the peer our credit info
-    pub fn credit_update(&mut self, connection_info: &ConnectionInfo) -> Result<(), SocketError> {
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::CreditUpdate as u16,
-            ..connection_info.new_header(self.guest_cid)
-        };
-        self.send_packet_to_tx_queue(&header, &[])
-    }
-
-    fn send_packet_to_tx_queue(
-        &mut self,
-        header: &VirtioVsockHdr,
-        buffer: &[u8],
-    ) -> Result<(), SocketError> {
-        debug!("Sent packet {:?}. Op {:?}", header, header.op());
-        debug!("buffer in send_packet_to_tx_queue: {:?}", buffer);
-        let tx_buffer = {
-            let pool = TX_BUFFER_POOL.get().unwrap();
-            TxBuffer::new(header, buffer, pool)
-        };
-
-        let token = self.send_queue.add_dma_buf(&[&tx_buffer], &[])?;
-
-        if self.send_queue.should_notify() {
-            self.send_queue.notify();
+        match event_id {
+            VirtioVsockEventId::TransportReset => (),
         }
 
-        // Wait until the buffer is used
-        while !self.send_queue.can_pop() {
-            spin_loop();
-        }
+        drop(event_queue);
 
-        // Pop out the buffer, so we can reuse the send queue further
-        let (pop_token, _) = self.send_queue.pop_used()?;
-        debug_assert!(pop_token == token);
-        if pop_token != token {
-            return Err(SocketError::QueueError(QueueError::WrongToken));
-        }
-        debug!("send packet succeeds");
-        Ok(())
-    }
-
-    fn check_peer_buffer_is_sufficient(
-        &mut self,
-        connection_info: &mut ConnectionInfo,
-        buffer_len: usize,
-    ) -> Result<(), SocketError> {
-        debug!("connection info {:?}", connection_info);
-        debug!(
-            "peer free from peer: {:?}, buffer len : {:?}",
-            connection_info.peer_free(),
-            buffer_len
-        );
-        if connection_info.peer_free() as usize >= buffer_len {
-            Ok(())
+        if let Some(callback) = self.event_callback.get() {
+            (callback)();
         } else {
-            // Request an update of the cached peer credit, if we haven't already done so, and tell
-            // the caller to try again later.
-            if !connection_info.has_pending_credit_request {
-                self.credit_request(connection_info)?;
-                connection_info.has_pending_credit_request = true;
-                //TODO check if the update needed
-            }
-            Err(SocketError::InsufficientBufferSpaceInPeer)
+            // Reload the CID, even if the callback is not yet available. Otherwise, the callback is
+            // expected to do so.
+            self.reload_guest_id();
         }
     }
 
-    /// Sends the buffer to the destination.
-    pub fn send(
-        &mut self,
-        buffer: &[u8],
-        connection_info: &mut ConnectionInfo,
-    ) -> Result<(), SocketError> {
-        self.check_peer_buffer_is_sufficient(connection_info, buffer.len())?;
-
-        let len = buffer.len() as u32;
-        let header = VirtioVsockHdr {
-            op: VirtioVsockOp::Rw as u16,
-            len,
-            ..connection_info.new_header(self.guest_cid)
-        };
-        connection_info.tx_cnt += len;
-        self.send_packet_to_tx_queue(&header, buffer)
-    }
-
-    /// Receive bytes from peer, returns the header
-    pub fn receive(
-        &mut self,
-        // connection_info: &mut ConnectionInfo,
-    ) -> Result<RxBuffer, SocketError> {
-        let (token, len) = self.recv_queue.pop_used()?;
-        debug!(
-            "receive packet in rx_queue: token = {}, len = {}",
-            token, len
-        );
-        let mut rx_buffer = self
-            .rx_buffers
-            .remove(token as usize)
-            .ok_or(QueueError::WrongToken)?;
-        rx_buffer.set_packet_len(len as usize);
-
-        let rx_pool = RX_BUFFER_POOL.get().unwrap();
-        let new_rx_buffer = RxBuffer::new(size_of::<VirtioVsockHdr>(), rx_pool);
-        self.add_rx_buffer(new_rx_buffer, token)?;
-
-        Ok(rx_buffer)
-    }
-
-    /// Polls the RX virtqueue for the next event, and calls the given handler function to handle it.
-    pub fn poll(
-        &mut self,
-        handler: impl FnOnce(VsockEvent, &[u8]) -> Result<Option<VsockEvent>, SocketError>,
-    ) -> Result<Option<VsockEvent>, SocketError> {
-        // Return None if there is no pending packet.
-        if !self.recv_queue.can_pop() {
-            return Ok(None);
-        }
-        let rx_buffer = self.receive()?;
-
-        let mut buf_reader = rx_buffer.buf();
-        let mut temp_buffer = vec![0u8; buf_reader.remain()];
-        buf_reader.read(&mut VmWriter::from(&mut temp_buffer as &mut [u8]));
-
-        let (header, payload) = read_header_and_body(&temp_buffer)?;
-        // The length written should be equal to len(header)+len(packet)
-        debug!("Received packet {:?}. Op {:?}", header, header.op());
-        debug!("body is {:?}", payload);
-        VsockEvent::from_header(&header).and_then(|event| handler(event, payload))
-    }
-
-    /// Add a used rx buffer to recv queue,@index is only to check the correctness
-    fn add_rx_buffer(&mut self, rx_buffer: RxBuffer, index: u16) -> Result<(), SocketError> {
-        let token = self.recv_queue.add_dma_buf(&[], &[&rx_buffer])?;
-        assert_eq!(index, token);
-        assert!(self.rx_buffers.put_at(token as usize, rx_buffer).is_none());
-        if self.recv_queue.should_notify() {
-            self.recv_queue.notify();
-        }
-        Ok(())
-    }
-
-    /// Negotiate features for the device specified bits 0~23
-    pub(crate) fn negotiate_features(features: u64) -> u64 {
-        let device_features = VsockFeatures::from_bits_truncate(features);
-        let supported_features = VsockFeatures::supported_features();
-        let vsock_features = device_features & supported_features;
-        debug!("features negotiated: {:?}", vsock_features);
-        vsock_features.bits()
+    /// Reloads the guest CID from the device configuration space.
+    ///
+    /// This is used after transport reset events, which may change the local CID.
+    pub fn reload_guest_id(&self) {
+        let guest_cid = VirtioVsockConfig::read_guest_cid(&self.config_manager);
+        self.guest_cid.store(guest_cid, Ordering::Relaxed);
     }
 }
 
-impl Debug for SocketDevice {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SocketDevice")
-            .field("config", &self.config)
-            .field("guest_cid", &self.guest_cid)
-            .field("send_queue", &self.send_queue)
-            .field("recv_queue", &self.recv_queue)
-            .field("event_queue", &self.event_queue)
-            .field("transport", &self.transport)
-            .finish()
-    }
-}
-
-fn read_header_and_body(buffer: &[u8]) -> Result<(VirtioVsockHdr, &[u8]), SocketError> {
-    // Shouldn't panic, because we know `RX_BUFFER_SIZE > size_of::<VirtioVsockHdr>()`.
-    let header = VirtioVsockHdr::from_bytes(&buffer[..VIRTIO_VSOCK_HDR_LEN]);
-    let body_length = header.len() as usize;
-
-    // This could fail if the device returns an unreasonably long body length.
-    let data_end = VIRTIO_VSOCK_HDR_LEN
-        .checked_add(body_length)
-        .ok_or(SocketError::InvalidNumber)?;
-    // This could fail if the device returns a body length longer than the buffer we gave it.
-    let data = buffer
-        .get(VIRTIO_VSOCK_HDR_LEN..data_end)
-        .ok_or(SocketError::BufferTooShort)?;
-    Ok((header, data))
+fn config_space_change(_: &TrapFrame) {
+    debug!("virtio-vsock config change");
 }

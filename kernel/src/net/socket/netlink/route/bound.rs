@@ -2,12 +2,14 @@
 
 use core::ops::Sub;
 
-use super::message::RtnlMessage;
+use super::message::{RtnlMessage, RtnlSegment};
 use crate::{
     events::IoEvents,
     net::socket::{
         netlink::{
-            NetlinkSocketAddr, common::BoundNetlink, message::ProtocolSegment,
+            NetlinkSocketAddr,
+            common::BoundNetlink,
+            message::{ContinueRead, ProtocolSegment},
             route::kernel::get_netlink_route_kernel,
         },
         util::{SendRecvFlags, datagram_common},
@@ -58,23 +60,29 @@ impl datagram_common::Bound for BoundNetlinkRoute {
 
         let sum_lens = reader.sum_lens();
 
-        let mut nlmsg = match RtnlMessage::read_from(reader) {
-            Ok(nlmsg) => nlmsg,
-            Err(e) if e.error() == Errno::EFAULT => {
+        let local_port = self.handle.port();
+        let rtnl_kernel = get_netlink_route_kernel();
+
+        loop {
+            let mut segment = match RtnlSegment::read_from(reader) {
+                Ok(ContinueRead::Parsed(seg)) => seg,
+                Ok(ContinueRead::Skipped) => continue,
+                // There is at least a valid segment header, so we can create an error segment to
+                // report any errors found while parsing the segment body or attributes.
+                Ok(ContinueRead::SkippedErr(err_segment)) => {
+                    rtnl_kernel.report_error(err_segment, local_port);
+                    continue;
+                }
                 // EFAULT indicates an error occurred while copying data from user space,
                 // and this error should be returned back to user space.
-                return Err(e);
-            }
-            Err(e) => {
-                // Errors other than EFAULT indicate a failure in parsing the netlink message.
-                // These errors should be silently ignored.
-                warn!("failed to send netlink message: {:?}", e);
-                return Ok(sum_lens);
-            }
-        };
+                Err(err) if err.error() == Errno::EFAULT => {
+                    return Err(err);
+                }
+                // There isn't a valid segment header. Either there are no more bytes to read, or
+                // the header is corrupted. These errors are not recoverable, so we abort the loop.
+                Err(_) => break,
+            };
 
-        let local_port = self.handle.port();
-        for segment in nlmsg.segments_mut() {
             // The header's PID should be the sender's port ID.
             // However, the sender can also leave it unspecified.
             // In such cases, we will manually set the PID to the sender's port ID.
@@ -82,9 +90,9 @@ impl datagram_common::Bound for BoundNetlinkRoute {
             if header.pid == 0 {
                 header.pid = local_port;
             }
-        }
 
-        get_netlink_route_kernel().request(&nlmsg, local_port);
+            rtnl_kernel.handle_request(&segment, local_port);
+        }
 
         Ok(sum_lens)
     }
@@ -99,27 +107,18 @@ impl datagram_common::Bound for BoundNetlinkRoute {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let mut receive_queue = self.receive_queue.0.lock();
+        let mut receive_queue = self.receive_queue.lock();
 
-        let Some(response) = receive_queue.front() else {
-            return_errno_with_message!(Errno::EAGAIN, "nothing to receive");
-        };
+        receive_queue.dequeue_if(|response, response_len| {
+            let len = response_len.min(writer.sum_lens());
+            response.write_to(writer)?;
 
-        let len = {
-            let max_len = writer.sum_lens();
-            response.total_len().min(max_len)
-        };
+            // TODO: The message can only come from kernel socket currently.
+            let remote = NetlinkSocketAddr::new_unspecified();
 
-        response.write_to(writer)?;
-
-        if !flags.contains(SendRecvFlags::MSG_PEEK) {
-            receive_queue.pop_front().unwrap();
-        }
-
-        // TODO: The message can only come from kernel socket currently.
-        let remote = NetlinkSocketAddr::new_unspecified();
-
-        Ok((len, remote))
+            let should_dequeue = !flags.contains(SendRecvFlags::MSG_PEEK);
+            Ok((should_dequeue, (len, remote)))
+        })
     }
 
     fn check_io_events(&self) -> IoEvents {

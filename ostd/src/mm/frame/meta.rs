@@ -3,8 +3,9 @@
 //! Metadata management of frames.
 //!
 //! You can picture a globally shared, static, gigantic array of metadata
-//! initialized for each frame. An entry in the array is called a [`MetaSlot`],
-//! which contains the metadata of a frame. There would be a dedicated small
+//! initialized for each frame.
+//! Each entry in this array holds the metadata for a single frame.
+//! There would be a dedicated small
 //! "heap" space in each slot for dynamic metadata. You can store anything as
 //! the metadata of a frame as long as it's [`Sync`].
 //!
@@ -17,8 +18,6 @@
 pub(crate) mod mapping {
     //! The metadata of each physical page is linear mapped to fixed virtual addresses
     //! in [`FRAME_METADATA_RANGE`].
-
-    use core::mem::size_of;
 
     use super::MetaSlot;
     use crate::mm::{PAGE_SIZE, Paddr, Vaddr, kspace::FRAME_METADATA_RANGE};
@@ -48,18 +47,14 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use align_ext::AlignExt;
-use log::info;
-
 use crate::{
     arch::mm::PagingConsts,
     boot::memory_region::MemoryRegionType,
-    const_assert,
+    const_assert, info,
     mm::{
         CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PagingLevel,
         PrivilegedPageFlags, Segment, Vaddr, VmReader,
         frame::allocator::{self, EarlyAllocatedFrameMeta},
-        kspace::LINEAR_MAPPING_BASE_VADDR,
         paddr_to_vaddr, page_size,
         page_table::boot_pt,
     },
@@ -86,7 +81,7 @@ pub(in crate::mm) struct MetaSlot {
     ///  - the implementation can simply cast a `*const MetaSlot`
     ///    to a `*const AnyFrameMeta` for manipulation;
     ///  - if the metadata need special alignment, we can provide
-    ///    at most `PAGE_METADATA_ALIGN` bytes of alignment;
+    ///    at most [`FRAME_METADATA_MAX_ALIGN`] bytes of alignment;
     ///  - the subsequent fields can utilize the padding of the
     ///    reference count to save space.
     ///
@@ -109,6 +104,7 @@ pub(in crate::mm) struct MetaSlot {
     ///
     /// [`Frame::from_unused`]: super::Frame::from_unused
     /// [`UniqueFrame`]: super::unique::UniqueFrame
+    /// [`drop_last_in_place`]: Self::drop_last_in_place
     //
     // Other than this field the fields should be `MaybeUninit`.
     // See initialization in `alloc_meta_frames`.
@@ -132,7 +128,7 @@ pub(super) const REF_COUNT_MAX: u64 = i64::MAX as u64;
 
 type FrameMetaVtablePtr = core::ptr::DynMetadata<dyn AnyFrameMeta>;
 
-const_assert!(PAGE_SIZE % META_SLOT_SIZE == 0);
+const_assert!(PAGE_SIZE.is_multiple_of(META_SLOT_SIZE));
 const_assert!(size_of::<MetaSlot>() == META_SLOT_SIZE);
 
 /// All frame metadata types must implement this trait.
@@ -166,6 +162,17 @@ pub unsafe trait AnyFrameMeta: Any + Send + Sync {
     }
 }
 
+/// Checks that a frame metadata type has valid size and alignment.
+#[macro_export]
+macro_rules! check_frame_meta_layout {
+    ($t:ty) => {
+        $crate::const_assert!(size_of::<$t>() <= $crate::mm::frame::meta::FRAME_METADATA_MAX_SIZE);
+        $crate::const_assert!(
+            $crate::mm::frame::meta::FRAME_METADATA_MAX_ALIGN % align_of::<$t>() == 0
+        );
+    };
+}
+
 /// Makes a structure usable as a frame metadata.
 #[macro_export]
 macro_rules! impl_frame_meta_for {
@@ -174,12 +181,7 @@ macro_rules! impl_frame_meta_for {
         // SAFETY: `on_drop` won't read the page.
         unsafe impl $crate::mm::frame::meta::AnyFrameMeta for $t {}
 
-        $crate::const_assert!(
-            core::mem::size_of::<$t>() <= $crate::mm::frame::meta::FRAME_METADATA_MAX_SIZE
-        );
-        $crate::const_assert!(
-            $crate::mm::frame::meta::FRAME_METADATA_MAX_ALIGN % core::mem::align_of::<$t>() == 0
-        );
+        $crate::check_frame_meta_layout!($t);
     };
 }
 
@@ -206,7 +208,7 @@ pub enum GetFrameError {
 
 /// Gets the reference to a metadata slot.
 pub(super) fn get_slot(paddr: Paddr) -> Result<&'static MetaSlot, GetFrameError> {
-    if paddr % PAGE_SIZE != 0 {
+    if !paddr.is_multiple_of(PAGE_SIZE) {
         return Err(GetFrameError::NotAligned);
     }
     if paddr >= super::max_paddr() {
@@ -467,7 +469,7 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
         let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
         regions
             .iter()
-            .filter(|r| r.typ() == MemoryRegionType::Usable)
+            .filter(|r| r.typ().is_physical())
             .map(|r| r.base() + r.len())
             .max()
             .unwrap()
@@ -478,6 +480,11 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
         max_paddr
     );
 
+    // In RISC-V, the boot page table has mapped the 512GB memory,
+    // so we don't need to add temporary linear mapping.
+    // In LoongArch, the DWM0 has mapped the whole memory,
+    // so we don't need to add temporary linear mapping.
+    #[cfg(target_arch = "x86_64")]
     add_temp_linear_mapping(max_paddr);
 
     let tot_nr_frames = max_paddr / page_size::<PagingConsts>(1);
@@ -494,7 +501,7 @@ pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
                 priv_flags: PrivilegedPageFlags::GLOBAL,
             };
             // SAFETY: we are doing the metadata mappings for the kernel.
-            unsafe { boot_pt.map_base_page(vaddr, frame_paddr / PAGE_SIZE, prop) };
+            unsafe { boot_pt.map_base_page(vaddr, frame_paddr, prop) };
         }
     })
     .unwrap();
@@ -536,12 +543,12 @@ fn alloc_meta_frames(tot_nr_frames: usize) -> (usize, Paddr) {
         .checked_mul(size_of::<MetaSlot>())
         .unwrap()
         .div_ceil(PAGE_SIZE);
-    let start_paddr = allocator::early_alloc(
+    let paddr = allocator::early_alloc(
         Layout::from_size_align(nr_meta_pages * PAGE_SIZE, PAGE_SIZE).unwrap(),
     )
     .unwrap();
 
-    let slots = paddr_to_vaddr(start_paddr) as *mut MetaSlot;
+    let slots = paddr_to_vaddr(paddr) as *mut MetaSlot;
 
     // Initialize the metadata slots.
     for i in 0..tot_nr_frames {
@@ -561,7 +568,7 @@ fn alloc_meta_frames(tot_nr_frames: usize) -> (usize, Paddr) {
         };
     }
 
-    (nr_meta_pages, start_paddr)
+    (nr_meta_pages, paddr)
 }
 
 /// Unusable memory metadata. Cannot be used for any purposes.
@@ -581,8 +588,8 @@ impl_frame_meta_for!(KernelMeta);
 
 macro_rules! mark_ranges {
     ($region: expr, $typ: expr) => {{
-        debug_assert!($region.base() % PAGE_SIZE == 0);
-        debug_assert!($region.len() % PAGE_SIZE == 0);
+        debug_assert!($region.base().is_multiple_of(PAGE_SIZE));
+        debug_assert!($region.len().is_multiple_of(PAGE_SIZE));
 
         let seg = Segment::from_unused($region.base()..$region.end(), |_| $typ).unwrap();
         let _ = ManuallyDrop::new(seg);
@@ -592,11 +599,7 @@ macro_rules! mark_ranges {
 fn mark_unusable_ranges() {
     let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
 
-    for region in regions
-        .iter()
-        .rev()
-        .skip_while(|r| r.typ() != MemoryRegionType::Usable)
-    {
+    for region in regions.iter().rev().skip_while(|r| !r.typ().is_physical()) {
         match region.typ() {
             MemoryRegionType::BadMemory => mark_ranges!(region, UnusableMemoryMeta),
             MemoryRegionType::Unknown => mark_ranges!(region, ReservedMemoryMeta),
@@ -616,7 +619,12 @@ fn mark_unusable_ranges() {
 /// We only assume boot page table to contain 4G linear mapping. Thus if the
 /// physical memory is huge we end up depleted of linear virtual memory for
 /// initializing metadata.
+#[cfg(target_arch = "x86_64")]
 fn add_temp_linear_mapping(max_paddr: Paddr) {
+    use align_ext::AlignExt;
+
+    use crate::mm::kspace::LINEAR_MAPPING_BASE_VADDR;
+
     const PADDR4G: Paddr = 0x1_0000_0000;
 
     if max_paddr <= PADDR4G {
@@ -639,7 +647,7 @@ fn add_temp_linear_mapping(max_paddr: Paddr) {
         boot_pt::with_borrow(|boot_pt| {
             for paddr in prange.step_by(PAGE_SIZE) {
                 let vaddr = LINEAR_MAPPING_BASE_VADDR + paddr;
-                boot_pt.map_base_page(vaddr, paddr / PAGE_SIZE, prop);
+                boot_pt.map_base_page(vaddr, paddr, prop);
             }
         })
         .unwrap();

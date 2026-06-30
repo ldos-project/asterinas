@@ -10,8 +10,9 @@ use super::{AnyStorage, CpuLocal};
 use crate::{
     Result,
     cpu::{CpuId, PinCurrentCpu, all_cpus, num_cpus},
-    mm::{FrameAllocOptions, PAGE_SIZE, Segment, Vaddr, paddr_to_vaddr},
-    trap::irq::DisabledLocalIrqGuard,
+    irq::DisabledLocalIrqGuard,
+    mm::{FrameAllocOptions, HasPaddr, PAGE_SIZE, Segment, Vaddr, paddr_to_vaddr},
+    util::id_set::Id,
 };
 
 /// A dynamically-allocated storage for a CPU-local variable of type `T`.
@@ -74,24 +75,29 @@ impl<T> CpuLocal<T, DynamicStorage<T>> {
     /// The given `ptr` points to the variable located on the BSP.
     ///
     /// Please do not call this function directly. Instead, use
-    /// `DynCpuLocalChunk::alloc`.
+    /// [`DynCpuLocalChunk::alloc`].
     ///
     /// # Safety
     ///
-    /// The caller must ensure that the new per-CPU object belongs to an
-    /// existing [`DynCpuLocalChunk`], and does not overlap with any existing
-    /// CPU-local object.
+    /// The caller must ensure that
+    ///  - the new per-CPU object belongs to an existing
+    ///    [`DynCpuLocalChunk`], and does not overlap with any
+    ///    existing CPU-local object;
+    ///  - the `ITEM_SIZE` of the [`DynCpuLocalChunk`] satisfies
+    ///    the layout requirement of `T`.
     unsafe fn __new_dynamic(ptr: *mut T, init_values: &mut impl FnMut(CpuId) -> T) -> Self {
         let mut storage = DynamicStorage(NonNull::new(ptr).unwrap());
         for cpu in all_cpus() {
             let ptr = storage.get_mut_ptr_on_target(cpu);
-            // SAFETY: `ptr` points to valid, uninitialized per-CPU memory
-            // reserved for CPU-local storage. This initialization occurs
-            // before any other code can access the memory. References to
-            // the data may only be created after `Self` is created, ensuring
-            // exclusive access by the current task. Each per-CPU memory
-            // region is written exactly once using `ptr::write`, which is
-            // safe for uninitialized memory.
+            // SAFETY:
+            //  - `ptr` is valid for writes, because:
+            //    - The `DynCpuLocalChunk` slot is non-null and dereferenceable.
+            //    - This initialization occurs before any other code can access
+            //      the memory. References to the data may only be created
+            //      after `Self` is created, ensuring exclusive access by the
+            //      current task.
+            //  - `ptr` is properly aligned, as the caller guarantees that the
+            //    layout requirement is satisfied.
             unsafe {
                 core::ptr::write(ptr, init_values(cpu));
             }
@@ -107,7 +113,7 @@ impl<T> CpuLocal<T, DynamicStorage<T>> {
 const CHUNK_SIZE: usize = PAGE_SIZE;
 
 /// Footer metadata to describe a `SSTable`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct DynCpuLocalMeta;
 crate::impl_frame_meta_for!(DynCpuLocalMeta);
 
@@ -130,7 +136,7 @@ impl<const ITEM_SIZE: usize> DynCpuLocalChunk<ITEM_SIZE> {
             .alloc_segment_with(total_chunk_size.div_ceil(PAGE_SIZE), |_| DynCpuLocalMeta)?;
 
         let num_items = CHUNK_SIZE / ITEM_SIZE;
-        const { assert!(CHUNK_SIZE % ITEM_SIZE == 0) };
+        const { assert!(CHUNK_SIZE.is_multiple_of(ITEM_SIZE)) };
 
         Ok(Self {
             segment: ManuallyDrop::new(segment),
@@ -140,7 +146,7 @@ impl<const ITEM_SIZE: usize> DynCpuLocalChunk<ITEM_SIZE> {
 
     /// Returns a pointer to the local chunk owned by the BSP.
     fn start_vaddr(&self) -> Vaddr {
-        paddr_to_vaddr(self.segment.start_paddr())
+        paddr_to_vaddr(self.segment.paddr())
     }
 
     /// Allocates a CPU-local object from the chunk, and
@@ -151,16 +157,17 @@ impl<const ITEM_SIZE: usize> DynCpuLocalChunk<ITEM_SIZE> {
         &mut self,
         init_values: &mut impl FnMut(CpuId) -> T,
     ) -> Option<CpuLocal<T, DynamicStorage<T>>> {
-        const {
-            assert!(ITEM_SIZE.is_power_of_two());
-            assert!(core::mem::size_of::<T>() <= ITEM_SIZE);
-            assert!(core::mem::align_of::<T>() <= ITEM_SIZE);
-        }
+        assert!(ITEM_SIZE.is_power_of_two());
+        assert!(size_of::<T>() <= ITEM_SIZE);
+        assert!(align_of::<T>() <= ITEM_SIZE);
 
         let index = self.bitmap.first_zero()?;
         self.bitmap.set(index, true);
-        // SAFETY: `index` refers to an available position in the chunk
-        // for allocating a new CPU-local object.
+        // SAFETY:
+        //  - `index` refers to an available position in the chunk
+        //    for allocating a new CPU-local object.
+        //  - We have checked the size and alignment requirement
+        //    for `T` above.
         unsafe {
             let vaddr = self.start_vaddr() + index * ITEM_SIZE;
             Some(CpuLocal::__new_dynamic(vaddr as *mut T, init_values))
@@ -195,15 +202,22 @@ impl<const ITEM_SIZE: usize> DynCpuLocalChunk<ITEM_SIZE> {
         let Some(index) = self.get_item_index(&cpu_local) else {
             return Err(cpu_local);
         };
+
         self.bitmap.set(index, false);
         for cpu in all_cpus() {
             let ptr = cpu_local.storage.get_mut_ptr_on_target(cpu);
-            // SAFETY: `ptr` points to the valid CPU-local object. We can
-            // mutably borrow the CPU-local object on `cpu` because we have
-            // the exclusive access to `cpu_local`. Each CPU-local object
-            // is dropped exactly once. After the deallocation, no one will
-            // access the dropped CPU-local object, since we explicitly
-            // forget the `cpu_local`.
+            // SAFETY:
+            //  - `ptr` is valid for both reads and writes, because:
+            //    - The pointer of the CPU-local object on `cpu` is
+            //      non-null and dereferenceable.
+            //    - We can mutably borrow the CPU-local object on `cpu`
+            //      because we have the exclusive access to `cpu_local`.
+            //  - The pointer of the CPU-local object is properly aligned.
+            //  - The pointer of the CPU-local object points to a valid
+            //    instance of `T`.
+            //  - After the deallocation, no one will access the
+            //    dropped CPU-local object, since we explicitly forget
+            //    the `cpu_local`.
             unsafe {
                 core::ptr::drop_in_place(ptr);
             }

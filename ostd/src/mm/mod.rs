@@ -2,17 +2,17 @@
 
 //! Virtual memory (VM).
 
-/// Virtual addresses.
-pub type Vaddr = usize;
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(unused_imports)
+)]
 
-/// Physical addresses.
-pub type Paddr = usize;
-
-pub(crate) mod dma;
+pub mod dma;
 pub mod frame;
 pub mod heap;
-mod io;
+pub mod io;
 pub(crate) mod kspace;
+pub(crate) mod mem_obj;
 pub(crate) mod page_prop;
 pub(crate) mod page_table;
 pub mod tlb;
@@ -21,28 +21,40 @@ pub mod vm_space;
 #[cfg(ktest)]
 mod test;
 
-use core::{fmt::Debug, ops::Range};
+use core::fmt::Debug;
 
 pub use self::{
-    dma::{Daddr, DmaCoherent, DmaDirection, DmaStream, DmaStreamSlice, HasDaddr},
     frame::{
         Frame,
         allocator::FrameAllocOptions,
         segment::{Segment, USegment},
         unique::UniqueFrame,
-        untyped::{AnyUFrameMeta, UFrame, UntypedMem},
+        untyped::{AnyUFrameMeta, UFrame},
     },
     io::{
-        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodOnce, VmIo, VmIoOnce, VmReader,
-        VmWriter,
+        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodAtomic, PodOnce, VmIo, VmIoFill,
+        VmIoOnce, VmReader, VmWriter,
     },
+    kspace::{KERNEL_VADDR_RANGE, MAX_USERSPACE_VADDR},
+    mem_obj::{HasDaddr, HasPaddr, HasPaddrRange, HasSize, Split},
     page_prop::{CachePolicy, PageFlags, PageProperty},
     vm_space::VmSpace,
 };
 pub(crate) use self::{
-    kspace::paddr_to_vaddr, page_prop::PrivilegedPageFlags, page_table::PageTable,
+    kspace::paddr_to_vaddr,
+    page_prop::{PageTableFlags, PrivilegedPageFlags},
+    page_table::PageTable,
 };
 pub use crate::arch::mm::PagingConsts;
+
+/// Virtual addresses.
+pub type Vaddr = usize;
+
+/// Physical addresses.
+pub type Paddr = usize;
+
+/// Device addresses.
+pub type Daddr = usize;
 
 /// The level of a page table node or a frame.
 pub type PagingLevel = u8;
@@ -103,30 +115,6 @@ pub(crate) const fn nr_subpage_per_huge<C: PagingConstsTrait>() -> usize {
 #[expect(dead_code)]
 pub(crate) const fn nr_base_per_page<C: PagingConstsTrait>(level: PagingLevel) -> usize {
     page_size::<C>(level) / C::BASE_PAGE_SIZE
-}
-
-/// The maximum virtual address of user space (non inclusive).
-///
-/// Typical 64-bit systems have at least 48-bit virtual address space.
-/// A typical way to reserve half of the address space for the kernel is
-/// to use the highest 48-bit virtual address space.
-///
-/// Also, the top page is not regarded as usable since it's a workaround
-/// for some x86_64 CPUs' bugs. See
-/// <https://github.com/torvalds/linux/blob/480e035fc4c714fb5536e64ab9db04fedc89e910/arch/x86/include/asm/page_64.h#L68-L78>
-/// for the rationale.
-pub const MAX_USERSPACE_VADDR: Vaddr = 0x0000_8000_0000_0000 - PAGE_SIZE;
-
-/// The kernel address space.
-///
-/// There are the high canonical addresses defined in most 48-bit width
-/// architectures.
-pub const KERNEL_VADDR_RANGE: Range<Vaddr> = 0xffff_8000_0000_0000..0xffff_ffff_ffff_0000;
-
-/// Gets physical address trait
-pub trait HasPaddr {
-    /// Returns the physical address.
-    fn paddr(&self) -> Paddr;
 }
 
 /// Checks if the given address is page-aligned.

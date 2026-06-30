@@ -2,11 +2,22 @@
 
 // The boot routine executed by the bootstrap processor.
 
+IA32_EFER_MSR     = 0xC0000080
+IA32_EFER_BIT_LME = 1 << 8
+
+IA32_GS_BASE_MSR  = 0xC0000101
+
+CR0_BIT_PG        = 1 << 31
+
+CR4_BIT_PAE       = 1 << 5
+CR4_BIT_PGE       = 1 << 7
+
+KERNEL_VMA        = 0xffffffff80000000
+
 // The boot header, initial boot setup code, temporary GDT and page tables are
 // in the boot section. The boot section is mapped writable since kernel may
 // modify the initial page table.
-.section ".bsp_boot", "awx"
-.code32
+.section ".bsp_boot", "awx", @progbits
 
 // With every entry types we could go through common paging or machine
 // state setup routines. Thus we make a mark of protocol used in each entrypoint
@@ -18,8 +29,6 @@ ENTRYTYPE_LINUX_64      = 4
 
 MULTIBOOT_ENTRY_MAGIC   = 0x2BADB002
 MULTIBOOT2_ENTRY_MAGIC  = 0x36D76289
-
-KERNEL_VMA              = 0xffffffff80000000
 
 // The Linux 32-bit Boot Protocol entry point.
 // Must be located at 0x8001000, ABI immutable!
@@ -122,7 +131,7 @@ protected_mode:
 
     // Enable PAE and PGE.
     mov eax, cr4
-    or  eax, 0xa0
+    or  eax, CR4_BIT_PAE | CR4_BIT_PGE
     mov cr4, eax
 
     // Set the page table address.
@@ -130,9 +139,9 @@ protected_mode:
     mov cr3, eax
 
     // Enable long mode.
-    mov ecx, 0xc0000080
+    mov ecx, IA32_EFER_MSR
     rdmsr
-    or  eax, 0x0100
+    or  eax, IA32_EFER_BIT_LME
     wrmsr
 
     // Prepare for far return.
@@ -142,7 +151,7 @@ protected_mode:
 
     // Enable paging.
     mov eax, cr0
-    or  eax, 0x80000000
+    or  eax, CR0_BIT_PG
     mov cr0, eax
 
     retf
@@ -285,11 +294,6 @@ boot_l2pt_3g_4g:
     .skip 4096
 boot_page_table_end:
 
-.global boot_stack_top
-boot_stack_bottom:
-    .skip 0x40000
-boot_stack_top:
-
 .code64
 long_mode_in_low_address:
     mov ax, 0
@@ -305,9 +309,17 @@ long_mode_in_low_address:
     mov rax, offset long_mode
     jmp rax
 
+.section ".bsp_boot.stack", "aw", @nobits
+
+boot_stack_bottom:
+    .align 4096
+    .skip 0x40000  # 256 KiB
+boot_stack_top:
+
 // From here, we're in the .text section: we no longer use physical address.
 .text
 .code64
+
 long_mode:
     // Clear .bss section.
     mov al, 0x00
@@ -323,8 +335,8 @@ long_mode:
 .extern __cpu_local_start
     lea rax, [rip + __cpu_local_start]
     mov rdx, rax
-    shr rdx, 32          // EDX:EAX = __cpu_local_start
-    mov ecx, 0xC0000101  // ECX = GS.base
+    shr rdx, 32                // EDX:EAX = __cpu_local_start
+    mov ecx, IA32_GS_BASE_MSR  // ECX = GS.base
     wrmsr
 
     // Call the corresponding Rust entrypoint according to the boot entrypoint.

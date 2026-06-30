@@ -14,7 +14,3 @@ bitflags! {
         const READ   = 0o004;
     }
 }
-
-pub(super) fn init() {
-    sem_set::init();
-}

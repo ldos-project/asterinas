@@ -1,0 +1,123 @@
+// Close a file descriptor
+close(fd);
+
+// Get file status
+stat(pathname, statbuf);
+lstat(pathname, statbuf);
+fstat(fd, statbuf);
+
+// Read from a file descriptor
+read(fd, buf, count);
+
+// Write to a file descriptor
+write(fd, buf, count);
+
+// Create a directory
+mkdir(pathname, mode);
+mkdirat(dirfd, path, mode);
+
+// Read from a file descriptor at a given offset
+pread64(fd, buf, count, offset);
+
+// Check user's permissions for a file
+access(pathname, mode);
+
+// Write to a file descriptor at a given offset
+pwrite64(fd, buf, count, offset);
+
+// Read/write data into multiple buffers
+readv(fd, iov, iovcnt);
+preadv(fd, iov, iovcnt, offset);
+writev(fd, iov, iovcnt);
+pwritev(fd, iov, iovcnt, offset);
+
+// Truncate a file to a specified length
+truncate(path, length);
+ftruncate(fd, length);
+
+// Get current working directory
+getcwd(buf, size);
+
+// Change working directory
+chdir(path);
+fchdir(fd);
+
+// Change the name or location of a file
+rename(oldpath, newpath);
+renameat(olddirfd, oldpath, newdirfd, newpath);
+
+// Delete a directory
+rmdir(path);
+
+// Create a file
+creat(path, mode);
+
+// Make a new name for a file
+link(oldpath, newpath);
+linkat(olddirfd, oldpath, newdirfd, newpath, flags = AT_EMPTY_PATH | AT_SYMLINK_FOLLOW);
+
+// Delete a name and possibly the file it refers to
+unlink(path);
+unlinkat(dirfd, path, flags = AT_REMOVEDIR);
+
+// Make a new name for a file
+symlink(target, linkpath);
+symlinkat(target, newdirfd, linkpath);
+
+// Read value of a symbolic link
+readlink(path, buf, bufsiz);
+readlinkat(dirfd, path, buf, bufsiz);
+
+// Change permissions of a file
+chmod(path, mode);
+fchmod(fd, mode);
+fchmodat(dirfd, path_ptr, mode);
+fchmodat2(dirfd, path_ptr, mode, flags = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+
+// Change ownership of a file
+chown(path, owner, group);
+fchown(fd, owner, group);
+lchown(path, owner, group);
+fchownat(dirfd, path, owner, group, flags = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+
+// Set file mode creation mask
+umask(mask);
+
+// Change file last access and modification times
+utime(path, times);
+utimes(path, times);
+
+// Create a filesystem node
+mknod(path, mode, dev);
+mknodat(dirfd, path, mode, dev);
+
+// Change timestamps of a file relative to a directory file descriptor
+futimesat(dirfd, path, times);
+
+// Retrieve an extended attribute value
+getxattr(path, name, value, size);
+lgetxattr(path, name, value, size);
+fgetxattr(fd, name, value, size);
+
+xattr_flags = XATTR_CREATE | XATTR_REPLACE;
+
+// Set an extended attribute value
+setxattr(path, name, value, size, flags = <xattr_flags>);
+lsetxattr(path, name, value, size, flags = <xattr_flags>);
+fsetxattr(fd, name, value, size, flags = <xattr_flags>);
+
+// List extended attribute names
+listxattr(path, list, size);
+llistxattr(path, list, size);
+flistxattr(fd, list, size);
+
+// Remove an extended attribute
+removexattr(path, name);
+lremovexattr(path, name);
+fremovexattr(fd, name);
+
+// Check user's permissions for a file
+faccessat(dirfd, path, mode);
+
+// Apply or remove an advisory lock on an open file
+flock(fd, op = LOCK_SH | LOCK_EX | LOCK_UN | LOCK_NB);

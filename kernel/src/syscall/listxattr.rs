@@ -2,12 +2,12 @@
 
 use super::{
     SyscallReturn,
-    setxattr::{XattrFileCtx, lookup_dentry_for_xattr},
+    setxattr::{XattrFileCtx, lookup_path_for_xattr},
 };
 use crate::{
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        utils::{XATTR_LIST_MAX_LEN, XattrNamespace},
+        file::file_table::{RawFileDesc, get_file_fast},
+        vfs::xattr::{XATTR_LIST_MAX_LEN, XattrNamespace},
     },
     prelude::*,
     process::credentials::capabilities::CapSet,
@@ -55,13 +55,13 @@ pub fn sys_llistxattr(
 }
 
 pub fn sys_flistxattr(
-    fd: FileDesc,
+    raw_fd: RawFileDesc,
     list_ptr: Vaddr, // The given list is used to place xattr (null-terminated) names.
     list_len: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
     let user_space = ctx.user_space();
     let len = listxattr(
@@ -89,8 +89,8 @@ fn listxattr(
     let namespace = get_current_xattr_namespace(ctx);
     let mut list_writer = user_space.writer(list_ptr, list_len)?;
 
-    let dentry = lookup_dentry_for_xattr(&file_ctx, ctx)?;
-    dentry.list_xattr(namespace, &mut list_writer)
+    let path = lookup_path_for_xattr(&file_ctx, ctx)?;
+    path.list_xattr(namespace, &mut list_writer)
 }
 
 fn get_current_xattr_namespace(ctx: &Context) -> XattrNamespace {

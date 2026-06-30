@@ -1,37 +1,56 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        fs_resolver::FsPath,
-        utils::{PATH_MAX, SuperBlock},
+        file::file_table::{RawFileDesc, get_file_fast},
+        utils::PATH_MAX,
+        vfs::{file_system::SuperBlock, path::FsPath},
     },
     prelude::*,
 };
 
 pub fn sys_statfs(path_ptr: Vaddr, statfs_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     let user_space = ctx.user_space();
-    let path = user_space.read_cstring(path_ptr, PATH_MAX)?;
-    debug!("path = {:?}, statfs_buf_ptr = 0x{:x}", path, statfs_buf_ptr,);
+    let path_name = user_space.read_cstring(path_ptr, PATH_MAX)?;
+    debug!(
+        "path = {:?}, statfs_buf_ptr = 0x{:x}",
+        path_name, statfs_buf_ptr,
+    );
 
-    let dentry = {
-        let path = path.to_string_lossy();
-        let fs_path = FsPath::try_from(path.as_ref())?;
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
+    let fs = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path = FsPath::try_from(path_name.as_ref())?;
+        let path = ctx
+            .thread_local
+            .borrow_fs()
+            .resolver()
+            .read()
+            .lookup(&fs_path)?;
+        path.fs()
     };
-    let statfs = Statfs::from(dentry.fs().sb());
+
+    let statfs = Statfs::from(fs.sb());
     user_space.write_val(statfs_buf_ptr, &statfs)?;
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_fstatfs(fd: FileDesc, statfs_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fd = {}, statfs_buf_addr = 0x{:x}", fd, statfs_buf_ptr);
+pub fn sys_fstatfs(
+    raw_fd: RawFileDesc,
+    statfs_buf_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!(
+        "raw_fd = {}, statfs_buf_addr = 0x{:x}",
+        raw_fd, statfs_buf_ptr
+    );
 
     let fs = {
         let mut file_table = ctx.thread_local.borrow_file_table_mut();
-        let file = get_file_fast!(&mut file_table, fd);
-        file.as_inode_or_err()?.dentry().fs()
+        let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+        file.path().fs()
     };
 
     let statfs = Statfs::from(fs.sb());
@@ -40,8 +59,8 @@ pub fn sys_fstatfs(fd: FileDesc, statfs_buf_ptr: Vaddr, ctx: &Context) -> Result
 }
 
 /// FS Stat
-#[derive(Debug, Clone, Copy, Pod, Default)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 struct Statfs {
     /// Type of filesystem
     f_type: u64,

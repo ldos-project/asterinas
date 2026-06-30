@@ -2,46 +2,90 @@
 
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{InodeMode, PATH_MAX},
+        file::{
+            InodeMode,
+            file_table::{RawFileDesc, get_file_fast},
+        },
+        utils::PATH_MAX,
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     },
     prelude::*,
 };
 
-pub fn sys_fchmod(fd: FileDesc, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fd = {}, mode = 0o{:o}", fd, mode);
+pub fn sys_fchmod(raw_fd: RawFileDesc, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
+    debug!("raw_fd = {}, mode = 0o{:o}", raw_fd, mode);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-    file.set_mode(InodeMode::from_bits_truncate(mode))?;
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    file.path().set_mode(InodeMode::from_bits_truncate(mode))?;
+    fs::vfs::notify::on_attr_change(file.path());
     Ok(SyscallReturn::Return(0))
 }
 
 pub fn sys_chmod(path_ptr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
-    self::sys_fchmodat(AT_FDCWD, path_ptr, mode, ctx)
+    do_fchmodat(AT_FDCWD, path_ptr, mode, ChmodFlags::empty(), ctx)
 }
 
-// Glibc handles the `flags` argument, so we just ignore it.
 pub fn sys_fchmodat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u16,
-    /* flags: u32, */
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let path = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
-    debug!("dirfd = {}, path = {:?}, mode = 0o{:o}", dirfd, path, mode,);
+    do_fchmodat(dirfd, path_ptr, mode, ChmodFlags::empty(), ctx)
+}
 
-    let dentry = {
-        let path = path.to_string_lossy();
-        if path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
+pub fn sys_fchmodat2(
+    dirfd: RawFileDesc,
+    path_ptr: Vaddr,
+    mode: u16,
+    flags: u32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let flags = ChmodFlags::from_bits(flags)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid chmod flags"))?;
+
+    do_fchmodat(dirfd, path_ptr, mode, flags, ctx)
+}
+
+fn do_fchmodat(
+    dirfd: RawFileDesc,
+    path_ptr: Vaddr,
+    mode: u16,
+    flags: ChmodFlags,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let path_name = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
+
+    debug!(
+        "dirfd = {}, path_name = {:?}, mode = 0o{:o}, flags = {:?}",
+        dirfd, path_name, mode, flags,
+    );
+
+    let path = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
+        if flags.contains(ChmodFlags::AT_SYMLINK_NOFOLLOW) {
+            path_resolver.lookup_no_follow(&fs_path)?
+        } else {
+            path_resolver.lookup(&fs_path)?
         }
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
     };
-    dentry.set_mode(InodeMode::from_bits_truncate(mode))?;
+
+    path.set_mode(InodeMode::from_bits_truncate(mode))?;
+    fs::vfs::notify::on_attr_change(&path);
     Ok(SyscallReturn::Return(0))
+}
+
+bitflags::bitflags! {
+    struct ChmodFlags: u32 {
+        const AT_EMPTY_PATH = 1 << 12;
+        const AT_SYMLINK_NOFOLLOW = 1 << 8;
+    }
 }

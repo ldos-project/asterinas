@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The standard library for Asterinas and other Rust OSes.
+#![doc = include_str!("../README.md")]
 #![feature(alloc_error_handler)]
 #![feature(allocator_api)]
 #![feature(btree_cursors)]
-#![feature(const_trait_impl)]
 #![feature(core_intrinsics)]
-#![feature(coroutines)]
-#![feature(fn_traits)]
-#![feature(iter_advance_by)]
-#![feature(iter_from_coroutine)]
 #![feature(linkage)]
 #![feature(min_specialization)]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
 #![feature(sync_unsafe_cell)]
+#![cfg_attr(target_arch = "x86_64", feature(iter_advance_by, macro_metavar_expr))]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
@@ -24,21 +20,32 @@
 extern crate self as ostd;
 
 extern crate alloc;
+#[macro_use]
+extern crate ostd_pod;
 
-#[cfg(target_arch = "x86_64")]
-#[path = "arch/x86/mod.rs"]
+// Set this crate's log prefix for `ostd::log`.
+macro_rules! __log_prefix {
+    () => {
+        ""
+    };
+}
+
+#[cfg_attr(target_arch = "x86_64", path = "arch/x86/mod.rs")]
+#[cfg_attr(target_arch = "riscv64", path = "arch/riscv/mod.rs")]
+#[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
 pub mod arch;
-#[cfg(target_arch = "riscv64")]
-#[path = "arch/riscv/mod.rs"]
-pub mod arch;
+
 pub mod assertion;
+
 pub mod boot;
 pub mod bus;
 pub mod console;
 pub mod cpu;
 pub mod error;
+mod ex_table;
 pub mod io;
-pub mod logger;
+pub mod irq;
+pub mod log;
 pub mod mm;
 #[cfg(not(baseline_asterinas))]
 pub mod orpc;
@@ -47,6 +54,7 @@ pub mod orpc;
 pub mod orpc;
 mod orpc_common;
 pub mod panic;
+pub mod power;
 pub mod prelude;
 pub mod smp;
 pub mod stack_info;
@@ -54,9 +62,11 @@ pub mod stacktrace;
 pub mod sync;
 pub mod task;
 pub mod timer;
-pub mod trap;
 pub mod user;
 pub mod util;
+
+#[cfg(feature = "coverage")]
+mod coverage;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,7 +74,6 @@ pub use ostd_macros::{
     global_frame_allocator, global_heap_allocator, global_heap_allocator_slot_map, main,
     ostd_error, panic_handler,
 };
-pub use ostd_pod::Pod;
 
 pub use self::{
     error::{Error, OstdError},
@@ -83,7 +92,6 @@ pub use self::{
 // TODO: We need to refactor this function to make it more modular and
 // make inter-initialization-dependencies more clear and reduce usages of
 // boot stage only global variables.
-#[doc(hidden)]
 unsafe fn init() {
     arch::enable_cpu_features();
 
@@ -99,12 +107,12 @@ unsafe fn init() {
     #[cfg(not(target_arch = "x86_64"))]
     arch::serial::init();
 
-    logger::init();
+    log::init();
 
     // SAFETY:
     // 1. They are only called once in the boot context of the BSP.
     // 2. The number of CPUs are available because ACPI has been initialized.
-    // 3. No CPU-local objects have been accessed yet.
+    //  3. CPU-local storage has NOT been used.
     unsafe { cpu::init_on_bsp() };
 
     // SAFETY: We are on the BSP and APs are not yet started.
@@ -116,12 +124,14 @@ unsafe fn init() {
 
     mm::kspace::init_kernel_page_table(meta_pages);
 
+    // SAFETY: This function is called only once on the BSP.
+    unsafe { mm::kspace::activate_kernel_page_table() };
+
     sync::init();
 
     boot::init_after_heap();
 
-    mm::dma::init();
-
+    // SAFETY: This function is called only once on the BSP.
     unsafe { arch::late_init_on_bsp() };
 
     #[cfg(target_arch = "x86_64")]
@@ -131,12 +141,11 @@ unsafe fn init() {
 
     smp::init();
 
-    // SAFETY: This function is called only once on the BSP.
-    unsafe {
-        mm::kspace::activate_kernel_page_table();
-    }
-
-    bus::init();
+    // SAFETY:
+    // 1. The kernel page table is activated on the BSP.
+    // 2. The function is called only once on the BSP.
+    // 3. No remaining `with_borrow` invocations from now.
+    unsafe { crate::mm::page_table::boot_pt::dismiss() };
 
     task::scheduler::init();
 
@@ -167,13 +176,20 @@ fn invoke_ffi_init_funcs() {
         fn __sinit_array();
         fn __einit_array();
     }
-    let call_len = (__einit_array as usize - __sinit_array as usize) / 8;
+    let call_len = (__einit_array as *const () as usize - __sinit_array as *const () as usize) / 8;
     for i in 0..call_len {
         unsafe {
-            let function = (__sinit_array as usize + 8 * i) as *const fn();
+            let function = (__sinit_array as *const () as usize + 8 * i) as *const fn();
             (*function)();
         }
     }
+}
+
+mod feature_validation {
+    #[cfg(all(not(target_arch = "riscv64"), feature = "riscv_sv39_mode"))]
+    compile_error!(
+        "feature \"riscv_sv39_mode\" cannot be specified for architectures other than RISC-V"
+    );
 }
 
 /// Simple unit tests for the ktest framework.
@@ -181,8 +197,8 @@ fn invoke_ffi_init_funcs() {
 mod test {
     use crate::prelude::*;
 
-    #[ktest]
     #[expect(clippy::eq_op)]
+    #[ktest]
     fn trivial_assertion() {
         assert_eq!(0, 0);
     }

@@ -34,7 +34,7 @@ mod legacy_tests {
     };
 
     #[ktest]
-    fn test_legacy_capture_server() {
+    fn legacy_capture_server() {
         // Create memory disk with space for 4 blocks
         let block_device = Arc::new(MemoryDisk::new(4096 * 4));
         let device = DataCaptureDeviceServer::new(block_device.clone());

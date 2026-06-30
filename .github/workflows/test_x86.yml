@@ -18,9 +18,17 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.15.2-20250613
-      options: --device=/dev/kvm --privileged
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+      volumes:
+        # Map the following directories on the host into the container so that
+        # the container can remove them to save some precious disk space (~16GB),
+        # which is quite limited on free-tier Github runners.
+        - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
+        - /usr/local/lib/android:/usr/local/lib/android
+        - /usr/share/dotnet:/usr/share/dotnet
     strategy:
+      fail-fast: false
       matrix:
         include:
           - id: 'lint'
@@ -32,8 +40,10 @@ jobs:
           - id: 'ktest'
             baseline_asterinas: true
           - id: 'early_boot_test'
-      fail-fast: false
     steps:
+      - name: Free disk space
+        # Remove unused packages from the host to save disk space.
+        run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
       - uses: actions/checkout@v4
       - name: Run basic tests ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
         uses: ./.github/actions/test
@@ -42,103 +52,15 @@ jobs:
           runs_on: 'ubuntu-latest'
           baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
 
-  integration-test:
-    runs-on: ubuntu-latest
-    container:
-      image: ldosproject/asterinas:0.15.2-20250613
-      options: --device=/dev/kvm --privileged
-    strategy:
-      matrix:
-        include:
-          # SMP Boot Test (Linux Legacy 32-bit Boot Protocol)
-          - test_id: 'boot-legacy32'
-            boot_protocol: 'linux-legacy32'
-            smp: 4
-          # SMP Boot Test (Multiboot)
-          - test_id: 'boot-multiboot2-smp4'
-            boot_protocol: 'multiboot'
-            smp: 4
-
-          # Syscall Test (Linux EFI PE/COFF Boot Protocol) (Debug Build)
-          - test_id: 'syscall-debug'
-            release: false
-            boot_protocol: 'linux-efi-pe64'
-          # Syscall Test at Ext2 (MicroVM)
-          - test_id: 'syscall-ext2-microvm'
-            scheme: 'microvm'
-            syscall_test_workdir: '/ext2'
-          - test_id: 'syscall-ext2-microvm-baseline'
-            scheme: 'microvm'
-            syscall_test_workdir: '/ext2'
-            baseline_asterinas: true
-          # Syscall Test at Ext2 (IOMMU) (Debug Build)
-          - test_id: 'syscall-ext2-iommu-debug'
-            scheme: 'iommu'
-            syscall_test_workdir: '/ext2'
-            release: false
-          # Syscall Test at Exfat (Multiboot2) (without KVM enabled)
-          - test_id: 'syscall-exfat-multiboot2-nokvm'
-            boot_protocol: 'multiboot2'
-            enable_kvm: false
-            extra_blocklists: 'blocklists.exfat'
-            syscall_test_workdir: '/exfat'
-          # SMP Syscall Test (Multiboot2)
-          # TODO: Reenable this test once we know why it's hanging
-          # - test_id: 'syscall-multiboot2-smp4'
-          #   boot_protocol: 'multiboot2'
-          #   smp: 4
-
-          # General Test (Linux EFI Handover)
-          - test_id: 'general-handover64'
-            boot_protocol: 'linux-efi-handover64'
-          # SMP General Test (Multiboot2)
-          - test_id: 'general-multiboot2-smp4'
-            boot_protocol: 'multiboot2'
-            smp: 4
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with LTP') || '' }} ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
-        uses: ./.github/actions/test
-        with:
-          auto_test: ${{ (startsWith(matrix.test_id, 'boot') && 'boot') ||
-              (startsWith(matrix.test_id, 'syscall') && 'syscall') || 'test' }}
-          release: ${{ matrix.release || true }}
-          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
-          enable_kvm: ${{ matrix.enable_kvm || true }}
-          smp: ${{ matrix.smp }}
-          netdev: ${{ matrix.netdev || 'tap' }}
-          scheme: ${{ matrix.scheme }}
-          extra_blocklists: ${{ matrix.extra_blocklists }}
-          syscall_test_suite: 'ltp'
-          syscall_test_workdir: ${{ matrix.syscall_test_workdir }}
-          boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
-      - name: Run integration tests ${{ (startsWith(matrix.test_id, 'syscall') && 'with gVisor') || '' }} ${{ (matrix.baseline_asterinas && '(baseline)') || '' }}
-        if: ${{ startsWith(matrix.test_id, 'syscall') }}
-        uses: ./.github/actions/test
-        with:
-          auto_test: ${{ (startsWith(matrix.test_id, 'boot') && 'boot') ||
-              (startsWith(matrix.test_id, 'syscall') && 'syscall') || 'test' }}
-          release: ${{ matrix.release || true }}
-          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
-          enable_kvm: ${{ matrix.enable_kvm || true }}
-          smp: ${{ matrix.smp }}
-          netdev: ${{ matrix.netdev || 'tap' }}
-          scheme: ${{ matrix.scheme }}
-          extra_blocklists: ${{ matrix.extra_blocklists }}
-          syscall_test_suite: 'gvisor'
-          syscall_test_workdir: ${{ matrix.syscall_test_workdir }}
-          boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
-
   osdk-test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        image: ['ldosproject/asterinas:0.15.2-20250613', 'ldosproject/osdk:0.15.2-20250613']
-      fail-fast: false
     container:
       image: ${{ matrix.image }}
-      options: --device=/dev/kvm --privileged
+      options: -v /dev:/dev --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ldosproject/asterinas:0.17.2-20260518', 'ldosproject/osdk:0.17.2-20260518']
     steps:
       - uses: actions/checkout@v4
       - name: Run OSDK tests
@@ -146,3 +68,125 @@ jobs:
         with:
           auto_test: 'osdk'
           intel_tdx: false
+
+  boot-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: 'legacy32', boot_protocol: 'linux-legacy32', smp: 4 }
+          - { variant: 'multiboot2-smp4', boot_protocol: 'multiboot', smp: 4 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run boot test (${{ matrix.variant }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'boot'
+          smp: ${{ matrix.smp }}
+          boot_protocol: ${{ matrix.boot_protocol }}
+
+  regression-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+      volumes:
+        # Map the following directories on the host into the container so that
+        # the container can remove them to save some precious disk space (~16GB),
+        # which is quite limited on free-tier Github runners.
+        - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
+        - /usr/local/lib/android:/usr/local/lib/android
+        - /usr/share/dotnet:/usr/share/dotnet
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: 'handover64-debug', release: false, boot_protocol: 'linux-efi-handover64' }
+          - { variant: 'multiboot2-smp4',  boot_protocol: 'multiboot2', smp: 4 }
+    steps:
+      - name: Free disk space
+        # Remove unused packages from the host to save disk space.
+        run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
+      - uses: actions/checkout@v4
+      - name: Run regression test (${{ matrix.variant }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'regression'
+          release: ${{ !contains(matrix.release, 'false') }}
+          smp: ${{ matrix.smp }}
+          boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
+
+  conformance-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+      volumes:
+        # Map the following directories on the host into the container so that
+        # the container can remove them to save some precious disk space (~16GB),
+        # which is quite limited on free-tier Github runners.
+        - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
+        - /usr/local/lib/android:/usr/local/lib/android
+        - /usr/share/dotnet:/usr/share/dotnet
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ['ltp', 'gvisor', 'kselftest']
+        variant:
+          - 'debug'
+          - 'ext2-microvm'
+          - 'ext2-iommu-debug'
+          - 'exfat-multiboot2-nokvm'
+          - 'multiboot2-smp4'
+        include:
+          - { variant: 'debug', release: false, boot_protocol: 'linux-efi-pe64' }
+          - { variant: 'ext2-microvm', scheme: 'microvm', extra_blocklists: 'blocklists.ext2', conformance_test_workdir: '/ext2' }
+          - { variant: 'ext2-microvm-baseline', scheme: 'microvm', extra_blocklists: 'blocklists.ext2', conformance_test_workdir: '/ext2', baseline_asterinas: true }
+          - { variant: 'ext2-iommu-debug', scheme: 'iommu', extra_blocklists: 'blocklists.ext2', conformance_test_workdir: '/ext2', release: false }
+          - { variant: 'exfat-multiboot2-nokvm', boot_protocol: 'multiboot2', enable_kvm: false, extra_blocklists: 'blocklists.exfat', conformance_test_workdir: '/exfat' }
+          - { variant: 'multiboot2-smp4', boot_protocol: 'multiboot2', smp: 4 }
+    steps:
+      - name: Free disk space
+        # Remove unused packages from the host to save disk space.
+        run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
+      - uses: actions/checkout@v4
+      - name: Run conformance test (${{ matrix.variant }}, ${{ matrix.suite }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'conformance'
+          release: ${{ !contains(matrix.release, 'false') }}
+          baseline_asterinas: ${{ matrix.baseline_asterinas || false }}
+          enable_kvm: ${{ !contains(matrix.enable_kvm, 'false') }}
+          smp: ${{ matrix.smp }}
+          netdev: ${{ matrix.netdev || 'tap' }}
+          scheme: ${{ matrix.scheme }}
+          extra_blocklists: ${{ matrix.extra_blocklists }}
+          conformance_test_suite: ${{ matrix.suite }}
+          conformance_test_workdir: ${{ matrix.conformance_test_workdir }}
+          boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
+
+  # cross-compile-test:
+  #   timeout-minutes: 30
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - name: arm-cross-boot
+  #           runs_on: ubuntu-24.04-arm
+  #           image: ldosproject/asterinas:0.17.2-20260518
+  #           auto_test: boot
+  #           enable_kvm: false
+  #   runs-on: ${{ matrix.runs_on }}
+  #   container:
+  #     image: ${{ matrix.image }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run cross-compile tests (${{ matrix.name }})
+  #       uses: ./.github/actions/test
+  #       with:
+  #         auto_test: ${{ matrix.auto_test }}
+  #         enable_kvm: ${{ matrix.enable_kvm }}

@@ -1,0 +1,39 @@
+// Duplicate a file descriptor
+dup(oldfd);
+dup2(oldfd, newfd);
+dup3(oldfd, newfd, flags);
+
+// Monitor multiplexed I/O with signal safety and precise timeout handling
+pselect6(nfds, readfds, writefds, exceptfds, timeout, sigmask);
+
+// Transfer data between file descriptors
+sendfile(out_fd, in_fd, offset, count);
+
+// Synchronize a file's in-core state with storage device
+fsync(fd);
+fdatasync(fd);
+
+// Open an epoll file descriptor
+epoll_create(size);
+epoll_create1(flags = EPOLL_CLOEXEC);
+
+// Create a file descriptor for accepting signals
+signalfd(fd, mask, sizemask);
+signalfd4(fd, mask, sizemask, flags = SFD_NONBLOCK | SFD_CLOEXEC);
+
+// Wait for I/O event on an epoll file descriptor
+epoll_wait(epfd, events, maxevents, timeout);
+epoll_pwait(epfd, events, maxevents, timeout, sigmask);
+epoll_pwait2(epfd, events, maxevents, timeout, sigmask);
+
+// Wait for I/O event on the file descriptors set in read, write or except bitmaps
+select(nfds, readfds, writefds, exceptfds, timeout);
+
+// Obtain a file descriptor that refers to a process
+pidfd_open(pid, flags = PIDFD_NONBLOCK);
+
+// Obtain a duplicate of another process's file descriptor
+pidfd_getfd(pidfd, targetfd, flags = 0);
+
+// Close all file descriptors in the inclusive range [first, last]
+close_range(first, last, flags = CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC);

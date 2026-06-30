@@ -1,0 +1,11 @@
+# TODO: Support `F_SETPIPE_SZ`/`F_GETPIPE_SZ` for `fcntl` syscall.
+Pipes/PipeTest.*/smallbuffer
+Pipes/PipeTest.BlockPartialWriteClosed/*
+Pipes/PipeTest.BlockWriteClosed/*
+Pipes/PipeTest.FionRead/*
+Pipes/PipeTest.SizeChange*
+Pipes/PipeTest.Streaming/*
+
+# TODO: Report `O_LARGEFILE` flag for named pipes.
+Pipes/PipeTest.Flags/namedblocking
+Pipes/PipeTest.Flags/namednonblocking

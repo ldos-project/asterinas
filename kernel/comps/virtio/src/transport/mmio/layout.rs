@@ -2,10 +2,8 @@
 
 use core::fmt::Debug;
 
-use ostd::Pod;
-
-#[derive(Clone, Copy, Pod)]
 #[repr(C)]
+#[derive(Clone, Copy, Pod)]
 pub struct VirtioMmioLayout {
     /// Magic value: 0x74726976. **Read-only**
     pub magic_value: u32,

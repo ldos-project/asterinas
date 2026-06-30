@@ -3,14 +3,14 @@
 #![no_std]
 #![deny(unsafe_code)]
 #![feature(trait_alias)]
-#![feature(fn_traits)]
-#![feature(linked_list_cursors)]
 
 mod buffer;
 pub mod dma_pool;
 mod driver;
 
 extern crate alloc;
+#[macro_use]
+extern crate ostd_pod;
 
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{any::Any, fmt::Debug};
@@ -20,22 +20,20 @@ use aster_softirq::{
     BottomHalfDisabled, SoftIrqLine,
     softirq_id::{NETWORK_RX_SOFTIRQ_ID, NETWORK_TX_SOFTIRQ_ID},
 };
-pub use buffer::{RX_BUFFER_POOL, RxBuffer, TX_BUFFER_LEN, TxBuffer};
+pub use buffer::{RxBuffer, TxBuffer, TxBufferBuilder};
 use component::{ComponentInitError, init_component};
-pub use dma_pool::DmaSegment;
-use ostd::{Pod, sync::SpinLock};
+use ostd::sync::SpinLock;
 use spin::Once;
 
-#[derive(Debug, Clone, Copy, Pod)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct EthernetAddr(pub [u8; 6]);
 
-#[derive(Debug, Clone, Copy)]
-pub enum VirtioNetError {
+#[derive(Clone, Copy, Debug)]
+pub enum NetError {
     NotReady,
-    WrongToken,
     Busy,
-    Unknown,
+    NoMemory,
 }
 
 pub trait AnyNetworkDevice: Send + Sync + Any + Debug {
@@ -50,11 +48,11 @@ pub trait AnyNetworkDevice: Send + Sync + Any + Debug {
     fn can_send(&self) -> bool;
 
     /// Receives a packet from network. If packet is ready, returns a `RxBuffer` containing the packet.
-    /// Otherwise, return [`VirtioNetError::NotReady`].
-    fn receive(&mut self) -> Result<RxBuffer, VirtioNetError>;
+    /// Otherwise, return [`NetError::NotReady`].
+    fn receive(&mut self) -> Result<RxBuffer, NetError>;
 
     /// Sends a packet to network.
-    fn send(&mut self, packet: &[u8]) -> Result<(), VirtioNetError>;
+    fn send(&mut self, packet: &[u8]) -> Result<(), NetError>;
 
     /// Frees processes tx buffers.
     fn free_processed_tx_buffers(&mut self);
@@ -173,11 +171,12 @@ static COMPONENT: Once<Component> = Once::new();
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
-    let a = Component::init()?;
-    COMPONENT.call_once(|| a);
+    let component = Component::init()?;
+    COMPONENT.call_once(|| component);
+
     SoftIrqLine::get(NETWORK_TX_SOFTIRQ_ID).enable(handle_tx_softirq);
     SoftIrqLine::get(NETWORK_RX_SOFTIRQ_ID).enable(handle_rx_softirq);
-    buffer::init();
+
     Ok(())
 }
 

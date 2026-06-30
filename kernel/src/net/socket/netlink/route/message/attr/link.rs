@@ -2,7 +2,7 @@
 
 use super::IFNAME_SIZE;
 use crate::{
-    net::socket::netlink::message::{Attribute, CAttrHeader},
+    net::socket::netlink::message::{Attribute, CAttrHeader, ContinueRead},
     prelude::*,
     util::MultiRead,
 };
@@ -10,10 +10,10 @@ use crate::{
 /// Link-level attributes.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/uapi/linux/if_link.h#L297>.
-#[derive(Debug, Clone, Copy, TryFromInt)]
-#[repr(u16)]
 #[expect(non_camel_case_types)]
 #[expect(clippy::upper_case_acronyms)]
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
 enum LinkAttrClass {
     UNSPEC = 0,
     ADDRESS = 1,
@@ -118,7 +118,7 @@ impl Attribute for LinkAttr {
         }
     }
 
-    fn read_from(header: &CAttrHeader, reader: &mut dyn MultiRead) -> Result<Option<Self>>
+    fn read_from(header: &CAttrHeader, reader: &mut dyn MultiRead) -> Result<ContinueRead<Self>>
     where
         Self: Sized,
     {
@@ -129,12 +129,23 @@ impl Attribute for LinkAttr {
             // Unknown attributes should be ignored.
             // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#unknown-attributes>.
             reader.skip_some(payload_len);
-            return Ok(None);
+            return Ok(ContinueRead::Skipped);
         };
 
         let res = match (class, payload_len) {
             (LinkAttrClass::IFNAME, 1..=IFNAME_SIZE) => {
-                Self::Name(reader.read_cstring_with_max_len(payload_len)?)
+                let (name, namelen) =
+                    reader.read_cstring_until_end(IFNAME_SIZE.min(payload_len))?;
+                if namelen != payload_len {
+                    reader.skip_some(payload_len - namelen);
+                }
+                if name.as_bytes().len() == IFNAME_SIZE {
+                    return Ok(ContinueRead::skipped_with_error(
+                        Errno::ERANGE,
+                        "the link attribute is invalid",
+                    ));
+                }
+                Self::Name(name)
             }
             (LinkAttrClass::MTU, 4) => Self::Mtu(reader.read_val_opt::<u32>()?.unwrap()),
             (LinkAttrClass::TXQLEN, 4) => Self::TxqLen(reader.read_val_opt::<u32>()?.unwrap()),
@@ -153,17 +164,25 @@ impl Attribute for LinkAttr {
                 _,
             ) => {
                 warn!("link attribute `{:?}` contains invalid payload", class);
-                return_errno_with_message!(Errno::EINVAL, "the link attribute is invalid");
+                reader.skip_some(payload_len);
+                return Ok(ContinueRead::skipped_with_error(
+                    if class == LinkAttrClass::IFNAME {
+                        Errno::ERANGE
+                    } else {
+                        Errno::EINVAL
+                    },
+                    "the link attribute is invalid",
+                ));
             }
 
             (_, _) => {
                 warn!("link attribute `{:?}` is not supported", class);
                 reader.skip_some(payload_len);
-                return Ok(None);
+                return Ok(ContinueRead::Skipped);
             }
         };
 
-        Ok(Some(res))
+        Ok(ContinueRead::Parsed(res))
     }
 }
 

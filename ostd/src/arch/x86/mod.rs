@@ -2,56 +2,71 @@
 
 //! Platform-specific code for the x86 platform.
 
-pub mod boot;
-pub(crate) mod cpu;
+pub(crate) mod boot;
+pub mod cpu;
 pub mod device;
-pub(crate) mod ex_table;
 pub(crate) mod io;
 pub(crate) mod iommu;
-pub(crate) mod irq;
+pub mod irq;
 pub mod kernel;
 pub(crate) mod mm;
-pub(crate) mod pci;
-pub mod pmu;
-pub mod qemu;
-pub(crate) mod serial;
+mod power;
+pub mod serial;
 pub(crate) mod task;
-pub mod timer;
+mod timer;
 pub mod trap;
 
-use io::construct_io_mem_allocator_builder;
-use spin::Once;
-use x86::cpuid::{CpuId, FeatureInfo};
-
+pub mod pmu;
 #[cfg(feature = "cvm_guest")]
 pub(crate) mod tdx_guest;
 
-use core::sync::atomic::Ordering;
-
-use log::warn;
-
 #[cfg(feature = "cvm_guest")]
 pub(crate) fn init_cvm_guest() {
-    match ::tdx_guest::init_tdx() {
+    use ::tdx_guest::{
+        SeptVeError, disable_sept_ve, init_tdx, metadata, reduce_unnecessary_ve,
+        tdcall::{InitError, write_td_metadata},
+        tdvmcall::report_fatal_error_simple,
+    };
+    match init_tdx() {
         Ok(td_info) => {
+            reduce_unnecessary_ve().unwrap();
+            match disable_sept_ve(td_info.attributes) {
+                Ok(_) => {}
+                Err(SeptVeError::Misconfiguration) => {
+                    crate::early_println!(
+                        "[kernel] Error: TD misconfiguration: \
+                        The SEPT_VE_DISABLE bit of the TD attributes must be set by VMM \
+                        when running in non-debug mode and FLEXIBLE_PENDING_VE is not enabled."
+                    );
+                    report_fatal_error_simple("TD misconfiguration: SEPT #VE has to be disabled");
+                }
+                Err(e) => {
+                    crate::early_println!("[kernel] Error: Unexpected TDX error: {:?}", e);
+                    report_fatal_error_simple(
+                        "Disabling SEPT #VE failed due to unexpected TDX error",
+                    );
+                }
+            }
+            // Enable notification for zero step attack detection.
+            write_td_metadata(metadata::NOTIFY_ENABLES, 1, 1).unwrap();
+
             crate::early_println!(
                 "[kernel] Intel TDX initialized\n[kernel] td gpaw: {}, td attributes: {:?}",
                 td_info.gpaw,
                 td_info.attributes
             );
         }
-        Err(::tdx_guest::tdcall::InitError::TdxGetVpInfoError(td_call_error)) => {
-            panic!(
-                "[kernel] Intel TDX not initialized, Failed to get TD info: {:?}",
+        Err(InitError::TdxGetVpInfoError(td_call_error)) => {
+            crate::early_println!(
+                "[kernel] Intel TDX not initialized, Failed to get TD info. TD call error: {:?}",
                 td_call_error
             );
+            report_fatal_error_simple("Intel TDX not initialized, Failed to get TD info.");
         }
         // The machine has no TDX support.
         Err(_) => {}
     }
 }
-
-static CPU_FEATURES: Once<FeatureInfo> = Once::new();
 
 /// Architecture-specific initialization on the bootstrapping processor.
 ///
@@ -59,19 +74,24 @@ static CPU_FEATURES: Once<FeatureInfo> = Once::new();
 ///
 /// # Safety
 ///
-/// This function must be called only once in the boot context of the
-/// bootstrapping processor.
+/// 1. This function must be called only once in the boot context of the
+///    bootstrapping processor.
+/// 2. This function must be called after the kernel page table is activated on
+///    the bootstrapping processor.
 pub(crate) unsafe fn late_init_on_bsp() {
-    // SAFETY: This function is only called once on BSP.
-    unsafe { trap::init() };
+    // SAFETY: This is only called once on this BSP in the boot context.
+    unsafe { trap::init_on_cpu() };
 
-    let io_mem_builder = construct_io_mem_allocator_builder();
+    // SAFETY: The caller ensures that this function is only called once on BSP,
+    // after the kernel page table is activated.
+    let io_mem_builder = unsafe { io::construct_io_mem_allocator_builder() };
 
     kernel::apic::init(&io_mem_builder).expect("APIC doesn't exist");
-    kernel::irq::init(&io_mem_builder);
+    irq::chip::init(&io_mem_builder);
+    irq::ipi::init();
 
     kernel::tsc::init_tsc_freq();
-    timer::init_bsp();
+    timer::init_on_bsp();
 
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
@@ -80,7 +100,7 @@ pub(crate) unsafe fn late_init_on_bsp() {
     } else {
         match iommu::init(&io_mem_builder) {
             Ok(_) => {}
-            Err(err) => warn!("IOMMU initialization error:{:?}", err),
+            Err(err) => crate::warn!("IOMMU initialization error: {:?}", err),
         }
     });
 
@@ -89,32 +109,31 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // 2. All the port I/O regions belonging to the system device are defined using the macros.
     // 3. `MAX_IO_PORT` defined in `crate::arch::io` is the maximum value specified by x86-64.
     unsafe { crate::io::init(io_mem_builder) };
+
+    kernel::acpi::init();
+    power::init();
 }
 
-/// Architecture-specific initialization on the application processor.
+/// Initializes application-processor-specific state.
 ///
 /// # Safety
 ///
-/// This function must be called only once on each application processor.
-/// And it should be called after the BSP's call to [`init_on_bsp`].
+/// 1. This function must be called only once on each application processor.
+/// 2. This function must be called after the BSP's call to [`late_init_on_bsp`]
+///    and before any other architecture-specific code in this module is called
+///    on this AP.
 pub(crate) unsafe fn init_on_ap() {
-    timer::init_ap();
-}
-
-pub(crate) fn interrupts_ack(irq_number: usize) {
-    if !cpu::context::CpuException::is_cpu_exception(irq_number as u16) {
-        // TODO: We're in the interrupt context, so `disable_preempt()` is not
-        // really necessary here.
-        kernel::apic::get_or_init(&crate::task::disable_preempt() as _).eoi();
-    }
+    timer::init_on_ap();
 }
 
 /// Returns the frequency of TSC. The unit is Hz.
 pub fn tsc_freq() -> u64 {
+    use core::sync::atomic::Ordering;
+
     kernel::tsc::TSC_FREQ.load(Ordering::Acquire)
 }
 
-/// Reads the current value of the processor’s time-stamp counter (TSC).
+/// Reads the current value of the processor's time-stamp counter (TSC).
 pub fn read_tsc() -> u64 {
     use core::arch::x86_64::_rdtsc;
 
@@ -124,13 +143,19 @@ pub fn read_tsc() -> u64 {
 
 /// Reads a hardware generated 64-bit random value.
 ///
-/// Returns None if no random value was generated.
+/// Returns `None` if no random value was generated.
 pub fn read_random() -> Option<u64> {
     use core::arch::x86_64::_rdrand64_step;
 
-    // Recommendation from "Intel® Digital Random Number Generator (DRNG) Software
-    // Implementation Guide" - Section 5.2.1 and "Intel® 64 and IA-32 Architectures
-    // Software Developer’s Manual" - Volume 1 - Section 7.3.17.1.
+    use cpu::extension::{IsaExtensions, has_extensions};
+
+    if !has_extensions(IsaExtensions::RDRAND) {
+        return None;
+    }
+
+    // Recommendation from "Intel(R) Digital Random Number Generator (DRNG) Software
+    // Implementation Guide" - Section 5.2.1 and "Intel(R) 64 and IA-32 Architectures
+    // Software Developer's Manual" - Volume 1 - Section 7.3.17.1.
     const RETRY_LIMIT: usize = 10;
 
     for _ in 0..RETRY_LIMIT {
@@ -143,76 +168,56 @@ pub fn read_random() -> Option<u64> {
     None
 }
 
-fn has_avx() -> bool {
-    use core::arch::x86_64::{__cpuid, __cpuid_count};
-
-    let cpuid_result = __cpuid(0);
-    if cpuid_result.eax < 1 {
-        // CPUID function 1 is not supported
-        return false;
-    }
-
-    let cpuid_result = __cpuid_count(1, 0);
-    // Check for AVX (bit 28 of ecx)
-    cpuid_result.ecx & (1 << 28) != 0
-}
-
-fn has_avx512() -> bool {
-    use core::arch::x86_64::{__cpuid, __cpuid_count};
-
-    let cpuid_result = __cpuid(0);
-    if cpuid_result.eax < 7 {
-        // CPUID function 7 is not supported
-        return false;
-    }
-
-    let cpuid_result = __cpuid_count(7, 0);
-    // Check for AVX-512 Foundation (bit 16 of ebx)
-    cpuid_result.ebx & (1 << 16) != 0
-}
-
 pub(crate) fn enable_cpu_features() {
-    use x86_64::registers::{control::Cr4Flags, model_specific::EferFlags, xcontrol::XCr0Flags};
+    use cpu::extension::{IsaExtensions, has_extensions};
+    use x86_64::registers::{
+        control::{Cr0Flags, Cr4Flags},
+        xcontrol::XCr0Flags,
+    };
 
-    CPU_FEATURES.call_once(|| {
-        let cpuid = CpuId::new();
-        cpuid.get_feature_info().unwrap()
-    });
+    cpu::extension::init();
+
+    let mut cr0 = x86_64::registers::control::Cr0::read();
+    cr0 |= Cr0Flags::WRITE_PROTECT;
+    // These FPU control bits should be set for new CPUs (e.g., all CPUs with 64-bit support) and
+    // modern OSes. See recommendation from "Intel(R) 64 and IA-32 Architectures Software
+    // Developer's Manual" - Volume 3 - Section 10.2.1, Configuring the x87 FPU Environment.
+    cr0 |= Cr0Flags::NUMERIC_ERROR | Cr0Flags::MONITOR_COPROCESSOR;
+    unsafe { x86_64::registers::control::Cr0::write(cr0) };
+
+    let mut cr4 = x86_64::registers::control::Cr4::read();
+    cr4 |= Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE | Cr4Flags::PAGE_GLOBAL;
+    if has_extensions(IsaExtensions::XSAVE) {
+        cr4 |= Cr4Flags::OSXSAVE;
+    }
+    // For now, we unconditionally require the `rdfsbase`, `wrfsbase`, `rdgsbase`, and `wrgsbase`
+    // instructions because they are used when switching contexts, getting the address of a
+    // CPU-local variable, e.t.c. Meanwhile, this is at a very early stage of the boot process, so
+    // we want to avoid failing immediately even if we cannot enable these instructions (though the
+    // kernel will certainly fail later when they are absent).
+    //
+    // Note that this also enables the userspace to control their own FS/GS bases, which requires
+    // the kernel to properly deal with the arbitrary base values set by the userspace program.
+    if has_extensions(IsaExtensions::FSGSBASE) {
+        cr4 |= Cr4Flags::FSGSBASE;
+    }
+    unsafe { x86_64::registers::control::Cr4::write(cr4) };
+
+    if has_extensions(IsaExtensions::XSAVE) {
+        let mut xcr0 = x86_64::registers::xcontrol::XCr0::read();
+        xcr0 |= XCr0Flags::SSE;
+        if has_extensions(IsaExtensions::AVX) {
+            xcr0 |= XCr0Flags::AVX;
+        }
+        if has_extensions(IsaExtensions::AVX512F) {
+            xcr0 |= XCr0Flags::OPMASK | XCr0Flags::ZMM_HI256 | XCr0Flags::HI16_ZMM;
+        }
+        unsafe { x86_64::registers::xcontrol::XCr0::write(xcr0) };
+    }
 
     cpu::context::enable_essential_features();
 
-    let mut cr4 = x86_64::registers::control::Cr4::read();
-    cr4 |= Cr4Flags::FSGSBASE
-        | Cr4Flags::OSXSAVE
-        | Cr4Flags::OSFXSR
-        | Cr4Flags::OSXMMEXCPT_ENABLE
-        | Cr4Flags::PAGE_GLOBAL;
-    unsafe {
-        x86_64::registers::control::Cr4::write(cr4);
-    }
-
-    let mut xcr0 = x86_64::registers::xcontrol::XCr0::read();
-
-    xcr0 |= XCr0Flags::SSE;
-
-    if has_avx() {
-        xcr0 |= XCr0Flags::AVX;
-    }
-
-    if has_avx512() {
-        xcr0 |= XCr0Flags::OPMASK | XCr0Flags::ZMM_HI256 | XCr0Flags::HI16_ZMM;
-    }
-
-    unsafe {
-        x86_64::registers::xcontrol::XCr0::write(xcr0);
-    }
-
-    unsafe {
-        // enable non-executable page protection
-        x86_64::registers::model_specific::Efer::update(|efer| {
-            *efer |= EferFlags::NO_EXECUTE_ENABLE;
-        });
-    }
+    mm::enable_essential_features();
 }
 
 /// Inserts a TDX-specific code block.

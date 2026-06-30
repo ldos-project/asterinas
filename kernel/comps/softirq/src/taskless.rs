@@ -8,7 +8,7 @@ use core::{
 };
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
-use ostd::{cpu::local::StaticCpuLocal, cpu_local, sync::SpinLock, trap};
+use ostd::{cpu::local::StaticCpuLocal, cpu_local, irq};
 
 use super::{
     SoftIrqLine,
@@ -58,7 +58,7 @@ pub struct Taskless {
     /// Whether the taskless job is running.
     is_running: AtomicBool,
     /// The function that will be called when executing this taskless job.
-    callback: Box<SpinLock<dyn FnMut() + Send + Sync + 'static>>,
+    callback: Box<dyn Fn() + Send + Sync + 'static>,
     /// Whether this `Taskless` is disabled.
     is_disabled: AtomicBool,
     link: LinkedListAtomicLink,
@@ -67,20 +67,22 @@ pub struct Taskless {
 intrusive_adapter!(TasklessAdapter = Arc<Taskless>: Taskless { link: LinkedListAtomicLink });
 
 cpu_local! {
-    static TASKLESS_LIST: RefCell<LinkedList<TasklessAdapter>> = RefCell::new(LinkedList::new(TasklessAdapter::NEW));
-    static TASKLESS_URGENT_LIST: RefCell<LinkedList<TasklessAdapter>> = RefCell::new(LinkedList::new(TasklessAdapter::NEW));
+    static TASKLESS_LIST: RefCell<LinkedList<TasklessAdapter>> =
+        RefCell::new(LinkedList::new(TasklessAdapter::NEW));
+    static TASKLESS_URGENT_LIST: RefCell<LinkedList<TasklessAdapter>> =
+        RefCell::new(LinkedList::new(TasklessAdapter::NEW));
 }
 
 impl Taskless {
     /// Creates a new `Taskless` instance with its callback function.
     pub fn new<F>(callback: F) -> Arc<Self>
     where
-        F: FnMut() + Send + Sync + 'static,
+        F: Fn() + Send + Sync + 'static,
     {
         Arc::new(Self {
             is_scheduled: AtomicBool::new(false),
             is_running: AtomicBool::new(false),
-            callback: Box::new(SpinLock::new(callback)),
+            callback: Box::new(callback),
             is_disabled: AtomicBool::new(false),
             link: LinkedListAtomicLink::new(),
         })
@@ -131,7 +133,7 @@ fn do_schedule(
     {
         return;
     }
-    let irq_guard = trap::irq::disable_local();
+    let irq_guard = irq::disable_local();
     taskless_list
         .get_with(&irq_guard)
         .borrow_mut()
@@ -158,7 +160,7 @@ fn taskless_softirq_handler(
     softirq_id: u8,
 ) {
     let mut processing_list = {
-        let irq_guard = trap::irq::disable_local();
+        let irq_guard = irq::disable_local();
         let guard = taskless_list.get_with(&irq_guard);
         let mut list_mut = guard.borrow_mut();
         LinkedList::take(list_mut.deref_mut())
@@ -170,7 +172,7 @@ fn taskless_softirq_handler(
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            let irq_guard = trap::irq::disable_local();
+            let irq_guard = irq::disable_local();
             taskless_list
                 .get_with(&irq_guard)
                 .borrow_mut()
@@ -181,7 +183,7 @@ fn taskless_softirq_handler(
 
         taskless.is_scheduled.store(false, Ordering::Release);
 
-        (taskless.callback.lock())();
+        (taskless.callback)();
         taskless.is_running.store(false, Ordering::Release);
     }
 }
@@ -191,15 +193,14 @@ mod test {
     use core::sync::atomic::AtomicUsize;
 
     use ostd::prelude::*;
+    use spin::Once;
 
     use super::*;
 
     fn init() {
-        static DONE: AtomicBool = AtomicBool::new(false);
-        if !DONE.load(Ordering::SeqCst) {
-            let _ = super::super::init();
-            DONE.store(true, Ordering::SeqCst);
-        }
+        static INIT: Once<()> = Once::new();
+
+        INIT.call_once(|| super::super::init().unwrap());
     }
 
     #[ktest]

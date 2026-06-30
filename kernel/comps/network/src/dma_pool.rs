@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(unused)]
-
 use alloc::{
     collections::VecDeque,
     sync::{Arc, Weak},
@@ -9,18 +7,18 @@ use alloc::{
 use core::ops::Range;
 
 use aster_softirq::BottomHalfDisabled;
-use bitvec::{array::BitArray, prelude::Lsb0};
+use bitvec::array::BitArray;
 use ostd::{
-    error::AccessDeniedSnafu,
     mm::{
-        Daddr, DmaDirection, DmaStream, FrameAllocOptions, HasDaddr, Infallible, PAGE_SIZE,
-        VmReader, VmWriter,
+        Daddr, FrameAllocOptions, HasDaddr, Infallible, PAGE_SIZE, VmReader, VmWriter,
+        dma::{DmaDirection, DmaStream},
+        io::util::HasVmReaderWriter,
     },
-    sync::{RwLock, SpinLock},
+    sync::SpinLock,
 };
 
 /// `DmaPool` is responsible for allocating small streaming DMA segments
-/// (equal to or smaller than PAGE_SIZE),
+/// (equal to or smaller than `PAGE_SIZE`),
 /// referred to as `DmaSegment`.
 ///
 /// A `DmaPool` can only allocate `DmaSegment` of a fixed size.
@@ -31,16 +29,15 @@ use ostd::{
 /// Therefore, as a best practice,
 /// it is recommended for the `DmaPool` to have a static lifetime.
 #[derive(Debug)]
-pub struct DmaPool {
+pub struct DmaPool<D: DmaDirection> {
     segment_size: usize,
-    direction: DmaDirection,
     is_cache_coherent: bool,
     high_watermark: usize,
-    avail_pages: SpinLock<VecDeque<Arc<DmaPage>>, BottomHalfDisabled>,
-    all_pages: SpinLock<VecDeque<Arc<DmaPage>>, BottomHalfDisabled>,
+    avail_pages: SpinLock<VecDeque<Arc<DmaPage<D>>>, BottomHalfDisabled>,
+    all_pages: SpinLock<VecDeque<Arc<DmaPage<D>>>, BottomHalfDisabled>,
 }
 
-impl DmaPool {
+impl<D: DmaDirection> DmaPool<D> {
     /// Constructs a new `DmaPool` with a specified initial capacity and a high watermark.
     ///
     /// The `DmaPool` starts with `init_size` DMAable pages.
@@ -59,7 +56,6 @@ impl DmaPool {
         segment_size: usize,
         init_size: usize,
         high_watermark: usize,
-        direction: DmaDirection,
         is_cache_coherent: bool,
     ) -> Arc<Self> {
         assert!(segment_size.is_power_of_two());
@@ -73,13 +69,7 @@ impl DmaPool {
 
             for _ in 0..init_size {
                 let page = Arc::new(
-                    DmaPage::new(
-                        segment_size,
-                        direction,
-                        is_cache_coherent,
-                        Weak::clone(pool),
-                    )
-                    .unwrap(),
+                    DmaPage::new(segment_size, is_cache_coherent, Weak::clone(pool)).unwrap(),
                 );
                 avail_pages.push_back(page.clone());
                 all_pages.push_back(page);
@@ -87,7 +77,6 @@ impl DmaPool {
 
             Self {
                 segment_size,
-                direction,
                 is_cache_coherent,
                 high_watermark,
                 avail_pages: SpinLock::new(avail_pages),
@@ -96,18 +85,17 @@ impl DmaPool {
         })
     }
 
-    /// Allocates a `DmaSegment` from the pool
-    pub fn alloc_segment(self: &Arc<Self>) -> Result<DmaSegment, ostd::Error> {
+    /// Allocates a segment from the pool.
+    pub fn alloc_segment(self: &Arc<Self>) -> Result<DmaSegment<D>, ostd::Error> {
         // Lock order: pool.avail_pages -> pool.all_pages
         //             pool.avail_pages -> page.allocated_segments
         let mut avail_pages = self.avail_pages.lock();
         if avail_pages.is_empty() {
-            /// Allocate a new page
+            // Allocate a new page
             let new_page = {
                 let pool = Arc::downgrade(self);
                 Arc::new(DmaPage::new(
                     self.segment_size,
-                    self.direction,
                     self.is_cache_coherent,
                     pool,
                 )?)
@@ -125,50 +113,49 @@ impl DmaPool {
         Ok(free_segment)
     }
 
-    /// Returns the number of pages in pool
+    /// Returns the number of pages in the pool.
+    #[cfg(ktest)]
     fn num_pages(&self) -> usize {
         self.all_pages.lock().len()
     }
 
-    /// Return segment size in pool
+    /// Returns the segment size of the pool.
     pub fn segment_size(&self) -> usize {
         self.segment_size
     }
 }
 
 #[derive(Debug)]
-struct DmaPage {
-    storage: DmaStream,
+struct DmaPage<D: DmaDirection> {
+    storage: Arc<DmaStream<D>>,
     segment_size: usize,
-    // `BitArray` is 64 bits, since each `DmaSegment` is bigger than 64 bytes,
-    // there's no more than `PAGE_SIZE` / 64 = 64 `DmaSegment`s in a `DmaPage`.
+    // A `BitArray` has 64 bits. Since each `DmaSegment` is bigger than 64 bytes,
+    // there are no more than `PAGE_SIZE` / 64 = 64 `DmaSegment`s in a `DmaPage`.
     allocated_segments: SpinLock<BitArray, BottomHalfDisabled>,
-    pool: Weak<DmaPool>,
+    pool: Weak<DmaPool<D>>,
 }
 
-impl DmaPage {
+impl<D: DmaDirection> DmaPage<D> {
     fn new(
         segment_size: usize,
-        direction: DmaDirection,
         is_cache_coherent: bool,
-        pool: Weak<DmaPool>,
+        pool: Weak<DmaPool<D>>,
     ) -> Result<Self, ostd::Error> {
         let dma_stream = {
             let segment = FrameAllocOptions::new().alloc_segment(1)?;
 
-            DmaStream::map(segment.into(), direction, is_cache_coherent)
-                .map_err(|_| AccessDeniedSnafu.build())?
+            DmaStream::<D>::map(segment.into(), is_cache_coherent)?
         };
 
         Ok(Self {
-            storage: dma_stream,
+            storage: Arc::new(dma_stream),
             segment_size,
             allocated_segments: SpinLock::new(BitArray::ZERO),
             pool,
         })
     }
 
-    fn alloc_segment(self: &Arc<Self>) -> Option<DmaSegment> {
+    fn alloc_segment(self: &Arc<Self>) -> Option<DmaSegment<D>> {
         let mut segments = self.allocated_segments.lock();
         let free_segment_index = get_next_free_index(&segments, self.nr_blocks_per_page())?;
         segments.set(free_segment_index, true);
@@ -181,10 +168,6 @@ impl DmaPage {
         };
 
         Some(segment)
-    }
-
-    fn is_free(&self) -> bool {
-        *self.allocated_segments.lock() == BitArray::<[usize; 1], Lsb0>::ZERO
     }
 
     const fn nr_blocks_per_page(&self) -> usize {
@@ -207,7 +190,7 @@ fn get_next_free_index(segments: &BitArray, nr_blocks_per_page: usize) -> Option
     }
 }
 
-impl HasDaddr for DmaPage {
+impl<D: DmaDirection> HasDaddr for DmaPage<D> {
     fn daddr(&self) -> Daddr {
         self.storage.daddr()
     }
@@ -215,23 +198,24 @@ impl HasDaddr for DmaPage {
 
 /// A small and fixed-size segment of DMA memory.
 ///
-/// The size of `DmaSegment` ranges from 64 bytes to `PAGE_SIZE` and must be 2^K.
-/// Each `DmaSegment`'s daddr must be aligned with its size.
+/// The size of a `DmaSegment` ranges from 64 bytes to `PAGE_SIZE`
+/// and is a power of two.
+/// Each `DmaSegment`'s DMA address is guaranteed to be aligned with its size.
 #[derive(Debug)]
-pub struct DmaSegment {
-    dma_stream: DmaStream,
+pub struct DmaSegment<D: DmaDirection> {
+    dma_stream: Arc<DmaStream<D>>,
     start_addr: Daddr,
     size: usize,
-    page: Weak<DmaPage>,
+    page: Weak<DmaPage<D>>,
 }
 
-impl HasDaddr for DmaSegment {
+impl<D: DmaDirection> HasDaddr for DmaSegment<D> {
     fn daddr(&self) -> Daddr {
         self.start_addr
     }
 }
 
-impl DmaSegment {
+impl<D: DmaDirection> DmaSegment<D> {
     pub const fn size(&self) -> usize {
         self.size
     }
@@ -250,14 +234,20 @@ impl DmaSegment {
         Ok(writer)
     }
 
-    pub fn sync(&self, byte_range: Range<usize>) -> Result<(), ostd::Error> {
+    pub fn sync_from_device(&self, byte_range: Range<usize>) -> Result<(), ostd::Error> {
         let offset = self.daddr() - self.dma_stream.daddr();
         let range = byte_range.start + offset..byte_range.end + offset;
-        self.dma_stream.sync(range)
+        self.dma_stream.sync_from_device(range)
+    }
+
+    pub fn sync_to_device(&self, byte_range: Range<usize>) -> Result<(), ostd::Error> {
+        let offset = self.daddr() - self.dma_stream.daddr();
+        let range = byte_range.start + offset..byte_range.end + offset;
+        self.dma_stream.sync_to_device(range)
     }
 }
 
-impl Drop for DmaSegment {
+impl<D: DmaDirection> Drop for DmaSegment<D> {
     fn drop(&mut self) {
         let page = self.page.upgrade().unwrap();
         let pool = page.pool.upgrade().unwrap();
@@ -294,13 +284,16 @@ impl Drop for DmaSegment {
 mod test {
     use alloc::vec::Vec;
 
-    use ostd::prelude::*;
+    use ostd::{
+        mm::dma::{FromAndToDevice, ToDevice},
+        prelude::*,
+    };
 
     use super::*;
 
     #[ktest]
     fn alloc_page_size_segment() {
-        let pool = DmaPool::new(PAGE_SIZE, 0, 100, DmaDirection::ToDevice, false);
+        let pool = DmaPool::<ToDevice>::new(PAGE_SIZE, 0, 100, false);
         let segments1: Vec<_> = (0..100)
             .map(|_| {
                 let segment = pool.alloc_segment().unwrap();
@@ -317,7 +310,7 @@ mod test {
 
     #[ktest]
     fn write_to_dma_segment() {
-        let pool: Arc<DmaPool> = DmaPool::new(PAGE_SIZE, 1, 2, DmaDirection::ToDevice, false);
+        let pool: Arc<DmaPool<ToDevice>> = DmaPool::new(PAGE_SIZE, 1, 2, false);
         let segment = pool.alloc_segment().unwrap();
         let mut writer = segment.writer().unwrap();
         let data = &[0u8, 1, 2, 3, 4] as &[u8];
@@ -327,7 +320,7 @@ mod test {
 
     #[ktest]
     fn free_pool_pages() {
-        let pool: Arc<DmaPool> = DmaPool::new(PAGE_SIZE, 10, 50, DmaDirection::ToDevice, false);
+        let pool: Arc<DmaPool<ToDevice>> = DmaPool::new(PAGE_SIZE, 10, 50, false);
         let segments1: Vec<_> = (0..100)
             .map(|_| {
                 let segment = pool.alloc_segment().unwrap();
@@ -345,8 +338,7 @@ mod test {
     #[ktest]
     fn alloc_small_size_segment() {
         const SEGMENT_SIZE: usize = PAGE_SIZE / 4;
-        let pool: Arc<DmaPool> =
-            DmaPool::new(SEGMENT_SIZE, 0, 10, DmaDirection::Bidirectional, false);
+        let pool: Arc<DmaPool<FromAndToDevice>> = DmaPool::new(SEGMENT_SIZE, 0, 10, false);
         let segments1: Vec<_> = (0..100)
             .map(|_| {
                 let segment = pool.alloc_segment().unwrap();
@@ -365,8 +357,7 @@ mod test {
     #[ktest]
     fn read_dma_segments() {
         const SEGMENT_SIZE: usize = PAGE_SIZE / 4;
-        let pool: Arc<DmaPool> =
-            DmaPool::new(SEGMENT_SIZE, 1, 2, DmaDirection::Bidirectional, false);
+        let pool: Arc<DmaPool<FromAndToDevice>> = DmaPool::new(SEGMENT_SIZE, 1, 2, false);
         let segment = pool.alloc_segment().unwrap();
         assert_eq!(pool.num_pages(), 1);
         let mut writer = segment.writer().unwrap();

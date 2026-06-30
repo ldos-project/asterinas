@@ -75,7 +75,6 @@ pub trait RawSocketOption: SocketOption {
 }
 
 /// Impl `RawSocketOption` for a struct which implements `SocketOption`.
-#[macro_export]
 macro_rules! impl_raw_socket_option {
     ($option:ty) => {
         impl RawSocketOption for $option {
@@ -106,7 +105,6 @@ macro_rules! impl_raw_socket_option {
 }
 
 /// Impl `RawSocketOption` for a struct which is for only `getsockopt` and implements `SocketOption`.
-#[macro_export]
 macro_rules! impl_raw_sock_option_get_only {
     ($option:ty) => {
         impl RawSocketOption for $option {
@@ -133,7 +131,6 @@ macro_rules! impl_raw_sock_option_get_only {
 }
 
 /// Impl `RawSocketOption` for a struct which is for only `setsockopt` and implements `SocketOption`.
-#[macro_export]
 macro_rules! impl_raw_sock_option_set_only {
     ($option:ty) => {
         impl RawSocketOption for $option {
@@ -160,6 +157,11 @@ macro_rules! impl_raw_sock_option_set_only {
     };
 }
 
+// Export macros to sub-modules
+use impl_raw_sock_option_get_only;
+use impl_raw_sock_option_set_only;
+use impl_raw_socket_option;
+
 pub fn new_raw_socket_option(
     level: CSocketOptionLevel,
     name: i32,
@@ -173,10 +175,14 @@ pub fn new_raw_socket_option(
     }
 }
 
-/// Sock Opt level. The definition is from https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/socket.h#L343
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt, PartialEq, Eq)]
+/// Socket level.
+///
+/// This can refer to either a socket option or a control message level.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/socket.h#L343>.
 #[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
 pub enum CSocketOptionLevel {
     SOL_IP = 0,
     SOL_SOCKET = 1,

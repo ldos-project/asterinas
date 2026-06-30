@@ -5,17 +5,13 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::time::Duration;
 
 use id_alloc::IdAlloc;
-use ostd::{
-    arch::{timer::TIMER_FREQ, trap::is_kernel_interrupted},
-    sync::Mutex,
-    timer,
-};
+use ostd::{cpu::PrivilegeLevel, irq::InterruptLevel, sync::Mutex, timer};
 
 use super::Process;
 use crate::{
+    fs::cgroupfs::{CpuStatKind, charge_cpu_time},
     process::{
         posix_thread::AsPosixThread,
         signal::{constants::SIGALRM, signals::kernel::KernelSignal},
@@ -27,6 +23,7 @@ use crate::{
     time::{
         Timer, TimerManager,
         clocks::{ProfClock, RealTimeClock},
+        timer::TimerGuard,
     },
 };
 
@@ -36,6 +33,19 @@ use crate::{
 /// invoke the callbacks of expired timers which are based on the updated
 /// CPU clock.
 fn update_cpu_time() {
+    // Retrieve some info about the timer interrupt
+    let is_kernel_interrupted = {
+        let interrupt_level = InterruptLevel::current();
+        let InterruptLevel::L1(cpu_priv_at_irq) = interrupt_level else {
+            // We are at the interrupt level 2.
+            // This means that bottom half of IRQ handling is interrupted.
+            // We should not count this time slice on the head of the current task.
+            return;
+        };
+        cpu_priv_at_irq == PrivilegeLevel::Kernel
+    };
+
+    // Retrieve some info about the current task
     let Some(current_thread) = Thread::current() else {
         return;
     };
@@ -47,26 +57,19 @@ fn update_cpu_time() {
         // `None` here.
         return;
     };
+
     let timer_manager = process.timer_manager();
-    let jiffies_interval = Duration::from_millis(1000 / TIMER_FREQ);
     // Based on whether the timer interrupt occurs in kernel mode or user mode,
     // the function will add the duration of one timer interrupt interval to the
     // corresponding CPU clocks.
-    if is_kernel_interrupted() {
-        posix_thread
-            .prof_clock()
-            .kernel_clock()
-            .add_time(jiffies_interval);
-        process
-            .prof_clock()
-            .kernel_clock()
-            .add_time(jiffies_interval);
+    if is_kernel_interrupted {
+        posix_thread.prof_clock().kernel_clock().add_jiffies(1);
+        process.prof_clock().kernel_clock().add_jiffies(1);
+        charge_cpu_time(&process, CpuStatKind::System);
     } else {
-        posix_thread
-            .prof_clock()
-            .user_clock()
-            .add_time(jiffies_interval);
-        process.prof_clock().user_clock().add_time(jiffies_interval);
+        posix_thread.prof_clock().user_clock().add_jiffies(1);
+        process.prof_clock().user_clock().add_jiffies(1);
+        charge_cpu_time(&process, CpuStatKind::User);
         timer_manager
             .virtual_timer()
             .timer_manager()
@@ -81,8 +84,8 @@ fn update_cpu_time() {
 
 /// Registers a function to update the CPU clock in processes and
 /// threads during the system timer interrupt.
-pub(super) fn init() {
-    timer::register_callback(update_cpu_time);
+pub(super) fn init_on_each_cpu() {
+    timer::register_callback_on_cpu(update_cpu_time);
 }
 
 /// Represents timer resources and utilities for a POSIX process.
@@ -100,19 +103,21 @@ pub struct PosixTimerManager {
     posix_timers: Mutex<Vec<Option<Arc<Timer>>>>,
 }
 
-fn create_process_timer_callback(process_ref: &Weak<Process>) -> impl Fn() + Clone + 'static {
+fn create_process_timer_callback(
+    process_ref: &Weak<Process>,
+) -> impl Fn(TimerGuard) + Clone + 'static {
     let current_process = process_ref.clone();
     let sent_signal = move || {
         let signal = KernelSignal::new(SIGALRM);
         if let Some(process) = current_process.upgrade() {
-            process.enqueue_signal(signal);
+            process.enqueue_signal(Box::new(signal));
         }
     };
 
     let work_func = Box::new(sent_signal);
     let work_item = WorkItem::new(work_func);
 
-    move || {
+    move |_guard: TimerGuard| {
         submit_work_item(
             work_item.clone(),
             crate::thread::work_queue::WorkPriority::High,
@@ -159,7 +164,7 @@ impl PosixTimerManager {
     /// Creates a timer based on the profiling CPU clock of the current process.
     pub fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(TimerGuard) + Send + Sync + 'static,
     {
         self.prof_timer.timer_manager().create_timer(func)
     }
@@ -167,24 +172,24 @@ impl PosixTimerManager {
     /// Creates a timer based on the user CPU clock of the current process.
     pub fn create_virtual_timer<F>(&self, func: F) -> Arc<Timer>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(TimerGuard) + Send + Sync + 'static,
     {
         self.virtual_timer.timer_manager().create_timer(func)
     }
 
     /// Adds a POSIX timer to the managed `posix_timers`, and allocate a timer ID for this timer.
-    /// Return the timer ID.
-    pub fn add_posix_timer(&self, posix_timer: Arc<Timer>) -> usize {
+    /// Return the timer ID, or `None` if allocation failed.
+    pub fn add_posix_timer(&self, posix_timer: Arc<Timer>) -> Option<usize> {
         let mut timers = self.posix_timers.lock();
         // Holding the lock of `posix_timers` is required to operate the `id_allocator`.
-        let timer_id = self.id_allocator.lock().alloc().unwrap();
-        if timers.len() < timer_id + 1 {
+        let timer_id = self.id_allocator.lock().alloc()?;
+        if timers.len() <= timer_id {
             timers.resize(timer_id + 1, None);
         }
         // The ID allocated is not used by any other timers so this index in `timers`
         // must be `None`.
         timers[timer_id] = Some(posix_timer);
-        timer_id
+        Some(timer_id)
     }
 
     /// Finds a POSIX timer by the input `timer_id`.

@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::Ordering;
+use ostd::mm::VmIo;
 
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::signal::{
-        constants::{SIGKILL, SIGSTOP},
-        sig_mask::SigMask,
-    },
+    process::{posix_thread::ContextPthreadAdminApi, signal::sig_mask::SigMask},
 };
 
 pub fn sys_rt_sigprocmask(
@@ -36,37 +33,34 @@ fn do_rt_sigprocmask(
     oldset_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<()> {
-    let old_sig_mask_value = ctx.posix_thread.sig_mask().load(Ordering::Relaxed);
+    let old_sig_mask_value = ctx.posix_thread.sig_mask();
     debug!("old sig mask value: 0x{:x}", old_sig_mask_value);
     if oldset_ptr != 0 {
         ctx.user_space()
             .write_val(oldset_ptr, &old_sig_mask_value)?;
     }
 
-    let sig_mask_ref = ctx.posix_thread.sig_mask();
     if set_ptr != 0 {
-        let mut read_mask = ctx.user_space().read_val::<SigMask>(set_ptr)?;
+        let read_mask = ctx.user_space().read_val::<SigMask>(set_ptr)?;
         match mask_op {
             MaskOp::Block => {
-                // According to man pages, "it is not possible to block SIGKILL or SIGSTOP.
-                // Attempts to do so are silently ignored."
-                read_mask -= SIGKILL;
-                read_mask -= SIGSTOP;
-                sig_mask_ref.store(old_sig_mask_value + read_mask, Ordering::Relaxed);
+                ctx.set_sig_mask(old_sig_mask_value + read_mask);
             }
             MaskOp::Unblock => {
-                sig_mask_ref.store(old_sig_mask_value - read_mask, Ordering::Relaxed)
+                ctx.set_sig_mask(old_sig_mask_value - read_mask);
             }
-            MaskOp::SetMask => sig_mask_ref.store(read_mask, Ordering::Relaxed),
+            MaskOp::SetMask => {
+                ctx.set_sig_mask(read_mask);
+            }
         }
     }
-    debug!("new set = {:x?}", sig_mask_ref.load(Ordering::Relaxed));
+    debug!("new set = {:x?}", ctx.posix_thread.sig_mask());
 
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromInt)]
 #[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
 pub enum MaskOp {
     Block = 0,
     Unblock = 1,

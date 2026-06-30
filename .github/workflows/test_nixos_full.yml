@@ -1,0 +1,48 @@
+# A comprehensive test for NixOS.
+#
+# This test suite is designed to run on GitHub's larger runners,
+# leveraging their extended storage capacity.
+# Here, we can thoroughly test a wider range of NixOS commands and various applications.
+# As GitHub charges more for these premium runners,
+# these tests will only run when changes are detected in AsterNixOS-specific content.
+name: Test AsterNixOS (full)
+
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   paths:
+  #     - distro/**
+  #     - .github/workflows/test_nixos_full.yml
+  #     - tools/nixos/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - distro/**
+  #     - .github/workflows/test_nixos_full.yml
+  #     - tools/nixos/**
+
+jobs:
+  full-nixos-test:
+    runs-on: ubuntu-4-cores-150GB-ssd
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - name: nix
+            disk_size: 6144
+          - name: podman
+            disk_size: 8192
+
+    name: Test ${{ matrix.test.name }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the ${{ matrix.test.name }} test on AsterNixOS 
+        run: |
+          make nixos NIXOS_TEST_SUITE=${{ matrix.test.name }} NIXOS_DISK_SIZE_IN_MB=${{ matrix.test.disk_size }}
+          make run_nixos NIXOS_TEST_SUITE=${{ matrix.test.name }}

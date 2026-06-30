@@ -6,17 +6,17 @@
 //! relaxed rules but we cannot create references to them. This module provides
 //! the declaration of untyped frames and segments, and the implementation of
 //! extra functionalities (such as [`VmIo`]) for them.
-
-use snafu::OptionExt as _;
+//!
+//! [`VmIo`]: crate::mm::VmIo
 
 use super::{Frame, Segment, meta::AnyFrameMeta};
-use crate::{
-    Result,
-    mm::{
-        Infallible,
-        io::{FallibleVmRead, FallibleVmWrite, VmIo, VmReader, VmWriter},
-        paddr_to_vaddr,
+use crate::mm::{
+    HasPaddr, HasSize, Infallible,
+    io::{
+        VmReader, VmWriter,
+        util::{HasVmReaderWriter, VmReaderWriterIdentity},
     },
+    paddr_to_vaddr,
 };
 
 /// The metadata of untyped frame.
@@ -49,6 +49,8 @@ macro_rules! impl_untyped_frame_meta_for {
             }
         }
         impl $crate::mm::frame::untyped::AnyUFrameMeta for $t {}
+
+        $crate::check_frame_meta_layout!($t);
     };
     // Implement with a customized drop function.
     ($t:ty, $body:expr) => {
@@ -63,74 +65,35 @@ macro_rules! impl_untyped_frame_meta_for {
             }
         }
         impl $crate::mm::frame::untyped::AnyUFrameMeta for $t {}
+
+        $crate::check_frame_meta_layout!($t);
     };
 }
 
 // A special case of untyped metadata is the unit type.
 impl_untyped_frame_meta_for!(());
 
-/// A physical memory range that is untyped.
-///
-/// Untyped frames or segments can be safely read and written by the kernel or
-/// the user.
-pub trait UntypedMem {
-    /// Borrows a reader that can read the untyped memory.
-    fn reader(&self) -> VmReader<'_, Infallible>;
-    /// Borrows a writer that can write the untyped memory.
-    fn writer(&self) -> VmWriter<'_, Infallible>;
-}
-
 macro_rules! impl_untyped_for {
     ($t:ident) => {
-        impl<UM: AnyUFrameMeta + ?Sized> UntypedMem for $t<UM> {
+        impl<UM: AnyUFrameMeta + ?Sized> HasVmReaderWriter for $t<UM> {
+            type Types = VmReaderWriterIdentity;
+
             fn reader(&self) -> VmReader<'_, Infallible> {
-                let ptr = paddr_to_vaddr(self.start_paddr()) as *const u8;
-                // SAFETY: Only untyped frames are allowed to be read.
+                let ptr = paddr_to_vaddr(self.paddr()) as *const u8;
+                // SAFETY:
+                // - The memory range points to untyped memory.
+                // - The frame/segment is alive during the lifetime `'_`.
+                // - Using `VmReader` and `VmWriter` is the only way to access the frame/segment.
                 unsafe { VmReader::from_kernel_space(ptr, self.size()) }
             }
 
             fn writer(&self) -> VmWriter<'_, Infallible> {
-                let ptr = paddr_to_vaddr(self.start_paddr()) as *mut u8;
-                // SAFETY: Only untyped frames are allowed to be written.
+                let ptr = paddr_to_vaddr(self.paddr()) as *mut u8;
+                // SAFETY:
+                // - The memory range points to untyped memory.
+                // - The frame/segment is alive during the lifetime `'_`.
+                // - Using `VmReader` and `VmWriter` is the only way to access the frame/segment.
                 unsafe { VmWriter::from_kernel_space(ptr, self.size()) }
-            }
-        }
-
-        impl<UM: AnyUFrameMeta + ?Sized> VmIo for $t<UM> {
-            fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<()> {
-                let read_len = writer.avail().min(self.size().saturating_sub(offset));
-                // Do bound check with potential integer overflow in mind
-                let max_offset = offset
-                    .checked_add(read_len)
-                    .context($crate::error::OverflowSnafu)?;
-                if max_offset > self.size() {
-                    return $crate::error::InvalidArgsSnafu.fail();
-                }
-                let len = self
-                    .reader()
-                    .skip(offset)
-                    .read_fallible(writer)
-                    .map_err(|(e, _)| e)?;
-                debug_assert!(len == read_len);
-                Ok(())
-            }
-
-            fn write(&self, offset: usize, reader: &mut VmReader) -> Result<()> {
-                let write_len = reader.remain().min(self.size().saturating_sub(offset));
-                // Do bound check with potential integer overflow in mind
-                let max_offset = offset
-                    .checked_add(write_len)
-                    .context($crate::error::OverflowSnafu)?;
-                if max_offset > self.size() {
-                    return $crate::error::InvalidArgsSnafu.fail();
-                }
-                let len = self
-                    .writer()
-                    .skip(offset)
-                    .write_fallible(reader)
-                    .map_err(|(e, _)| e)?;
-                debug_assert!(len == write_len);
-                Ok(())
             }
         }
     };

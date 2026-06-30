@@ -1,26 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
+//! This module defines vsock sockets.
+//!
+//! The vsock address family facilitates communication between virtual machines and the host they
+//! are running on. This address family is used by guest agents and hypervisor services that need a
+//! communications channel that is independent of virtual machine network configuration.
+//!
+//! The implementation is organized into three layers:
+//! - The [_device layer_](`aster_virtio::device::socket`) provides the basic packet transmit and
+//!   receive primitives.
+//! - The [_transport layer_](`self::transport`) implements protocol logic such as connection and
+//!   listener management.
+//! - The [_socket layer_](`self::stream`) builds the Linux-compatible socket interface used by
+//!   userspace-facing system calls.
+//!
 
-use aster_virtio::device::socket::{DEVICE_NAME, get_device, register_recv_callback};
-use common::VsockSpace;
-use spin::Once;
+mod addr;
+mod stream;
+mod transport;
 
-pub mod addr;
-pub mod common;
-pub mod stream;
 pub use addr::VsockSocketAddr;
 pub use stream::VsockStreamSocket;
 
-// init static driver
-pub static VSOCK_GLOBAL: Once<Arc<VsockSpace>> = Once::new();
-
 pub(in crate::net) fn init() {
-    if let Some(driver) = get_device(DEVICE_NAME) {
-        VSOCK_GLOBAL.call_once(|| Arc::new(VsockSpace::new(driver)));
-        register_recv_callback(DEVICE_NAME, || {
-            let vsockspace = VSOCK_GLOBAL.get().unwrap();
-            vsockspace.poll().unwrap();
-        })
-    }
+    transport::init();
 }

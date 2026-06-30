@@ -9,19 +9,24 @@
  *
  * We make the following new changes:
  * * Add the `trap_handler_table`.
+ * * Adjust some symbol names.
+ * * Fix an off-by-one bug to correct the RSP value in the trap frame.
+ * * Disable alternate macro mode after using it.
  *
  * These changes are released under the following license:
  *
  * SPDX-License-Identifier: MPL-2.0
  */
 
-.code64
-
 .equ NUM_INT, 256
 
-.altmacro
+.text
+.code64
+
+.altmacro # enable alternate macro mode to use "%i"
+
 .macro DEF_HANDLER, i
-.Ltrap_handler_\i:
+_trap_handler_\i:
 .if \i == 8 || (\i >= 10 && \i <= 14) || \i == 17
     # error code pushed by CPU
     push    \i          # interrupt vector
@@ -33,7 +38,6 @@
 .endif
 .endm
 
-.section .text
 _trap_handlers:
 .set i, 0
 .rept NUM_INT
@@ -41,11 +45,12 @@ _trap_handlers:
     .set i, i + 1
 .endr
 
+.rodata
+
 .macro DEF_TABLE_ENTRY, i
-    .quad .Ltrap_handler_\i
+    .quad _trap_handler_\i
 .endm
 
-.section .rodata
 .global trap_handler_table
 trap_handler_table:
 .set i, 0
@@ -54,28 +59,30 @@ trap_handler_table:
     .set i, i + 1
 .endr
 
-.section .text
-.global trap_common
+.noaltmacro # disable alternate macro mode; otherwise, it may leak to other files
+
+.text
+.code64
+
 trap_common:
-    cld                     # clear DF before calling/returning to any C function to conform to x86-64 calling convention
+    cld                     # clear DF before going to Rust to conform to x86-64 calling convention
     push rax
     mov ax, [rsp + 4*8]     # load cs
     and ax, 0x3             # test
-    jz __from_kernel        # continue trap
+    jz _trap_from_kernel    # continue trap
 
-__from_user:
-    /*
-    kernel stack:
-    - ptr to UserContext
-    - ss
-    - rsp
-    - rflags
-    - cs
-    - rip
-    - error code
-    - trap num
-    - rax
-    */
+_trap_from_user:
+    # kernel stack:
+    # - ptr to UserContext
+    # - ss
+    # - rsp
+    # - rflags
+    # - cs
+    # - rip
+    # - error code
+    # - trap num
+    # - rax
+
     swapgs                  # swap in kernel gs
     mov rax, [rsp + 6*8]    # rax = user rsp
     mov gs:12, rax          # store user rsp -> scratch at TSS.sp1
@@ -92,18 +99,18 @@ __from_user:
     push [rax - 3*8]        # push rflags
     push [rax - 5*8]        # push rip
     mov rax, [rax - 8*8]    # pop rax
+.extern trap_syscall_entry
     jmp trap_syscall_entry
 
-__from_kernel:
-    /*
-    kernel stack:
-    - rflags
-    - cs
-    - rip
-    - error code
-    - trap num
-    - rax
-    */
+_trap_from_kernel:
+    # kernel stack:
+    # - rflags
+    # - cs
+    # - rip
+    # - error code
+    # - trap num
+    # - rax
+
     pop rax
     push 0
     push r15
@@ -114,7 +121,7 @@ __from_kernel:
     push r10
     push r9
     push r8
-    lea r8, [rsp + 13*8]
+    lea r8, [rsp + 14*8]
     push r8                 # push rsp
     push rbp
     push rdi
@@ -127,8 +134,6 @@ __from_kernel:
     mov rdi, rsp
     call trap_handler
 
-.global trap_return
-trap_return:
     pop rax
     pop rbx
     pop rcx

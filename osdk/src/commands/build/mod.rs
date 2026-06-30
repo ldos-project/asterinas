@@ -11,7 +11,7 @@ use std::{
     time::SystemTime,
 };
 
-use bin::make_elf_for_qemu;
+use bin::{make_elf_for_qemu, make_install_bzimage};
 
 use super::util::{COMMON_CARGO_ARGS, DEFAULT_TARGET_RELPATH, cargo, profile_name_adapter};
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     cli::BuildArgs,
     config::{
         Config,
-        scheme::{ActionChoice, BootMethod},
+        scheme::{ActionChoice, BootMethod, BootProtocol},
     },
     error::Errno,
     error_msg,
@@ -132,11 +132,13 @@ pub fn do_cached_build(
     action: ActionChoice,
     rustflags: &[&str],
 ) -> Bundle {
-    let (build, boot) = match action {
-        ActionChoice::Run => (&config.run.build, &config.run.boot),
-        ActionChoice::Test => (&config.test.build, &config.test.boot),
+    let (build, boot, grub) = match action {
+        ActionChoice::Run => (&config.run.build, &config.run.boot, &config.run.grub),
+        ActionChoice::Test => (&config.test.build, &config.test.boot, &config.test.grub),
     };
 
+    let mut rustflags = rustflags.to_vec();
+    rustflags.push(&build.rustflags);
     let aster_elf = build_kernel_elf(
         config.target_arch,
         &build.profile,
@@ -144,15 +146,15 @@ pub fn do_cached_build(
         build.no_default_features,
         &build.override_configs[..],
         &cargo_target_directory,
-        rustflags,
+        &rustflags,
     );
 
     // Check the existing bundle's reusability
-    if let Some(existing_bundle) = get_reusable_existing_bundle(&bundle_path, config, action) {
-        if aster_elf.modified_time() < &existing_bundle.last_modified_time() {
-            info!("Reusing existing bundle: aster_elf is unchanged");
-            return existing_bundle;
-        }
+    if let Some(existing_bundle) = get_reusable_existing_bundle(&bundle_path, config, action)
+        && aster_elf.modified_time() < &existing_bundle.last_modified_time()
+    {
+        info!("Reusing existing bundle: aster_elf is unchanged");
+        return existing_bundle;
     }
 
     // Build a new bundle
@@ -186,8 +188,17 @@ pub fn do_cached_build(
             bundle.consume_aster_bin(aster_elf);
         }
         BootMethod::QemuDirect => {
-            let qemu_elf = make_elf_for_qemu(&osdk_output_directory, &aster_elf, build.strip_elf);
-            bundle.consume_aster_bin(qemu_elf);
+            let aster_bin = match grub.boot_protocol {
+                BootProtocol::Linux => make_install_bzimage(
+                    &osdk_output_directory,
+                    &osdk_output_directory,
+                    &aster_elf,
+                    build.linux_x86_legacy_boot,
+                    config.build.encoding.clone(),
+                ),
+                _ => make_elf_for_qemu(&osdk_output_directory, &aster_elf, build.strip_elf),
+            };
+            bundle.consume_aster_bin(aster_bin);
         }
     }
 
@@ -209,7 +220,7 @@ fn build_kernel_elf(
     let env_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     let mut rustflags = Vec::from(rustflags);
     // Asterinas does not support PIC yet.
-    rustflags.extend(vec![
+    rustflags.extend([
         &env_rustflags,
         &rustc_linker_script_arg,
         "-C relocation-model=static",
@@ -237,10 +248,31 @@ fn build_kernel_elf(
         // It makes running on Intel CPUs after Ivy Bridge (2012) faster, but much slower
         // on older CPUs.
         rustflags.push("-C target-feature=+ermsb");
+    } else if matches!(arch, Arch::RiscV64) {
+        // Enable the Zicbom extension for RISC-V to support cache block operations.
+        rustflags.push("-C target-feature=+zicbom");
     }
 
     let mut command = cargo();
     command.env_remove("RUSTUP_TOOLCHAIN");
+    command.env(
+        "OSDK_BUILD_USERNAME",
+        whoami::fallible::username().unwrap_or("unknown".to_string()),
+    );
+    command.env(
+        "OSDK_BUILD_HOSTNAME",
+        whoami::fallible::hostname().unwrap_or("unknown".to_string()),
+    );
+    command.env(
+        "OSDK_BUILD_RUSTC",
+        format!(
+            "rustc {}",
+            rustc_version::version()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|_| "unknown".to_string())
+        ),
+    );
+
     command.env("RUSTFLAGS", rustflags.join(" "));
     command.arg("build");
     command.arg("--features").arg(features.join(" "));
@@ -256,6 +288,18 @@ fn build_kernel_elf(
     for override_config in override_configs {
         command.arg("--config").arg(override_config);
     }
+
+    const CFLAGS: &str = "CFLAGS_x86_64-unknown-none";
+    let mut env_cflags = std::env::var(CFLAGS).unwrap_or_default();
+    env_cflags += " -fPIC";
+
+    if features.contains(&"coverage".to_string()) {
+        // This is a workaround for minicov <https://github.com/Amanieu/minicov/issues/29>,
+        // makes coverage work on x86_64-unknown-none.
+        env_cflags += " -D__linux__";
+    }
+
+    command.env(CFLAGS, env_cflags);
 
     info!("Building kernel ELF using command: {:#?}", command);
     info!("Building directory: {:?}", std::env::current_dir().unwrap());

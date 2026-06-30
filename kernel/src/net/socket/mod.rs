@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::fmt::Display;
+
 use options::SocketOption;
 use util::{MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr};
 
 use crate::{
     fs::{
-        file_handle::FileLike,
-        utils::{InodeMode, Metadata, StatusFlags},
+        file::{CreationFlags, FileLike, StatusFlags, file_table::FdFlags},
+        pseudofs::SockFs,
+        vfs::path::Path,
     },
     prelude::*,
     util::{MultiRead, MultiWrite},
@@ -118,9 +121,12 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     /// and the message header.
     fn recvmsg(
         &self,
-        writers: &mut dyn MultiWrite,
+        writer: &mut dyn MultiWrite,
         flags: SendRecvFlags,
     ) -> Result<(usize, MessageHeader)>;
+
+    /// Returns a reference to the pseudo path associated with this socket.
+    fn pseudo_path(&self) -> &Path;
 }
 
 impl<T: Socket + 'static> FileLike for T {
@@ -139,10 +145,7 @@ impl<T: Socket + 'static> FileLike for T {
         // TODO: Set correct flags
         self.sendmsg(
             reader,
-            MessageHeader {
-                addr: None,
-                control_message: None,
-            },
+            MessageHeader::new(None, Vec::new()),
             SendRecvFlags::empty(),
         )
     }
@@ -170,13 +173,33 @@ impl<T: Socket + 'static> FileLike for T {
         Some(self)
     }
 
-    fn metadata(&self) -> Metadata {
-        // This is a dummy implementation.
-        // TODO: Add "SockFS" and link `Socket` to it.
-        Metadata::new_socket(
-            0,
-            InodeMode::from_bits_truncate(0o140777),
-            aster_block::BLOCK_SIZE,
-        )
+    fn path(&self) -> &Path {
+        self.pseudo_path()
+    }
+
+    fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
+        struct FdInfo {
+            flags: u32,
+            ino: u64,
+        }
+
+        impl Display for FdInfo {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                writeln!(f, "pos:\t{}", 0)?;
+                writeln!(f, "flags:\t0{:o}", self.flags)?;
+                writeln!(f, "mnt_id:\t{}", SockFs::mount_node().id())?;
+                writeln!(f, "ino:\t{}", self.ino)
+            }
+        }
+
+        let mut flags = self.status_flags().bits() | self.access_mode() as u32;
+        if fd_flags.contains(FdFlags::CLOEXEC) {
+            flags |= CreationFlags::O_CLOEXEC.bits();
+        }
+
+        Box::new(FdInfo {
+            flags,
+            ino: self.pseudo_path().inode().ino(),
+        })
     }
 }

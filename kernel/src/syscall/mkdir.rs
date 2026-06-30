@@ -2,17 +2,17 @@
 
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{InodeMode, InodeType},
+        file::{InodeMode, InodeType, file_table::RawFileDesc},
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_mkdirat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_addr: Vaddr,
     mode: u16,
     ctx: &Context,
@@ -20,25 +20,23 @@ pub fn sys_mkdirat(
     let path = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
     debug!("dirfd = {}, path = {:?}, mode = {}", dirfd, path, mode);
 
-    let current = ctx.posix_thread;
-    let (dir_dentry, name) = {
+    let fs_ref = ctx.thread_local.borrow_fs();
+    let (dir_path, name) = {
         let path = path.to_string_lossy();
-        if path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
-        }
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        current
-            .fs()
+        let fs_path = FsPath::from_fd_at(dirfd, &path, EmptyPathStr::Reject)?;
+        fs_ref
             .resolver()
             .read()
-            .lookup_dir_and_new_basename(&fs_path, true)?
+            .lookup_unresolved_no_follow(&fs_path)?
+            .into_parent_and_basename()?
     };
 
     let inode_mode = {
-        let mask_mode = mode & !current.fs().umask().read().get();
+        let mask_mode = mode & !fs_ref.umask().get();
         InodeMode::from_bits_truncate(mask_mode)
     };
-    let _ = dir_dentry.new_fs_child(name.trim_end_matches('/'), InodeType::Dir, inode_mode)?;
+    dir_path.new_fs_child(&name, InodeType::Dir, inode_mode)?;
+    fs::vfs::notify::on_mkdir(&dir_path, || name);
     Ok(SyscallReturn::Return(0))
 }
 

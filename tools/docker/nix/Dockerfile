@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MPL-2.0
+
+ARG BASE_VERSION
+FROM ldosproject/osdk:${BASE_VERSION} AS build-base
+
+SHELL ["/bin/bash", "-c"]
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install Nix package manager and other Nix tools
+#
+# The nixpkgs and nixos channels are pinned to a particular commit (NixOS 25.05, 2025-07-01) for reproducibility.
+# FIXME: Installing Nix as root is not supported in single-user mode.
+RUN sh <(curl -L https://nixos.org/nix/install) --daemon --yes \
+    && . /etc/profile.d/nix.sh \
+    && nix-channel --add https://github.com/NixOS/nixpkgs/archive/c0bebd16e69e631ac6e52d6eb439daba28ac50cd.tar.gz nixpkgs \
+    && nix-channel --add https://github.com/NixOS/nixpkgs/archive/c0bebd16e69e631ac6e52d6eb439daba28ac50cd.tar.gz nixos \
+    && nix-channel --update \
+    && nix-env -iA nixpkgs.nixfmt \
+    && nix-env -iA nixpkgs.nixos-install-tools \
+    && nix-env -iA cachix -f https://cachix.org/api/v1/install \
+    && rm /nix/var/nix/gcroots/auto/* \
+    && nix-collect-garbage -d
+
+#= Build Nix packages ======================================================
+
+COPY test/initramfs /root/test
+WORKDIR /root/test
+ENV PATH="/nix/var/nix/profiles/default/bin:${PATH}"
+
+# Build riscv64 packages
+RUN make riscv64_pkgs VERBOSE=0 \
+    && make nix_gc
+
+# Build x86_64 packages
+RUN make x86_64_pkgs VERBOSE=0 \
+    && make nix_gc
+
+# Install host required packages
+RUN make install_host_pkgs \
+    && make nix_gc
+
+# Build initramfs packages to accelerate CI workflows
+#
+# It could also cache `stdenvNoCC`, a fundamental and predefined build environment.
+# Therefore, `make nix_gc` MUST NOT be run after this.
+RUN make initramfs_pkgs VERBOSE=0
+
+# Clean source files
+RUN rm -rf /root/test
+
+# Let Github runners reuse Nixpkgs tarball installed in the Dockerfile.
+RUN mkdir -p /github/home/.cache \
+    && ln -s /root/.cache/nix /github/home/.cache/nix
+
+VOLUME [ "/root/asterinas" ]
+
+WORKDIR /root/asterinas

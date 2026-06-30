@@ -2,46 +2,84 @@
 
 //! This module defines functions related to spawning the init process.
 
-use ostd::{cpu::context::UserContext, task::Task, user::UserContextApi};
+use ostd::{arch::cpu::context::UserContext, task::Task, user::UserContextApi};
 
-use super::{Process, Terminal};
+use super::{Process, Session};
 use crate::{
     fs::{
-        fs_resolver::{AT_FDCWD, FsPath},
         thread_info::ThreadFsInfo,
+        vfs::path::{FsPath, MountNamespace, Path},
     },
     prelude::*,
     process::{
-        Credentials, ProgramToLoad,
+        Credentials, ProcessVm, UserNamespace, pid_table,
         posix_thread::{PosixThreadBuilder, ThreadName, allocate_posix_tid},
-        process_table,
-        process_vm::ProcessVm,
-        rlimit::ResourceLimits,
+        program_loader::ProgramToLoad,
+        rlimit::new_resource_limits_for_init,
         signal::sig_disposition::SigDispositions,
     },
     sched::Nice,
     thread::Tid,
+    vm::vmar::Vmar,
 };
 
 /// Creates and schedules the init process to run.
 pub fn spawn_init_process(
-    executable_path: &str,
+    executable_path: Option<&str>,
     argv: Vec<CString>,
     envp: Vec<CString>,
 ) -> Result<Arc<Process>> {
-    // Ensure the path for init process executable is absolute.
-    debug_assert!(executable_path.starts_with('/'));
+    let process = if let Some(executable_path) = executable_path {
+        create_init_process(
+            executable_path,
+            with_init_argv0(executable_path, argv),
+            envp,
+        )?
+    } else {
+        create_default_init_process(argv, envp)?
+    };
 
-    let process = create_init_process(executable_path, argv, envp)?;
-
-    set_session_and_group(&process);
-
-    // FIXME: This should be done by the userspace init process.
-    (crate::device::tty::system_console().clone() as Arc<dyn Terminal>).set_control(&process)?;
+    // Linux starts the init process without placing it in a process group or session.
+    // It joins one only after userspace first calls `setsid()`.
+    //
+    // Asterinas instead requires every process to belong to both a process group and
+    // a session. The init process is therefore placed in a bootstrap process group
+    // and session with PGID and SID set to zero. This preserves the same user-visible
+    // behavior.
+    set_bootstrap_session_and_group(&process);
 
     process.run();
 
     Ok(process)
+}
+
+fn create_default_init_process(argv: Vec<CString>, envp: Vec<CString>) -> Result<Arc<Process>> {
+    // Linux probes the fallback init executables in this order:
+    // <https://elixir.bootlin.com/linux/v6.19/source/init/main.c#L1634>.
+    const DEFAULT_INIT_EXEC_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+
+    let mut last_error = None;
+
+    for default_init_exec_path in DEFAULT_INIT_EXEC_PATHS {
+        // FIXME: Avoid cloning `argv` and `envp` for each fallback candidate.
+        match create_init_process(
+            default_init_exec_path,
+            with_init_argv0(default_init_exec_path, argv.clone()),
+            envp.clone(),
+        ) {
+            Ok(process) => return Ok(process),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+fn with_init_argv0(executable_path: &str, mut argv: Vec<CString>) -> Vec<CString> {
+    // Linux prepends the init executable path as `argv[0]`.
+    // Reference: <https://elixir.bootlin.com/linux/v6.19/source/init/main.c#L1491>.
+    argv.insert(0, CString::new(executable_path).unwrap());
+    argv
 }
 
 fn create_init_process(
@@ -49,81 +87,82 @@ fn create_init_process(
     argv: Vec<CString>,
     envp: Vec<CString>,
 ) -> Result<Arc<Process>> {
+    let fs = {
+        let fs_resolver = MountNamespace::get_init_singleton().new_path_resolver();
+        ThreadFsInfo::new(fs_resolver)
+    };
+    let fs_path = FsPath::try_from(executable_path)?;
+    let elf_path = fs.resolver().read().lookup(&fs_path)?;
+
     let pid = allocate_posix_tid();
-    let parent = Weak::new();
-    let process_vm = ProcessVm::alloc();
-    let resource_limits = ResourceLimits::default();
+    let vmar = Vmar::new(ProcessVm::new(elf_path.clone()));
+    let resource_limits = new_resource_limits_for_init();
     let nice = Nice::default();
+    let oom_score_adj = 0;
     let sig_dispositions = Arc::new(Mutex::new(SigDispositions::default()));
+    let user_ns = UserNamespace::get_init_singleton().clone();
 
     let init_proc = Process::new(
         pid,
-        parent,
-        executable_path.to_string(),
-        process_vm,
+        vmar,
         resource_limits,
         nice,
+        oom_score_adj,
         sig_dispositions,
+        user_ns,
     );
 
-    let init_task = create_init_task(
-        pid,
-        init_proc.vm(),
-        executable_path,
-        Arc::downgrade(&init_proc),
-        argv,
-        envp,
-    )?;
+    let init_task = create_init_task(pid, &init_proc, fs, elf_path, argv, envp)?;
     init_proc.tasks().lock().insert(init_task).unwrap();
 
     Ok(init_proc)
 }
 
-fn set_session_and_group(process: &Arc<Process>) {
-    // Locking order: session table -> group table -> process table -> process group
-    let mut session_table_mut = process_table::session_table_mut();
-    let mut group_table_mut = process_table::group_table_mut();
-    let mut process_table_mut = process_table::process_table_mut();
+fn set_bootstrap_session_and_group(process: &Arc<Process>) {
+    // Locking order: PID table -> process group
+    let mut pid_table = pid_table::pid_table_mut();
 
-    // Create a new process group and session for the process
-    process.set_new_session(
-        &mut process.process_group.lock(),
-        &mut session_table_mut,
-        &mut group_table_mut,
-    );
+    // Add the process to the bootstrap process group and session
+    let (session, process_group) = Session::new_bootstrap_pair(process);
+    pid_table.insert_session(session.sid(), &session);
+    pid_table.insert_process_group(process_group.pgid(), &process_group);
+    *process.process_group.lock() = Some(process_group);
 
     // Add the new process to the global table
-    process_table_mut.insert(process.pid(), process.clone());
+    pid_table.insert_process(process.pid(), process);
 }
 
 /// Creates the init task from the given executable file.
 fn create_init_task(
     tid: Tid,
-    process_vm: &ProcessVm,
-    executable_path: &str,
-    process: Weak<Process>,
+    process: &Arc<Process>,
+    fs: ThreadFsInfo,
+    elf_path: Path,
     argv: Vec<CString>,
     envp: Vec<CString>,
 ) -> Result<Arc<Task>> {
     let credentials = Credentials::new_root();
-    let fs = ThreadFsInfo::default();
-    let (_, elf_load_info) = {
-        let fs_resolver = fs.resolver().read();
-        let fs_path = FsPath::new(AT_FDCWD, executable_path)?;
-        let elf_file = fs.resolver().read().lookup(&fs_path)?;
+
+    let (elf_load_info, elf_abs_path) = {
+        let path_resolver = fs.resolver().read();
+
         let program_to_load =
-            ProgramToLoad::build_from_file(elf_file, &fs_resolver, argv, envp, 1)?;
-        process_vm.clear_and_map();
-        program_to_load.load_to_vm(process_vm, &fs_resolver)?
+            ProgramToLoad::build_from_file(elf_path.clone(), &path_resolver, argv, envp)?;
+        let vmar = process.lock_vmar();
+        let elf_load_info = program_to_load.load_to_vmar(vmar.unwrap(), &path_resolver)?;
+        let elf_abs_path = path_resolver.make_abs_path(&elf_path).into_string();
+
+        (elf_load_info, elf_abs_path)
     };
 
     let mut user_ctx = UserContext::default();
     user_ctx.set_instruction_pointer(elf_load_info.entry_point as _);
     user_ctx.set_stack_pointer(elf_load_info.user_stack_top as _);
-    let thread_name = Some(ThreadName::new_from_executable_path(executable_path)?);
-    let thread_builder = PosixThreadBuilder::new(tid, Arc::new(user_ctx), credentials)
-        .thread_name(thread_name)
-        .process(process)
+
+    let thread_name = ThreadName::new_from_executable_path(&elf_abs_path);
+
+    let thread_builder = PosixThreadBuilder::new(tid, thread_name, Box::new(user_ctx), credentials)
+        .process(Arc::downgrade(process))
         .fs(Arc::new(fs));
     Ok(thread_builder.build())
 }

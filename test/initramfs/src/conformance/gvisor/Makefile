@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# A list of enabled system call test suites from Gvisor.
+# Each test suite consists of multiple test cases,
+# some of which are disabled by the blocklists.
+#
+# Please keep the list sorted by name.
+TESTS ?= \
+	access_test \
+	brk_test \
+	chown_test \
+	creat_test \
+	dev_test \
+	dup_test \
+	epoll_test \
+	eventfd_test \
+	fallocate_test \
+	fcntl_test \
+	flock_test \
+	fsync_test \
+	futex_test \
+	getdents_test \
+	inotify_test \
+	ioctl_test \
+	link_test \
+	lseek_test \
+	memfd_test \
+	mkdir_test \
+	mknod_test \
+	mmap_test \
+	mount_test \
+	mremap_test \
+	msync_test \
+	open_create_test \
+	open_test \
+	pipe_test \
+	ppoll_test \
+	prctl_setuid_test \
+	pread64_test \
+	preadv2_test \
+	proc_pid_oomscore_test \
+	proc_test \
+	pselect_test \
+	pty_test \
+	pwrite64_test \
+	pwritev2_test \
+	read_test \
+	readv_test \
+	rename_test \
+	rlimits_test \
+	sched_test \
+	sched_yield_test \
+	semaphore_test \
+	sendfile_test \
+	setns_test \
+	sigaction_test \
+	sigaltstack_test \
+	signalfd_test \
+	sigtimedwait_test \
+	socket_netlink_route_test \
+	socket_unix_dgram_local_test \
+	socket_unix_dgram_non_blocking_test \
+	socket_unix_pair_test \
+	socket_unix_seqpacket_local_test \
+	socket_unix_stream_test \
+	socket_unix_unbound_dgram_test \
+	socket_unix_unbound_seqpacket_test \
+	socket_unix_unbound_stream_test \
+	stat_test \
+	stat_times_test \
+	statfs_test \
+	symlink_test \
+	sync_test \
+	sysinfo_test \
+	tcp_socket_test \
+	timerfd_test \
+	timers_test \
+	truncate_test \
+	uname_test \
+	uidgid_test \
+	unlink_test \
+	utimes_test \
+	vdso_clock_gettime_test \
+	vfork_test \
+	write_test \
+	xattr_test \
+	# The end of the list
+
+MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
+CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
+BUILD_DIR ?= $(CUR_DIR)/../../../build
+BIN_DIR := $(GVISOR_PREBUILT_DIR)
+INITRAMFS ?= $(CUR_DIR)/../../../build/initramfs
+TARGET_DIR := $(INITRAMFS)/opt/gvisor
+RUN_BASH := $(CUR_DIR)/run_gvisor_test.sh
+BLOCK_LIST := $(CUR_DIR)/blocklists
+EXT2_BLOCK_LIST := $(CUR_DIR)/blocklists.ext2
+EXFAT_BLOCK_LIST := $(CUR_DIR)/blocklists.exfat
+
+.PHONY: all
+all: $(TESTS)
+
+$(TESTS): $(BIN_DIR) $(TARGET_DIR)
+	@cp -f $</$@ $(TARGET_DIR)/tests
+
+$(TARGET_DIR): $(RUN_BASH) $(BLOCK_LIST) $(EXT2_BLOCK_LIST) $(EXFAT_BLOCK_LIST)
+	@rm -rf $@ && mkdir -p $@
+	@# Prepare tests dir for test binaries
+	@mkdir $@/tests
+	@# Copy blocklists
+	@cp -rf $(BLOCK_LIST) $@
+	@# Copy ext2 specific blocklists
+	@cp -rf $(EXT2_BLOCK_LIST) $@
+	@# Copy exFAT specific blocklists
+	@cp -rf $(EXFAT_BLOCK_LIST) $@
+	@# Copy bash script
+	@cp -f $(RUN_BASH) $@
+
+.PHONY: clean
+clean:
+	@rm -rf $(TARGET_DIR)

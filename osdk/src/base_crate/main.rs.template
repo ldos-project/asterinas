@@ -19,6 +19,7 @@ mod default_frame_allocator {
     use osdk_frame_allocator::FrameAllocator;
     static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator;
 
+    // SAFETY: The name does not collide with other symbols.
     #[unsafe(no_mangle)]
     #[linkage = "weak"]
     static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn GlobalFrameAllocator = &FRAME_ALLOCATOR;
@@ -30,14 +31,17 @@ mod default_heap_allocator {
     use osdk_heap_allocator::{HeapAllocator, type_from_layout};
     static HEAP_ALLOCATOR: HeapAllocator = HeapAllocator;
 
+    // SAFETY: The name does not collide with other symbols.
     #[unsafe(no_mangle)]
     #[linkage = "weak"]
     static __GLOBAL_HEAP_ALLOCATOR_REF: &'static dyn GlobalHeapAllocator = &HEAP_ALLOCATOR;
 
+    // SAFETY: The name does not collide with other symbols.
     #[unsafe(no_mangle)]
     #[linkage = "weak"]
-    #[expect(non_snake_case)]
-    fn __GLOBAL_HEAP_SLOT_INFO_FROM_LAYOUT(layout: core::alloc::Layout) -> Option<ostd::mm::heap::SlotInfo> {
+    fn __global_heap_slot_info_from_layout(
+        layout: core::alloc::Layout,
+    ) -> Option<ostd::mm::heap::SlotInfo> {
         type_from_layout(layout)
     }
 }

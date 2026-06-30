@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::task::{CurrentTask, Task};
+use ostd::{mm::VmIo, task::Task};
 
 use super::{
-    AsPosixThread, AsThreadLocal, ThreadLocal, futex::futex_wake, robust_list::wake_robust_futex,
-    thread_table,
+    AsPosixThread, AsThreadLocal, ThreadLocal,
+    futex::{FutexVisibility, futex_wake},
+    robust_list::wake_robust_futex,
 };
 use crate::{
-    current_userspace,
+    context::current_userspace,
     prelude::*,
     process::{
         TermStatus,
         exit::exit_process,
+        pid_table,
         signal::{constants::SIGKILL, signals::kernel::KernelSignal},
         task_set::TaskSet,
     },
@@ -38,6 +40,8 @@ pub fn do_exit_group(term_status: TermStatus) {
 
 /// Exits the current POSIX thread or process.
 fn exit_internal(term_status: TermStatus, is_exiting_group: bool) {
+    let exit_code = term_status.as_u32();
+
     let current_task = Task::current().unwrap();
     let current_thread = current_task.as_thread().unwrap();
     let posix_thread = current_thread.as_posix_thread().unwrap();
@@ -47,17 +51,20 @@ fn exit_internal(term_status: TermStatus, is_exiting_group: bool) {
     let is_last_thread = {
         let mut tasks = posix_process.tasks().lock();
         let has_exited_group = tasks.has_exited_group();
+        let in_evecve = tasks.in_execve();
 
-        if is_exiting_group && !has_exited_group {
+        if is_exiting_group && !has_exited_group && !in_evecve {
             sigkill_other_threads(&current_task, &tasks);
             tasks.set_exited_group();
         }
 
         // According to Linux's behavior, the last thread's exit code will become the process's
         // exit code, so here we should just overwrite the old value (if any).
-        if !has_exited_group {
-            posix_process.status().set_exit_code(term_status.as_u32());
+        if !has_exited_group && !in_evecve {
+            posix_process.status().set_exit_code(exit_code);
         }
+
+        posix_thread.set_exit_code(exit_code);
 
         // We should only change the thread status when running as the thread, so no race
         // conditions can occur in between.
@@ -69,6 +76,16 @@ fn exit_internal(term_status: TermStatus, is_exiting_group: bool) {
         tasks.remove_exited(&current_task)
     };
 
+    // This is put after `current_thread.exit()`,
+    // so `attach_tracee` will observe that the tracer has exited while
+    // holding the `tracees` lock, and can not race with `clear_tracees`.
+    posix_thread.clear_tracees();
+
+    if let Some(tracer) = posix_thread.tracer() {
+        let tracer = tracer.as_posix_thread().unwrap();
+        tracer.process().children_wait_queue().wake_all();
+    }
+
     wake_clear_ctid(thread_local);
 
     wake_robust_list(thread_local, posix_thread.tid());
@@ -76,15 +93,17 @@ fn exit_internal(term_status: TermStatus, is_exiting_group: bool) {
     // According to Linux behavior, the main thread shouldn't be removed from the table until the
     // process is reaped by its parent.
     if posix_thread.tid() != posix_process.pid() {
-        thread_table::remove_thread(posix_thread.tid());
+        pid_table::pid_table_mut().remove_thread(posix_thread.tid());
     }
 
     // Drop fields in `PosixThread`.
     *posix_thread.file_table().lock() = None;
+    *posix_thread.ns_proxy().lock() = None;
 
     // Drop fields in `ThreadLocal`.
-    *thread_local.root_vmar().borrow_mut() = None;
+    *thread_local.vmar().borrow_mut() = None;
     thread_local.borrow_file_table_mut().remove();
+    thread_local.borrow_ns_proxy_mut().remove();
 
     if is_last_thread {
         exit_process(&posix_process);
@@ -92,11 +111,16 @@ fn exit_internal(term_status: TermStatus, is_exiting_group: bool) {
 }
 
 /// Sends `SIGKILL` to all other threads in the current process.
-///
-/// This is only needed when initiating an `exit_group` for the first time.
-fn sigkill_other_threads(current_task: &CurrentTask, task_set: &TaskSet) {
+pub(in crate::process) fn sigkill_other_threads(current_task: &Task, task_set: &TaskSet) {
+    debug_assert!(
+        task_set
+            .as_slice()
+            .iter()
+            .any(|task| core::ptr::eq(current_task, task.as_ref()))
+    );
+
     for task in task_set.as_slice() {
-        if core::ptr::eq(current_task.as_ref(), task.as_ref()) {
+        if core::ptr::eq(current_task, task.as_ref()) {
             continue;
         }
         task.as_posix_thread()
@@ -116,7 +140,7 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
     let _ = current_userspace!()
         .write_val(clear_ctid, &0u32)
         .inspect_err(|err| debug!("exit: cannot clear the child TID: {:?}", err));
-    let _ = futex_wake(clear_ctid, 1, None)
+    let _ = futex_wake(clear_ctid, 1, FutexVisibility::Shared)
         .inspect_err(|err| debug!("exit: cannot wake the futex on the child TID: {:?}", err));
 
     thread_local.clear_child_tid().set(0);
@@ -126,18 +150,19 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
 ///
 /// This corresponds to Linux's `exit_robust_list`. Errors are silently ignored.
 fn wake_robust_list(thread_local: &ThreadLocal, tid: Tid) {
-    let mut robust_list = thread_local.robust_list().borrow_mut();
-
-    let list_head = match *robust_list {
+    let list_head = match thread_local.robust_list().borrow_mut().take() {
         Some(robust_list_head) => robust_list_head,
         None => return,
     };
 
-    trace!("exit: wake up the rubust list: {:?}", list_head);
+    debug!("exit: wake up the robust list: {:?}", list_head);
     for futex_addr in list_head.futexes() {
-        let _ = wake_robust_futex(futex_addr, tid)
-            .inspect_err(|err| debug!("exit: cannot wake up the robust futex: {:?}", err));
+        if let Err(err) = wake_robust_futex(futex_addr, tid) {
+            debug!(
+                "exit: cannot wake the robust futex at {:#x}: {:?}",
+                futex_addr, err
+            );
+            return;
+        }
     }
-
-    *robust_list = None;
 }

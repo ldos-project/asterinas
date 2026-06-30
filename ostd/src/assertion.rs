@@ -144,7 +144,7 @@ mod tests {
     use crate::{prelude::ktest, sync::Mutex};
 
     #[ktest]
-    fn test_assert_eventually_success() {
+    fn assert_eventually_success() {
         let value = Arc::new(AtomicUsize::new(0));
         crate::task::TaskOptions::new({
             let value = value.clone();
@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_assert_ne_eventually_success() {
+    fn assert_ne_eventually_success() {
         let value = Arc::new(AtomicUsize::new(3));
         crate::task::TaskOptions::new({
             let value = value.clone();
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_assert_matches_eventually_success() {
+    fn assert_matches_eventually_success() {
         let result = Arc::new(Mutex::new(Option::<usize>::None));
         crate::task::TaskOptions::new({
             let result = result.clone();
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_assert_eq_eventually_success() {
+    fn assert_eq_eventually_success() {
         let value = Arc::new(AtomicUsize::new(1));
         crate::task::TaskOptions::new({
             let value = value.clone();
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_sleep_duration() {
+    fn sleep_duration() {
         let start = Jiffies::elapsed().as_duration();
         sleep(Duration::from_millis(10));
         let end = Jiffies::elapsed().as_duration();

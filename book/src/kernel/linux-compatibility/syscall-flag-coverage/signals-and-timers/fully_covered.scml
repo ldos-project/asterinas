@@ -1,0 +1,60 @@
+// Get value of an interval timer
+getitimer(which, value);
+
+// Set an alarm clock for delivery of a signal
+alarm(seconds);
+
+// Set value of an interval timer
+setitimer(which, value, ovalue);
+
+// Return from signal handler and cleanup stack frame
+rt_sigreturn(arg);
+
+// Send signal to a process
+kill(pid, sig);
+
+// Send signal to a thread
+tkill(tid, sig);
+
+// Send signal to a thread within a process
+tgkill(tgid, tid, sig);
+
+// Send signal to the target process referred to by pidfd
+pidfd_send_signal(pidfd, sig, info, flags = PIDFD_SIGNAL_THREAD | PIDFD_SIGNAL_THREAD_GROUP | PIDFD_SIGNAL_PROCESS_GROUP);
+
+// Wait for signal
+pause();
+
+// Examine pending signals
+sigpending(set);
+
+// Replace the signal mask and wait for a signal
+sigsuspend(mask);
+
+// Fetch state of POSIX per-process timer
+timer_gettime(timerid, curr_value);
+
+// Delete a POSIX per-process timer
+timer_delete(timerid);
+
+// Get current setting of timerfd timer
+timerfd_gettime(fd, curr_value);
+
+// Get the time and timezone
+gettimeofday(tv, tz);
+
+// Get time in seconds
+time(tloc);
+
+// Synchronously wait for a signal with a timeout
+rt_sigtimedwait(set, info, timeout, sigsetsize);
+
+// Arm or disarm a POSIX per-process timer
+timer_settime(timer_id, flags, new_setting, old_setting);
+
+struct stack_t = {
+    sp, flags = SS_AUTODISARM | SS_ONSTACK | SS_DISABLE, size
+};
+
+// Set and/or get signal stack context
+sigaltstack(stack = <stack_t>, old_stack = <stack_t>);

@@ -3,11 +3,10 @@
 # =========================== Makefile options. ===============================
 
 # Global build options.
-ARCH ?= x86_64
+OSDK_TARGET_ARCH ?= x86_64
 BENCHMARK ?= none
 BOOT_METHOD ?= grub-rescue-iso
 BOOT_PROTOCOL ?= multiboot2
-BUILD_SYSCALL_TEST ?= 0
 ENABLE_KVM ?= 1
 KVM_EXISTS = $(shell test -c /dev/kvm && echo 1 || echo 0)
 INTEL_TDX ?= 0
@@ -24,6 +23,16 @@ ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
 BASELINE_ASTERINAS ?= 0
 RUSTFLAGS ?= 
+COVERAGE ?= 0
+
+# Specify the primary system console (supported: tty0, ttyS0, hvc0).
+# - tty0: The active virtual terminal (VT).
+# - ttyS0: The serial (UART) terminal.
+# - hvc0: The virtio-console terminal.
+# Asterinas will automatically fall back to tty0 if hvc0 is not available.
+# Note that currently the virtual terminal (tty0) can only work with
+# linux-efi-handover64 and linux-efi-pe64 boot protocol.
+CONSOLE ?= hvc0
 # End of global build options.
 
 # GDB debugging and profiling options.
@@ -37,14 +46,26 @@ GDB_PROFILE_INTERVAL ?= 0.1
 # mode using the kernel command line.
 # Here are the options for the auto test feature.
 AUTO_TEST ?= none
-EXTRA_BLOCKLISTS_DIRS ?= ""
-SYSCALL_TEST_WORKDIR ?= /tmp
+# Specify whether to build conformance tests under `test/initramfs/src/conformance`.
+ENABLE_CONFORMANCE_TEST ?= false
+CONFORMANCE_TEST_SUITE ?= ltp
+CONFORMANCE_TEST_WORKDIR ?= /tmp
+# Whitespace-separated extra blocklist paths for conformance runners.
+# - `gvisor` treats each entry as a directory relative to its runner directory,
+#   and loads a per-test blocklist file from that directory.
+# - `kselftest` treats each entry as a blocklist file relative to its runner
+#   directory, and appends that file directly.
+EXTRA_BLOCKLISTS ?= ""
+# Specify whether to build regression tests under `test/initramfs/src/regression`.
+ENABLE_REGRESSION_TEST ?= false
 # End of auto test features.
 
 # Network settings
 # NETDEV possible values are user,tap
 NETDEV ?= user
 VHOST ?= off
+# The name server listed by /etc/resolv.conf inside the Asterinas VM
+DNS_SERVER ?= none
 # End of network settings
 
 # Docker settings
@@ -55,6 +76,28 @@ DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
 # Rust cache
 DOCKER_RUST_CACHE_LOCATION ?= $(shell pwd)/.cache
 
+# NixOS settings
+NIXOS_DISK_SIZE_IN_MB ?= 8192
+NIXOS_DISABLE_SYSTEMD ?= false
+# The following option is only effective when NIXOS_DISABLE_SYSTEMD is set to 'true'.
+# Use a login shell to ensure that environment variables are initialized correctly.
+NIXOS_STAGE_2_INIT ?= /bin/sh -l
+# End of NixOS settings
+
+# ISO installer settings
+AUTO_INSTALL ?= true
+# End of ISO installer settings
+
+# Cachix binary cache settings
+CACHIX_AUTH_TOKEN ?=
+RELEASE_CACHIX_NAME ?= 
+RELEASE_SUBSTITUTER ?= 
+RELEASE_TRUSTED_PUBLIC_KEY ?= 
+DEV_CACHIX_NAME ?= 
+DEV_SUBSTITUTER ?= 
+DEV_TRUSTED_PUBLIC_KEY ?= 
+# End of Cachix binary cache settings
+
 # ========================= End of Makefile options. ==========================
 
 SHELL := /bin/bash
@@ -62,9 +105,10 @@ SHELL := /bin/bash
 CARGO_OSDK := ~/.cargo/bin/cargo-osdk
 
 # Common arguments for `cargo osdk` `build`, `run` and `test` commands.
-CARGO_OSDK_COMMON_ARGS := --target-arch=$(ARCH)
+CARGO_OSDK_COMMON_ARGS := --target-arch=$(OSDK_TARGET_ARCH)
 # The build arguments also apply to the `cargo osdk run` command.
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
 CARGO_OSDK_TEST_ARGS :=
 # Common arguments for all `cargo clippy` and `cargo osdk clippy` commands.
 CLIPPY_COMMON_ARGS := 
@@ -81,26 +125,27 @@ BASH_HISTORY := $(DOCKER_RUST_CACHE_LOCATION)/.bash_history
 DOCKER_TAG := ldosproject/asterinas
 DOCKER_IMAGE := $(shell cat DOCKER_IMAGE_VERSION)
 DOCKER_IMAGE_TAG := $(DOCKER_TAG):$(DOCKER_IMAGE)
-DOCKER_RUN_ARGS := --privileged --device=/dev/kvm
+DOCKER_RUN_ARGS := --network=host --privileged --device=/dev/kvm
 DOCKER_MOUNTS := -v $(shell pwd):/root/asterinas -v $(CARGO_CACHE):/root/.cargo -v $(RUSTUP_CACHE):/root/.rustup
+DOCKER_MOUNTS += -v /dev:/dev
 DOCKER_MOUNTS += -v $(BASH_HISTORY):/root/.bash_history
 
-ifeq ($(AUTO_TEST), syscall)
-BUILD_SYSCALL_TEST := 1
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="SYSCALL_TEST_SUITE=$(SYSCALL_TEST_SUITE)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="SYSCALL_TEST_WORKDIR=$(SYSCALL_TEST_WORKDIR)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS_DIRS=$(EXTRA_BLOCKLISTS_DIRS)"
-CARGO_OSDK_BUILD_ARGS += --init-args="/opt/syscall_test/run_syscall_test.sh"
-else ifeq ($(AUTO_TEST), test)
-	ifneq ($(SMP), 1)
-		CARGO_OSDK_BUILD_ARGS += --kcmd-args="BLOCK_UNSUPPORTED_SMP_TESTS=1"
-	endif
-CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_general_test.sh"
+ifeq ($(AUTO_TEST), conformance)
+ENABLE_CONFORMANCE_TEST := true
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TEST_WORKDIR)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), regression)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), raid)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
+ENABLE_REGRESSION_TEST := true
 export VSOCK=on
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_vsock_test.sh"
 endif
@@ -110,7 +155,14 @@ CARGO_OSDK_COMMON_ARGS += --profile release-lto
 OSTD_TASK_STACK_SIZE_IN_PAGES = 8
 else ifeq ($(RELEASE), 1)
 CARGO_OSDK_COMMON_ARGS += --release
-OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+	ifeq ($(OSDK_TARGET_ARCH), riscv64)
+	# FIXME: Unwinding in RISC-V seems to cost more stack space, so we increase
+	# the stack size for it. This may need further investigation.
+	# See https://github.com/asterinas/asterinas/pull/2383#discussion_r2307673156
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 16
+	else
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+	endif
 endif
 
 # If the BENCHMARK is set, we will run the benchmark in the kernel mode.
@@ -128,21 +180,24 @@ KCMDARGS ?=
 CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(KCMDARGS), --kcmd-args="$(ARG)")
 
 ifeq ($(INTEL_TDX), 1)
-BOOT_METHOD = grub-qcow2
 BOOT_PROTOCOL = linux-efi-handover64
 CARGO_OSDK_COMMON_ARGS += --scheme tdx
 endif
 
-ifeq ($(BOOT_PROTOCOL), linux-legacy32)
+ifeq ($(BOOT_PROTOCOL), multiboot)
 BOOT_METHOD = qemu-direct
-OVMF = off
-else ifeq ($(BOOT_PROTOCOL), multiboot)
-BOOT_METHOD = qemu-direct
-OVMF = off
 endif
 
-ifeq ($(ARCH), riscv64)
-SCHEME = riscv
+ifeq ($(SCHEME), microvm)
+BOOT_METHOD = qemu-direct
+endif
+
+ifeq ($(SCHEME), "")
+	ifeq ($(OSDK_TARGET_ARCH), riscv64)
+	SCHEME = riscv
+	else ifeq ($(OSDK_TARGET_ARCH), loongarch64)
+	SCHEME = loongarch
+	endif
 endif
 
 ifneq ($(SCHEME), "")
@@ -154,6 +209,10 @@ endif
 # Feature for RAID test.
 ifeq ($(ENABLE_RAID_TEST),1)
 FEATURES := $(strip $(FEATURES) raid_test)
+endif
+
+ifeq ($(COVERAGE), 1)
+CARGO_OSDK_COMMON_ARGS += --coverage
 endif
 
 ifdef FEATURES
@@ -182,7 +241,7 @@ endif
 
 ifeq ($(ENABLE_KVM), 1)
 	ifeq ($(KVM_EXISTS), 1)
-		ifeq ($(ARCH), x86_64)
+		ifeq ($(OSDK_TARGET_ARCH), x86_64)
 			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
 		endif
 	endif
@@ -190,7 +249,7 @@ endif
 
 # Skip GZIP to make encoding and decoding of initramfs faster
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
-CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(realpath test/build/initramfs.cpio)
+CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio)
 CARGO_OSDK_COMMON_ARGS += $(CARGO_OSDK_INITRAMFS_OPTION)
 endif
 
@@ -200,60 +259,12 @@ CARGO_OSDK_TEST_ARGS += $(CARGO_OSDK_COMMON_ARGS)
 # Pass make variables to all subdirectory makes
 export
 
-# Basically, non-OSDK crates do not depend on Aster Frame and can be checked
-# or tested without OSDK.
-NON_OSDK_CRATES := \
-	ostd/libs/align_ext \
-	ostd/libs/id-alloc \
-	ostd/libs/linux-bzimage/builder \
-	ostd/libs/linux-bzimage/boot-params \
-	ostd/libs/ostd-macros \
-	ostd/libs/ostd-test \
-	kernel/libs/cpio-decoder \
-	kernel/libs/int-to-c-enum \
-	kernel/libs/int-to-c-enum/derive \
-	kernel/libs/aster-rights \
-	kernel/libs/aster-rights-proc \
-	kernel/libs/jhash \
-	kernel/libs/keyable-arc \
-	kernel/libs/typeflags \
-	kernel/libs/typeflags-util \
-	kernel/libs/atomic-integer-wrapper
-
-# In contrast, OSDK crates depend on OSTD (or being `ostd` itself)
-# and need to be built or tested with OSDK.
-OSDK_CRATES := \
-	osdk/deps/frame-allocator \
-	osdk/deps/heap-allocator \
-	osdk/deps/test-kernel \
-	ostd \
-	ostd/libs/linux-bzimage/setup \
-	ostd/tests/early-boot-test-kernel \
-	kernel \
-	kernel/comps/block \
-	kernel/comps/console \
-	kernel/comps/framebuffer \
-	kernel/comps/input \
-	kernel/comps/keyboard \
-	kernel/comps/network \
-	kernel/comps/raid \
-	kernel/comps/softirq \
-	kernel/comps/systree \
-	kernel/comps/logger \
-	kernel/comps/mariposa_data_capture \
-	kernel/comps/mlsdisk \
-	kernel/comps/time \
-	kernel/comps/virtio \
-	kernel/libs/aster-util \
-	kernel/libs/aster-bigtcp \
-	kernel/libs/xarray
-
 # OSDK dependencies
 OSDK_SRC_FILES := \
 	$(shell find osdk/Cargo.toml osdk/Cargo.lock osdk/src -type f)
 
 .PHONY: all
-all: build
+all: kernel
 
 # Install or update OSDK from source
 # To uninstall, do `cargo uninstall cargo-osdk`
@@ -270,7 +281,7 @@ $(CARGO_OSDK): $(OSDK_SRC_FILES)
 
 .PHONY: check_osdk
 check_osdk:
-	cd osdk && cargo clippy -- $(CLIPPY_COMMON_ARGS) -D warnings
+	@./tools/clippy_check.sh osdk $(CLIPPY_COMMON_ARGS)
 
 .PHONY: test_osdk
 test_osdk:
@@ -278,39 +289,37 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+.PHONY: check_vdso
+check_vdso:
+	@# Checking `VDSO_LIBRARY_DIR` environment variable
+	@if [ -z "$(VDSO_LIBRARY_DIR)" ]; then \
+		echo "Error: the VDSO_LIBRARY_DIR environment variable must be given."; \
+		echo "    This variable points to a directory that provides Linux's vDSO files,"; \
+		echo "    which is required to build Asterinas. Search for VDSO_LIBRARY_DIR"; \
+		echo "    in Asterinas's Dockerfile for more information."; \
+		exit 1; \
+	fi
+
 .PHONY: initramfs
-initramfs:
-	@$(MAKE) --no-print-directory -C test
+initramfs: check_vdso
+	@$(MAKE) --no-print-directory -C test/initramfs
 
-.PHONY: build
-build: initramfs $(CARGO_OSDK)
-	cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
+# Build the kernel with an initramfs
+.PHONY: kernel
+kernel: initramfs $(CARGO_OSDK)
+	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
-.PHONY: tools
-tools:
-	cd kernel/libs/comp-sys && cargo install --path cargo-component
-
-.PHONY: run
-run: initramfs $(CARGO_OSDK)
-	@[ $(ENABLE_KVM) -eq 1 ] && \
-		([ $(KVM_EXISTS) -eq 1 ] || \
-			echo Warning: KVM not present on your system)
-	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
-
-.PHONY: run_dropbear
-run_dropbear: initramfs $(CARGO_OSDK)
-	@[ $(ENABLE_KVM) -eq 1 ] && \
-		([ $(KVM_EXISTS) -eq 1 ] || \
-			echo Warning: KVM not present on your system)
-	cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --init-args="/service/start_dropbear.sh"
-
+# Build the kernel with an initramfs and then run it
+.PHONY: run_kernel
+run_kernel: initramfs $(CARGO_OSDK)
+	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
-ifeq ($(AUTO_TEST), syscall)
-	@tail --lines 100 qemu.log | grep -q "^All syscall tests passed." \
-		|| (echo "Syscall test failed" && exit 1)
-else ifeq ($(AUTO_TEST), test)
-	@tail --lines 100 qemu.log | grep -q "^All general tests passed." \
-		|| (echo "General test failed" && exit 1)
+ifeq ($(AUTO_TEST), conformance)
+	@tail --lines 100 qemu.log | grep -q "^All conformance tests passed." \
+		|| (echo "Conformance test failed" && exit 1)
+else ifeq ($(AUTO_TEST), regression)
+	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
+		|| (echo "Regression test failed" && exit 1)
 else ifeq ($(AUTO_TEST), boot)
 	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
@@ -320,6 +329,58 @@ else ifeq ($(AUTO_TEST), raid)
 else ifeq ($(AUTO_TEST), vsock)
 	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
 		|| (echo "Vsock test failed" && exit 1)
+endif
+
+# Build the Asterinas NixOS ISO installer image
+iso: BOOT_PROTOCOL = linux-efi-handover64
+iso:
+	@make kernel
+	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
+        $(MAKE) --no-print-directory -C test/nixos iso; \
+    else \
+        ./tools/nixos/build_iso.sh; \
+    fi
+
+# Build the Asterinas NixOS ISO installer image and then do installation
+run_iso: OVMF = off
+run_iso:
+	@./tools/nixos/run.sh iso
+
+# Create an Asterinas NixOS installation on host
+nixos: BOOT_PROTOCOL = linux-efi-handover64
+nixos:
+	@make kernel
+	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
+        $(MAKE) --no-print-directory -C test/nixos nixos; \
+    else \
+        ./tools/nixos/build_nixos.sh; \
+    fi
+
+# After creating a Asterinas NixOS installation (via either the `run_iso` or `nixos` target),
+# run the NixOS
+run_nixos: OVMF = off
+run_nixos:
+	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
+        $(MAKE) --no-print-directory -C test/nixos run_nixos; \
+    else \
+        ./tools/nixos/run.sh nixos; \
+    fi
+
+# Build the Asterinas NixOS patched packages
+cachix:
+	@nix-build distro/cachix \
+		--option extra-substituters "${RELEASE_SUBSTITUTER} ${DEV_SUBSTITUTER}" \
+		--option extra-trusted-public-keys "${RELEASE_TRUSTED_PUBLIC_KEY} ${DEV_TRUSTED_PUBLIC_KEY}" \
+		--out-link cachix.list
+
+# Push the Asterinas NixOS patched packages to Cachix
+.PHONY: push_cachix
+push_cachix: USE_RELEASE_CACHE ?= 0
+push_cachix: cachix
+ifeq ($(USE_RELEASE_CACHE), 1)
+	@cachix push $(RELEASE_CACHIX_NAME) < cachix.list
+else
+	@cachix push $(DEV_CACHIX_NAME) < cachix.list
 endif
 
 .PHONY:
@@ -352,142 +413,97 @@ profile_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk profile $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT) \
 		--samples $(GDB_PROFILE_COUNT) --interval $(GDB_PROFILE_INTERVAL) --format $(GDB_PROFILE_FORMAT)
 
-
-
-# For each non-OSDK crate, invoke a rule which runs tests
-NON_OSDK_TEST_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
-
-test_%:
-	cd $(subst @@,/,$*) && cargo test
-
-.PHONY: test_non_osdk
-test: $(addprefix test_, $(NON_OSDK_TEST_TARGETS))
-
-# For each OSDK crate, invoke a rule which runs ktests using OSDK
-OSDK_KTEST_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
-
-ktest_ostd@@libs@@linux-bzimage@@setup:
-	@true
-
-ktest_%: initramfs $(CARGO_OSDK)
-	@dir=$(subst @@,/,$*); \
-	echo "cd $$dir && cargo osdk test $(CARGO_OSDK_TEST_ARGS)"; \
-	(cd $$dir && cargo osdk test $(CARGO_OSDK_TEST_ARGS)) || exit 1; \
-	tail --lines 10 qemu.log | grep -q "^\\[ktest runner\\] All crates tested." \
-		|| (echo "Test failed" && exit 1); \
+.PHONY: test
+test: NON_DEFAULT_PACKAGE_NAMES = \
+    $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
+test: TEST_PACKAGE_NAMES = \
+    $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
+test:
+	@if [ -n "$(TEST_PACKAGE_NAMES)" ]; then \
+		cargo test $(addprefix -p ,$(TEST_PACKAGE_NAMES)); \
+	fi
 
 .PHONY: ktest
-ktest: $(addprefix ktest_, $(OSDK_KTEST_TARGETS))
+ktest: CONSOLE = ttyS0
+ktest: initramfs $(CARGO_OSDK)
+	@# cargo-osdk tests default workspace members.
+	@# `linux-bzimage-setup` is left out of `default-members`
+	@# because it is hard to unit test.
+	@cargo osdk test $(CARGO_OSDK_TEST_ARGS)
+
 
 .PHONY: early_boot_test
 early_boot_test: initramfs $(CARGO_OSDK)
 	@dir=ostd/tests/early-boot-test-kernel; \
 	echo "cd $$dir && cargo osdk run"; \
-	(cd $$dir && cargo osdk run) || exit 1; \
+	(cd $$dir && cargo osdk run) || exit 1;
 
-# For each non-OSDK crate, invoke a rule which runs docs
-NON_OSDK_DOCS_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
-
-docs_non_osdk_%:
-	cd $(subst @@,/,$*) && cargo doc --no-deps
-
-.PHONY: docs_non_osdk
-docs_non_osdk: $(addprefix docs_non_osdk_, $(NON_OSDK_DOCS_TARGETS))
-
-# For each OSDK crate, invoke a rule which runs docs using OSDK
-OSDK_DOCS_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
-
-docs_osdk_%: $(CARGO_OSDK)
-	cd $(subst @@,/,$*) && cargo osdk doc --no-deps
-
-.PHONY: docs_osdk
-docs_osdk: $(addprefix docs_osdk_, $(OSDK_DOCS_TARGETS))
-
-# Combine the two into a single `docs` target and build mdbook
 .PHONY: docs
-docs: docs_non_osdk docs_osdk
-	@echo "Building mdBook"
-	cd docs && mdbook build
+docs: private DEFAULT_PACKAGE_NAMES = \
+    $(shell ./tools/print_workspace_members.sh --default-ones --package-names)
+docs: private DEFAULT_NON_KERNEL_PACKAGE_NAMES = \
+    $(filter-out aster-kernel,$(DEFAULT_PACKAGE_NAMES))
+docs: private NON_DEFAULT_PACKAGE_NAMES = \
+    $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
+docs: private DOC_NON_DEFAULT_PACKAGE_NAMES = \
+    $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
+docs: $(CARGO_OSDK)
+	@if [ -n "$(DEFAULT_NON_KERNEL_PACKAGE_NAMES)" ]; then \
+		RUSTDOCFLAGS="-Dwarnings" cargo osdk doc $(addprefix -p ,$(DEFAULT_NON_KERNEL_PACKAGE_NAMES)) --no-deps; \
+	fi
+	@if [ -n "$(DOC_NON_DEFAULT_PACKAGE_NAMES)" ]; then \
+		RUSTDOCFLAGS="-Dwarnings" cargo doc $(addprefix -p ,$(DOC_NON_DEFAULT_PACKAGE_NAMES)) --no-deps; \
+	fi
+	@# The kernel crate is primarily composed of private items.
+	@# Include --document-private-items to fully check internal documentation.
+	@RUSTDOCFLAGS="-Dwarnings --document-private-items -Arustdoc::private_intra_doc_links" \
+		cargo osdk doc -p aster-kernel --no-deps
+	@if [ "$(OSDK_TARGET_ARCH)" = "x86_64" ]; then \
+		cd ostd/libs/linux-bzimage/setup && RUSTDOCFLAGS="-Dwarnings" cargo osdk doc --no-deps; \
+	fi
+
+.PHONY: book
+book: book/mermaid.min.js book/mermaid-init.js
+	@cd book && mdbook build
+
+book/mermaid.min.js book/mermaid-init.js:
+	@mdbook-mermaid install book/
 
 .PHONY: format
 format:
-	./tools/format_all.sh
-	@$(MAKE) --no-print-directory -C test format
+	@./tools/format_all.sh
+	@nixfmt ./distro
+	@$(MAKE) --no-print-directory -C test/initramfs format
+	@$(MAKE) --no-print-directory -C test/nixos format
 
-.PHONY: format_check lint_check clippy_check c_code_check typo_check
-
-format_check:
+.PHONY: check
+check: private WORKSPACE_MEMBER_DIRS = \
+    $(shell ./tools/print_workspace_members.sh)
+check: $(CARGO_OSDK)
 	@# Check formatting issues of the Rust code
-	./tools/format_all.sh --check
-
-
-# Check that the makefile includes all projects.
-.PHONY: workspace_project_lint
-workspace_project_coverage_check:
-	@# Check if the combination of STD_CRATES and NON_OSDK_CRATES is the
-	@# same as all workspace members
-	@sed -n '/^\[workspace\]/,/^\[.*\]/{/members = \[/,/\]/p}' Cargo.toml | \
-		grep -v "members = \[" | tr -d '", \]' | \
-		sort > /tmp/all_crates
-	@echo $(NON_OSDK_CRATES) $(OSDK_CRATES) | tr ' ' '\n' | sort > /tmp/combined_crates
-	@diff -B /tmp/all_crates /tmp/combined_crates || \
-		(echo "Error: The combination of STD_CRATES and NOSTD_CRATES" \
-			"is not the same as all workspace members" && exit 1)
-	@rm /tmp/all_crates /tmp/combined_crates
-
-# The following rules use check a list of subdirectories with the same command. This complex pattern is used instead of
-# a bash level loop because this works correctly with `--keep-going`. The bash loop would exit after the first failure.
-# It also also makes make level parallelism work. The pattern is:
-# 
-# * Depend a set of rules with the names `prefix_escaped_directory_name`
-# * Create a pattern rule `prefix_%` which unescapes the matched suffix (which is available as $*), and performs the
-#   checks.
-
-# TODO: This pattern could be applied to some of the loops above (test, ktest, docs), but checks are by far the most
-# important because it allows showing ALL check failures, not just the first.
-
-# Target names with `/` replaced with `@@` since is `/` is special in make.
-NON_OSDK_CRATE_TARGETS := $(foreach crate, $(NON_OSDK_CRATES), $(subst /,@@,$(crate)))
-OSDK_CRATE_TARGETS := $(foreach crate, $(OSDK_CRATES), $(subst /,@@,$(crate)))
-
-# For each crate, invoke a rule which checks that it inherits lints from the workspace.
-.PHONY: lint_check
-lint_check: $(addprefix lint_check_, $(NON_OSDK_CRATE_TARGETS) $(OSDK_CRATE_TARGETS))
-
-lint_check_%:
-	@# Convert matched tail back to a proper path by replacing `@@` with `/`
-	@dir=$(subst @@,/,$*); \
-	if [[ "$$(tail -2 $$dir/Cargo.toml)" != "[lints]"$$'\n'"workspace = true" ]]; then \
-		echo "Error: Workspace lints in $$dir are not enabled"; \
-		exit 1; \
-	fi
-
-# For each non-OSDK crate, invoke a rule which runs clippy
-.PHONY: clippy_check_non_osdk 
-clippy_check_non_osdk: $(addprefix clippy_check_non_osdk_, $(NON_OSDK_CRATE_TARGETS))
-
-clippy_check_non_osdk_%:
-	cd $(subst @@,/,$*) && cargo clippy -- $(CLIPPY_COMMON_ARGS) -D warnings
-
-# For each OSDK crate, invoke a rule which runs clippy
-.PHONY: clippy_check_osdk
-clippy_check_osdk: $(addprefix clippy_check_osdk_, $(OSDK_CRATE_TARGETS))
-
-clippy_check_osdk_%:  $(CARGO_OSDK)
-	cd $(subst @@,/,$*) && cargo osdk clippy -- -- $(CLIPPY_COMMON_ARGS) -D warnings
-
-.PHONY: clippy_check
-clippy_check: clippy_check_non_osdk clippy_check_osdk
-
-c_code_check:
-	@# Check formatting issues of the C code (regression tests)
-	@$(MAKE) --no-print-directory -C test check
-
-typos_check:
+	@./tools/format_all.sh --check
+	@
+	@# Check if all workspace members enable workspace lints
+	@for dir in $(WORKSPACE_MEMBER_DIRS); do \
+		if [[ "$$(tail -2 $$dir/Cargo.toml)" != "[lints]"$$'\n'"workspace = true" ]]; then \
+			echo "Error: Workspace lints in $$dir are not enabled"; \
+			exit 1; \
+		fi; \
+	done
+	@
+	@# Check compilation of the Rust code
+	@OSDK_TARGET_ARCH="$(OSDK_TARGET_ARCH)" ./tools/clippy_check.sh workspace $(CLIPPY_COMMON_ARGS)
+	@
+	@# Check formatting issues of the C code and Nix files (regression tests)
+	@$(MAKE) --no-print-directory -C test/initramfs check
+	@
+	@# Check formatting issues of the Rust code in NixOS tests
+	@$(MAKE) --no-print-directory -C test/nixos check
+	@
 	@# Check typos
-	typos
-
-check: initramfs format_check workspace_project_coverage_check lint_check clippy_check c_code_check typo_check
+	@typos
+	@# Check formatting issues of Nix files under distro directory
+	@nixfmt --check ./distro
 
 # Here we build our mount cache
 # TODO make this rule depend on the dockerfile version see #34
@@ -535,13 +551,13 @@ clean:
 			true; \
 		fi
 	@echo "Cleaning up Asterinas workspace target files"
-	cargo clean
+	@cargo clean
 	@echo "Cleaning up OSDK workspace target files"
-	cd osdk && cargo clean
-	@echo "Cleaning up documentation target files"
-	cd docs && mdbook clean
+	@cd osdk && cargo clean
+	@echo "Cleaning up mdBook output files"
+	@cd book && mdbook clean
 	@echo "Cleaning up test target files"
-	@$(MAKE) --no-print-directory -C test clean
+	@$(MAKE) --no-print-directory -C test/initramfs clean
 	@echo "Uninstalling OSDK"
 	rm -f $(CARGO_OSDK)
 

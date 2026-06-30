@@ -12,7 +12,7 @@
 //! component and subsystem initialization, servers may be created and called and these may need to
 //! happen before the first kernel task starts during boot. This may happen during scheduler
 //! initialization, for example. This should be minimized, but in some cases creating a server first
-//! may be preferrable to managing non-server state until it can be moved into a server later in the
+//! may be preferable to managing non-server state until it can be moved into a server later in the
 //! boot process.
 //!
 //! NOTE: OQueues are unlikely to ever work in the early boot. However, server method calls do.
@@ -44,7 +44,7 @@ use crate::{
     orpc::errors::{RPCError, ServerMissingSnafu},
     prelude::Arc,
     sync::Mutex,
-    task::{Task, TaskOptions, disable_preempt, scheduler},
+    task::{Task, disable_preempt, scheduler},
 };
 
 /// The primary trait for all server. This provides access to information and capabilities common to all servers.
@@ -293,6 +293,7 @@ mod test {
     use crate::{
         orpc::{errors, legacy_oqueue::generic_test, sync::Blocker},
         sync::{Waker, WakerKey},
+        task::TaskOptions,
     };
 
     struct InfiniteBlocker;

@@ -12,6 +12,7 @@ use crate::prelude::*;
 
 pub mod clocks;
 mod core;
+pub mod cpu_time_stats;
 mod softirq;
 mod system_time;
 pub mod timerfd;
@@ -20,7 +21,6 @@ pub mod wait;
 pub type clockid_t = i32;
 pub type time_t = i64;
 pub type suseconds_t = i64;
-pub type clock_t = i64;
 
 const NSEC_PER_USEC: i64 = 1_000;
 const USEC_PER_SEC: i64 = 1_000_000;
@@ -30,10 +30,15 @@ pub(super) fn init() {
     system_time::init();
     clocks::init();
     softirq::init();
+    cpu_time_stats::init();
+}
+
+pub(super) fn init_on_each_cpu() {
+    cpu_time_stats::init_on_each_cpu();
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct timespec_t {
     pub sec: time_t,
     pub nsec: i64,
@@ -58,7 +63,7 @@ impl From<timeval_t> for timespec_t {
 }
 
 impl TryFrom<timespec_t> for Duration {
-    type Error = crate::Error;
+    type Error = Error;
 
     fn try_from(value: timespec_t) -> Result<Self> {
         if value.sec < 0 || value.nsec < 0 {
@@ -76,7 +81,7 @@ impl TryFrom<timespec_t> for Duration {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct timeval_t {
     pub sec: time_t,
     pub usec: suseconds_t,
@@ -107,7 +112,7 @@ impl From<Duration> for timeval_t {
 }
 
 impl TryFrom<timeval_t> for Duration {
-    type Error = crate::Error;
+    type Error = Error;
 
     fn try_from(timeval: timeval_t) -> Result<Self> {
         if timeval.sec < 0 || timeval.usec < 0 {
@@ -132,7 +137,7 @@ pub const TIMER_ABSTIME: i32 = 0x01;
 /// Unix time measures time by the number of seconds that have elapsed since
 /// the Unix epoch, without adjustments made due to leap seconds.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct UnixTime {
     sec: u32,
 }
@@ -153,7 +158,7 @@ impl From<UnixTime> for Duration {
 
 /// This struct is corresponding to the `itimerval` struct in Linux.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct itimerval_t {
     pub it_interval: timeval_t,
     pub it_value: timeval_t,
@@ -161,7 +166,7 @@ pub struct itimerval_t {
 
 /// This struct is corresponding to the `itimerspec` struct in Linux.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct itimerspec_t {
     pub it_interval: timespec_t,
     pub it_value: timespec_t,

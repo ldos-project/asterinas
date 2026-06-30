@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub use context_table::RootTable;
-use log::{info, warn};
-use second_stage::IommuPtConfig;
+pub use second_stage::IommuPtConfig;
 use spin::Once;
 
 use super::IommuError;
 use crate::{
     arch::iommu::registers::{CapabilitySagaw, IOMMU_REGS},
-    bus::pci::PciDeviceLocation,
+    info,
     mm::{Daddr, PageTable},
     prelude::Paddr,
     sync::{LocalIrqDisabled, SpinLock},
+    warn,
 };
 
 mod context_table;
@@ -21,11 +21,66 @@ pub fn has_dma_remapping() -> bool {
     PAGE_TABLE.get().is_some()
 }
 
-/// Mapping device address to physical address.
+/// PCI device Location
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PciDeviceLocation {
+    /// Bus number
+    pub bus: u8,
+    /// Device number with max 31
+    pub device: u8,
+    /// Device number with max 7
+    pub function: u8,
+}
+
+impl PciDeviceLocation {
+    // TODO: Find a proper way to obtain the bus range. For example, if the PCI bus is identified
+    // from a device tree, this information can be obtained from the `bus-range` field (e.g.,
+    // `bus-range = <0x00 0x7f>`).
+    const MIN_BUS: u8 = 0;
+    const MAX_BUS: u8 = 255;
+
+    const MIN_DEVICE: u8 = 0;
+    const MAX_DEVICE: u8 = 31;
+
+    const MIN_FUNCTION: u8 = 0;
+    const MAX_FUNCTION: u8 = 7;
+
+    /// Returns an iterator that enumerates all possible PCI device locations.
+    fn all() -> impl Iterator<Item = PciDeviceLocation> {
+        let all_bus = Self::MIN_BUS..=Self::MAX_BUS;
+        let all_dev = Self::MIN_DEVICE..=Self::MAX_DEVICE;
+        let all_func = Self::MIN_FUNCTION..=Self::MAX_FUNCTION;
+
+        all_bus
+            .flat_map(move |bus| all_dev.clone().map(move |dev| (bus, dev)))
+            .flat_map(move |(bus, dev)| all_func.clone().map(move |func| (bus, dev, func)))
+            .map(|(bus, dev, func)| PciDeviceLocation {
+                bus,
+                device: dev,
+                function: func,
+            })
+    }
+
+    /// Returns the zero PCI device location.
+    fn zero() -> Self {
+        Self {
+            bus: 0,
+            device: 0,
+            function: 0,
+        }
+    }
+}
+
+/// Maps a device address to a physical address.
+///
+/// The physical address should point to a page containing untyped, non-sensitive data that can be
+/// accessed by the device.
 ///
 /// # Safety
 ///
-/// Mapping an incorrect address may lead to a kernel data leak.
+/// While the physical address is mapped as the device address (i.e. from calling this method to
+/// calling [`unmap`]), it must point to an untyped memory page. Otherwise, the device may corrupt
+/// kernel data, which could lead to memory safety issues.
 pub unsafe fn map(daddr: Daddr, paddr: Paddr) -> Result<(), IommuError> {
     let Some(table) = PAGE_TABLE.get() else {
         return Err(IommuError::NoIommu);
@@ -45,6 +100,9 @@ pub unsafe fn map(daddr: Daddr, paddr: Paddr) -> Result<(), IommuError> {
     }
 }
 
+/// Unmaps a device address.
+///
+/// This method will fail if the device address is not mapped (by [`map`]) before.
 pub fn unmap(daddr: Daddr) -> Result<(), IommuError> {
     let Some(table) = PAGE_TABLE.get() else {
         return Err(IommuError::NoIommu);
@@ -72,7 +130,7 @@ pub fn init() {
         .supported_adjusted_guest_address_widths()
         .contains(CapabilitySagaw::AGAW_39BIT_3LP)
     {
-        warn!("[IOMMU] 3-level page tables not supported, disabling DMA remapping");
+        warn!("3-level page tables not supported, disabling DMA remapping");
         return;
     }
 
@@ -93,7 +151,7 @@ pub fn init() {
     // Enable DMA remapping.
     let mut iommu_regs = IOMMU_REGS.get().unwrap().lock();
     iommu_regs.enable_dma_remapping(PAGE_TABLE.get().unwrap());
-    info!("[IOMMU] DMA remapping enabled");
+    info!("DMA remapping enabled");
 }
 
 // TODO: Currently `map()` or `unmap()` could be called in both task and interrupt

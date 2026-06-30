@@ -1,37 +1,54 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
-
-use super::{JobControl, Pgid, Process, Session, Sid, session::SessionGuard};
+use super::{JobControl, Pgid, Process, Session, session::SessionGuard};
 use crate::{
-    current_userspace,
-    fs::{inode_handle::FileIo, utils::IoctlCmd},
-    prelude::{Errno, Error, Result, current, return_errno_with_message, warn},
-    process::process_table,
+    device::Device,
+    prelude::*,
+    process::pid_table,
+    util::ioctl::{RawIoctl, dispatch_ioctl},
 };
 
 /// A terminal.
 ///
-/// We currently support two kinds of terminal, the TTY and PTY. They're associated with a
+/// We currently support two kinds of terminal, the TTY and pty. They're associated with a
 /// `JobControl` to track the session and the foreground process group.
-pub trait Terminal: FileIo {
+pub trait Terminal: Device {
     /// Returns the job control of the terminal.
     fn job_control(&self) -> &JobControl;
 }
 
-impl dyn Terminal {
-    pub fn job_ioctl(self: Arc<Self>, cmd: IoctlCmd, arg: usize, via_master: bool) -> Result<()> {
-        match cmd {
-            // Commands about foreground process groups
-            IoctlCmd::TIOCSPGRP => {
-                let pgid = current_userspace!().read_val::<Pgid>(arg)?;
-                if pgid.cast_signed() < 0 {
-                    return_errno_with_message!(Errno::EINVAL, "negative PGIDs are not valid");
-                }
+mod ioctl_defs {
+    use crate::{
+        process::{Pgid, Sid},
+        util::ioctl::{InData, NoData, OutData, PassByVal, ioc},
+    };
 
-                self.set_foreground(pgid, &current!())
-            }
-            IoctlCmd::TIOCGPGRP => {
+    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ioctls.h>
+
+    pub(super) type GetForegroundPgid = ioc!(TIOCGPGRP, 0x540F, OutData<Pgid>);
+    pub(super) type SetForegroundPgid = ioc!(TIOCSPGRP, 0x5410, InData<Pgid>);
+
+    pub(super) type SetControlTty     = ioc!(TIOCSCTTY, 0x540E, InData<i32, PassByVal>);
+    pub(super) type SetControlNoTty   = ioc!(TIOCNOTTY, 0x5422, NoData);
+    pub(super) type GetControlSid     = ioc!(TIOCGSID,  0x5429, OutData<Sid>);
+}
+
+impl dyn Terminal {
+    /// Handles job-control ioctls.
+    ///
+    /// The return value depends on whether the ioctl is recognized:
+    /// - If the terminal recognizes and handles the ioctl, it should return
+    ///   `Ok(true)`.
+    /// - If an error occurs while processing the ioctl, it should return
+    ///   `Err(_)`.
+    /// - If the terminal does not recognize the ioctl command, it should return
+    ///   `Ok(false)` to indicate that the ioctl command is not supported.
+    pub fn job_ioctl(self: Arc<Self>, raw_ioctl: RawIoctl, via_master: bool) -> Result<bool> {
+        use ioctl_defs::*;
+
+        dispatch_ioctl!(match raw_ioctl {
+            // Commands about foreground process groups
+            cmd @ GetForegroundPgid => {
                 let operate = || {
                     self.job_control()
                         .foreground()
@@ -44,18 +61,26 @@ impl dyn Terminal {
                     self.is_control_and(&current!(), |_, _| Ok(operate()))?
                 };
 
-                current_userspace!().write_val::<Pgid>(arg, &pgid)
+                cmd.write(&pgid)?;
+            }
+            cmd @ SetForegroundPgid => {
+                let pgid = cmd.read()?;
+                if pgid.cast_signed() < 0 {
+                    return_errno_with_message!(Errno::EINVAL, "negative PGIDs are not valid");
+                }
+
+                self.set_foreground(pgid, &current!())?;
             }
 
             // Commands about sessions
-            IoctlCmd::TIOCSCTTY => {
-                if arg == 1 {
+            cmd @ SetControlTty => {
+                if cmd.get() == 1 {
                     warn!("stealing TTY from another session is not supported");
                 }
 
-                self.set_control(&current!())
+                self.set_control(&current!())?;
             }
-            IoctlCmd::TIOCNOTTY => {
+            _cmd @ SetControlNoTty => {
                 if via_master {
                     return_errno_with_message!(
                         Errno::ENOTTY,
@@ -63,9 +88,9 @@ impl dyn Terminal {
                     );
                 }
 
-                self.unset_control(&current!())
+                self.unset_control(&current!())?;
             }
-            IoctlCmd::TIOCGSID => {
+            cmd @ GetControlSid => {
                 let sid = if via_master {
                     self.job_control()
                         .session()
@@ -80,14 +105,16 @@ impl dyn Terminal {
                     self.is_control_and(&current!(), |session, _| Ok(session.sid()))?
                 };
 
-                current_userspace!().write_val::<Sid>(arg, &sid)
+                cmd.write(&sid)?;
             }
 
             // Commands that are invalid or not supported
             _ => {
-                return_errno_with_message!(Errno::EINVAL, "the `ioctl` command is invalid")
+                return Ok(false);
             }
-        }
+        });
+
+        Ok(true)
     }
 
     /// Sets the terminal to be the controlling terminal of the process.
@@ -95,8 +122,8 @@ impl dyn Terminal {
         // Lock order: group of process -> session inner -> job control
         let process_group_mut = process.process_group.lock();
 
-        let process_group = process_group_mut.upgrade().unwrap();
-        let session = process_group.session().unwrap();
+        let process_group = process_group_mut.as_ref().unwrap();
+        let session = process_group.session();
 
         if !session.is_leader(process) {
             return_errno_with_message!(
@@ -117,7 +144,7 @@ impl dyn Terminal {
             );
         }
 
-        self.job_control().set_session(&session, &process_group)?;
+        self.job_control().set_session(session, process_group)?;
         session_inner.set_terminal(Some(self));
 
         Ok(())
@@ -154,25 +181,25 @@ impl dyn Terminal {
 
     /// Sets the foreground process group of the terminal.
     fn set_foreground(self: Arc<Self>, pgid: Pgid, process: &Process) -> Result<()> {
-        // Lock order: group table -> group of process -> session inner -> job control
-        let group_table_mut = process_table::group_table_mut();
+        // Lock order: PID table -> group of process -> session inner -> job control
+        let pid_table = pid_table::pid_table_mut();
 
         self.is_control_and(process, |session, _| {
-            let Some(process_group) = group_table_mut.get(&pgid) else {
+            let Some(process_group) = pid_table.get_process_group(&pgid) else {
                 return_errno_with_message!(
                     Errno::ESRCH,
                     "the process group to be foreground does not exist"
                 );
             };
 
-            if !Arc::ptr_eq(session, &process_group.session().unwrap()) {
+            if !Arc::ptr_eq(session, process_group.session()) {
                 return_errno_with_message!(
                     Errno::EPERM,
                     "the process group to be foreground belongs to a different session"
                 );
             }
 
-            self.job_control().set_foreground(process_group);
+            self.job_control().set_foreground(&process_group);
 
             Ok(())
         })
@@ -188,8 +215,8 @@ impl dyn Terminal {
     {
         let process_group_mut = process.process_group.lock();
 
-        let process_group = process_group_mut.upgrade().unwrap();
-        let session = process_group.session().unwrap();
+        let process_group = process_group_mut.as_ref().unwrap();
+        let session = process_group.session();
 
         let mut session_inner = session.lock();
 
@@ -203,6 +230,6 @@ impl dyn Terminal {
             );
         }
 
-        op(&session, &mut session_inner)
+        op(session, &mut session_inner)
     }
 }

@@ -1,162 +1,123 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// Modified from protocol.rs in virtio-drivers project
-//
-// MIT License
-//
-// Copyright (c) 2022-2023 Ant Group
-// Copyright (c) 2019-2020 rCore Developers
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-//
+//! Wire-format virtio-vsock headers and protocol enums.
+
 use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
-use ostd::Pod;
 
-use super::error::{self, SocketError};
-
-pub const VIRTIO_VSOCK_HDR_LEN: usize = core::mem::size_of::<VirtioVsockHdr>();
-
-/// Socket address.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct VsockDeviceAddr {
-    /// Context Identifier.
-    pub cid: u64,
-    /// Port number.
-    pub port: u32,
-}
-
-/// VirtioVsock header precedes the payload in each packet.
-// #[repr(packed)]
-#[repr(C, packed)]
-#[derive(Debug, Clone, Copy, Pod)]
-pub struct VirtioVsockHdr {
-    pub src_cid: u64,
-    pub dst_cid: u64,
-    pub src_port: u32,
-    pub dst_port: u32,
-
-    pub len: u32,
-    pub socket_type: u16,
-    pub op: u16,
-    pub flags: u32,
-    /// Total receive buffer space for this socket. This includes both free and in-use buffers.
-    pub buf_alloc: u32,
-    /// Free-running bytes received counter.
-    pub fwd_cnt: u32,
-}
-
-impl Default for VirtioVsockHdr {
-    fn default() -> Self {
-        Self {
-            src_cid: 0,
-            dst_cid: 0,
-            src_port: 0,
-            dst_port: 0,
-            len: 0,
-            socket_type: VsockType::Stream as u16,
-            op: 0,
-            flags: 0,
-            buf_alloc: 0,
-            fwd_cnt: 0,
-        }
-    }
-}
-
-impl VirtioVsockHdr {
-    /// Returns the length of the data.
-    pub fn len(&self) -> u32 {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn op(&self) -> error::Result<VirtioVsockOp> {
-        VirtioVsockOp::try_from(self.op).map_err(|err| err.into())
-    }
-
-    pub fn source(&self) -> VsockDeviceAddr {
-        VsockDeviceAddr {
-            cid: self.src_cid,
-            port: self.src_port,
-        }
-    }
-
-    pub fn destination(&self) -> VsockDeviceAddr {
-        VsockDeviceAddr {
-            cid: self.dst_cid,
-            port: self.dst_port,
-        }
-    }
-
-    pub fn check_data_is_empty(&self) -> error::Result<()> {
-        if self.is_empty() {
-            Ok(())
-        } else {
-            Err(SocketError::UnexpectedDataInPacket)
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, TryFromInt)]
+/// The socket type encoded in a virtio-vsock packet.
 #[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+pub enum VirtioVsockType {
+    /// Identifies a byte-stream vsock connection.
+    Stream = 1,
+}
+
+/// The operation encoded in a virtio-vsock packet.
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
 pub enum VirtioVsockOp {
-    #[default]
-    Invalid = 0,
-
-    /* Connect operations */
+    /// Starts a new connection.
     Request = 1,
+    /// Accepts a connection request.
     Response = 2,
+    /// Resets a connection.
     Rst = 3,
+    /// Announces half-close state changes.
     Shutdown = 4,
-
-    /* To send payload */
+    /// Carries stream payload bytes.
     Rw = 5,
-
-    /* Tell the peer our credit info */
+    /// Updates the peer-visible receive credit.
     CreditUpdate = 6,
-    /* Request the peer to send the credit info to us */
+    /// Requests an immediate credit update from the peer.
     CreditRequest = 7,
 }
 
 bitflags! {
-    #[repr(C)]
-    #[derive(Default, Pod)]
-    /// Header flags field type makes sense when connected socket receives VIRTIO_VSOCK_OP_SHUTDOWN.
-    pub struct ShutdownFlags: u32{
-        /// The peer will not receive any more data.
-        const VIRTIO_VSOCK_SHUTDOWN_RCV = 1 << 0;
-        /// The peer will not send any more data.
-        const VIRTIO_VSOCK_SHUTDOWN_SEND = 1 << 1;
-        /// The peer will not send or receive any more data.
-        const VIRTIO_VSOCK_SHUTDOWN_ALL = Self::VIRTIO_VSOCK_SHUTDOWN_RCV.bits | Self::VIRTIO_VSOCK_SHUTDOWN_SEND.bits;
+    /// The half-close bits carried by `VirtioVsockOp::Shutdown` packets.
+    pub struct VirtioVsockShutdownFlags: u32 {
+        /// Indicates that the sender will no longer receive more data.
+        const RECEIVE = 1;
+        /// Indicates that the sender will no longer send more data.
+        const SEND = 2;
     }
 }
 
-/// Currently only stream sockets are supported. type is 1 for stream socket types.
-#[derive(Copy, Clone, Debug)]
-#[repr(u16)]
-pub enum VsockType {
-    /// Stream sockets provide in-order, guaranteed, connection-oriented delivery without message boundaries.
-    Stream = 1,
-    /// seqpacket socket type introduced in virtio-v1.2.
-    SeqPacket = 2,
+/// The common header of a virtio-vsock packet.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioVsockHdr {
+    /// The source CID.
+    pub src_cid: u64,
+    /// The destination CID.
+    pub dst_cid: u64,
+    /// The source port.
+    pub src_port: u32,
+    /// The destination port.
+    pub dst_port: u32,
+    /// The payload length in bytes.
+    pub len: u32,
+    /// The encoded [`VirtioVsockType`].
+    pub type_: u16,
+    /// The encoded [`VirtioVsockOp`].
+    pub op: u16,
+    /// Stores operation-specific flags.
+    pub flags: u32,
+    /// The sender's advertised receive buffer size.
+    pub buf_alloc: u32,
+    /// The sender's forwarded-byte counter.
+    pub fwd_cnt: u32,
+}
+
+impl VirtioVsockHdr {
+    /// Creates a stream-type virtio-vsock header.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the wire header fields map directly to the virtio-vsock specification"
+    )]
+    pub const fn new(
+        src_cid: u64,
+        dst_cid: u64,
+        src_port: u32,
+        dst_port: u32,
+        len: u32,
+        op: VirtioVsockOp,
+        flags: u32,
+        buf_alloc: u32,
+        fwd_cnt: u32,
+    ) -> Self {
+        Self {
+            src_cid,
+            dst_cid,
+            src_port,
+            dst_port,
+            len,
+            type_: VirtioVsockType::Stream as u16,
+            op: op as u16,
+            flags,
+            buf_alloc,
+            fwd_cnt,
+        }
+    }
+
+    /// Decodes and returns the packet operation.
+    pub fn op(&self) -> Option<VirtioVsockOp> {
+        VirtioVsockOp::try_from(self.op).ok()
+    }
+}
+
+/// The event identifier carried by the transport event queue.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+pub(super) enum VirtioVsockEventId {
+    /// Indicates that the transport has been reset.
+    TransportReset = 0,
+}
+
+/// The payload stored in the transport event virtqueue.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(super) struct VirtioVsockEvent {
+    /// The encoded [`VirtioVsockEventId`].
+    pub id: u32,
 }

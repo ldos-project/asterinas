@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::RawSocketOption;
+use ostd::mm::VmIo;
+
+use super::{RawSocketOption, impl_raw_sock_option_get_only, impl_raw_socket_option};
 use crate::{
-    current_userspace, impl_raw_sock_option_get_only, impl_raw_socket_option,
+    context::current_userspace,
     net::socket::options::{
-        AcceptConn, Error, KeepAlive, Linger, PeerCred, PeerGroups, Priority, RecvBuf,
-        RecvBufForce, ReuseAddr, ReusePort, SendBuf, SendBufForce, SocketOption,
+        AcceptConn, Broadcast, Error, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
+        RecvBuf, RecvBufForce, ReuseAddr, ReusePort, SendBuf, SendBufForce, SocketOption,
     },
     prelude::*,
     process::Gid,
@@ -13,11 +15,11 @@ use crate::{
 
 /// Socket level options.
 ///
-/// The definition is from https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/socket.h.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt, PartialEq, Eq, PartialOrd, Ord)]
+/// The definition is from <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/socket.h>.
 #[expect(non_camel_case_types)]
 #[expect(clippy::upper_case_acronyms)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
 enum CSocketOptionName {
     DEBUG = 1,
     REUSEADDR = 2,
@@ -50,14 +52,16 @@ enum CSocketOptionName {
 pub fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
     let name = CSocketOptionName::try_from(name).map_err(|_| Errno::ENOPROTOOPT)?;
     match name {
-        CSocketOptionName::SNDBUF => Ok(Box::new(SendBuf::new())),
-        CSocketOptionName::RCVBUF => Ok(Box::new(RecvBuf::new())),
         CSocketOptionName::REUSEADDR => Ok(Box::new(ReuseAddr::new())),
         CSocketOptionName::ERROR => Ok(Box::new(Error::new())),
-        CSocketOptionName::REUSEPORT => Ok(Box::new(ReusePort::new())),
+        CSocketOptionName::BROADCAST => Ok(Box::new(Broadcast::new())),
+        CSocketOptionName::SNDBUF => Ok(Box::new(SendBuf::new())),
+        CSocketOptionName::RCVBUF => Ok(Box::new(RecvBuf::new())),
+        CSocketOptionName::KEEPALIVE => Ok(Box::new(KeepAlive::new())),
         CSocketOptionName::PRIORITY => Ok(Box::new(Priority::new())),
         CSocketOptionName::LINGER => Ok(Box::new(Linger::new())),
-        CSocketOptionName::KEEPALIVE => Ok(Box::new(KeepAlive::new())),
+        CSocketOptionName::REUSEPORT => Ok(Box::new(ReusePort::new())),
+        CSocketOptionName::PASSCRED => Ok(Box::new(PassCred::new())),
         CSocketOptionName::PEERCRED => Ok(Box::new(PeerCred::new())),
         CSocketOptionName::ACCPETCONN => Ok(Box::new(AcceptConn::new())),
         CSocketOptionName::SNDBUFFORCE => Ok(Box::new(SendBufForce::new())),
@@ -67,14 +71,16 @@ pub fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
     }
 }
 
-impl_raw_socket_option!(SendBuf);
-impl_raw_socket_option!(RecvBuf);
 impl_raw_socket_option!(ReuseAddr);
 impl_raw_sock_option_get_only!(Error);
-impl_raw_socket_option!(ReusePort);
+impl_raw_socket_option!(Broadcast);
+impl_raw_socket_option!(SendBuf);
+impl_raw_socket_option!(RecvBuf);
+impl_raw_socket_option!(KeepAlive);
 impl_raw_socket_option!(Priority);
 impl_raw_socket_option!(Linger);
-impl_raw_socket_option!(KeepAlive);
+impl_raw_socket_option!(ReusePort);
+impl_raw_socket_option!(PassCred);
 impl_raw_sock_option_get_only!(PeerCred);
 impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
@@ -91,13 +97,13 @@ impl RawSocketOption for PeerGroups {
         let groups = self.get().unwrap();
 
         let old_len = *buffer_len;
-        *buffer_len = (groups.len() * core::mem::size_of::<Gid>()) as u32;
+        *buffer_len = (groups.len() * size_of::<Gid>()) as u32;
         if old_len < *buffer_len {
             return_errno_with_message!(Errno::ERANGE, "the buffer is too small");
         }
 
         for (i, gid) in groups.iter().enumerate() {
-            let dst = addr + i * core::mem::size_of::<Gid>();
+            let dst = addr + i * size_of::<Gid>();
             current_userspace!().write_val(dst, gid)?;
         }
 

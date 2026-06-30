@@ -3,7 +3,7 @@
 use core::ops::Range;
 
 use lending_iterator::prelude::*;
-use ostd_pod::Pod;
+use ostd_pod::{IntoBytes, Pod};
 
 use super::{Iv, Key, Mac};
 use crate::{
@@ -65,7 +65,7 @@ pub struct CryptoChain<L> {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Pod)]
+#[derive(Clone, Copy, Pod)]
 struct Footer {
     len: u32,
     pre_mac: Mac,
@@ -76,7 +76,7 @@ struct Footer {
 impl<L: BlockLog> CryptoChain<L> {
     /// The available size in each chained block is smaller than that of
     /// the block size.
-    pub const AVAIL_BLOCK_SIZE: usize = BLOCK_SIZE - core::mem::size_of::<Footer>();
+    pub const AVAIL_BLOCK_SIZE: usize = BLOCK_SIZE - size_of::<Footer>();
 
     /// Construct a new `CryptoChain` using `block_log: L` as the storage.
     pub fn new(block_log: L) -> Self {

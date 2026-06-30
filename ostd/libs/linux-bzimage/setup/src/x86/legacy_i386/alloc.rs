@@ -24,12 +24,12 @@ pub(super) unsafe fn init(boot_params: &'static linux_boot_params::BootParams) {
 
     let mut used = core::array::from_fn(|_| 0..0);
 
-    extern "C" {
+    unsafe extern "C" {
         fn __executable_start();
         fn __executable_end();
     }
 
-    used[0] = (__executable_start as usize)..(__executable_end as usize);
+    used[0] = (__executable_start as *const () as usize)..(__executable_end as *const () as usize);
 
     fn range_from_start_and_len(start: usize, len: usize) -> Range<usize> {
         start..start.checked_add(len).unwrap()
@@ -37,7 +37,7 @@ pub(super) unsafe fn init(boot_params: &'static linux_boot_params::BootParams) {
 
     used[1] = range_from_start_and_len(
         core::ptr::from_ref(boot_params).addr(),
-        core::mem::size_of::<linux_boot_params::BootParams>(),
+        size_of::<linux_boot_params::BootParams>(),
     );
     // No need to worry about `ext_*` addresses/sizes since we're 32-bit.
     used[2] = range_from_start_and_len(

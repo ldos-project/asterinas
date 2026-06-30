@@ -66,13 +66,13 @@ mod test {
     use crate::prelude::*;
 
     #[ktest]
-    fn test_new_extractor() {
+    fn new_extractor() {
         let query = ObservationQuery::new(|v| *v + 1);
         assert_eq!(query.call(&41), Some(42));
     }
 
     #[ktest]
-    fn test_new_filter() {
+    fn new_filter() {
         let query = ObservationQuery::new_filter(|v| if *v > 0 { Some(*v + 1) } else { None });
         assert_eq!(query.call(&5), Some(6));
         assert_eq!(query.call(&-1), None);

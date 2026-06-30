@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::size_of};
+use core::fmt::Debug;
 
 use bitflags::bitflags;
 use id_alloc::IdAlloc;
@@ -8,7 +8,7 @@ use int_to_c_enum::TryFromInt;
 
 use super::IrtEntryHandle;
 use crate::{
-    mm::{FrameAllocOptions, PAGE_SIZE, Segment, UntypedMem},
+    mm::{FrameAllocOptions, HasPaddr, PAGE_SIZE, Segment, io::util::HasVmReaderWriter},
     sync::{LocalIrqDisabled, SpinLock},
 };
 
@@ -89,7 +89,7 @@ impl IntRemappingTable {
 
     /// Encodes the value written into the Interrupt Remapping Table Register.
     pub(crate) fn encode(&self) -> u64 {
-        let mut encoded = self.segment.start_paddr() as u64;
+        let mut encoded = self.segment.paddr() as u64;
 
         // Bit Range 11 - Extended Interrupt Mode Enable (EIME)
         encoded |= match self.extended_interrupt_mode {
@@ -111,8 +111,8 @@ impl IntRemappingTable {
 }
 
 /// The type of validation that must be performed by the interrupt-remapping hardware.
-#[derive(Debug, TryFromInt)]
 #[repr(u32)]
+#[derive(Debug, TryFromInt)]
 pub enum SourceValidationType {
     /// No requester-id verification is required.
     Disable = 0b00,
@@ -128,8 +128,8 @@ pub enum SourceValidationType {
 
 /// Source ID qualifier. This field is evaluated by hardware only when the Present bit
 /// is Set and the SVT field is 0b01.
-#[derive(Debug, TryFromInt)]
 #[repr(u32)]
+#[derive(Debug, TryFromInt)]
 pub enum SourceIdQualifier {
     /// Verify the interrupt request by comparing all 16 bits of the SID field with the
     /// 16-bit requester-id of the interrupt request.
@@ -148,8 +148,8 @@ pub enum SourceIdQualifier {
 }
 
 #[expect(dead_code)]
-#[derive(Debug, TryFromInt)]
 #[repr(u32)]
+#[derive(Debug, TryFromInt)]
 enum DeliveryMode {
     FixedMode = 0b000,
     LowestPriority = 0b001,
@@ -195,10 +195,10 @@ impl IrtEntry {
     /// The format of this field in various Interrupt Remapping modes is as follows:
     /// - Intel xAPIC Mode (IRTA_REG.EIME=0):
     ///     - 63:48 - Reserved (0)
-    ///     - 47:40 - APIC DestinationID[7:0]
+    ///     - 47:40 - APIC DestinationID\[7:0\]
     ///     - 39:32 - Reserved (0)
     /// - Intel x2APIC Mode (IRTA_REG.EIME=1):
-    ///     - 63:32 - APIC DestinationID[31:0]
+    ///     - 63:32 - APIC DestinationID\[31:0\]
     pub const fn destination_id(&self) -> u32 {
         const DST_MASK: u128 = 0xFFFF_FFFF << 32;
         ((self.0 & DST_MASK) >> 32) as u32

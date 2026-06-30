@@ -15,8 +15,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ostd::{ignore_err, mm::VmIo};
-use ostd_pod::Pod;
+use device_id::DeviceId;
+use ostd::mm::{HasSize, VmIo};
+use ostd_pod::{FromZeros, Pod};
 
 use super::{
     bio::{BioReq, BioReqQueue, BioResp, BioType},
@@ -76,12 +77,6 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
     ) -> core::result::Result<(), aster_block::bio::BioEnqueueError> {
         use aster_block::bio::{BioStatus, BioType, SubmittedBio};
 
-        if bio.type_() == BioType::Discard {
-            warn!("discard operation not supported");
-            bio.complete(BioStatus::NotSupported);
-            return Ok(());
-        }
-
         if bio.type_() == BioType::Flush {
             let status = match self.sync() {
                 Ok(_) => BioStatus::Complete,
@@ -109,7 +104,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             let mut base = start_offset % BLOCK_SIZE;
             bio.segments().iter().for_each(|seg| {
                 let offset = seg.nbytes();
-                ignore_err!(seg.write_bytes(0, &buf.as_slice()[base..base + offset]));
+                let _ = seg.write_bytes(0, &buf.as_slice()[base..base + offset]);
                 base += offset;
             });
             BioStatus::Complete
@@ -126,7 +121,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             }
 
             // Read the last unaligned block.
-            if end_offset % BLOCK_SIZE != 0 {
+            if !end_offset.is_multiple_of(BLOCK_SIZE) {
                 let offset = buf.as_slice().len() - BLOCK_SIZE;
                 let buf_mut = BufMut::try_from(&mut buf.as_mut_slice()[offset..]).unwrap();
                 if self.read(end_lba - 1, buf_mut).is_err() {
@@ -136,7 +131,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
 
             bio.segments().iter().for_each(|seg| {
                 let offset = seg.nbytes();
-                ignore_err!(seg.read_bytes(0, &mut buf.as_mut_slice()[base..base + offset]));
+                let _ = seg.read_bytes(0, &mut buf.as_mut_slice()[base..base + offset]);
                 base += offset;
             });
 
@@ -162,6 +157,14 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
             max_nr_segments_per_bio: usize::MAX,
             nr_sectors: (BLOCK_SIZE / SECTOR_SIZE) * self.total_blocks(),
         }
+    }
+
+    fn name(&self) -> &str {
+        todo!()
+    }
+
+    fn id(&self) -> DeviceId {
+        todo!()
     }
 }
 
@@ -202,7 +205,7 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
         // TODO: Error handling the sync operation
         self.inner.sync().unwrap();
 
-        trace!("[MlsDisk] Sync completed. {self:?}");
+        debug!("Sync completed. {self:?}");
         Ok(())
     }
 
@@ -257,7 +260,7 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
             }),
         };
 
-        info!("[MlsDisk] Created successfully! {:?}", &new_self);
+        info!("Created successfully! {:?}", &new_self);
         // XXX: Would `disk::drop()` bring unexpected behavior?
         Ok(new_self)
     }
@@ -309,7 +312,7 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
             }),
         };
 
-        info!("[MlsDisk] Opened successfully! {:?}", &opened_self);
+        info!("Opened successfully! {:?}", &opened_self);
         Ok(opened_self)
     }
 
@@ -360,7 +363,7 @@ impl<D: BlockSet + 'static> DiskInner<D> {
         if let Err(e) = &res
             && e.errno() == NotFound
         {
-            warn!("[MlsDisk] read contains empty read on lba {lba}");
+            warn!("read contains empty read on lba {lba}");
             return Ok(());
         }
         res
@@ -375,7 +378,7 @@ impl<D: BlockSet + 'static> DiskInner<D> {
         if let Err(e) = &res
             && e.errno() == NotFound
         {
-            warn!("[MlsDisk] readv contains empty read on lba {lba}");
+            warn!("readv contains empty read on lba {lba}");
             return Ok(());
         }
         res
@@ -434,7 +437,7 @@ impl<D: BlockSet + 'static> DiskInner<D> {
 
         let mut res = range_query_ctx.into_results();
         let record_batches = {
-            res.sort_by(|(_, v1), (_, v2)| v1.hba.cmp(&v2.hba));
+            res.sort_by_key(|(_, v1)| v1.hba);
             res.chunk_by(|(_, v1), (_, v2)| v2.hba - v1.hba == 1)
         };
 
@@ -777,7 +780,7 @@ pub(super) struct Record {
 
 /// The key of a `Record`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Pod)]
 pub(super) struct RecordKey {
     /// Logical block address of user data block.
     pub lba: Lba,
@@ -785,7 +788,7 @@ pub(super) struct RecordKey {
 
 /// The value of a `Record`.
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Debug)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub(super) struct RecordValue {
     /// Host block address of user data block.
     pub hba: Hba,

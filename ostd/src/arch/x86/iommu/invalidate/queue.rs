@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::mem::size_of;
-
 use crate::{
     mm::{FrameAllocOptions, PAGE_SIZE, Segment, VmIo},
-    prelude::Paddr,
+    prelude::*,
 };
 
 pub struct Queue {
@@ -33,7 +31,7 @@ impl Queue {
     }
 
     pub(crate) fn base_paddr(&self) -> Paddr {
-        self.segment.start_paddr()
+        self.segment.paddr()
     }
 
     pub(super) fn new() -> Self {

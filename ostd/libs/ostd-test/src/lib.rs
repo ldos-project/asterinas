@@ -94,7 +94,8 @@ pub enum KtestError {
 }
 
 /// The information of the unit test.
-#[derive(Clone, PartialEq, Debug)]
+#[repr(C)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KtestItemInfo {
     /// The path of the module, not including the function name.
     ///
@@ -112,7 +113,8 @@ pub struct KtestItemInfo {
     pub col: usize,
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[repr(C)]
+#[derive(Clone, Debug)]
 pub struct KtestItem {
     fn_: fn() -> (),
     should_panic: (bool, Option<&'static str>),
@@ -163,7 +165,9 @@ impl KtestItem {
                 Err(e) => match e.downcast::<PanicInfo>() {
                     Ok(s) => {
                         if let Some(expected) = self.should_panic.1 {
-                            if s.message == expected {
+                            // The expected message should appear in the actual panic message. Reference:
+                            // <https://doc.rust-lang.org/reference/attributes/testing.html#the-should_panic-attribute>
+                            if s.message.contains(expected) {
                                 Ok(())
                             } else {
                                 Err(KtestError::ExpectedPanicNotMatch(expected, s))
@@ -185,10 +189,14 @@ macro_rules! ktest_array {
             fn __ktest_array();
             fn __ktest_array_end();
         }
-        let item_size = core::mem::size_of::<KtestItem>();
-        let l = (__ktest_array_end as usize - __ktest_array as usize) / item_size;
-        // SAFETY: __ktest_array is a static section consisting of KtestItem.
-        unsafe { core::slice::from_raw_parts(__ktest_array as *const KtestItem, l) }
+        let array_ptr = __ktest_array as *const () as *const KtestItem;
+        let array_end_ptr = __ktest_array_end as *const () as *const KtestItem;
+        // SAFETY: The pointer arithmetic is valid since both pointers point to
+        // the same section.
+        let l = unsafe { array_end_ptr.offset_from(array_ptr) as usize };
+        // SAFETY: `array_ptr` points to a valid static section with `l`
+        // `KtestItem` elements, and there are no write accesses.
+        unsafe { core::slice::from_raw_parts(array_ptr, l) }
     }};
 }
 

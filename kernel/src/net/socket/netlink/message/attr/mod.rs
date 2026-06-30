@@ -4,7 +4,7 @@
 //!
 //! Netlink attributes provide additional information for each [`segment`].
 //! Each netlink attribute consists of two components:
-//! 1. Header: The attribute header is of type [`CNlAttrHeader`],
+//! 1. Header: The attribute header is of type [`CAttrHeader`],
 //!    which specifies the type and length of the attribute. The attribute
 //!    type belongs to different classes, which rely on the segment type.
 //! 2. Payload: The attribute's payload, which can vary in type.
@@ -12,7 +12,7 @@
 //!    The payload can also include one or multiple other attributes,
 //!    known as nested attributes.
 //!
-//! Similar to [`super::segment::NlSegment`], attributes have alignment requirements;
+//! Similar to [`super::segment::common::SegmentCommon`], attributes have alignment requirements;
 //! both the header and payload must be aligned to [`super::NLMSG_ALIGN`]
 //! when being transferred to and from user space.
 //!
@@ -26,7 +26,7 @@
 
 use align_ext::AlignExt;
 
-use super::NLMSG_ALIGN;
+use super::{ContinueRead, NLMSG_ALIGN};
 use crate::{
     prelude::*,
     util::{MultiRead, MultiWrite},
@@ -43,8 +43,8 @@ pub mod noattr;
 // │ Nested │ Net Byteorder │ Payload  │
 // └────────┴───────────────┴──────────┘
 //   bit 15      bit 14       bits 13-0
-#[derive(Debug, Clone, Copy, Pod)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct CAttrHeader {
     len: u16,
     type_: u16,
@@ -111,17 +111,20 @@ pub trait Attribute: Debug + Send + Sync {
 
     /// Reads the attribute from the `reader`.
     ///
-    /// This method may return a `None` if the attribute is not recognized. In that case, however,
-    /// it must still skip the payload length (excluding padding), as if the attribute were parsed
-    /// properly.
-    fn read_from(header: &CAttrHeader, reader: &mut dyn MultiRead) -> Result<Option<Self>>
+    /// This method may return a [`ContinueRead::Skipped`] or a [`ContinueRead::SkippedErr`] if the
+    /// attribute is not recognized or not valid. In that case, however, it must still skip the
+    /// payload length (excluding padding), as if the attribute were parsed properly.
+    fn read_from(header: &CAttrHeader, reader: &mut dyn MultiRead) -> Result<ContinueRead<Self>>
     where
         Self: Sized;
 
     /// Reads all attributes from the reader.
     ///
     /// The cumulative length of the read attributes must not exceed `total_len`.
-    fn read_all_from(reader: &mut dyn MultiRead, mut total_len: usize) -> Result<Vec<Self>>
+    fn read_all_from(
+        reader: &mut dyn MultiRead,
+        mut total_len: usize,
+    ) -> Result<ContinueRead<Vec<Self>>>
     where
         Self: Sized,
     {
@@ -136,23 +139,42 @@ pub trait Attribute: Debug + Send + Sync {
         while total_len > 0 {
             // Validate the remaining length for the attribute header length.
             if total_len < size_of::<CAttrHeader>() {
-                return_errno_with_message!(Errno::EINVAL, "the reader length is too small");
+                reader.skip_some(total_len);
+                return Ok(ContinueRead::skipped_with_error(
+                    Errno::EINVAL,
+                    "the reader length is too small",
+                ));
             }
 
             // Read and validate the attribute header.
             let header = reader.read_val_opt::<CAttrHeader>()?.unwrap();
+            total_len -= size_of::<CAttrHeader>();
             if header.total_len() < size_of::<CAttrHeader>() {
-                return_errno_with_message!(Errno::EINVAL, "the attribute length is too small");
+                reader.skip_some(total_len);
+                return Ok(ContinueRead::skipped_with_error(
+                    Errno::EINVAL,
+                    "the attribute length is too small",
+                ));
             }
 
             // Validate the remaining length for the attribute payload length.
-            total_len = total_len.checked_sub(header.total_len()).ok_or_else(|| {
-                Error::with_message(Errno::EINVAL, "the reader size is too small")
-            })?;
+            if header.payload_len() > total_len {
+                reader.skip_some(total_len);
+                return Ok(ContinueRead::skipped_with_error(
+                    Errno::EINVAL,
+                    "the reader size is too small",
+                ));
+            }
+            total_len -= header.payload_len();
 
             // Read the attribute.
-            if let Some(attr) = Self::read_from(&header, reader)? {
-                res.push(attr);
+            match Self::read_from(&header, reader)? {
+                ContinueRead::Parsed(attr) => res.push(attr),
+                ContinueRead::Skipped => (),
+                ContinueRead::SkippedErr(err) => {
+                    reader.skip_some(total_len);
+                    return Ok(ContinueRead::SkippedErr(err));
+                }
             }
 
             // Skip the padding bytes.
@@ -161,7 +183,7 @@ pub trait Attribute: Debug + Send + Sync {
             total_len -= padding_len;
         }
 
-        Ok(res)
+        Ok(ContinueRead::Parsed(res))
     }
 
     /// Writes the attribute to the `writer`.

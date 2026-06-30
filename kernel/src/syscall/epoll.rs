@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{sync::atomic::Ordering, time::Duration};
+use core::time::Duration;
+
+use ostd::mm::VmIo;
 
 use super::SyscallReturn;
 use crate::{
-    events::IoEvents,
-    fs::{
-        epoll::{EpollCtl, EpollEvent, EpollFile, EpollFlags},
-        file_table::{FdFlags, FileDesc, get_file_fast},
-        utils::CreationFlags,
+    events::{EpollCtl, EpollEvent, EpollFile, EpollFlags, IoEvents},
+    fs::file::{
+        CreationFlags,
+        file_table::{FdFlags, RawFileDesc, get_file_fast},
     },
     prelude::*,
-    process::signal::sig_mask::{SigMask, SigSet},
+    process::{posix_thread::ContextPthreadAdminApi, signal::sig_mask::SigMask},
     time::timespec_t,
 };
 
 // See: https://elixir.bootlin.com/linux/v6.11.5/source/fs/eventpoll.c#L2437
-const EP_MAX_EVENTS: usize = i32::MAX as usize / core::mem::size_of::<c_epoll_event>();
+const EP_MAX_EVENTS: usize = i32::MAX as usize / size_of::<c_epoll_event>();
 
 pub fn sys_epoll_create(size: i32, ctx: &Context) -> Result<SyscallReturn> {
     if size <= 0 {
@@ -44,13 +45,13 @@ pub fn sys_epoll_create1(flags: u32, ctx: &Context) -> Result<SyscallReturn> {
     let epoll_file: Arc<EpollFile> = EpollFile::new();
     let file_table = ctx.thread_local.borrow_file_table();
     let fd = file_table.unwrap().write().insert(epoll_file, fd_flags);
-    Ok(SyscallReturn::Return(fd as _))
+    Ok(SyscallReturn::Return(fd.into()))
 }
 
 pub fn sys_epoll_ctl(
-    epfd: FileDesc,
+    epfd: RawFileDesc,
     op: i32,
-    fd: FileDesc,
+    fd: RawFileDesc,
     event_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
@@ -63,6 +64,7 @@ pub fn sys_epoll_ctl(
     const EPOLL_CTL_DEL: i32 = 2;
     const EPOLL_CTL_MOD: i32 = 3;
 
+    let fd = fd.try_into()?;
     let cmd = match op {
         EPOLL_CTL_ADD => {
             let c_epoll_event = ctx.user_space().read_val::<c_epoll_event>(event_addr)?;
@@ -81,7 +83,7 @@ pub fn sys_epoll_ctl(
     };
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, epfd).into_owned();
+    let file = get_file_fast!(&mut file_table, epfd.try_into()?).into_owned();
     // Drop `file_table` as `EpollFile::control` also performs `borrow_file_table_mut()`.
     drop(file_table);
 
@@ -94,12 +96,12 @@ pub fn sys_epoll_ctl(
 }
 
 fn do_epoll_pwait2(
-    epfd: FileDesc,
+    epfd: RawFileDesc,
     events_addr: Vaddr,
     max_events: i32,
     timeout: Option<Duration>,
-    sigmask: Vaddr,
-    sigset_size: usize,
+    sigmask_addr: Vaddr,
+    sigmask_size: usize,
     ctx: &Context,
 ) -> Result<usize> {
     let max_events = {
@@ -109,28 +111,22 @@ fn do_epoll_pwait2(
         max_events as usize
     };
 
-    let sigset = sigmask != 0;
-    if sigset && sigset_size != 8 {
-        return_errno_with_message!(Errno::EINVAL, "sigset size is not equal to 8");
+    if sigmask_addr != 0 {
+        if sigmask_size != size_of::<SigMask>() {
+            return_errno_with_message!(Errno::EINVAL, "invalid sigmask size");
+        }
+
+        let sigmask = ctx.user_space().read_val::<SigMask>(sigmask_addr)?;
+        ctx.save_and_set_sig_mask(sigmask);
     }
 
-    let old_sig_mask_value = if sigset {
-        set_signal_mask(sigmask, ctx)?
-    } else {
-        SigSet::from(0)
-    };
-
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, epfd);
+    let file = get_file_fast!(&mut file_table, epfd.try_into()?);
     let epoll_file = file
         .downcast_ref::<EpollFile>()
         .ok_or(Error::with_message(Errno::EINVAL, "not epoll file"))?;
 
     let result = epoll_file.wait(max_events, timeout.as_ref());
-
-    if sigset {
-        restore_signal_mask(old_sig_mask_value, ctx);
-    }
 
     // As mentioned in the manual, the return value should be zero if no file descriptor becomes ready
     // during the requested `timeout` milliseconds. So we ignore `Err(ETIME)` and return an empty vector.
@@ -152,14 +148,14 @@ fn do_epoll_pwait2(
     for epoll_event in epoll_events.iter() {
         let c_epoll_event = c_epoll_event::from(epoll_event);
         user_space.write_val(write_addr, &c_epoll_event)?;
-        write_addr += core::mem::size_of::<c_epoll_event>();
+        write_addr += size_of::<c_epoll_event>();
     }
 
     Ok(epoll_events.len())
 }
 
 pub fn sys_epoll_wait(
-    epfd: FileDesc,
+    epfd: RawFileDesc,
     events_addr: Vaddr,
     max_events: i32,
     timeout: i32,
@@ -181,42 +177,18 @@ pub fn sys_epoll_wait(
     Ok(SyscallReturn::Return(events_len as _))
 }
 
-fn set_signal_mask(set_ptr: Vaddr, ctx: &Context) -> Result<SigMask> {
-    let new_mask: Option<SigMask> = if set_ptr != 0 {
-        Some(ctx.user_space().read_val::<u64>(set_ptr)?.into())
-    } else {
-        None
-    };
-
-    let old_sig_mask_value = ctx.posix_thread.sig_mask().load(Ordering::Relaxed);
-
-    if let Some(new_mask) = new_mask {
-        ctx.posix_thread
-            .sig_mask()
-            .store(new_mask, Ordering::Relaxed);
-    }
-
-    Ok(old_sig_mask_value)
-}
-
-fn restore_signal_mask(sig_mask_val: SigMask, ctx: &Context) {
-    ctx.posix_thread
-        .sig_mask()
-        .store(sig_mask_val, Ordering::Relaxed);
-}
-
 pub fn sys_epoll_pwait(
-    epfd: FileDesc,
+    epfd: RawFileDesc,
     events_addr: Vaddr,
     max_events: i32,
     timeout: i32,
-    sigmask: Vaddr,
-    sigset_size: usize,
+    sigmask_addr: Vaddr,
+    sigmask_size: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     debug!(
-        "epfd = {}, events_addr = 0x{:x}, max_events = {}, timeout = {:?}, sigmask = 0x{:x}, sigset_size = {}",
-        epfd, events_addr, max_events, timeout, sigmask, sigset_size
+        "epfd = {}, events_addr = 0x{:x}, max_events = {}, timeout = {:?}, sigmask_addr = 0x{:x}, sigmask_size = {}",
+        epfd, events_addr, max_events, timeout, sigmask_addr, sigmask_size
     );
 
     let timeout = if timeout >= 0 {
@@ -230,8 +202,8 @@ pub fn sys_epoll_pwait(
         events_addr,
         max_events,
         timeout,
-        sigmask,
-        sigset_size,
+        sigmask_addr,
+        sigmask_size,
         ctx,
     )?;
 
@@ -239,7 +211,7 @@ pub fn sys_epoll_pwait(
 }
 
 pub fn sys_epoll_pwait2(
-    epfd: FileDesc,
+    epfd: RawFileDesc,
     events_addr: Vaddr,
     max_events: i32,
     timeout_addr: Vaddr,
@@ -264,18 +236,24 @@ pub fn sys_epoll_pwait2(
     Ok(SyscallReturn::Return(events_len as _))
 }
 
-#[derive(Debug, Clone, Copy, Pod)]
-#[repr(C, packed)]
+#[repr(C)]
+// Here we use `repr(packed)` on x86_64 to ensure the same layout as Linux.
+// Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/include/uapi/linux/eventpoll.h#L71-L81>.
+#[cfg_attr(target_arch = "x86_64", repr(packed))]
+#[cfg_attr(not(target_arch = "x86_64"), padding_struct)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 struct c_epoll_event {
     events: u32,
     data: u64,
 }
 
 impl From<&EpollEvent> for c_epoll_event {
+    #[cfg_attr(target_arch = "x86_64", expect(clippy::needless_update))]
     fn from(ep_event: &EpollEvent) -> Self {
         Self {
             events: ep_event.events.bits(),
             data: ep_event.user_data,
+            ..Default::default()
         }
     }
 }

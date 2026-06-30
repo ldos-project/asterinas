@@ -12,24 +12,22 @@
 mod heap;
 mod init_stack;
 
-use aster_rights::Full;
-pub use heap::Heap;
+#[cfg(target_arch = "riscv64")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ostd::{sync::MutexGuard, task::disable_preempt};
 
 pub use self::{
-    heap::USER_HEAP_SIZE_LIMIT,
+    heap::{Heap, LockedHeap},
     init_stack::{
-        INIT_STACK_SIZE, InitStack, InitStackReader, MAX_ARG_LEN, MAX_ARGV_NUMBER, MAX_ENV_LEN,
-        MAX_ENVP_NUMBER,
+        INIT_STACK_SIZE, InitStack, InitStackReader, MAX_LEN_STRING_ARG, MAX_NR_STRING_ARGS,
         aux_vec::{AuxKey, AuxVec},
     },
 };
-use crate::{prelude::*, vm::vmar::Vmar};
+use crate::{fs::vfs::path::Path, prelude::*, vm::vmar::Vmar};
 
 /*
  * The user's virtual memory space layout looks like below.
- * TODO: The layout of the userheap does not match the current implementation,
- * And currently the initial program break is a fixed value.
  *
  *  (high address)
  *  +---------------------+ <------+ The top of Vmar, which is the highest address usable
@@ -64,138 +62,214 @@ use crate::{prelude::*, vm::vmar::Vmar};
 
 /// The process user space virtual memory
 pub struct ProcessVm {
-    root_vmar: Mutex<Option<Vmar<Full>>>,
+    /// The initial portion of the main stack of a process.
     init_stack: InitStack,
+    /// The user heap
     heap: Heap,
+    /// The executable file.
+    executable_file: Path,
+    /// The base address for vDSO segment
+    #[cfg(target_arch = "riscv64")]
+    vdso_base: AtomicUsize,
+}
+
+impl ProcessVm {
+    /// Creates a new `ProcessVm` for testing
+    #[cfg(ktest)]
+    #[expect(unused)]
+    pub fn new_test() -> Self {
+        use crate::fs::pseudofs::AnonInodeFs;
+
+        Self::new(AnonInodeFs::new_path(|_| "test_executable".to_string()))
+    }
+
+    /// Creates a new `ProcessVm` without mapping anything.
+    pub(super) fn new(executable_file: Path) -> Self {
+        Self {
+            init_stack: InitStack::new(),
+            heap: Heap::new_uninitialized(),
+            executable_file,
+            #[cfg(target_arch = "riscv64")]
+            vdso_base: AtomicUsize::new(0),
+        }
+    }
+
+    /// Creates a new `ProcessVm` with identical contents of an existing one.
+    pub fn fork_from(process_vm: &Self, heap_guard: &LockedHeap) -> Self {
+        Self {
+            init_stack: process_vm.init_stack.clone(),
+            heap: Heap::fork_from(heap_guard),
+            executable_file: process_vm.executable_file.clone(),
+            #[cfg(target_arch = "riscv64")]
+            vdso_base: AtomicUsize::new(process_vm.vdso_base.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// Returns the initial portion of the main stack of a process.
+    pub fn init_stack(&self) -> &InitStack {
+        &self.init_stack
+    }
+
+    /// Returns the user heap.
+    pub fn heap(&self) -> &Heap {
+        &self.heap
+    }
+
+    /// Returns a reference to the executable `Path`.
+    pub fn executable_file(&self) -> &Path {
+        &self.executable_file
+    }
+
+    /// Maps and writes the initial portion of the main stack of a process.
+    pub(super) fn map_and_write_init_stack(
+        &self,
+        vmar: &Vmar,
+        argv: Vec<CString>,
+        envp: Vec<CString>,
+        aux_vec: AuxVec,
+    ) -> Result<()> {
+        self.init_stack().map_and_write(vmar, argv, envp, aux_vec)
+    }
+
+    /// Maps and initializes the heap virtual memory.
+    pub(super) fn map_and_init_heap(
+        &self,
+        vmar: &Vmar,
+        data_segment_size: usize,
+        heap_base: Vaddr,
+    ) -> Result<()> {
+        self.heap()
+            .map_and_init_heap(vmar, data_segment_size, heap_base)
+    }
+
+    /// Returns the base address for vDSO segment.
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn vdso_base(&self) -> Vaddr {
+        self.vdso_base.load(Ordering::Relaxed)
+    }
+
+    /// Sets the base address for vDSO segment.
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn set_vdso_base(&self, addr: Vaddr) {
+        self.vdso_base.store(addr, Ordering::Relaxed);
+    }
 }
 
 /// A guard to the [`Vmar`] used by a process.
 ///
-/// It is bound to a [`ProcessVm`] and can only be obtained from
-/// the [`ProcessVm::lock_root_vmar`] method.
+/// It is bound to a [`Process`] and can only be obtained from
+/// the [`Process::lock_vmar`] method.
+///
+/// [`Process`]: super::process::Process
+/// [`Process::lock_vmar`]: super::process::Process::lock_vmar
 pub struct ProcessVmarGuard<'a> {
-    inner: MutexGuard<'a, Option<Vmar<Full>>>,
+    inner: MutexGuard<'a, Option<Arc<Vmar>>>,
 }
 
-impl ProcessVmarGuard<'_> {
+/// A snapshot of the process VMAR identity.
+///
+/// This type is used only for identity comparison.
+//
+// NOTE: Upgrading the `Weak<Vmar>` in the snapshot is not permitted,
+// as this will cause the `Vmar` to be dropped in the wrong context,
+// and break the reference count used in `CurrentUserSpace::is_vmar_shared`.
+#[derive(Clone, Debug)]
+pub struct VmarSnapshot(Weak<Vmar>);
+
+impl VmarSnapshot {
+    /// Returns the raw identity pointer of the captured `Vmar`.
+    pub fn as_ptr(&self) -> *const Vmar {
+        Weak::as_ptr(&self.0)
+    }
+
+    /// Returns whether two snapshots refer to the same `Vmar`.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl From<Weak<Vmar>> for VmarSnapshot {
+    fn from(snapshot: Weak<Vmar>) -> Self {
+        Self(snapshot)
+    }
+}
+
+impl<'a> ProcessVmarGuard<'a> {
+    /// Creates a new VMAR guard from the mutex guard.
+    ///
+    /// This method should only used by [`Process::lock_vmar`].
+    ///
+    /// [`Process::lock_vmar`]: super::process::Process::lock_vmar
+    pub(super) fn new(inner: MutexGuard<'a, Option<Arc<Vmar>>>) -> Self {
+        Self { inner }
+    }
+
     /// Unwraps and returns a reference to the process VMAR.
     ///
     /// # Panics
     ///
     /// This method will panic if the process has exited and its VMAR has been dropped.
-    pub fn unwrap(&self) -> &Vmar<Full> {
+    pub fn unwrap(&self) -> &Vmar {
         self.inner.as_ref().unwrap()
     }
 
     /// Returns a reference to the process VMAR if it exists.
     ///
     /// Returns `None` if the process has exited and its VMAR has been dropped.
-    pub fn as_ref(&self) -> Option<&Vmar<Full>> {
-        self.inner.as_ref()
+    pub fn as_ref(&self) -> Option<&Vmar> {
+        self.inner.as_ref().map(|v| &**v)
+    }
+
+    /// Takes a snapshot of the current VMAR identity.
+    pub fn snapshot(&self) -> VmarSnapshot {
+        VmarSnapshot(self.inner.as_ref().map(Arc::downgrade).unwrap_or_default())
+    }
+
+    /// Returns whether the current VMAR has the same identity as the `snapshot`.
+    pub fn is_same_as(&self, snapshot: &VmarSnapshot) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|vmar| core::ptr::eq(Arc::as_ptr(vmar), Weak::as_ptr(&snapshot.0)))
     }
 
     /// Sets a new VMAR for the binding process.
     ///
     /// If the `new_vmar` is `None`, this method will remove the
     /// current VMAR.
-    pub(super) fn set_vmar(&mut self, new_vmar: Option<Vmar<Full>>) {
+    pub(super) fn set_vmar(&mut self, new_vmar: Option<Arc<Vmar>>) {
         *self.inner = new_vmar;
     }
-}
 
-impl Clone for ProcessVm {
-    fn clone(&self) -> Self {
-        let root_vmar = self.lock_root_vmar();
-        Self {
-            root_vmar: Mutex::new(Some(root_vmar.unwrap().dup().unwrap())),
-            init_stack: self.init_stack.clone(),
-            heap: self.heap.clone(),
-        }
-    }
-}
-
-impl ProcessVm {
-    /// Allocates a new `ProcessVm`
-    pub fn alloc() -> Self {
-        let root_vmar = Vmar::<Full>::new_root();
-        let init_stack = InitStack::new();
-        let heap = Heap::new();
-        heap.alloc_and_map_vm(&root_vmar).unwrap();
-        Self {
-            root_vmar: Mutex::new(Some(root_vmar)),
-            heap,
-            init_stack,
-        }
-    }
-
-    /// Forks a `ProcessVm` from `other`.
+    /// Duplicates a new VMAR from the binding process.
     ///
-    /// The returned `ProcessVm` will have a forked `Vmar`.
-    pub fn fork_from(other: &ProcessVm) -> Result<Self> {
-        let process_vmar = other.lock_root_vmar();
-        let root_vmar = Mutex::new(Some(Vmar::<Full>::fork_from(process_vmar.unwrap())?));
-        Ok(Self {
-            root_vmar,
-            heap: other.heap.clone(),
-            init_stack: other.init_stack.clone(),
-        })
-    }
-
-    /// Locks the root VMAR and gets a guard to it.
-    pub fn lock_root_vmar(&self) -> ProcessVmarGuard {
-        ProcessVmarGuard {
-            inner: self.root_vmar.lock(),
-        }
+    /// This method should only be used to clone the VMAR in the `Process`
+    /// and store it in the `ThreadLocal`.
+    pub(super) fn dup_vmar(&self) -> Option<Arc<Vmar>> {
+        self.inner.as_ref().cloned()
     }
 
     /// Returns a reader for reading contents from
-    /// the `InitStack`.
-    pub fn init_stack_reader(&self) -> InitStackReader {
-        self.init_stack.reader(self.lock_root_vmar())
-    }
-
-    /// Returns the top address of the user stack.
-    pub fn user_stack_top(&self) -> Vaddr {
-        self.init_stack.user_stack_top()
-    }
-
-    pub(super) fn map_and_write_init_stack(
-        &self,
-        argv: Vec<CString>,
-        envp: Vec<CString>,
-        aux_vec: AuxVec,
-    ) -> Result<()> {
-        let root_vmar: ProcessVmarGuard<'_> = self.lock_root_vmar();
-        self.init_stack
-            .map_and_write(root_vmar.unwrap(), argv, envp, aux_vec)
-    }
-
-    pub(super) fn heap(&self) -> &Heap {
-        &self.heap
-    }
-
-    /// Clears existing mappings and then maps the heap VMO to the current VMAR.
-    pub fn clear_and_map(&self) {
-        let root_vmar = self.lock_root_vmar();
-        root_vmar.unwrap().clear().unwrap();
-        self.heap.alloc_and_map_vm(root_vmar.unwrap()).unwrap();
+    /// the initial portion of the main stack of a process.
+    ///
+    /// Returns `None` if the process has exited and its VMAR has been dropped.
+    pub fn init_stack_reader(&self) -> Option<InitStackReader<'_>> {
+        self.as_ref()
+            .map(|vmar| vmar.process_vm().init_stack.reader(vmar))
     }
 }
 
-/// Renews the [`ProcessVm`] of the current process and then maps the heap VMO to the new VMAR.
-pub fn renew_vm_and_map(ctx: &Context) {
-    let process_vm = ctx.process.vm();
-    let mut root_vmar = process_vm.lock_root_vmar();
+/// Activates the [`Vmar`] in the current process's context.
+///
+/// Returns a [`ProcessVmarGuard`] that keeps the process VMAR lock held.
+pub(super) fn activate_vmar<'a>(ctx: &'a Context<'a>, new_vmar: Arc<Vmar>) -> ProcessVmarGuard<'a> {
+    let mut vmar_guard = ctx.process.lock_vmar();
+    // Disable preemption because `thread_local::vmar()` will be borrowed during a context switch.
+    let _preempt_guard = disable_preempt();
 
-    let new_vmar = Vmar::<Full>::new_root();
-    let guard = disable_preempt();
-    *ctx.thread_local.root_vmar().borrow_mut() = Some(new_vmar.dup().unwrap());
+    *ctx.thread_local.vmar().borrow_mut() = Some(new_vmar.clone());
     new_vmar.vm_space().activate();
-    root_vmar.set_vmar(Some(new_vmar));
-    drop(guard);
 
-    process_vm
-        .heap
-        .alloc_and_map_vm(root_vmar.unwrap())
-        .unwrap();
+    vmar_guard.set_vmar(Some(new_vmar));
+
+    vmar_guard
 }

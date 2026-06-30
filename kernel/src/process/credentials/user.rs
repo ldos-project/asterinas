@@ -6,8 +6,8 @@ use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 
 use crate::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Pod)]
 pub struct Uid(u32);
 
 const ROOT_UID: u32 = 0;
@@ -17,6 +17,14 @@ impl Uid {
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.15/source/include/linux/uidgid.h#L50>.
     pub const INVALID: Uid = Self::new(u32::MAX);
+
+    /// The overflow UID, typically used to indicate that user mappings between namespaces fail.
+    ///
+    /// This is currently a constant (65534 is usually the "nobody" user), but it should be
+    /// configured via `/proc/sys/kernel/overflowuid`.
+    ///
+    /// Reference: <https://elixir.bootlin.com/linux/v6.15/source/kernel/sys.c#L166>.
+    pub const OVERFLOW: Uid = Self::new(65534);
 
     pub const fn new_root() -> Self {
         Self(ROOT_UID)
@@ -48,14 +56,8 @@ define_atomic_version_of_integer_like_type!(Uid, {
     pub(super) struct AtomicUid(AtomicU32);
 });
 
-impl AtomicUid {
-    pub fn is_root(&self) -> bool {
-        self.load(Ordering::Acquire).is_root()
-    }
-}
-
 impl Clone for AtomicUid {
     fn clone(&self) -> Self {
-        Self::new(self.load(Ordering::Acquire))
+        Self::new(self.load(Ordering::Relaxed))
     }
 }

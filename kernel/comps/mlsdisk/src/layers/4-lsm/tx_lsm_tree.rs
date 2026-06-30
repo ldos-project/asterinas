@@ -54,7 +54,7 @@ pub(super) struct TreeInner<K: RecordKey<K>, V, D> {
 }
 
 /// Levels in a `TxLsmTree`.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LsmLevel {
     L0 = 0,
     L1,
@@ -102,7 +102,7 @@ pub trait TxEventListener<K, V> {
 }
 
 /// Types of `TxLsmTree`'s internal transactions.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum TxType {
     /// A Compaction Transaction merges old `SSTable`s into new ones.
     Compaction { to_level: LsmLevel },
@@ -311,7 +311,7 @@ impl<K: RecordKey<K>, V: RecordValue, D: BlockSet + 'static> TreeInner<K, V, D> 
 
         recov_self.do_migration_tx()?;
 
-        debug!("[MlsDisk TxLsmTree] Recovery completed: {recov_self:?}");
+        debug!("Recovery completed: {recov_self:?}");
         Ok(recov_self)
     }
 
@@ -539,7 +539,7 @@ impl<K: RecordKey<K>, V: RecordValue, D: BlockSet + 'static> TreeInner<K, V, D> 
 
         self.sst_manager.write().insert(new_sst, LsmLevel::L0);
 
-        debug!("[MlsDisk TxLsmTree] Minor Compaction completed: {self:?}");
+        debug!("Minor Compaction completed: {self:?}");
         Ok(())
     }
 
@@ -638,7 +638,7 @@ impl<K: RecordKey<K>, V: RecordValue, D: BlockSet + 'static> TreeInner<K, V, D> 
             deleted_ssts.into_iter(),
         );
 
-        debug!("[MlsDisk TxLsmTree] Major Compaction completed: {self:?}");
+        debug!("Major Compaction completed: {self:?}");
 
         // Continue to do major compaction if necessary
         if self.sst_manager.read().require_major_compaction(to_level) {
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Pod, Debug)]
+    #[derive(Clone, Copy, Debug, Pod)]
     struct Value {
         pub hba: BlockId,
         pub key: Key,

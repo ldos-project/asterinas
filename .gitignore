@@ -17,6 +17,7 @@ target/
 
 # qemu log file
 qemu.log
+qemu-serial.log
 
 # packet dump file
 virtio-net.pcap
@@ -33,8 +34,20 @@ aster-nix-profile-*.json
 aster-nix-profile-*.folded
 aster-nix-profile-*.svg
 
+# distro results
+distro/result
+
+# cachix package list
+cachix.list
+
+# temporary configuration file for NixOS tests
+distro/etc_nixos/_config_for_test.nix
+
 # editor configuration
 .vscode
 
 # Python files
 __pycache__
+aster-kernel-profile-*.json
+aster-kernel-profile-*.folded
+aster-kernel-profile-*.svg

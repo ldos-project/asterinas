@@ -66,7 +66,7 @@ use crate::{
 /// assert_eq!(cursor.current_meta().unwrap().mark, 1);
 /// ```
 ///
-/// [`from_in_use`]: Frame::from_in_use
+/// [`from_in_use`]: super::Frame::from_in_use
 pub struct LinkedList<M>
 where
     Link<M>: AnyFrameMeta,
@@ -206,7 +206,7 @@ where
         if self.list_id == 0 {
             let id = LIST_ID_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
             if id >= MAX_LIST_ID {
-                log::error!("The frame list ID allocator has exhausted.");
+                crate::error!("The frame list ID allocator has exhausted.");
                 abort();
             }
             self.list_id = id;

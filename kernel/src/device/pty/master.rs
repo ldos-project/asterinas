@@ -6,21 +6,20 @@ use ostd::task::Task;
 
 use super::{PtySlave, driver::PtyDriver};
 use crate::{
-    current_userspace,
+    device::tty::TtyFlags,
     events::IoEvents,
     fs::{
-        devpts::DevPts,
-        file_table::FdFlags,
-        fs_resolver::FsPath,
-        inode_handle::FileIo,
-        utils::{AccessMode, Inode, InodeMode, IoctlCmd},
+        devpts::Ptmx,
+        file::{AccessMode, FileIo, OpenArgs, StatusFlags, file_table::FdFlags, mkmod},
+        vfs::{inode::InodeIo, path::FsPath},
     },
     prelude::*,
     process::{
         Terminal,
-        posix_thread::{AsPosixThread, AsThreadLocal},
+        posix_thread::AsThreadLocal,
         signal::{PollHandle, Pollable},
     },
+    util::ioctl::{RawIoctl, dispatch_ioctl},
 };
 
 const IO_CAPACITY: usize = 4096;
@@ -35,30 +34,48 @@ const IO_CAPACITY: usize = 4096;
 ///
 /// [`Tty`]: crate::device::tty::Tty
 pub struct PtyMaster {
-    ptmx: Arc<dyn Inode>,
+    ptmx: Arc<Ptmx>,
     slave: Arc<PtySlave>,
 }
 
 impl PtyMaster {
-    pub(super) fn new(ptmx: Arc<dyn Inode>, index: u32) -> Arc<Self> {
+    pub(super) fn new(ptmx: Arc<Ptmx>, index: u32) -> Box<Self> {
         let slave = PtySlave::new(index, PtyDriver::new());
 
-        Arc::new(Self { ptmx, slave })
+        Box::new(Self { ptmx, slave })
     }
 
     pub(super) fn slave(&self) -> &Arc<PtySlave> {
         &self.slave
     }
 
+    fn master_flags(&self) -> &TtyFlags {
+        self.slave.driver().tty_flags()
+    }
+
+    fn slave_flags(&self) -> &TtyFlags {
+        self.slave.tty_flags()
+    }
+
     fn check_io_events(&self) -> IoEvents {
         let mut events = IoEvents::empty();
 
         if self.slave().driver().buffer_len() > 0 {
-            events |= IoEvents::IN;
+            events |= IoEvents::IN | IoEvents::RDNORM;
         }
 
         if self.slave().can_push() {
             events |= IoEvents::OUT;
+        }
+
+        if self.master_flags().is_other_closed() {
+            events |= IoEvents::HUP;
+        }
+
+        // Deal with packet mode.
+        let packet_ctrl = self.slave.driver().packet_ctrl();
+        if packet_ctrl.has_status() {
+            events |= IoEvents::PRI | IoEvents::IN | IoEvents::RDNORM;
         }
 
         events
@@ -74,13 +91,23 @@ impl Pollable for PtyMaster {
     }
 }
 
-impl FileIo for PtyMaster {
-    fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        // TODO: Add support for non-blocking mode and timeout
+impl InodeIo for PtyMaster {
+    fn read_at(
+        &self,
+        _offset: usize,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
+        // TODO: Add support for timeout.
         let mut buf = vec![0u8; writer.avail().min(IO_CAPACITY)];
-        let read_len = self.wait_events(IoEvents::IN, None, || {
-            self.slave.driver().try_read(&mut buf)
-        })?;
+        let is_nonblocking = status_flags.contains(StatusFlags::O_NONBLOCK);
+        let read_len = if is_nonblocking {
+            self.slave.driver().try_read(&mut buf)?
+        } else {
+            self.wait_events(IoEvents::IN, None, || {
+                self.slave.driver().try_read(&mut buf)
+            })?
+        };
         self.slave.driver().pollee().invalidate();
         self.slave.notify_output();
 
@@ -89,49 +116,88 @@ impl FileIo for PtyMaster {
         Ok(read_len)
     }
 
-    fn write(&self, reader: &mut VmReader) -> Result<usize> {
+    fn write_at(
+        &self,
+        _offset: usize,
+        reader: &mut VmReader,
+        status_flags: StatusFlags,
+    ) -> Result<usize> {
         let mut buf = vec![0u8; reader.remain().min(IO_CAPACITY)];
         let write_len = reader.read_fallible(&mut buf.as_mut_slice().into())?;
 
-        // TODO: Add support for non-blocking mode and timeout
-        let len = self.wait_events(IoEvents::OUT, None, || {
-            Ok(self.slave.push_input(&buf[..write_len])?)
-        })?;
+        // TODO: Add support for timeout.
+        let is_nonblocking = status_flags.contains(StatusFlags::O_NONBLOCK);
+        let len = if is_nonblocking {
+            self.slave.push_input(&buf[..write_len])?
+        } else {
+            self.wait_events(IoEvents::OUT, None, || {
+                self.slave.push_input(&buf[..write_len])
+            })?
+        };
         self.slave.driver().pollee().invalidate();
         Ok(len)
     }
+}
 
-    fn ioctl(&self, cmd: IoctlCmd, arg: usize) -> Result<i32> {
-        match cmd {
-            IoctlCmd::TCGETS
-            | IoctlCmd::TCSETS
-            | IoctlCmd::TCSETSW
-            | IoctlCmd::TCSETSF
-            | IoctlCmd::TIOCGWINSZ
-            | IoctlCmd::TIOCSWINSZ
-            | IoctlCmd::TIOCGPTN => return self.slave.ioctl(cmd, arg),
-            IoctlCmd::TIOCSPTLCK => {
-                // TODO: Lock or unlock the PTY.
+impl FileIo for PtyMaster {
+    fn check_seekable(&self) -> Result<()> {
+        return_errno_with_message!(Errno::ESPIPE, "the inode is a pty");
+    }
+
+    fn is_offset_aware(&self) -> bool {
+        false
+    }
+
+    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        use super::ioctl_defs::*;
+        use crate::{device::tty::ioctl_defs::*, util::ioctl::common_defs::GetNumBytesToRead};
+
+        dispatch_ioctl!(match raw_ioctl {
+            GetTermios | SetTermios | SetTermiosWait | SetTermiosFlush | GetWinSize
+            | SetWinSize | GetPtyNumber => {
+                return self.slave.ioctl(raw_ioctl);
             }
-            IoctlCmd::TIOCGPTPEER => {
+
+            cmd @ SetPtyLock => {
+                let should_lock = cmd.read()? != 0;
+
+                let flags = self.master_flags();
+                if should_lock {
+                    flags.set_pty_locked();
+                } else {
+                    flags.clear_pty_locked();
+                }
+            }
+            cmd @ GetPtyLock => {
+                let is_locked = if self.master_flags().is_pty_locked() {
+                    1
+                } else {
+                    0
+                };
+
+                cmd.write(&is_locked)?;
+            }
+            _cmd @ OpenPtySlave => {
                 let current_task = Task::current().unwrap();
-                let posix_thread = current_task.as_posix_thread().unwrap();
                 let thread_local = current_task.as_thread_local().unwrap();
 
                 // TODO: Deal with `open()` flags.
                 let slave = {
+                    let fs_ref = thread_local.borrow_fs();
+                    let path_resolver = fs_ref.resolver().read();
+
                     let slave_name = {
-                        let devpts_path = super::DEV_PTS.get().unwrap().abs_path();
+                        let devpts_path = path_resolver
+                            .make_abs_path(super::DEV_PTS.get().unwrap())
+                            .into_string();
                         format!("{}/{}", devpts_path, self.slave.index())
                     };
 
                     let fs_path = FsPath::try_from(slave_name.as_str())?;
 
                     let inode_handle = {
-                        let fs = posix_thread.fs().resolver().read();
-                        let flags = AccessMode::O_RDWR as u32;
-                        let mode = (InodeMode::S_IRUSR | InodeMode::S_IWUSR).bits();
-                        fs.open(&fs_path, flags, mode)?
+                        let open_args = OpenArgs::from_modes(AccessMode::O_RDWR, mkmod!(u+rw));
+                        path_resolver.lookup(&fs_path)?.open(open_args)?
                     };
                     Arc::new(inode_handle)
                 };
@@ -142,14 +208,38 @@ impl FileIo for PtyMaster {
                     // TODO: Deal with the `O_CLOEXEC` flag.
                     file_table_locked.insert(slave, FdFlags::empty())
                 };
-                return Ok(fd);
+                return Ok(fd.into());
             }
-            IoctlCmd::FIONREAD => {
+            cmd @ GetNumBytesToRead => {
                 let len = self.slave.driver().buffer_len() as i32;
-                current_userspace!().write_val(arg, &len)?;
+
+                cmd.write(&len)?;
             }
-            _ => (self.slave.clone() as Arc<dyn Terminal>).job_ioctl(cmd, arg, true)?,
-        }
+            cmd @ SetPktMode => {
+                let new_mode = cmd.read()? != 0;
+
+                self.slave.driver().packet_ctrl().set_mode(new_mode);
+            }
+            cmd @ GetPktMode => {
+                let packet_mode = if self.slave.driver().packet_ctrl().mode() {
+                    1
+                } else {
+                    0
+                };
+
+                cmd.write(&packet_mode)?;
+            }
+
+            _ => {
+                let terminal = self.slave.clone() as Arc<dyn Terminal>;
+
+                if terminal.job_ioctl(raw_ioctl, true)? {
+                    return Ok(0);
+                }
+
+                return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
+            }
+        });
 
         Ok(0)
     }
@@ -157,10 +247,12 @@ impl FileIo for PtyMaster {
 
 impl Drop for PtyMaster {
     fn drop(&mut self) {
-        let fs = self.ptmx.fs();
-        let devpts = fs.downcast_ref::<DevPts>().unwrap();
+        if let Some(devpts) = self.ptmx.devpts() {
+            let index = self.slave.index();
+            devpts.remove_slave(index);
+        }
 
-        let index = self.slave.index();
-        devpts.remove_slave(index);
+        self.slave_flags().set_other_closed();
+        self.slave.notify_hup();
     }
 }

@@ -44,12 +44,6 @@ pub enum Error {
     /// Arithmetic Overflow occurred.
     #[snafu(display("Arithmetic overflow ({context})"))]
     Overflow,
-    /// Memory mapping already exists for the given virtual address.
-    #[snafu(display("Memory mapping already exists for this virtual address ({context})"))]
-    MapAlreadyMappedVaddr,
-    /// Error when allocating kernel virtual memory.
-    #[snafu(display("Error allocating kernel virtual memory ({context})"))]
-    KVirtAreaAllocError,
     /// A ORPC error
     #[snafu(transparent)]
     #[ostd(context(source))]

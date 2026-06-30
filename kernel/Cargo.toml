@@ -1,87 +1,91 @@
 [package]
-name = "aster-nix"
+name = "aster-kernel"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-align_ext = { path = "../ostd/libs/align_ext" }
-aster-input = { path = "comps/input" }
-aster-block = { path = "comps/block" }
-aster-raid = { path = "comps/raid" }
-aster-network = { path = "comps/network" }
-aster-console = { path = "comps/console" }
-aster-framebuffer = { path = "comps/framebuffer" }
-aster-softirq = { path = "comps/softirq" }
-aster-logger = { path = "comps/logger" }
-aster-mlsdisk = { path = "comps/mlsdisk" }
-aster-time = { path = "comps/time" }
-aster-virtio = { path = "comps/virtio" }
-aster-rights = { path = "libs/aster-rights" }
-aster-systree = { path = "comps/systree" }
-aster-keyboard = { path = "comps/keyboard" }
-component = { path = "libs/comp-sys/component" }
-controlled = { path = "libs/comp-sys/controlled" }
-osdk-frame-allocator = { path = "../osdk/deps/frame-allocator" }
-osdk-heap-allocator = { path = "../osdk/deps/heap-allocator" }
-ostd = { path = "../ostd" }
-typeflags = { path = "libs/typeflags" }
-typeflags-util = { path = "libs/typeflags-util" }
-aster-rights-proc = { path = "libs/aster-rights-proc" }
-aster-util = { path = "libs/aster-util" }
-aster-bigtcp = { path = "libs/aster-bigtcp" }
-atomic-integer-wrapper = { path = "libs/atomic-integer-wrapper" }
-id-alloc = { path = "../ostd/libs/id-alloc" }
-int-to-c-enum = { path = "libs/int-to-c-enum" }
-cpio-decoder = { path = "libs/cpio-decoder" }
-mariposa_data_capture = { path = "comps/mariposa_data_capture" }
-xarray = { path = "libs/xarray" }
-intrusive-collections = "0.9.5"
-paste = "1.0"
-time = { version = "0.3", default-features = false, features = ["alloc"] }
-snafu = { workspace = true }
-serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
-
-# parse elf file
-xmas-elf = "0.10.0"
-# data-structures
-bitflags = "1.3"
-keyable-arc = { path = "libs/keyable-arc" }
-# unzip initramfs
-libflate = { version = "2.3", default-features = false }
-no_std_io2 = { version = "0.9.3", features = ["alloc"] }
-lending-iterator = "0.1.7"
-spin = "0.9.4"
-lru = "0.12.3"
-log = "0.4"
-bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
-hashbrown = "0.14"
-rand = { version = "0.8.5", default-features = false, features = [
+align_ext.workspace = true
+aster-bigtcp.workspace = true
+aster-block.workspace = true
+aster-cmdline.workspace = true
+aster-console.workspace = true
+aster-framebuffer.workspace = true
+aster-i8042.workspace = true
+aster-input.workspace = true
+aster-logger.workspace = true
+aster-mlsdisk.workspace = true
+aster-network.workspace = true
+aster-raid.workspace = true
+aster-rights.workspace = true
+aster-rights-proc.workspace = true
+aster-softirq.workspace = true
+aster-systree.workspace = true
+aster-time.workspace = true
+aster-uart.workspace = true
+aster-util.workspace = true
+aster-virtio.workspace = true
+atomic-integer-wrapper.workspace = true
+bitflags.workspace = true
+bitvec.workspace = true
+cfg-if.workspace = true
+component.workspace = true
+const_format.workspace = true
+controlled.workspace = true
+cpio-decoder.workspace = true
+crossbeam-utils.workspace = true
+device-id.workspace = true
+getset.workspace = true
+hashbrown.workspace = true
+id-alloc.workspace = true
+inherit-methods-macro.workspace = true
+intrusive-collections.workspace = true
+int-to-c-enum.workspace = true
+jhash.workspace = true
+keyable-arc.workspace = true
+lending-iterator.workspace = true
+libflate.workspace = true
+logo-ascii-art.workspace = true
+lru.workspace = true
+mariposa_data_capture.workspace = true
+no_std_io2.workspace = true
+osdk-frame-allocator.workspace = true
+osdk-heap-allocator.workspace = true
+ostd.workspace = true
+ostd-pod.workspace = true
+paste.workspace = true
+rand = { workspace = true, features = [
     "small_rng",
     "std_rng",
 ] }
-inherit-methods-macro = { git = "https://github.com/ldos-project/inherit-methods-macro", rev = "98f7e3e" }
-getset = "0.1.2"
-takeable = "0.2.2"
-cfg-if = "1.0"
-# Fixed point numbers
-# TODO: fork this crate to rewrite all the (unnecessary) unsafe usage
-fixed = "1.28.0"
+ring-buffer.workspace = true
+serde.workspace = true
+snafu.workspace = true
+spin.workspace = true
+takeable.workspace = true
+time.workspace = true
+typeflags.workspace = true
+typeflags-util.workspace = true
+xarray.workspace = true
+xmas-elf.workspace = true
+zerocopy.workspace = true
 
-# For benchmarking
-# TODO(aneesh): move this into it's own build target or otherwise make it optional
-crossbeam-utils = { version = "0.8.21", default-features = false }
+[target.x86_64-unknown-none.dependencies]
+tdx-guest = { version = "0.2.4", optional = true }
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-tdx-guest = { version = "0.2.1", optional = true }
+[target.riscv64imac-unknown-none-elf.dependencies]
+riscv = { version = "0.15.0", features = ["s-mode"] }
 
-[target.riscv64gc-unknown-none-elf.dependencies]
-riscv = { version = "0.11.1", features = ["s-mode"] }
+[target.loongarch64-unknown-none-softfloat.dependencies]
+loongArch64 = "0.2.5"
 
 [features]
-all = ["cvm_guest"]
+default = ["cvm_guest"]
+coverage = ["ostd/coverage"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
+# By default we use the Sv48 address translation mode.
+riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
 
 [lints]
 workspace = true

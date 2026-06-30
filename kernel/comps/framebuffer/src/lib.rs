@@ -6,13 +6,23 @@
 
 extern crate alloc;
 
+// Set this crate's log prefix for `ostd::log`.
+macro_rules! __log_prefix {
+    () => {
+        "framebuffer: "
+    };
+}
+
+mod ansi_escape;
 mod console;
+mod dummy_console;
 mod framebuffer;
 mod pixel;
 
 use component::{ComponentInitError, init_component};
-pub use console::{CONSOLE_NAME, FRAMEBUFFER_CONSOLE, FramebufferConsole};
-pub use framebuffer::{FRAMEBUFFER, FrameBuffer};
+pub use console::{CONSOLE_NAME, ConsoleCallbacks, FRAMEBUFFER_CONSOLE};
+pub use dummy_console::DummyFramebufferConsole;
+pub use framebuffer::{ColorMapEntry, FRAMEBUFFER, FrameBuffer, MAX_CMAP_SIZE};
 pub use pixel::{Pixel, PixelFormat, RenderedPixel};
 
 #[init_component]

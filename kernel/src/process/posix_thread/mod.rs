@@ -1,41 +1,44 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use aster_rights::{ReadDupOp, ReadOp, WriteOp};
-use ostd::sync::{RoArc, Waker};
+use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
+use ostd::{
+    sync::{RoArc, RwMutexReadGuard, Waker},
+    task::Task,
+};
+use spin::Once;
 
 use super::{
     Credentials, Process,
-    kill::SignalSenderIds,
-    signal::{
-        SigEvents, SigEventsFilter,
-        sig_disposition::SigDispositions,
-        sig_mask::{AtomicSigMask, SigMask, SigSet},
-        sig_num::SigNum,
-        sig_queues::SigQueues,
-        signals::Signal,
-    },
+    signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
 };
 use crate::{
-    events::Observer,
-    fs::{file_table::FileTable, thread_info::ThreadFsInfo},
+    events::IoEvents,
+    fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
-    process::signal::constants::SIGCONT,
+    process::{
+        ExitCode, Pid,
+        namespace::nsproxy::NsProxy,
+        posix_thread::ptrace::TraceeStatus,
+        signal::{PauseReason, PollHandle, sig_mask::SigMask},
+    },
     thread::{Thread, Tid},
-    time::{Timer, TimerManager, clocks::ProfClock},
+    time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
 
+pub mod alien_access;
 mod builder;
 mod exit;
 pub mod futex;
 mod name;
 mod posix_thread_ext;
+pub mod ptrace;
 mod robust_list;
 mod thread_local;
-pub mod thread_table;
 
 pub use builder::PosixThreadBuilder;
+pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
 pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
 pub use posix_thread_ext::AsPosixThread;
@@ -45,19 +48,22 @@ pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 pub struct PosixThread {
     // Immutable part
     process: Weak<Process>,
-    tid: Tid,
+    task: Weak<Task>,
 
     // Mutable part
-    name: Mutex<Option<ThreadName>>,
+    tid: AtomicU32,
+
+    name: Mutex<ThreadName>,
 
     /// Process credentials. At the kernel level, credentials are a per-thread attribute.
     credentials: Credentials,
 
+    /// The file system information of the thread.
+    fs: RwMutex<Arc<ThreadFsInfo>>,
+
     // Files
     /// File table
     file_table: Mutex<Option<RoArc<FileTable>>>,
-    /// File system
-    fs: Arc<ThreadFsInfo>,
 
     // Signal
     /// Blocked signals
@@ -65,8 +71,8 @@ pub struct PosixThread {
     /// Thread-directed sigqueue
     sig_queues: SigQueues,
     /// The per-thread signal [`Waker`], which will be used to wake up the thread
-    /// when enqueuing a signal.
-    signalled_waker: SpinLock<Option<Arc<Waker>>>,
+    /// when enqueuing a signal, along with the reason why the thread is paused.
+    signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
 
     /// A profiling clock measures the user CPU time and kernel CPU time in the thread.
     prof_clock: Arc<ProfClock>,
@@ -76,6 +82,26 @@ pub struct PosixThread {
 
     /// A manager that manages timers based on the profiling clock of the current thread.
     prof_timer_manager: Arc<TimerManager>,
+
+    /// I/O Scheduling priority value
+    io_priority: AtomicU32,
+
+    /// The namespaces that the thread belongs to.
+    ns_proxy: Mutex<Option<Arc<NsProxy>>>,
+
+    /// The current timer slack value for this thread.
+    timer_slack_ns: AtomicU64,
+    /// The default timer slack value for this thread.
+    default_timer_slack_ns: AtomicU64,
+
+    /// Status of being traced.
+    tracee_status: Once<TraceeStatus>,
+
+    /// Threads traced by this thread.
+    tracees: Once<Mutex<BTreeMap<Tid, Arc<Thread>>>>,
+
+    /// Exit code of this thread.
+    exit_code: AtomicU32,
 }
 
 impl PosixThread {
@@ -83,103 +109,59 @@ impl PosixThread {
         self.process.upgrade().unwrap()
     }
 
-    pub fn weak_process(&self) -> Weak<Process> {
-        Weak::clone(&self.process)
+    pub fn weak_process(&self) -> &Weak<Process> {
+        &self.process
     }
 
     /// Returns the thread id
     pub fn tid(&self) -> Tid {
-        self.tid
+        self.tid.load(Ordering::Relaxed)
     }
 
-    pub fn thread_name(&self) -> &Mutex<Option<ThreadName>> {
+    /// Sets the thread as the main thread by changing its thread ID.
+    pub(super) fn set_main(&self, pid: Pid) {
+        debug_assert_eq!(pid, self.process.upgrade().unwrap().pid());
+        debug_assert_ne!(pid, self.tid.load(Ordering::Relaxed));
+
+        self.tid.store(pid, Ordering::Relaxed);
+    }
+
+    pub fn thread_name(&self) -> &Mutex<ThreadName> {
         &self.name
+    }
+
+    /// Returns a read guard to the filesystem information of the thread.
+    pub fn read_fs(&self) -> RwMutexReadGuard<'_, Arc<ThreadFsInfo>> {
+        self.fs.read()
+    }
+
+    /// Sets the filesystem information of the thread.
+    pub(in crate::process) fn set_fs(&self, new_fs: Arc<ThreadFsInfo>) {
+        let mut fs_lock = self.fs.write();
+        *fs_lock = new_fs;
     }
 
     pub fn file_table(&self) -> &Mutex<Option<RoArc<FileTable>>> {
         &self.file_table
     }
 
-    pub fn fs(&self) -> &Arc<ThreadFsInfo> {
-        &self.fs
+    /// Returns the signal mask of the thread.
+    pub fn sig_mask(&self) -> SigMask {
+        self.sig_mask.load(Ordering::Relaxed)
     }
 
-    /// Get the reference to the signal mask of the thread.
-    ///
-    /// Note that while this function offers mutable access to the signal mask,
-    /// it is not sound for callers other than the current thread to modify the
-    /// signal mask. They may only read the signal mask.
-    pub fn sig_mask(&self) -> &AtomicSigMask {
-        &self.sig_mask
-    }
-
-    pub fn sig_pending(&self) -> SigSet {
-        self.sig_queues.sig_pending()
-    }
-
-    /// Returns whether the thread has some pending signals
-    /// that are not blocked.
-    pub fn has_pending(&self) -> bool {
-        let blocked = self.sig_mask().load(Ordering::Relaxed);
-        self.sig_queues.has_pending(blocked)
+    pub(super) fn sig_queues(&self) -> &SigQueues {
+        &self.sig_queues
     }
 
     /// Returns whether the signal is blocked by the thread.
-    pub(in crate::process) fn has_signal_blocked(&self, signum: SigNum) -> bool {
+    pub fn has_signal_blocked(&self, signum: SigNum) -> bool {
         // FIXME: Some signals cannot be blocked, even set in sig_mask.
         self.sig_mask.contains(signum, Ordering::Relaxed)
     }
 
-    /// Checks whether the signal can be delivered to the thread.
-    ///
-    /// For a signal can be delivered to the thread, the sending thread must either
-    /// be privileged, or the real or effective user ID of the sending thread must equal
-    /// the real or saved set-user-ID of the target thread.
-    ///
-    /// For SIGCONT, the sending and receiving processes should belong to the same session.
-    pub(in crate::process) fn check_signal_perm(
-        &self,
-        signum: Option<&SigNum>,
-        sender: &SignalSenderIds,
-    ) -> Result<()> {
-        if sender.euid().is_root() {
-            return Ok(());
-        }
-
-        if let Some(signum) = signum
-            && *signum == SIGCONT
-        {
-            let receiver_sid = self.process().sid();
-            if receiver_sid == sender.sid().unwrap() {
-                return Ok(());
-            }
-
-            return_errno_with_message!(
-                Errno::EPERM,
-                "sigcont requires that sender and receiver belongs to the same session"
-            );
-        }
-
-        let (receiver_ruid, receiver_suid) = {
-            let credentials = self.credentials();
-            (credentials.ruid(), credentials.suid())
-        };
-
-        // FIXME: further check the below code to ensure the behavior is same as Linux. According
-        // to man(2) kill, the real or effective user ID of the sending process must equal the
-        // real or saved set-user-ID of the target process.
-        if sender.ruid() == receiver_ruid
-            || sender.ruid() == receiver_suid
-            || sender.euid() == receiver_ruid
-            || sender.euid() == receiver_suid
-        {
-            return Ok(());
-        }
-
-        return_errno_with_message!(Errno::EPERM, "sending signal to the thread is not allowed.");
-    }
-
-    /// Sets the input [`Waker`] as the signalled waker of this thread.
+    /// Sets the input [`Waker`] as the signalled waker of this thread,
+    /// along with the reason why the thread is paused.
     ///
     /// This approach can collaborate with signal-aware wait methods.
     /// Once a signalled waker is set for a thread, it cannot be reset until it is cleared.
@@ -188,10 +170,10 @@ impl PosixThread {
     ///
     /// If setting a new waker before clearing the current thread's signalled waker
     /// this method will panic.
-    pub fn set_signalled_waker(&self, waker: Arc<Waker>) {
+    pub fn set_signalled_waker(&self, waker: Arc<Waker>, reason: PauseReason) {
         let mut signalled_waker = self.signalled_waker.lock();
         assert!(signalled_waker.is_none());
-        *signalled_waker = Some(waker);
+        *signalled_waker = Some((waker, reason));
     }
 
     /// Clears the signalled waker of this thread.
@@ -199,48 +181,89 @@ impl PosixThread {
         *self.signalled_waker.lock() = None;
     }
 
+    /// Returns the sleeping state of this thread.
+    pub fn sleeping_state(&self) -> SleepingState {
+        // This implementation prevents a thread (let's call it `threadA`) that is
+        // sleeping in an interruptible wait from being mistakenly reported as
+        // sleeping in an uninterruptible wait due to a race condition, where another
+        // thread (`threadB`) may observe that its `task.schedule_info().cpu` is
+        // `AtomicCpuId::NONE` and its `signalled_waker` is `None` (not set yet or
+        // already cleared).
+        //
+        // When `threadA` enters an interruptible wait, it executes the following steps:
+        // ```
+        // A1: Acquire signalled_waker.lock |
+        // A2: set signalled_waker to Some  |-- critical section #1
+        // A3: Release signalled_waker.lock |
+        // A4: cpu.set_to_none(Relaxed)
+        // A5: cpu.set_if_is_none(cpuid, Relaxed)
+        // A6: Acquire signalled_waker.lock |
+        // A7: set signalled_waker to None  |-- critical section #2
+        // A8: Release signalled_waker.lock |
+        // ```
+        //
+        // When `threadB` calls `threadA.sleeping_state()`, it executes the following steps:
+        // ```
+        // B1: Acquire threadA.signalled_waker.lock |
+        // B2: check threadA.signalled_waker        |-- critical section #3
+        // B3: check threadA.cpu.get(Relaxed)       |
+        // B4: Release threadA.signalled_waker.lock |
+        // ```
+        //
+        // We can see that:
+        //  - If #3 happens before #1, B3 can not observe the effect of A4 due to the
+        //    release-acquire pair B4-A1.
+        //  - If #3 happens between #1 and #2, B2 will always see a `Some`.
+        //  - If #3 happens after #2, B3 can observe the effect of A5 due to the
+        //    release-acquire pair A8-B1.
+        // Therefore, the condition where both B2 and B3 see `None` will never happen.
+        //
+        // Similarly, this implementation prevents a process that has been stopped by
+        // a signal or ptrace from being incorrectly reported as sleeping in an
+        // (un)interruptible wait.
+        //
+        // FIXME: This implementation cannot prevent a stopped process from being
+        // reported as running when `crate::process::signal::handle_pending_signal`
+        // is called, but the pending signal is not a `SIGCONT`. However, is this
+        // actually a problem? We considered an approach to fix this issue, but it
+        // does not fully resolve it and has some drawbacks. For more details, see
+        // <https://github.com/asterinas/asterinas/pull/2491#issuecomment-3527958970>.
+        let signalled_waker = self.signalled_waker.lock();
+        let task = self.task.upgrade().unwrap();
+        match (
+            signalled_waker.as_ref(),
+            task.schedule_info().cpu.get().is_none(),
+        ) {
+            (Some((_, PauseReason::Sleep)), true) => SleepingState::Interruptible,
+            (Some((_, PauseReason::StopBySignal)), true) => SleepingState::StopBySignal,
+            (Some((_, PauseReason::StopByPtrace)), true) => SleepingState::StopByPtrace,
+            (None, true) => SleepingState::Uninterruptible,
+            (_, false) => SleepingState::Running,
+        }
+    }
+
     /// Wakes up the signalled waker.
     pub fn wake_signalled_waker(&self) {
-        if let Some(waker) = &*self.signalled_waker.lock() {
+        if let Some((waker, _)) = &*self.signalled_waker.lock() {
             waker.wake_up();
         }
     }
 
     /// Enqueues a thread-directed signal.
     ///
-    /// This method does not perform permission checks on user signals. Therefore, unless the
-    /// caller can ensure that there are no permission issues, this method should be used for
-    /// enqueue kernel signals or fault signals.
+    /// This method does not perform permission checks on user signals.
+    /// Therefore, unless the caller can ensure that there are no permission issues,
+    /// this method should be used to enqueue kernel signals or fault signals.
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
-        let process = self.process();
-        let sig_dispositions = process.sig_dispositions().lock();
-
-        let signum = signal.num();
-        if sig_dispositions.get(signum).will_ignore(signum) {
-            return;
-        }
-
-        self.enqueue_signal_locked(signal, sig_dispositions);
-    }
-
-    /// Enqueues a thread-directed signal with locked dispositions.
-    ///
-    /// By locking dispositions, the caller should have already checked the signal is not to be
-    /// ignored.
-    //
-    // FIXME: According to Linux behavior, we should enqueue ignored signals blocked by all
-    // threads, as a thread may change the signal handler and unblock them in the future. However,
-    // achieving this behavior properly without maintaining a process-wide signal queue is
-    // difficult. For instance, if we randomly select a thread-wide signal queue, the thread that
-    // modifies the signal handler and unblocks the signal may not be the same one. Consequently,
-    // the current implementation uses a simpler mechanism that never enqueues any ignored signals.
-    pub(in crate::process) fn enqueue_signal_locked(
-        &self,
-        signal: Box<dyn Signal>,
-        _sig_dispositions: MutexGuard<SigDispositions>,
-    ) {
         self.sig_queues.enqueue(signal);
         self.wake_signalled_waker();
+    }
+
+    pub fn register_signalfd_poller(&self, poller: &mut PollHandle, mask: IoEvents) {
+        self.sig_queues.register_signalfd_poller(poller, mask);
+        self.process()
+            .sig_queues()
+            .register_signalfd_poller(poller, mask);
     }
 
     /// Returns a reference to the profiling clock of the current thread.
@@ -251,7 +274,7 @@ impl PosixThread {
     /// Creates a timer based on the profiling CPU clock of the current thread.
     pub fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(TimerGuard) + Send + Sync + 'static,
     {
         self.prof_timer_manager.create_timer(func)
     }
@@ -259,7 +282,7 @@ impl PosixThread {
     /// Creates a timer based on the user CPU clock of the current thread.
     pub fn create_virtual_timer<F>(&self, func: F) -> Arc<Timer>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(TimerGuard) + Send + Sync + 'static,
     {
         self.virtual_timer_manager.create_timer(func)
     }
@@ -268,22 +291,6 @@ impl PosixThread {
     /// If any have timed out, call the corresponding callback functions.
     pub fn process_expired_timers(&self) {
         self.prof_timer_manager.process_expired_timers();
-    }
-
-    pub fn dequeue_signal(&self, mask: &SigMask) -> Option<Box<dyn Signal>> {
-        self.sig_queues.dequeue(mask)
-    }
-
-    pub fn register_sigqueue_observer(
-        &self,
-        observer: Weak<dyn Observer<SigEvents>>,
-        filter: SigEventsFilter,
-    ) {
-        self.sig_queues.register_observer(observer, filter);
-    }
-
-    pub fn unregister_sigqueue_observer(&self, observer: &Weak<dyn Observer<SigEvents>>) {
-        self.sig_queues.unregister_observer(observer);
     }
 
     /// Gets the read-only credentials of the thread.
@@ -296,28 +303,133 @@ impl PosixThread {
         self.credentials.dup().restrict()
     }
 
-    /// Gets the write-only credentials of the current thread.
-    ///
-    /// It is illegal to mutate the credentials from a thread other than the
-    /// current thread. For performance reasons, this function only checks it
-    /// using debug assertions.
-    pub fn credentials_mut(&self) -> Credentials<WriteOp> {
-        debug_assert!(core::ptr::eq(
-            current_thread!().as_posix_thread().unwrap(),
-            self
-        ));
-        self.credentials.dup().restrict()
+    /// Returns the I/O priority value of the thread.
+    pub fn io_priority(&self) -> &AtomicU32 {
+        &self.io_priority
+    }
+
+    /// Returns the namespaces which the thread belongs to.
+    pub fn ns_proxy(&self) -> &Mutex<Option<Arc<NsProxy>>> {
+        &self.ns_proxy
+    }
+
+    /// Returns the current timer slack value in nanoseconds.
+    pub fn timer_slack_ns(&self) -> u64 {
+        self.timer_slack_ns.load(Ordering::Relaxed)
+    }
+
+    /// Sets the current timer slack value in nanoseconds.
+    pub fn set_timer_slack_ns(&self, slack_ns: u64) {
+        self.timer_slack_ns.store(slack_ns, Ordering::Relaxed);
+    }
+
+    /// Resets the current timer slack to the default value.
+    pub fn reset_timer_slack_to_default(&self) {
+        let default = self.default_timer_slack_ns.load(Ordering::Relaxed);
+        self.timer_slack_ns.store(default, Ordering::Relaxed);
+    }
+
+    /// Sets the exit code of this thread.
+    pub(super) fn set_exit_code(&self, exit_code: ExitCode) {
+        self.exit_code.store(exit_code, Ordering::Relaxed);
+    }
+
+    /// Returns the exit code of this thread.
+    pub fn exit_code(&self) -> ExitCode {
+        self.exit_code.load(Ordering::Relaxed)
     }
 }
 
-static POSIX_TID_ALLOCATOR: AtomicU32 = AtomicU32::new(1);
+/// Provides administrative APIs for the current POSIX thread.
+pub trait ContextPthreadAdminApi {
+    /// Sets the signal mask of the current thread.
+    ///
+    /// Note that it is not possible to block SIGKILL or SIGSTOP.
+    /// Attempts to do so are silently ignored.
+    fn set_sig_mask(&self, sig_mask: SigMask);
 
-/// Allocates a new tid for the new posix thread
-pub fn allocate_posix_tid() -> Tid {
-    POSIX_TID_ALLOCATOR.fetch_add(1, Ordering::SeqCst)
+    /// Saves and sets the signal mask of the current thread.
+    ///
+    /// If there are no signals to process, the old signal mask will
+    /// be automatically restored when returning from the system call.
+    /// Otherwise, it will be restored after the signal handler.
+    ///
+    /// This method should only be called when handling a system call.
+    /// It should not be called more than once per system call.
+    fn save_and_set_sig_mask(&self, sig_mask: SigMask);
+
+    /// Gets the read-write credentials of the current thread.
+    fn credentials_mut(&self) -> Credentials<ReadWriteOp>;
 }
 
-/// Returns the last allocated tid
+impl ContextPthreadAdminApi for Context<'_> {
+    fn set_sig_mask(&self, mut sig_mask: SigMask) {
+        use crate::process::signal::constants::{SIGKILL, SIGSTOP};
+
+        sig_mask -= SIGKILL;
+        sig_mask -= SIGSTOP;
+
+        self.posix_thread
+            .sig_mask
+            .store(sig_mask, Ordering::Relaxed);
+    }
+
+    fn save_and_set_sig_mask(&self, sig_mask: SigMask) {
+        let sig_mask_saved = self.thread_local.sig_mask_saved();
+        debug_assert!(sig_mask_saved.get().is_none());
+        sig_mask_saved.set(Some(self.posix_thread.sig_mask()));
+
+        self.set_sig_mask(sig_mask);
+    }
+
+    fn credentials_mut(&self) -> Credentials<ReadWriteOp> {
+        self.posix_thread.credentials.dup().restrict()
+    }
+}
+
+/// The TID of the first POSIX thread (i.e., the main thread of the init process).
+pub const FIRST_POSIX_TID: Tid = 1;
+
+static POSIX_TID_ALLOCATOR: AtomicU32 = AtomicU32::new(FIRST_POSIX_TID);
+
+/// Allocates a new TID for the new POSIX thread.
+pub fn allocate_posix_tid() -> Tid {
+    let tid = POSIX_TID_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
+    if tid >= PID_MAX {
+        // When the kernel's next PID value reaches `PID_MAX`,
+        // it should wrap back to a minimum PID value.
+        // PIDs with a value of `PID_MAX` or larger should not be allocated.
+        // Reference: <https://docs.kernel.org/admin-guide/sysctl/kernel.html#pid-max>.
+        //
+        // FIXME: Currently, we cannot determine which PID is recycled,
+        // so we are unable to allocate smaller PIDs.
+        warn!("the allocated ID is greater than the maximum allowed PID");
+    }
+    tid
+}
+
+/// Returns the last allocated TID.
 pub fn last_tid() -> Tid {
-    POSIX_TID_ALLOCATOR.load(Ordering::SeqCst) - 1
+    POSIX_TID_ALLOCATOR.load(Ordering::Relaxed) - 1
+}
+
+/// The maximum allowed process ID.
+//
+// FIXME: The current value is chosen arbitrarily.
+// This value can be modified by the user by writing to `/proc/sys/kernel/pid_max`.
+pub const PID_MAX: u32 = u32::MAX / 2;
+
+/// The sleeping state of a thread.
+#[derive(Clone, Copy, Debug)]
+pub enum SleepingState {
+    /// The thread is running.
+    Running,
+    /// The thread is sleeping in an interruptible wait.
+    Interruptible,
+    /// The thread is sleeping in an uninterruptible wait.
+    Uninterruptible,
+    /// The thread is stopped by a signal.
+    StopBySignal,
+    /// The thread is stopped by ptrace.
+    StopByPtrace,
 }

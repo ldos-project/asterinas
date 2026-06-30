@@ -31,7 +31,7 @@ mod test {
     use crate::prelude::*;
 
     #[ktest]
-    fn test_send_message() {
+    fn send_message() {
         let (producer, consumer) = ReplyQueue::new_pair().unwrap();
         producer.produce(42);
         assert_eq!(consumer.consume(), 42);

@@ -6,8 +6,8 @@ use core::{alloc::Layout, cell::RefCell};
 
 use ostd::{
     cpu_local,
+    irq::DisabledLocalIrqGuard,
     mm::{PAGE_SIZE, Paddr, PagingConsts, PagingLevel, page_size},
-    trap::irq::DisabledLocalIrqGuard,
 };
 
 cpu_local! {
@@ -171,7 +171,7 @@ mod test {
     use ostd::prelude::ktest;
 
     #[ktest]
-    fn test_cache_array() {
+    fn cache_array() {
         const BASE_PAGE_SIZE: usize = 4096;
         const LVL2_PAGE_SIZE: usize = 512 * BASE_PAGE_SIZE;
         const LVL3_PAGE_SIZE: usize = 512 * LVL2_PAGE_SIZE;

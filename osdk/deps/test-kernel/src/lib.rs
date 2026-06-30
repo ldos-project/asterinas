@@ -38,14 +38,14 @@ fn main() {
     let test_task = move || {
         use alloc::string::ToString;
 
-        use ostd::arch::qemu::{QemuExitCode, exit_qemu};
+        use ostd::power::{ExitCode, poweroff};
 
         match run_ktests(
             get_ktest_test_whitelist().map(|s| s.iter().map(|s| s.to_string())),
             get_ktest_crate_whitelist(),
         ) {
-            KtestResult::Ok => exit_qemu(QemuExitCode::Success),
-            KtestResult::Failed => exit_qemu(QemuExitCode::Failed),
+            KtestResult::Ok => poweroff(ExitCode::Success),
+            KtestResult::Failed => poweroff(ExitCode::Failure),
         };
     };
 
@@ -54,7 +54,7 @@ fn main() {
 
 #[ostd::ktest::panic_handler]
 fn panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let _irq_guard = ostd::trap::irq::disable_local();
+    let _irq_guard = ostd::irq::disable_local();
 
     use alloc::{boxed::Box, string::ToString};
 
@@ -105,11 +105,11 @@ where
     let crate_set =
         crate_whitelist.map(|crates| crates.iter().copied().collect::<BTreeSet<&str>>());
     for crate_ in tree.iter() {
-        if let Some(crate_set) = &crate_set {
-            if !crate_set.contains(crate_.name()) {
-                early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
-                continue;
-            }
+        if let Some(crate_set) = &crate_set
+            && !crate_set.contains(crate_.name())
+        {
+            early_print!("\n[ktest runner] skipping crate \"{}\".\n", crate_.name());
+            continue;
         }
         match run_crate_ktests(crate_, &whitelist_trie) {
             KtestResult::Ok => {}
@@ -149,7 +149,7 @@ fn run_crate_ktests(crate_: &KtestCrate, whitelist: &Option<SuffixTrie>) -> Ktes
             debug_assert_eq!(test.info().package, crate_name);
             match test.run(
                 &(ostd::panic::catch_unwind::<(), fn()>
-                    as fn(fn()) -> Result<(), Box<(dyn Any + Send + 'static)>>),
+                    as fn(fn()) -> Result<(), Box<dyn Any + Send + 'static>>),
             ) {
                 Ok(()) => {
                     early_print!(" {}\n", "ok".green());

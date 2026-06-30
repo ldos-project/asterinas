@@ -2,36 +2,35 @@ name: Publish OSDK and OSTD
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - VERSION
-      - ostd/**
-      - osdk/**
-  push:
-    branches:
-      - main
-    paths: 
-      - VERSION
+  # TODO(arthurp): When if we have crates.io setup
+  # pull_request:
+  #   paths:
+  #     - VERSION
+  #     - ostd/**
+  #     - osdk/**
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - VERSION
 
-# TODO: Re-enable upload once we have our own targets for upload.
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: ldosproject/asterinas:0.17.2-20260518
+    steps:
+      - uses: actions/checkout@v4
 
-# jobs:
-#   publish:
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 10
-#     container: ldosproject/asterinas:0.15.2-20250613
-#     steps:
-#       - uses: actions/checkout@v4
-
-#       - name: Publish OSTD and OSDK (dry run)
-#         # On pull request, set `--dry-run` to check whether they can be published
-#         if: github.event_name == 'pull_request'
-#         run: |
-#           ./tools/github_workflows/publish_osdk_and_ostd.sh --dry-run
+      - name: Publish OSTD and OSDK (dry run)
+        # On pull request, set `--dry-run` to check whether they can be published
+        if: github.event_name == 'pull_request'
+        run: |
+          ./tools/github_workflows/publish_osdk_and_ostd.sh --dry-run
       
-#       - name: Publish OSTD and OSDK
-#         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-#         env:
-#           REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-#         run: |
-#           ./tools/github_workflows/publish_osdk_and_ostd.sh --token ${REGISTRY_TOKEN}
+      - name: Publish OSTD and OSDK
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          ./tools/github_workflows/publish_osdk_and_ostd.sh --token ${REGISTRY_TOKEN}

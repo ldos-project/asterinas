@@ -9,21 +9,19 @@
  *
  * We make the following new changes:
  * * Skip saving/restoring the fsgsbase registers.
+ * * Use new logic to determine whether to use sysret or iret.
  *
  * These changes are released under the following license:
  *
  * SPDX-License-Identifier: MPL-2.0
  */
 
-.code64
 
 .text
-    # extern "sysv64" fn syscall_return(&mut UserContext)
-.global syscall_return
-syscall_return:
-    # disable interrupt
-    cli
+.code64
 
+.global syscall_return
+syscall_return: # (regs: &mut RawUserContext)
     # save callee-saved registers
     push r15
     push r14
@@ -62,10 +60,28 @@ syscall_return:
     # trap_num
     # error_code
 
-    # determain sysret or iret
-    cmp dword ptr [rsp + 4*8], 0x100  # syscall?
-    je sysret
-iret:
+    # Determine whether to use sysret or iret.
+    # If returning to user space with a clean context,
+    # the fast sysret path can be used;
+    # otherwise, the slower iret path should be used.
+    # Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/arch/x86/entry/entry_64.S#L122>.
+
+    cmp qword ptr [rsp], rcx      # sysret requires rcx = rip
+    jne _syscall_iret
+
+    cmp qword ptr [rsp + 8], r11  # sysret requires r11 = rflags
+    jne _syscall_iret
+
+    test r11, 0x10100             # sysret requires rflags not contain RF and TF flags
+    jnz _syscall_iret
+
+    shl rcx, 64 - {ADDRESS_WIDTH}
+    sar rcx, 64 - {ADDRESS_WIDTH}
+    cmp qword ptr [rsp], rcx      # sysret requires rip be a canonical address
+    je _syscall_sysret
+    mov rcx, [rsp]
+
+_syscall_iret:
     # construct trap frame
     push {USER_SS}          # push ss
     push [rsp - 8*8]        # push rsp
@@ -75,17 +91,14 @@ iret:
 
     iretq
 
-sysret:
-    pop rcx                 # rcx = rip
-    pop r11                 # r11 = rflags
-    mov rsp, [rsp - 11*8]   # load rsp
-
-    sysretq
+_syscall_sysret:
+    mov rsp, [rsp - 9*8]    # load rsp
 
     # sysretq instruction do:
     # - load cs, ss
     # - load rflags <- r11
     # - load rip <- rcx
+    sysretq
 
 .global syscall_entry
 syscall_entry:

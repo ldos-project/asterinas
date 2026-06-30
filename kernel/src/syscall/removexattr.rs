@@ -3,12 +3,13 @@
 use super::{
     SyscallReturn,
     setxattr::{
-        XattrFileCtx, check_xattr_namespace, lookup_dentry_for_xattr, parse_xattr_name,
+        XattrFileCtx, check_xattr_namespace, lookup_path_for_xattr, parse_xattr_name,
         read_xattr_name_cstr_from_user,
     },
 };
 use crate::{
-    fs::file_table::{FileDesc, get_file_fast},
+    fs,
+    fs::file::file_table::{RawFileDesc, get_file_fast},
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
@@ -31,9 +32,13 @@ pub fn sys_lremovexattr(path_ptr: Vaddr, name_ptr: Vaddr, ctx: &Context) -> Resu
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_fremovexattr(fd: FileDesc, name_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub fn sys_fremovexattr(
+    raw_fd: RawFileDesc,
+    name_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
     let user_space = ctx.user_space();
     removexattr(XattrFileCtx::FileHandle(file), name_ptr, &user_space, ctx)?;
@@ -52,6 +57,12 @@ fn removexattr(
     let xattr_name = parse_xattr_name(name_str.as_ref())?;
     check_xattr_namespace(xattr_name.namespace(), ctx)?;
 
-    let dentry = lookup_dentry_for_xattr(&file_ctx, ctx)?;
-    dentry.remove_xattr(xattr_name)
+    match lookup_path_for_xattr(&file_ctx, ctx) {
+        Ok(path) => {
+            path.remove_xattr(xattr_name)?;
+            fs::vfs::notify::on_attr_change(&path);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }

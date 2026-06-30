@@ -2,7 +2,7 @@
 
 #![expect(unused)]
 
-pub(crate) use alloc::{
+pub use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet, LinkedList, VecDeque},
     ffi::CString,
@@ -11,50 +11,30 @@ pub(crate) use alloc::{
     vec,
     vec::Vec,
 };
-pub(crate) use core::{any::Any, ffi::CStr, fmt::Debug};
+pub use core::{any::Any, ffi::CStr, fmt::Debug};
 
-pub(crate) use bitflags::bitflags;
-pub(crate) use int_to_c_enum::TryFromInt;
-pub(crate) use log::{debug, error, info, log_enabled, trace, warn};
-pub(crate) use ostd::{
-    Pod,
+pub use aster_logger::{print, println};
+pub use bitflags::bitflags;
+pub use int_to_c_enum::TryFromInt;
+pub use ostd::{
+    alert, crit, debug, emerg, error, info,
     mm::{FallibleVmRead, FallibleVmWrite, PAGE_SIZE, Vaddr, VmReader, VmWriter},
+    notice,
     sync::{Mutex, MutexGuard, RwLock, RwMutex, SpinLock, SpinLockGuard},
+    warn,
 };
+pub use ostd_pod::{FromBytes, FromZeros, IntoBytes, Pod};
 
-/// return current process
-#[macro_export]
-macro_rules! current {
-    () => {
-        $crate::process::Process::current().unwrap()
-    };
-}
-
-/// Returns the current thread.
-///
-/// # Panics
-///
-/// This macro will panic if the current task is not associated with a thread.
-///
-/// Except for unit tests, all tasks should be associated with threads. To write code that can be
-/// called directly in unit tests, consider using [`Thread::current`] instead.
-///
-/// [`Thread::current`]: crate::thread::Thread::current
-#[macro_export]
-macro_rules! current_thread {
-    () => {
-        $crate::thread::Thread::current().expect("the current task is not associated with a thread")
-    };
-}
-
-pub(crate) use aster_logger::{print, println};
-
-pub(crate) use crate::{
-    context::{Context, CurrentUserSpace, ReadCString},
-    current, current_thread,
+pub use crate::{
+    context::Context,
     error::{Errno, Error},
     process::{posix_thread::AsThreadLocal, signal::Pause},
     time::{Clock, wait::WaitTimeout},
+    util::ReadCString,
 };
-pub(crate) type Result<T> = core::result::Result<T, Error>;
-pub(crate) use crate::{return_errno, return_errno_with_message};
+pub(crate) use crate::{
+    context::{CurrentUserSpace, current, current_thread},
+    error::{return_errno, return_errno_with_message},
+};
+
+pub type Result<T> = core::result::Result<T, Error>;

@@ -1,0 +1,22 @@
+[package]
+name = "aster-pci"
+version = "0.1.0"
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+align_ext.workspace = true
+bitflags.workspace = true
+cfg-if.workspace = true
+component.workspace = true
+int-to-c-enum.workspace = true
+ostd.workspace = true
+spin.workspace = true
+snafu.workspace = true
+
+[target.loongarch64-unknown-none-softfloat.dependencies]
+fdt = { version = "0.1.5", features = ["pretty-printing"] }
+
+[lints]
+workspace = true

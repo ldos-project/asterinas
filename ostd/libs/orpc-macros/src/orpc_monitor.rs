@@ -146,8 +146,7 @@ pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> Token
                 format_ident!("__BAD_PATH__")
             }
         }
-        v => {
-            println!("v {:?}", v);
+        _ => {
             errors.push(Error::new(
                 input_impl.self_ty.span(),
                 "impl'd type must be a struct",
@@ -396,7 +395,7 @@ fn generate_start_fn(
                                 Some(e @ Err(_)) => {
                                     ::ostd::ignore_err!(
                                         e,
-                                        log::Level::Error,
+                                        ::ostd::log::Level::Error,
                                         "Detaching from OQueue due to handler error"
                                     );
                                     attachments.#field_name = None;

@@ -5,6 +5,7 @@ use std::fs;
 use super::{build::do_cached_build, util::DEFAULT_TARGET_RELPATH};
 use crate::{
     base_crate::{BaseCrateType, new_base_crate},
+    bundle::{QemuExit, classify_qemu_exit_status},
     cli::TestArgs,
     config::{Config, scheme::ActionChoice},
     error::Errno,
@@ -14,13 +15,24 @@ use crate::{
 
 pub fn execute_test_command(config: &Config, args: &TestArgs) {
     let crates = get_current_crates();
+    let mut exit_code = 0;
+
     for crate_info in crates {
         std::env::set_current_dir(crate_info.path).unwrap();
-        test_current_crate(config, args);
+        let qemu_exit = test_current_crate(config, args);
+        exit_code = exit_code.max(match qemu_exit {
+            QemuExit::Success => 0,
+            QemuExit::Failed => 1,
+            QemuExit::Unknown => 2,
+        });
+    }
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 }
 
-pub fn test_current_crate(config: &Config, args: &TestArgs) {
+pub fn test_current_crate(config: &Config, args: &TestArgs) -> QemuExit {
     let current_crates = get_current_crates();
     if current_crates.len() != 1 {
         error_msg!("The current directory contains more than one crate");
@@ -71,8 +83,10 @@ pub fn test_current_crate(config: &Config, args: &TestArgs) {
 
 {}
 
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 pub static KTEST_TEST_WHITELIST: Option<&[&str]> = {};
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
 
@@ -92,28 +106,16 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
     // Build the kernel with the given base crate
     let default_bundle_directory = osdk_output_directory.join(&current_crate.name);
     let dir_guard = DirGuard::change_dir(&target_crate_dir);
-
-    let mut config = config.clone();
-    let _vsc_launch_file = if let Some(gdb_server_str) = args.gdb_server.as_deref() {
-        // Adapt the config for gdb while still in the original workspace so
-        // `get_kernel_crate()` and VSCode launch generation find the kernel crate.
-        super::gdb::adapt_for_gdb_server(&mut config.test, gdb_server_str)
-    } else {
-        None
-    };
-
     let bundle = do_cached_build(
         default_bundle_directory,
         &osdk_output_directory,
         &cargo_target_directory,
-        &config,
+        config,
         ActionChoice::Test,
         &["--cfg ktest", "-C panic=unwind"],
     );
-    unsafe {
-        std::env::remove_var("RUSTFLAGS");
-    }
     drop(dir_guard);
 
-    bundle.run(&config, ActionChoice::Test);
+    let exit_status = bundle.run_qemu_and_wait(config, ActionChoice::Test);
+    classify_qemu_exit_status(exit_status)
 }

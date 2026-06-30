@@ -2,10 +2,15 @@
 
 //! Statically-allocated CPU-local objects.
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(dead_code)
+)]
+
 use core::marker::PhantomData;
 
 use super::{__cpu_local_end, __cpu_local_start, AnyStorage, CpuLocal};
-use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
+use crate::{arch, cpu::CpuId, irq::DisabledLocalIrqGuard, util::id_set::Id};
 
 /// Defines a statically-allocated CPU-local variable.
 ///
@@ -33,7 +38,7 @@ use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 ///     let val_of_foo = ref_of_foo.load(Ordering::Relaxed);
 ///     println!("FOO VAL: {}", val_of_foo);
 ///
-///     let irq_guard = trap::irq::disable_local();
+///     let irq_guard = irq::disable_local();
 ///     let bar_guard = BAR.get_with(&irq_guard);
 ///     let val_of_bar = bar_guard.get();
 ///     println!("BAR VAL: {}", val_of_bar);
@@ -43,6 +48,7 @@ use crate::{arch, cpu::CpuId, trap::irq::DisabledLocalIrqGuard};
 macro_rules! cpu_local {
     ($( $(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; )*) => {
         $(
+            // SAFETY: This is properly handled in the linker script.
             #[unsafe(link_section = ".cpu_local")]
             $(#[$attr])* $vis static $name: $crate::cpu::local::StaticCpuLocal<$t> = {
                 let val = $init;
@@ -75,7 +81,7 @@ impl<T: 'static> StaticStorage<T> {
         let local_va = local_base + offset;
 
         // A sanity check about the alignment.
-        debug_assert_eq!(local_va % core::mem::align_of::<T>(), 0);
+        debug_assert_eq!(local_va % align_of::<T>(), 0);
 
         local_va as *const T
     }
@@ -83,9 +89,9 @@ impl<T: 'static> StaticStorage<T> {
     /// Gets the offset of the CPU-local object in the CPU-local area.
     fn get_offset(&self) -> usize {
         let bsp_va = self as *const _ as usize;
-        let bsp_base = __cpu_local_start as usize;
+        let bsp_base = __cpu_local_start as *const () as usize;
         // The implementation should ensure that the CPU-local object resides in the `.cpu_local`.
-        debug_assert!(bsp_va + core::mem::size_of::<T>() <= __cpu_local_end as usize);
+        debug_assert!(bsp_va + size_of::<T>() <= __cpu_local_end as *const () as usize);
 
         bsp_va - bsp_base
     }

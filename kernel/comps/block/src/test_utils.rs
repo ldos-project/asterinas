@@ -4,7 +4,7 @@
 
 use alloc::{boxed::Box, vec};
 
-use ostd::{mm::UntypedMem, sync::Mutex};
+use ostd::{mm::io::util::HasVmReaderWriter as _, sync::Mutex};
 
 use crate::{
     BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
@@ -23,6 +23,14 @@ impl BlockDevice for FakeBlockDevice {
 
     fn metadata(&self) -> crate::BlockDeviceMeta {
         todo!()
+    }
+
+    fn name(&self) -> &str {
+        "fake device"
+    }
+
+    fn id(&self) -> device_id::DeviceId {
+        device_id::DeviceId::null()
     }
 }
 
@@ -45,7 +53,7 @@ impl MemoryDisk {
 impl BlockDevice for MemoryDisk {
     fn enqueue(&self, bio: SubmittedBio) -> core::result::Result<(), BioEnqueueError> {
         let bio_type = bio.type_();
-        if bio_type == BioType::Flush || bio_type == BioType::Discard {
+        if bio_type == BioType::Flush {
             bio.complete(BioStatus::Complete);
             return Ok(());
         }
@@ -56,12 +64,22 @@ impl BlockDevice for MemoryDisk {
             let size = match bio_type {
                 BioType::Read => {
                     let data = &data.as_ref()[current_offset..current_offset + segment.nbytes()];
-                    segment.inner_segment().writer().write(&mut data.into())
+                    // We are pretending to be the device so we directly access the DMA slice.
+                    segment
+                        .inner_dma_slice()
+                        .writer()
+                        .expect("submitted read bio missing writer")
+                        .write(&mut data.into())
                 }
                 BioType::Write => {
                     let data =
                         &mut data.as_mut()[current_offset..current_offset + segment.nbytes()];
-                    segment.inner_segment().reader().read(&mut data.into())
+                    // We are pretending to be the device so we directly access the DMA slice.
+                    segment
+                        .inner_dma_slice()
+                        .reader()
+                        .expect("submitted write bio missing reader")
+                        .read(&mut data.into())
                 }
                 _ => 0,
             };
@@ -76,5 +94,13 @@ impl BlockDevice for MemoryDisk {
             max_nr_segments_per_bio: usize::MAX,
             nr_sectors: self.data.lock().len() / SECTOR_SIZE,
         }
+    }
+
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    fn id(&self) -> device_id::DeviceId {
+        device_id::DeviceId::null()
     }
 }

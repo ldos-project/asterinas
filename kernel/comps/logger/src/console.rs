@@ -18,24 +18,25 @@ pub fn _print(args: fmt::Arguments) {
     // in the heap. (The heap allocator will log a message when memory is low.)
     //
     // Also, holding the lock will prevent the logs from interleaving.
-    if let Some(devices) = aster_console::all_devices_lock() {
-        struct Printer<'a>(
-            SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled>,
-        );
-        impl Write for Printer<'_> {
-            fn write_str(&mut self, s: &str) -> fmt::Result {
-                self.0
-                    .values()
-                    .for_each(|console| console.send(s.as_bytes()));
-                Ok(())
-            }
-        }
+    let devices = aster_console::all_devices_lock();
 
-        Printer(devices).write_fmt(args).unwrap();
-    } else {
-        // Fall-back to early_print if we have no console setup.
-        ostd::console::early_print(args);
+    struct Printer<'a>(
+        SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled>,
+    );
+    impl Write for Printer<'_> {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            if self.0.is_empty() {
+                ostd::early_print!("{}", s);
+            } else {
+                for console in self.0.values() {
+                    console.send(s.as_bytes());
+                }
+            }
+            Ok(())
+        }
     }
+
+    Printer(devices).write_fmt(args).unwrap();
 }
 
 /// Copied from Rust std: <https://github.com/rust-lang/rust/blob/master/library/std/src/macros.rs>
@@ -46,23 +47,13 @@ macro_rules! print {
     }};
 }
 
-/// The same as [`print!`], but adds a trailing new-line.
+/// Copied from Rust std: <https://github.com/rust-lang/rust/blob/master/library/std/src/macros.rs>
 #[macro_export]
 macro_rules! println {
     () => {
         $crate::print!("\n")
     };
     ($($arg:tt)*) => {{
-        $crate::_print(format_args!("{}\n", format_args!($($arg)*)));
+        $crate::_print(::core::format_args_nl!($($arg)*));
     }};
-}
-
-#[cfg(ktest)]
-mod test {
-    use ostd::prelude::*;
-
-    #[ktest]
-    fn test_println() {
-        crate::println!("test");
-    }
 }

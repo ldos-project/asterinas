@@ -1,77 +1,58 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
-use aster_virtio::device::socket::connect::{ConnectionInfo, VsockEvent};
-
-use super::connected::ConnectionID;
 use crate::{
     events::IoEvents,
-    net::socket::vsock::{VSOCK_GLOBAL, addr::VsockSocketAddr},
+    net::socket::vsock::{
+        addr::VsockSocketAddr,
+        stream::{ConnectedStream, InitStream},
+        transport::{BoundPort, ConnectResult, Connection},
+    },
     prelude::*,
-    process::signal::{PollHandle, Pollee},
+    process::signal::Pollee,
 };
 
-pub struct Connecting {
-    id: ConnectionID,
-    info: SpinLock<ConnectionInfo>,
-    is_connected: AtomicBool,
-    pollee: Pollee,
+pub(super) struct ConnectingStream {
+    connection: Connection,
 }
 
-impl Connecting {
-    pub fn new(peer_addr: VsockSocketAddr, local_addr: VsockSocketAddr) -> Self {
-        Self {
-            info: SpinLock::new(ConnectionInfo::new(peer_addr.into(), local_addr.port)),
-            id: ConnectionID::new(local_addr, peer_addr),
-            is_connected: AtomicBool::new(false),
-            pollee: Pollee::new(),
+pub(super) enum ConnResult {
+    Connecting(ConnectingStream),
+    Connected(ConnectedStream),
+    Failed(InitStream),
+}
+
+impl ConnectingStream {
+    pub(super) fn new(
+        bound_port: BoundPort,
+        remote_addr: VsockSocketAddr,
+        pollee: &Pollee,
+    ) -> core::result::Result<Self, (Error, BoundPort)> {
+        bound_port
+            .connect(remote_addr, pollee)
+            .map(|connection| Self { connection })
+    }
+
+    pub(super) fn local_addr(&self) -> VsockSocketAddr {
+        self.connection.local_addr()
+    }
+
+    pub(super) fn has_result(&self) -> bool {
+        self.connection.has_connect_result()
+    }
+
+    pub(super) fn into_result(self) -> ConnResult {
+        match self.connection.finish_connect() {
+            ConnectResult::Connecting(connection) => ConnResult::Connecting(Self { connection }),
+            ConnectResult::Connected(connection) => {
+                ConnResult::Connected(ConnectedStream::new(connection, true))
+            }
+            ConnectResult::Failed(bound_port, error) => {
+                ConnResult::Failed(InitStream::new_connect_failed(bound_port, error))
+            }
         }
     }
 
-    pub fn peer_addr(&self) -> VsockSocketAddr {
-        self.id.peer_addr
-    }
-
-    pub fn local_addr(&self) -> VsockSocketAddr {
-        self.id.local_addr
-    }
-
-    pub fn id(&self) -> ConnectionID {
-        self.id
-    }
-
-    pub fn info(&self) -> ConnectionInfo {
-        self.info.disable_irq().lock().clone()
-    }
-
-    pub fn update_info(&self, event: &VsockEvent) {
-        self.info.disable_irq().lock().update_for_event(event)
-    }
-
-    pub fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.pollee
-            .poll_with(mask, poller, || self.check_io_events())
-    }
-
-    fn check_io_events(&self) -> IoEvents {
-        if self.is_connected.load(Ordering::Relaxed) {
-            IoEvents::IN
-        } else {
-            IoEvents::empty()
-        }
-    }
-
-    pub fn set_connected(&self) {
-        self.is_connected.store(true, Ordering::Relaxed);
-        self.pollee.notify(IoEvents::IN);
-    }
-}
-
-impl Drop for Connecting {
-    fn drop(&mut self) {
-        let vsockspace = VSOCK_GLOBAL.get().unwrap();
-        vsockspace.recycle_port(&self.local_addr().port);
-        vsockspace.remove_connecting_socket(&self.local_addr());
+    pub(super) fn check_io_events(&self) -> IoEvents {
+        IoEvents::empty()
     }
 }

@@ -3,19 +3,21 @@
 //! This crate organizes the kernel information
 //! about the entire system in a tree structure called `SysTree`.
 //!
-//! This crate provides a singleton of `SysTree`,
-//! which is the "model" part of Asterinas's
-//! model-view-controller (MVC) architecture
-//! for organizing and managing device and kernel information.
-//! The "view" part is sysfs,
-//! a file system that exposes the system information
-//! of the in-kernel `SysTree` to the user space.
-//! The "controller" part consists of
-//! various subsystems, buses, drivers, and kernel modules.
-//! The "view" part has read-only access to the "model",
-//! whereas the "controller" part can make changes to the "model".
-//! This MVC architecture achieves separation of concerns,
-//! making the code more modular, maintainable, and easier to understand.
+//! Each `SysTree` instance represents a hierarchical model of system state,
+//! suitable for use by various subsystems. For example, sysfs, cgroup, and
+//! configfs can each maintain their own independent `SysTree`.
+//!
+//! The crate exposes a singleton for the primary system tree, typically used as
+//! the backing model for sysfs. Other trees can be instantiated as needed by
+//! subsystems or kernel modules.
+//!
+//! This design follows the model-view-controller (MVC) pattern:
+//! - The "model" is the in-kernel `SysTree`.
+//! - The "view" is a file system (such as sysfs) that exposes the tree to user space.
+//! - The "controller" consists of subsystems, buses, drivers, and kernel modules
+//!   that update the tree.
+//!
+//! By separating concerns, this architecture improves modularity, maintainability, and clarity.
 
 #![no_std]
 #![deny(unsafe_code)]
@@ -31,17 +33,25 @@ mod utils;
 
 use alloc::{borrow::Cow, sync::Arc};
 
+use aster_util::printer::VmPrinterError;
 use component::{ComponentInitError, init_component};
 use spin::Once;
 
 pub use self::{
-    attr::{SysAttr, SysAttrFlags, SysAttrSet, SysAttrSetBuilder},
-    node::{SysBranchNode, SysNode, SysNodeId, SysNodeType, SysObj, SysSymlink},
+    attr::{SysAttr, SysAttrSet, SysAttrSetBuilder},
+    node::{
+        MAX_ATTR_SIZE, SysBranchNode, SysNode, SysNodeId, SysNodeType, SysObj, SysPerms, SysSymlink,
+    },
     tree::SysTree,
-    utils::{SymlinkNodeFields, SysBranchNodeFields, SysNormalNodeFields, SysObjFields},
+    utils::{
+        _InheritSysBranchNode, _InheritSysLeafNode, _InheritSysSymlinkNode,
+        AttrLessBranchNodeFields, BranchNodeFields, EmptyNode, NormalNodeFields, ObjFields,
+        SymlinkNodeFields,
+    },
 };
+use crate::tree::RootNode;
 
-static SINGLETON: Once<Arc<SysTree>> = Once::new();
+static SINGLETON: Once<Arc<SysTree<RootNode>>> = Once::new();
 
 #[init_component]
 fn init() -> core::result::Result<(), ComponentInitError> {
@@ -49,9 +59,20 @@ fn init() -> core::result::Result<(), ComponentInitError> {
     Ok(())
 }
 
-/// Returns a reference to the global SysTree instance. Panics if not initialized. (Asterinas specific)
-pub fn singleton() -> &'static Arc<SysTree> {
+/// Returns a reference to the primary `SysTree` instance.
+///
+/// This tree usually serves as the main system information model exposed to user space via sysfs.
+///
+/// # Panics
+///
+/// Panics if the tree has not been initialized.
+pub fn primary_tree() -> &'static Arc<SysTree<RootNode>> {
     SINGLETON.get().expect("SysTree not initialized")
+}
+
+#[cfg(ktest)]
+pub fn init_for_ktest() {
+    init().expect("systree init failed");
 }
 
 /// An owned string or a static reference to string.
@@ -61,31 +82,49 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
-    /// Attempted to access a non-existent node
-    NodeNotFound(SysNodeId),
-    /// Invalid operation for node type
-    InvalidNodeOperation(SysNodeType),
+    /// Attempted to access a non-existent systree item
+    NotFound,
+    /// Invalid operation occurred
+    InvalidOperation,
+    /// Resource is unavailable
+    ResourceUnavailable,
     /// Attribute operation failed
     AttributeError,
     /// Permission denied for operation
     PermissionDenied,
     /// Other internal error
     InternalError(&'static str),
+    /// The systree item already exists
+    AlreadyExists,
     /// Arithmetic overflow occurred
     Overflow,
+    /// Page fault occurred during memory access
+    PageFault,
+    /// The current systree item is dead
+    IsDead,
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            Error::NodeNotFound(id) => write!(f, "Node not found: {:?}", id),
-            Error::InvalidNodeOperation(ty) => {
-                write!(f, "Invalid operation for node type: {:?}", ty)
-            }
+            Error::NotFound => write!(f, "Attempted to access a non-existent systree item"),
+            Error::InvalidOperation => write!(f, "Invalid operation occurred"),
+            Error::ResourceUnavailable => write!(f, "Resource is unavailable"),
             Error::AttributeError => write!(f, "Attribute error"),
             Error::PermissionDenied => write!(f, "Permission denied for operation"),
             Error::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            Error::AlreadyExists => write!(f, "The systree item already exists"),
             Error::Overflow => write!(f, "Numerical overflow occurred"),
+            Error::PageFault => write!(f, "Page fault occurred during memory access"),
+            Error::IsDead => write!(f, "The current systree item is dead"),
+        }
+    }
+}
+
+impl From<VmPrinterError> for Error {
+    fn from(value: VmPrinterError) -> Self {
+        match value {
+            VmPrinterError::PageFault => Error::PageFault,
         }
     }
 }

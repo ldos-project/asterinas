@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
-use core::fmt::Debug;
+use alloc::{boxed::Box, sync::Arc};
+use core::fmt::{Debug, Display};
 
+use aster_pci::cfg_space::BarAccess;
 use aster_util::safe_ptr::SafePtr;
 use ostd::{
-    Pod,
     arch::device::io_port::{PortRead, PortWrite},
-    bus::pci::cfg_space::Bar,
     io::IoMem,
-    mm::{DmaCoherent, PodOnce},
-    trap::irq::IrqCallbackFunction,
+    irq::IrqCallbackFunction,
+    mm::{PodOnce, dma::DmaCoherent},
 };
+use ostd_pod::Pod;
 
 use self::{mmio::virtio_mmio_init, pci::virtio_pci_init};
 use crate::{
@@ -61,7 +61,7 @@ pub trait VirtioTransport: Sync + Send + Debug {
     fn device_config_mem(&self) -> Option<IoMem>;
 
     /// Get access to the device config BAR space.
-    fn device_config_bar(&self) -> Option<(Bar, usize)>;
+    fn device_config_bar(&self) -> Option<(BarAccess, usize)>;
 
     // ====================Virtqueue related APIs====================
 
@@ -73,9 +73,9 @@ pub trait VirtioTransport: Sync + Send + Debug {
         &mut self,
         idx: u16,
         queue_size: u16,
-        descriptor_ptr: &SafePtr<Descriptor, DmaCoherent>,
-        avail_ring_ptr: &SafePtr<AvailRing, DmaCoherent>,
-        used_ring_ptr: &SafePtr<UsedRing, DmaCoherent>,
+        descriptor_ptr: &SafePtr<Descriptor, Arc<DmaCoherent>>,
+        avail_ring_ptr: &SafePtr<AvailRing, Arc<DmaCoherent>>,
+        used_ring_ptr: &SafePtr<UsedRing, Arc<DmaCoherent>>,
     ) -> Result<(), VirtioTransportError>;
 
     /// The max queue size of one virtqueue.
@@ -113,13 +113,13 @@ pub trait VirtioTransport: Sync + Send + Debug {
 #[derive(Debug)]
 pub struct ConfigManager<T: Pod> {
     modern_space: Option<SafePtr<T, IoMem>>,
-    legacy_space: Option<(Bar, usize)>,
+    legacy_space: Option<(BarAccess, usize)>,
 }
 
 impl<T: Pod> ConfigManager<T> {
     pub(super) fn new(
         modern_space: Option<SafePtr<T, IoMem>>,
-        legacy_space: Option<(Bar, usize)>,
+        legacy_space: Option<(BarAccess, usize)>,
     ) -> Self {
         Self {
             modern_space,
@@ -218,11 +218,21 @@ impl<T: Pod> ConfigManager<T> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum VirtioTransportError {
     DeviceStatusError,
     InvalidArgs,
-    NotEnoughResources,
+}
+
+impl core::error::Error for VirtioTransportError {}
+
+impl Display for VirtioTransportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DeviceStatusError => write!(f, "Virtio device status error"),
+            Self::InvalidArgs => write!(f, "Invalid arguments for virtio operation"),
+        }
+    }
 }
 
 bitflags::bitflags! {

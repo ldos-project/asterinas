@@ -27,7 +27,7 @@ use ostd::{
     sync::{self, PreemptDisabled, WaitQueue},
     task::{Task, TaskOptions},
 };
-use ostd_pod::Pod;
+use ostd_pod::{FromZeros, IntoBytes, Pod};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -57,7 +57,7 @@ impl CurrentThread {
 /// A `Condvar` (Condition Variable) is a synchronization primitive that can block threads
 /// until a certain condition becomes true.
 ///
-/// This is a copy from `aster-nix`.
+/// This is a copy from `aster-kernel`.
 pub struct Condvar {
     waitqueue: Arc<WaitQueue>,
     counter: SpinLock<Inner>,
@@ -255,7 +255,7 @@ impl crate::util::Rng for Rng {
 macro_rules! new_byte_array_type {
     ($name:ident, $n:expr) => {
         #[repr(C)]
-        #[derive(Copy, Clone, Pod, Debug, Default, Deserialize, Serialize)]
+        #[derive(Clone, Copy, Debug, Default, Deserialize, Pod, Serialize)]
         pub struct $name([u8; $n]);
 
         impl core::ops::Deref for $name {

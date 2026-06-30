@@ -3,11 +3,11 @@
 //! OQueue data capture utilities.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::time::Duration;
+use core::{result::Result, time::Duration};
 
-use log::{error, info};
+use aster_block::BlockDevice;
 use ostd::{
-    ignore_err, new_server,
+    error, ignore_err, info, new_server,
     orpc::{
         framework::{notifier::Notifier as _, spawn_thread},
         oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_type},
@@ -18,7 +18,7 @@ use ostd::{
 };
 use serde::Serialize;
 
-use crate::{fs, kcmdline, util::timer::TimerServer};
+use crate::{kcmdline, prelude::*, util::timer::TimerServer};
 
 #[orpc_server]
 struct DataCaptureManager {}
@@ -60,32 +60,55 @@ pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>>
 
 static DATA_CAPTURE_FILE_SYNCERS: Mutex<Vec<Box<dyn Fn() + Send>>> = Mutex::new(Vec::new());
 
-pub(super) fn start_capture_devices() {
-    match fs::start_block_device("capture_legacy") {
-        Ok(capture_block_device) => {
-            DATA_CAPTURE_DEVICE_LEGACY.lock().replace(
-                mariposa_data_capture::legacy::DataCaptureDeviceServer::new(capture_block_device),
-            );
-            info!("[kernel] Initialized legacy data capture device (capture_legacy)");
-        }
-        Err(e) => error!(
-            "[kernel] Failed to initialize legacy data capture device (capture_legacy): {}",
-            e
-        ),
-    }
+fn find_block_device(device_name: &str) -> Option<Arc<dyn aster_block::BlockDevice>> {
+    aster_block::collect_all()
+        .into_iter()
+        .find(|d| d.name() == device_name)
+}
 
-    match fs::start_block_device("capture") {
-        Ok(capture_block_device) => {
-            DATA_CAPTURE_DEVICE.lock().replace(
-                mariposa_data_capture::DataCaptureDeviceServer::new(capture_block_device),
-            );
-            info!("[kernel] Initialized new data capture device (capture)");
+/// Initializes a data capture device based on a specified kernel argument.
+///
+/// Retrieves the kernel argument `data_capture.<arg_name>`. If present, attempts to find the
+/// corresponding block device. If found, passes the device to `init_device`. If the argument is
+/// missing, this logs a warning. If the device can't be found, it logs an error.
+fn init_capture_device_from_arg(
+    arg_name: &str,
+    init_device: impl FnOnce(Arc<dyn BlockDevice + 'static>),
+) {
+    let cmdline = kcmdline::get_kernel_cmd_line();
+    let Some(name) =
+        cmdline.and_then(|cl| cl.get_module_arg_by_name::<String>("data_capture", arg_name))
+    else {
+        warn!(
+            "[kernel] Missing argument 'data_capture.{}'; disabling the associated data capture.",
+            arg_name
+        );
+        return;
+    };
+
+    match find_block_device(&name) {
+        Some(device) => {
+            init_device(device);
+            info!("[kernel] Initialized data capture device ({})", name);
         }
-        Err(e) => error!(
-            "[kernel] Failed to initialized new data capture device (capture): {}",
-            e
-        ),
+        None => {
+            error!("[kernel] Failed to find data capture device ({})", name);
+        }
     }
+}
+
+pub(super) fn start_capture_devices() {
+    init_capture_device_from_arg("legacy_device", |server| {
+        DATA_CAPTURE_DEVICE_LEGACY.lock().replace(
+            mariposa_data_capture::legacy::DataCaptureDeviceServer::new(server),
+        );
+    });
+
+    init_capture_device_from_arg("device", |server| {
+        DATA_CAPTURE_DEVICE
+            .lock()
+            .replace(mariposa_data_capture::DataCaptureDeviceServer::new(server));
+    });
 
     // Start a server which syncs the data_capture devices every `secs` seconds based on the
     // kcmdline arg `data_capture.sync_period`. If `data_capture.sync_period` is not provided or is
@@ -101,11 +124,10 @@ pub(super) fn start_capture_devices() {
 /// Create a new data capture file for legacy OQueues.
 pub fn new_legacy_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::legacy::FileDescriptor,
-) -> Arc<dyn mariposa_data_capture::legacy::DataCaptureFile<T>> {
+) -> Option<Arc<dyn mariposa_data_capture::legacy::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE_LEGACY
         .lock()
-        .as_ref()
-        .unwrap()
+        .as_ref()?
         .new_file(descriptor)
         .unwrap()
         .build();
@@ -123,17 +145,16 @@ pub fn new_legacy_data_capture_file<T: serde::Serialize + Copy + Send + 'static>
             info!("[kernel] Sync'd data capture device (capture)");
         }
     }));
-    ret
+    Some(ret)
 }
 
 /// Create a new data capture file for OQueues.
 pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
-) -> Arc<dyn mariposa_data_capture::DataCaptureFile<T>> {
+) -> Option<Arc<dyn mariposa_data_capture::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE
         .lock()
-        .as_ref()
-        .unwrap()
+        .as_ref()?
         .new_file(descriptor)
         .unwrap()
         .build();
@@ -151,7 +172,7 @@ pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
             info!("[kernel] Sync'd legacy data capture device (capture_legacy)");
         }
     }));
-    ret
+    Some(ret)
 }
 
 /// Capture data from all OQueues of a given type.
@@ -176,14 +197,18 @@ pub fn new_data_capture_data_file_by_type<
 ) {
     let oqueues = lookup_by_type::<T>();
     if !oqueues.is_empty() {
-        let capture_file = new_data_capture_file::<E>(mariposa_data_capture::FileDescriptor {
-            path: capture_path.clone(),
-            length,
-        });
+        let Some(capture_file) =
+            new_data_capture_file::<E>(mariposa_data_capture::FileDescriptor {
+                path: capture_path.clone(),
+                length,
+            })
+        else {
+            return;
+        };
 
         for oqueue in oqueues {
             let Some(oqueue_path) = oqueue.path().cloned() else {
-                log::warn!(
+                warn!(
                     "Found anonymous OQueue while collecting OQueues for {}. Not capturing.",
                     capture_path
                 );

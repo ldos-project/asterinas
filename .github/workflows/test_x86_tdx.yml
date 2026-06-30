@@ -1,0 +1,103 @@
+name: Test Intel TDX 
+
+on:
+  workflow_dispatch:
+  # # Schedule to run on every day at 22:00 UTC (06:00 Beijing Time)
+  # schedule:
+  #   - cron: '0 22 * * *'
+
+jobs:
+  osdk-test:
+    runs-on: self-hosted
+    strategy:
+      matrix:
+        image: ['ldosproject/asterinas:0.17.2-20260518', 'ldosproject/osdk:0.17.2-20260518']
+      fail-fast: false
+    container:
+      image: ${{ matrix.image }}
+      options: -v /dev:/dev --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run TDX OSDK tests
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'osdk'
+          intel_tdx: true
+
+  boot-test:
+    runs-on: self-hosted
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: 'handover64' }
+          - { variant: 'handover64-tap-smp4', netdev: 'tap', smp: 4 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run TDX boot test (${{ matrix.variant }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'boot'
+          intel_tdx: true
+          release: true
+          boot_protocol: 'linux-efi-handover64'
+          netdev: ${{ matrix.netdev || 'tap' }}
+          smp: ${{ matrix.smp }}
+
+  regression-test:
+    runs-on: self-hosted
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: 'handover64' }
+          - { variant: 'handover64-tap-smp4', netdev: 'tap', smp: 4 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run TDX regression test (${{ matrix.variant }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'regression'
+          intel_tdx: true
+          release: true
+          boot_protocol: 'linux-efi-handover64'
+          netdev: ${{ matrix.netdev || 'tap' }}
+          smp: ${{ matrix.smp }}
+
+  conformance-test:
+    runs-on: self-hosted
+    container:
+      image: ldosproject/asterinas:0.17.2-20260518
+      options: -v /dev:/dev --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ['ltp']
+        variant:
+          - 'ramfs'
+          - 'exfat'
+          - 'tap-smp4'
+        include:
+          - { variant: 'ramfs' }
+          - { variant: 'exfat', extra_blocklists: 'blocklists.exfat', conformance_test_workdir: '/exfat' }
+          - { variant: 'tap-smp4', netdev: 'tap', smp: 4 }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run TDX conformance test (${{ matrix.variant }}, ${{ matrix.suite }})
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'conformance'
+          intel_tdx: true
+          release: true
+          boot_protocol: 'linux-efi-handover64'
+          smp: ${{ matrix.smp }}
+          netdev: ${{ matrix.netdev || 'tap' }}
+          extra_blocklists: ${{ matrix.extra_blocklists }}
+          conformance_test_suite: ${{ matrix.suite }}
+          conformance_test_workdir: ${{ matrix.conformance_test_workdir }}

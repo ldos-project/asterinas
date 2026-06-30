@@ -8,19 +8,18 @@ use core::{
 };
 
 use ostd::{
-    cpu_local,
+    cpu_local, irq,
     mm::{
         PAGE_SIZE,
         heap::{GlobalHeapAllocator, HeapSlot, SlabSlotList, SlotInfo},
     },
     sync::{LocalIrqDisabled, SpinLock},
-    trap,
 };
 
 use crate::slab_cache::SlabCache;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CommonSizeClass {
     Bytes8 = 8,
     Bytes16 = 16,
@@ -296,7 +295,7 @@ impl GlobalHeapAllocator for HeapAllocator {
             return HeapSlot::alloc_large(layout.size().div_ceil(PAGE_SIZE) * PAGE_SIZE);
         };
 
-        let irq_guard = trap::irq::disable_local();
+        let irq_guard = irq::disable_local();
         let this_cache = LOCAL_POOL.get_with(&irq_guard);
         let mut local_cache = this_cache.borrow_mut();
 
@@ -309,7 +308,7 @@ impl GlobalHeapAllocator for HeapAllocator {
             return Ok(());
         };
 
-        let irq_guard = trap::irq::disable_local();
+        let irq_guard = irq::disable_local();
         let this_cache = LOCAL_POOL.get_with(&irq_guard);
         let mut local_cache = this_cache.borrow_mut();
 

@@ -1,32 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
 
 ARG BASE_VERSION
-FROM ldosproject/osdk:${BASE_VERSION} AS build-base
+FROM ldosproject/nix:${BASE_VERSION} AS build-base
 
 SHELL ["/bin/bash", "-c"]
 
 ARG DEBIAN_FRONTEND=noninteractive
-
-#= Install packages for Docker building ====================================
-
-# Please keep the list sorted by name
-RUN apt update && apt-get install -y --no-install-recommends \
-    apache2-utils \
-    clang \
-    cmake \
-    curl \
-    gnupg \
-    libevent-dev \
-    libslirp-dev \
-    libssl-dev \
-    jq \
-    tcl-dev \
-    unzip \
-    zip
-
-# Install netcat for clean shutdown of benchmarks
-# see test/benchmark/redis/ycsb/host.sh for example usage
-RUN apt-get install -y --no-install -recommends netcat-openbsd
 
 #= Install linux-modules for vdso and linux config =================================
 # TODO: This is very wasteful and maybe fragile. We should have our own custom vDSO.
@@ -34,7 +13,8 @@ RUN apt-get install -y --no-install -recommends netcat-openbsd
 
 FROM build-base AS build-linux
 
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    linux-modules-6.17.0-35-generic \
     fakeroot \
     build-essential \
     ncurses-dev \
@@ -43,19 +23,18 @@ RUN apt-get install -y --no-install-recommends \
     bc \
     flex \
     libelf-dev \
-    bison \
-    linux-modules-6.8.0-60-generic
+    bison
 
 WORKDIR /tmp
 
-RUN wget https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.105.tar.xz && \
-    echo "01b537650332d2852722a626169cf7e5e798d11f9b578171b477868555f5e44f  linux-5.15.105.tar.xz" | sha256sum -c - 
+RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.2.10.tar.xz && \
+    echo "57c562c3cd2753f232549cab05c8ad770ed848ae86401619c7581bdffaeea4fe  linux-6.2.10.tar.xz" | sha256sum -c - 
 
-RUN tar xf linux-5.15.105.tar.xz
+RUN tar xf linux-6.2.10.tar.xz
 
-WORKDIR /tmp/linux-5.15.105
+WORKDIR /tmp/linux-6.2.10
 
-# NOTE: This MAY pull the default configuration the linux-modules-6.8.0-60-generic package above.
+# NOTE: This MAY pull the default configuration the linux-modules-6.17.0-35-generic package above.
 RUN make defconfig && \
     scripts/config --disable SYSTEM_REVOCATION_KEYS && \
     scripts/config --disable SYSTEM_TRUSTED_KEYS && \
@@ -66,329 +45,50 @@ RUN make defconfig && \
     scripts/config --enable VIRTIO_BLK && \
     make olddefconfig
 
-RUN make -j $(nproc) bzImage
+# KCFLAGS=-Wno-array-bounds is needed because of a problem in a random network driver which causes a
+# warning with -Werror on this specific compiler version.
+RUN make -j $(nproc) KCFLAGS=-Wno-array-bounds bzImage arch/x86/entry/vdso
 
-RUN mkdir /opt/linux_binary_cache && \
-    cp /usr/lib/modules/6.8.0-60-generic/vdso/vdso64.so /opt/linux_binary_cache/vdso64.so && \
-    cp arch/x86/boot/bzImage /opt/linux_binary_cache/vmlinuz && \
-    cp .config /opt/linux_binary_cache/vmlinuz.config
-
-#= Build benchmark =========================================================
-
-FROM build-base AS build-benchmarks
-
-# Download the source files of benchmarks
-WORKDIR /root
-RUN apt install -y automake \
-    libtool \
-    pkg-config \
-    libntirpc-dev
-
-RUN wget https://github.com/akopytov/sysbench/archive/1.0.20.tar.gz \
-    && tar -zxvf 1.0.20.tar.gz \
-    && rm 1.0.20.tar.gz
-RUN git clone https://github.com/nicktehrany/membench.git
-RUN git clone https://github.com/esnet/iperf.git
-RUN git clone https://github.com/kdlucas/byte-unixbench.git
-RUN git clone https://github.com/asterinas/lmbench.git
-RUN wget https://www.iozone.org/src/current/iozone3_506.tar
-RUN tar -x -f iozone3_506.tar
-RUN git clone -b fio-3.37 https://github.com/axboe/fio.git
-RUN git clone https://git.kernel.org/pub/scm/linux/kernel/git/clrkwllms/rt-tests.git
-RUN git clone https://git.kernel.org/pub/scm/linux/kernel/git/mason/schbench.git
-RUN wget https://launchpad.net/libmemcached/1.0/1.0.18/+download/libmemcached-1.0.18.tar.gz \
-    && tar -zxvf libmemcached-1.0.18.tar.gz \
-    && rm libmemcached-1.0.18.tar.gz
-
-# Build sysbench
-WORKDIR /root/sysbench-1.0.20
-RUN ./autogen.sh \
-    && ./configure --without-mysql --prefix=/usr/local/benchmark/sysbench \
-    && make -j \
-    && make install
-
-# Build membench
-WORKDIR /root/membench
-RUN make -j \
-    && mkdir /usr/local/benchmark/membench \
-    && cp membench /usr/local/benchmark/membench/
-
-# Build iperf
-WORKDIR /root/iperf
-RUN ./configure --prefix=/usr/local/benchmark/iperf \
-    && make -j \
-    && make install
-
-# Build lmbench
-WORKDIR /root/lmbench
-RUN make -j \
-    && mv bin/x86_64-linux-gnu /usr/local/benchmark/lmbench \
-    && rm /usr/local/benchmark/lmbench/*.o \
-    && rm /usr/local/benchmark/lmbench/*.a
-
-# Build unixbench
-WORKDIR /root/byte-unixbench/UnixBench
-RUN make UB_GCC_OPTIONS=-mno-sse2 -j && mv pgms /usr/local/benchmark/unixbench
-
-# Build iozone
-WORKDIR /root/iozone3_506/src/current
-RUN CFLAGS=-static make linux-AMD64 \
-    && cp iozone /usr/local/benchmark/
-
-# Build fio
-WORKDIR /root/fio
-RUN ./configure --disable-shm --prefix=/usr/local/benchmark/fio \
-    # Remove this when we support syscall timerfd_create and fadvise
-    && sed -i -e '/#define CONFIG_HAVE_TIMERFD_CREATE/d' -e '/#define CONFIG_POSIX_FADVISE/d' config-host.h \
-    && make -j \
-    && make install
-
-# Build hackbench
-WORKDIR /root/rt-tests/src/hackbench
-RUN make hackbench \
-    && cp hackbench /usr/local/benchmark
-
-# Build schbench
-WORKDIR /root/schbench
-RUN make \
-    && cp schbench /usr/local/benchmark/
-
-# Build memaslap for memcached
-WORKDIR /root/libmemcached-1.0.18
-RUN LDFLAGS='-lpthread' CPPFLAGS='-fcommon -fpermissive' CFLAGS='-fpermissive -fcommon' \
-    ./configure --enable-memaslap --prefix=/usr/local/benchmark/libmemcached \
-    && CPPFLAGS='-fcommon' make -j \
-    && make install
-
-# Clear cached files
-WORKDIR /root
-RUN rm -rf sysbench-1.0.20 \
-    membench \
-    iperf \
-    lmbench \
-    byte-unixbench \
-    iozone3_506.tar \
-    iozone3_506 \
-    fio \
-    hackbench \
-    schbench \
-    libmemcached-1.0.18
-
-#= Install applications =======================================================
-
-FROM build-base AS build-applications
-
-# Install SQLite
-WORKDIR /root
-RUN apt-get install -y sqlite sqlite3
-RUN wget https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip \
-    && unzip sqlite-amalgamation-3460100.zip \
-    && cd sqlite-amalgamation-3460100 \
-    && gcc -g -shared -fPIC -c sqlite3.c \
-    && gcc -g -shared -fPIC -o libsqlite3.so sqlite3.o \
-    && mv ./libsqlite3.so /lib/x86_64-linux-gnu/ \
-    && mv ./sqlite3.h /usr/include/x86_64-linux-gnu/ \
-    && mv ./sqlite3ext.h /usr/include/x86_64-linux-gnu/
-
-RUN rm -rf sqlite-amalgamation-3460100.zip \
-    sqlite-amalgamation-3460100
-
-# Install SQLite-speedtest
-WORKDIR /root
-RUN git clone --branch version-3.46.1 https://github.com/sqlite/sqlite.git
-RUN cd sqlite \
-    && mkdir bld \
-    && cd bld \
-    && ../configure --enable-all \
-    && make speedtest1 \
-    && cp ./speedtest1 /usr/local
-
-RUN rm -rf sqlite
-
-# Instal LevelDB 1.23
-WORKDIR /root
-RUN mkdir -p /usr/local/leveldb/benchmark/
-RUN git clone -b 1.23 --recurse-submodules https://github.com/google/leveldb.git \
-    && cd leveldb \
-    && mkdir -p build \
-    && cd build \
-    && cmake -DCMAKE_BUILD_TYPE=Release .. \
-    && cmake --build . \
-    && make install \
-    && mv ./db_bench /usr/local/leveldb/benchmark/ \
-    && mv ./db_bench_sqlite3 /usr/local/leveldb/benchmark/
-
-RUN rm -rf 1.23.tar.gz \
-    leveldb-1.23
-
-# Install Redis-7.0.15
-WORKDIR /root
-RUN wget https://download.redis.io/releases/redis-7.0.15.tar.gz \
-    && tar -xzvf redis-7.0.15.tar.gz \
-    && cd redis-7.0.15 \
-    && make -j \
-    && make PREFIX=/usr/local/redis install
-
-RUN rm -rf redis-7.0.15.tar.gz \
-    redis-7.0.15
-
-# Install Nginx only with http enabled
-WORKDIR /root
-RUN wget https://nginx.org/download/nginx-1.26.2.tar.gz \
-    && tar -xzvf nginx-1.26.2.tar.gz \
-    && cd nginx-1.26.2 \
-    && ./configure --with-cc-opt="-O2" --with-ld-opt="-static" --without-select_module --without-poll_module \
-    --without-quic_bpf_module --without-http_charset_module --without-http_gzip_module --without-http_ssi_module \
-    --without-http_userid_module --without-http_access_module --without-http_auth_basic_module --without-http_mirror_module \
-    --without-http_geo_module --without-http_map_module --without-http_split_clients_module --without-http_referer_module \
-    --without-http_rewrite_module --without-http_proxy_module --without-http_fastcgi_module --without-http_uwsgi_module \
-    --without-http_scgi_module --without-http_grpc_module --without-http_memcached_module --without-http_limit_conn_module \
-    --without-http_limit_req_module --without-http_empty_gif_module --without-http_browser_module --without-http_upstream_hash_module \
-    --without-http_upstream_ip_hash_module --without-http_upstream_least_conn_module --without-http_upstream_random_module \
-    --without-http_upstream_keepalive_module --without-http_upstream_zone_module --without-http-cache --without-mail_pop3_module \
-    --without-mail_imap_module --without-mail_smtp_module --without-stream_limit_conn_module --without-stream_access_module \
-    --without-stream_geo_module --without-stream_map_module --without-stream_split_clients_module --without-stream_return_module \
-    --without-stream_pass_module --without-stream_set_module --without-stream_upstream_hash_module --without-stream_upstream_least_conn_module \
-    --without-stream_upstream_random_module --without-stream_upstream_zone_module --without-pcre --without-pcre2
-
-WORKDIR /root/nginx-1.26.2
-RUN make -j \
-    && make install
-
-WORKDIR /root
-RUN rm -rf nginx-1.26.2.tar.gz \
-    nginx-1.26.2
-
-# Install Memcached v1.6.32
-WORKDIR /root
-RUN wget https://www.memcached.org/files/memcached-1.6.32.tar.gz \
-    && tar -xzvf memcached-1.6.32.tar.gz \
-    && cd memcached-1.6.32 \
-    && ./configure --prefix=/usr/local/memcached \
-    && make -j \
-    && make install
-
-RUN rm -rf memcached-1.6.32.tar.gz \
-    memcached-1.6.32
-
-# Install Apache httpd v2.4.62
-WORKDIR /root
-RUN apt-get install -y --no-install-recommends libapr1-dev libaprutil1-dev libpcre2-dev
-RUN wget https://archive.apache.org/dist/httpd/httpd-2.4.63.tar.bz2 \
-    && tar xvf httpd-2.4.63.tar.bz2 \
-    && cd httpd-2.4.63 \
-    && ./configure \
-    --disable-authn-file \
-    --disable-authz-groupfile \
-    --disable-authz-user \
-    --disable-access-compat \
-    --disable-auth-basic \
-    --disable-reqtimeout \
-    --disable-filter \
-    --disable-charset-lite \
-    --disable-mime \
-    --disable-log-config \
-    --disable-env \
-    --disable-headers \
-    --disable-setenvif \
-    --disable-version \
-    --disable-status \
-    --disable-autoindex \
-    --disable-dir \
-    --disable-alias \
-    && make -j \
-    && make install
-
-RUN rm -rf httpd-2.4.63.tar.bz2 \
-    httpd-2.4.63
-
-# Install wrk
-WORKDIR /root
-RUN git clone https://github.com/wg/wrk.git \
-    && cd wrk \
-    && make -j \
-    && mkdir -p /usr/local/wrk \
-    && cp wrk /usr/local/wrk
-
-RUN rm -rf wrk
+# TODO(arthurp): This does not include the riscv vDSO
+RUN mkdir -p /opt/linux_binary_cache && \
+    cp -v arch/x86/entry/vdso/vdso64.so /opt/linux_binary_cache/vdso_x86_64.so && \
+    cp -v arch/x86/boot/bzImage /opt/linux_binary_cache/vmlinuz && \
+    cp -v .config /opt/linux_binary_cache/vmlinuz.config
 
 #= Build syscall test =========================================================
 
-FROM build-base AS build-bazel
+FROM build-base AS build-gvisor
 
-# Install bazel, which is required by the system call test suite from Gvisor project
-RUN mkdir -p /root/bazel
-COPY tools/install_bazel.sh /root/bazel/
-WORKDIR /root/bazel
-RUN ./install_bazel.sh
-RUN apt clean && rm -rf /var/lib/apt/lists/*
-WORKDIR /root
-RUN rm -rf bazel
+# Install required packages for bazel
+RUN apt update && apt install -y curl gnupg2 git \
+    python-is-python3 python3 python3-setuptools python3-pip \
+    build-essential crossbuild-essential-arm64 qemu-user-static \
+    openjdk-11-jdk-headless zip unzip \
+    apt-transport-https ca-certificates gnupg-agent \
+    software-properties-common \
+    pkg-config libffi-dev patch diffutils libssl-dev iptables kmod \
+    clang crossbuild-essential-amd64 erofs-utils busybox-static libbpf-dev \
+    iproute2 netcat-openbsd libnuma-dev libc6-dev-i386 golang-go
 
-FROM build-bazel AS build-gvisor
+ARG TARGETARCH
+
+# Install bazel
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64|arm64) deb="bazelisk-${TARGETARCH}.deb" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    wget -O "${deb}" "https://github.com/bazelbuild/bazelisk/releases/download/v1.27.0/${deb}"; \
+    dpkg -i "${deb}"; \
+    rm -f "${deb}"
 
 # Build the gvisor syscall test binaries
-COPY test/syscall_test/gvisor /root/gvisor
+WORKDIR /root
+RUN git clone -b release-20251215.0 --single-branch --depth 1 https://github.com/google/gvisor.git
 WORKDIR /root/gvisor
-RUN export BUILD_DIR=build && \
-    make ${BUILD_DIR}/syscall_test_bins
-
-#= Build syscall test of Linux Test Project====================================
-
-FROM build-base AS build-ltp
-
-WORKDIR /root
-RUN apt update && apt-get install -y --no-install-recommends \
-    autoconf \
-    automake \
-    pkg-config
-RUN git clone --single-branch -b v20250130 https://github.com/asterinas/ltp.git
-WORKDIR /root/ltp
-RUN make autotools \
-    && ./configure --prefix=/opt/ltp \
-    && make -C testcases/kernel/syscalls \
-    && make -C testcases/lib \
-    && make -C runtest \
-    && make -C pan \
-    && make -C testcases/kernel/syscalls install \
-    && make -C testcases/lib install \
-    && make -C runtest install \
-    && make -C pan install \
-    && install -m 00755 ./runltp /opt/ltp/runltp \
-    && install -m 00444 ./VERSION /opt/ltp/Version \
-    && install -m 00755 ./ver_linux /opt/ltp/ver_linux \
-    && install -m 00755 ./IDcheck.sh /opt/ltp/IDcheck.sh
-
-#= Build Dropbear SSH ==========================================================
-
-FROM build-base AS build-dropbear
-
-WORKDIR /root
-RUN wget https://matt.ucc.asn.au/dropbear/dropbear-2025.89.tar.bz2 \
-    && tar xf dropbear-2025.89.tar.bz2
-
-WORKDIR /root/dropbear-2025.89
-RUN ./configure --enable-static \
-    && make PROGRAMS="dropbear dropbearkey scp"
-
-#= Build busybox ==============================================================
-
-FROM build-base AS build-busybox
-
-RUN apt clean && rm -rf /var/lib/apt/lists/*
-
-FROM build-busybox AS busybox
-
-WORKDIR /root
-RUN wget -O busybox.tar.bz2 https://busybox.net/downloads/busybox-1.35.0.tar.bz2 \
-    && mkdir /root/busybox \
-    && tar xf busybox.tar.bz2 --strip-components=1 -C /root/busybox \
-    && rm busybox.tar.bz2
-WORKDIR /root/busybox
-RUN make defconfig \
-    && sed -i "s/# CONFIG_STATIC is not set/CONFIG_STATIC=y/g" .config \
-    && sed -i "s/# CONFIG_FEATURE_SH_STANDALONE is not set/CONFIG_FEATURE_SH_STANDALONE=y/g" .config \
-    && make -j
+RUN bazel build --test_tag_filters=native //test/syscalls/... && \
+    mkdir -p /root/syscall_test_bins && \
+    cp bazel-bin/test/syscalls/linux/*_test /root/syscall_test_bins
 
 #= The final stages to produce the Asterinas development image ====================
 
@@ -400,16 +100,18 @@ RUN apt update && apt-get install -y --no-install-recommends \
     clang-format       `# formatting general tests` \
     cpio \
     cpuid \
+    dosfstools \
     exfatprogs \
     file \
     grub-efi-amd64-bin \
     grub-efi-amd64-dbg \
-    iptables \
     iproute2 \
-    libnl-3-dev         `# dependency for netlink socket` \
-    libnl-route-3-dev   `# dependency for netlink route socket` \
+    iptables \
+    jq \
     net-tools \
+    netcat-openbsd \
     openssh-server \
+    parted \
     pkg-config \
     socat \
     strace \
@@ -420,33 +122,20 @@ RUN apt update && apt-get install -y --no-install-recommends \
 # Clean apt cache
 RUN apt clean && rm -rf /var/lib/apt/lists/*
 
-# Prepare the system call test suite
-COPY --from=build-ltp /opt/ltp /opt/ltp
-COPY --from=build-gvisor /root/gvisor/build/syscall_test_bins /root/syscall_test_bins
-ENV ASTER_PREBUILT_SYSCALL_TEST=/root/syscall_test_bins
+# Install sctrace
+RUN ln -s /root/asterinas/tools/sctrace.sh /usr/local/bin/sctrace
 
-# Install Busybox built from the previous stages
-COPY --from=busybox /root/busybox/busybox /bin/busybox
+# Set the `ASTER_SCML` env var to make sctrace easier to use for Asterinas developers.
+# For more information, check out the README of sctrace.
+RUN echo 'export ASTER_SCML=$(find /root/asterinas/book/src/kernel/linux-compatibility/ -name "*.scml")' >> /root/.bashrc
 
-# Install benchmarks built from the previous stages
-COPY --from=build-benchmarks /usr/local/benchmark /usr/local/benchmark
+# Copy the gvisor syscall test binaries
+COPY --from=build-gvisor /root/syscall_test_bins /root/syscall_test_bins
+ENV GVISOR_PREBUILT_DIR=/root/syscall_test_bins
 
-# Install applications built from the previous stages
-COPY --from=build-applications /usr/local/redis /usr/local/redis
-COPY --from=build-applications /usr/local/nginx /usr/local/nginx
-COPY --from=build-applications /usr/local/leveldb /usr/local/leveldb
-COPY --from=build-applications /usr/local/speedtest1 /usr/local/benchmark/sqlite-speedtest1
-COPY --from=build-applications /lib/x86_64-linux-gnu/libsqlite3.so /lib/x86_64-linux-gnu/libsqlite3.so
-COPY --from=build-applications /usr/local/memcached /usr/local/memcached
-COPY --from=build-applications /usr/local/apache2 /usr/local/apache2
-COPY --from=build-applications /usr/local/wrk /usr/local/wrk
-
+# Copy linux binaries
 COPY --from=build-linux /opt/linux_binary_cache /opt/linux_binary_cache
-
-# Install Dropbear SSH binaries built from the previous stages
-COPY --from=build-dropbear /root/dropbear-2025.89/dropbear /root/dropbear-2025.89/dropbear
-COPY --from=build-dropbear /root/dropbear-2025.89/dropbearkey /root/dropbear-2025.89/dropbearkey
-COPY --from=build-dropbear /root/dropbear-2025.89/scp /root/dropbear-2025.89/scp
+ENV VDSO_LIBRARY_DIR="/opt/linux_binary_cache"
 
 # Add the path of Asterinas tools
 ENV PATH="/root/asterinas/target/bin:${PATH}"

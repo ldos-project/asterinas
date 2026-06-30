@@ -1,0 +1,19 @@
+// Get filesystem statistics
+statfs(path, buf);
+fstatfs(fd, buf);
+
+// Commit filesystem caches to disk
+sync();
+
+// Commit caches of the filesystem containing the file referred to
+// by the file descriptor `fd` to disk
+syncfs(fd);
+
+// Change root directory
+chroot(path);
+
+// Remove a watch from an inotify instance
+inotify_rm_watch(fd, wd);
+
+// Change the root mount in the mount namespace of the calling thread
+pivot_root(new_root, put_old);

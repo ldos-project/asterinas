@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::{
     SyscallReturn,
     clock_gettime::{DynamicClockIdInfo, DynamicClockType},
@@ -7,8 +9,8 @@ use super::{
 use crate::{
     prelude::*,
     process::{
-        posix_thread::{AsPosixThread, thread_table},
-        process_table,
+        pid_table,
+        posix_thread::AsPosixThread,
         signal::{
             c_types::{SigNotify, sigevent_t},
             constants::SIGALRM,
@@ -21,6 +23,7 @@ use crate::{
     time::{
         Timer, clockid_t,
         clocks::{BootTimeClock, MonotonicClock, RealTimeClock},
+        timer::TimerGuard,
     },
 };
 
@@ -44,7 +47,7 @@ pub fn sys_timer_create(
             let process = current_process.clone();
             let signal = KernelSignal::new(SIGALRM);
             Box::new(move || {
-                process.enqueue_signal(signal);
+                process.enqueue_signal(Box::new(signal));
             })
         // Determine the timeout action through `sigevent`.
         } else {
@@ -59,21 +62,21 @@ pub fn sys_timer_create(
                     let process = current_process.clone();
                     let signal = KernelSignal::new(SigNum::try_from(signo as u8)?);
                     Box::new(move || {
-                        process.enqueue_signal(signal);
+                        process.enqueue_signal(Box::new(signal));
                     })
                 }
-                // Spawn a posix thread to run the `sigev_function`, which is stored in
+                // Spawn a POSIX thread to run the `sigev_function`, which is stored in
                 // `sig_event.sigev_un._sigev_thread`.
                 //
                 // TODO: enable this instructions. Currently the system does not provide an API to spawn
-                // a posix thread to run a specified function.
+                // a POSIX thread to run a specified function.
                 SigNotify::SIGEV_THREAD => {
                     unimplemented!()
                 }
                 // Send a signal to the specified thread when the timer is expired.
                 SigNotify::SIGEV_THREAD_ID => {
                     let tid = sig_event.sigev_un.read_tid() as u32;
-                    let thread = thread_table::get_thread(tid).ok_or_else(|| {
+                    let thread = pid_table::pid_table_mut().get_thread(tid).ok_or_else(|| {
                         Error::with_message(Errno::EINVAL, "target thread does not exist")
                     })?;
                     let posix_thread = thread.as_posix_thread().unwrap();
@@ -85,8 +88,8 @@ pub fn sys_timer_create(
                     }
                     let signal = KernelSignal::new(SigNum::try_from(signo as u8)?);
                     Box::new(move || {
-                        if let Some(thread) = thread.as_posix_thread() {
-                            thread.enqueue_signal(Box::new(signal));
+                        if let Some(posix_thread) = thread.as_posix_thread() {
+                            posix_thread.enqueue_signal(Box::new(signal));
                         }
                     })
                 }
@@ -96,7 +99,7 @@ pub fn sys_timer_create(
 
     let work_func = sent_signal;
     let work_item = WorkItem::new(work_func);
-    let func = move || {
+    let func = move |_guard: TimerGuard| {
         submit_work_item(
             work_item.clone(),
             crate::thread::work_queue::WorkPriority::High,
@@ -105,7 +108,9 @@ pub fn sys_timer_create(
 
     let timer = create_timer(clockid, func, ctx)?;
 
-    let timer_id = current_process.timer_manager().add_posix_timer(timer);
+    let Some(timer_id) = current_process.timer_manager().add_posix_timer(timer) else {
+        return_errno_with_message!(Errno::EAGAIN, "timer IDs are exhausted");
+    };
     ctx.user_space().write_val(timer_id_addr, &timer_id)?;
     Ok(SyscallReturn::Return(0))
 }
@@ -116,7 +121,7 @@ pub fn sys_timer_delete(timer_id: usize, _ctx: &Context) -> Result<SyscallReturn
         return_errno_with_message!(Errno::EINVAL, "invalid timer ID");
     };
 
-    timer.cancel();
+    timer.lock().cancel();
     Ok(SyscallReturn::Return(0))
 }
 
@@ -125,7 +130,7 @@ pub fn sys_timer_delete(timer_id: usize, _ctx: &Context) -> Result<SyscallReturn
 /// This timer will invoke the given callback function (`func`) when it expires.
 pub fn create_timer<F>(clockid: clockid_t, func: F, ctx: &Context) -> Result<Arc<Timer>>
 where
-    F: Fn() + Send + Sync + 'static,
+    F: Fn(TimerGuard) + Send + Sync + 'static,
 {
     let process_timer_manager = ctx.process.timer_manager();
     let timer = if clockid >= 0 {
@@ -142,8 +147,9 @@ where
         let dynamic_clockid_info = DynamicClockIdInfo::try_from(clockid)?;
         match dynamic_clockid_info {
             DynamicClockIdInfo::Pid(pid, clock_type) => {
-                let process = process_table::get_process(pid)
-                    .ok_or_else(|| crate::Error::with_message(Errno::EINVAL, "invalid clock id"))?;
+                let process = pid_table::pid_table_mut()
+                    .get_process(pid)
+                    .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock id"))?;
                 let process_timer_manager = process.timer_manager();
                 match clock_type {
                     DynamicClockType::Profiling => process_timer_manager.create_prof_timer(func),
@@ -153,7 +159,8 @@ where
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
-                let thread = thread_table::get_thread(tid)
+                let thread = pid_table::pid_table_mut()
+                    .get_thread(tid)
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock id"))?;
                 let posix_thread = thread.as_posix_thread().unwrap();
                 match clock_type {

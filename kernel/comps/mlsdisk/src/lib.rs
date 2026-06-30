@@ -3,7 +3,15 @@
 #![no_std]
 #![deny(unsafe_code)]
 #![feature(negative_impls)]
-#![expect(dead_code, unused_imports)]
+#![allow(unfulfilled_lint_expectations)]
+#![expect(dead_code, deprecated, unused_imports)]
+
+// Set this crate's log prefix for `ostd::log`.
+macro_rules! __log_prefix {
+    () => {
+        "mlsdisk: "
+    };
+}
 
 mod error;
 mod layers;
@@ -13,6 +21,8 @@ mod tx;
 mod util;
 
 extern crate alloc;
+#[macro_use]
+extern crate ostd_pod;
 
 use alloc::{string::ToString, sync::Arc, vec};
 use core::ops::Range;
@@ -23,7 +33,11 @@ use aster_block::{
     id::Sid,
 };
 use component::{ComponentInitError, init_component};
-use ostd::{mm::VmIo, prelude::*};
+use device_id::{DeviceId, MajorId, MinorId};
+use ostd::{
+    mm::{VmIo, io::util::HasVmReaderWriter},
+    prelude::*,
+};
 
 pub use self::{
     error::{Errno, Error},
@@ -37,15 +51,16 @@ pub use self::{
 
 #[init_component]
 fn init() -> core::result::Result<(), ComponentInitError> {
-    // FIXME: add a virtio-blk-pci device in qemu and a image file.
-    let Some(device) = aster_block::get_device("raw_mlsdisk") else {
+    // FIXME: how to find a valid device used to format mlsdisk.
+    let id = DeviceId::new(MajorId::new(255), MinorId::new(0));
+    let Some(device) = aster_block::lookup(id) else {
         return Err(ComponentInitError::Unknown);
     };
     let raw_disk = RawDisk::new(device);
     let root_key = AeadKey::random();
     let device =
         MlsDisk::create(raw_disk, root_key, None).map_err(|_| ComponentInitError::Unknown)?;
-    aster_block::register_device("mlsdisk".to_string(), Arc::new(device));
+    let _ = aster_block::register(Arc::new(device));
     Ok(())
 }
 
@@ -129,6 +144,7 @@ mod test {
         BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
         bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
     };
+    use device_id::DeviceId;
     use ostd::{
         mm::{FrameAllocOptions, Segment, VmIo},
         prelude::*,
@@ -154,7 +170,7 @@ mod test {
     impl BlockDevice for MemoryDisk {
         fn enqueue(&self, bio: SubmittedBio) -> core::result::Result<(), BioEnqueueError> {
             let bio_type = bio.type_();
-            if bio_type == BioType::Flush || bio_type == BioType::Discard {
+            if bio_type == BioType::Flush {
                 bio.complete(BioStatus::Complete);
                 return Ok(());
             }
@@ -163,14 +179,15 @@ mod test {
             for segment in bio.segments() {
                 let size = match bio_type {
                     BioType::Read => segment
-                        .inner_segment()
+                        .inner_dma()
                         .writer()
+                        .unwrap()
                         .write(self.blocks.reader().skip(current_offset)),
                     BioType::Write => self
                         .blocks
                         .writer()
                         .skip(current_offset)
-                        .write(&mut segment.inner_segment().reader()),
+                        .write(&mut segment.inner_dma().reader().unwrap()),
                     _ => 0,
                 };
                 current_offset += size;
@@ -184,6 +201,14 @@ mod test {
                 max_nr_segments_per_bio: usize::MAX,
                 nr_sectors: self.blocks.size() / SECTOR_SIZE,
             }
+        }
+
+        fn name(&self) -> &str {
+            todo!()
+        }
+
+        fn id(&self) -> DeviceId {
+            todo!()
         }
     }
 

@@ -3,70 +3,86 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::InodeType,
+        file::{InodeType, file_table::RawFileDesc},
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath, SplitPath},
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_renameat(
-    old_dirfd: FileDesc,
+pub fn sys_renameat2(
+    old_dirfd: RawFileDesc,
     old_path_addr: Vaddr,
-    new_dirfd: FileDesc,
+    new_dirfd: RawFileDesc,
     new_path_addr: Vaddr,
+    flags: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let user_space = ctx.user_space();
-    let old_path = user_space.read_cstring(old_path_addr, MAX_FILENAME_LEN)?;
-    let new_path = user_space.read_cstring(new_path_addr, MAX_FILENAME_LEN)?;
+    let old_path_name = user_space.read_cstring(old_path_addr, MAX_FILENAME_LEN)?;
+    let new_path_name = user_space.read_cstring(new_path_addr, MAX_FILENAME_LEN)?;
     debug!(
         "old_dirfd = {}, old_path = {:?}, new_dirfd = {}, new_path = {:?}",
-        old_dirfd, old_path, new_dirfd, new_path
+        old_dirfd, old_path_name, new_dirfd, new_path_name
     );
-
-    let fs = ctx.posix_thread.fs().resolver().read();
-
-    let (old_dir_dentry, old_name) = {
-        let old_path = old_path.to_string_lossy();
-        if old_path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "oldpath is empty");
-        }
-        let old_fs_path = FsPath::new(old_dirfd, old_path.as_ref())?;
-        fs.lookup_dir_and_base_name(&old_fs_path)?
+    let Some(flags) = Flags::from_bits(flags) else {
+        return_errno_with_message!(Errno::EINVAL, "invalid flags");
     };
-    let old_dentry = old_dir_dentry.lookup(&old_name)?;
-
-    let (new_dir_dentry, new_name) = {
-        let new_path = new_path.to_string_lossy();
-        if new_path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "newpath is empty");
-        }
-        if new_path.ends_with('/') && old_dentry.type_() != InodeType::Dir {
-            return_errno_with_message!(Errno::ENOTDIR, "oldpath is not dir");
-        }
-        let new_fs_path = FsPath::new(new_dirfd, new_path.as_ref().trim_end_matches('/'))?;
-        fs.lookup_dir_and_base_name(&new_fs_path)?
-    };
-
-    // Check abs_path
-    let old_abs_path = old_dentry.abs_path();
-    let new_abs_path = new_dir_dentry.abs_path() + "/" + &new_name;
-    if new_abs_path.starts_with(&old_abs_path) {
-        if new_abs_path.len() == old_abs_path.len() {
-            return Ok(SyscallReturn::Return(0));
-        } else {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "newpath contains a path prefix of the oldpath"
-            );
-        }
+    // TODO: Add support for handling the `NOREPLACE`, `EXCHANGE`, and `WHITEOUT` flags.
+    if !flags.is_empty() {
+        warn!("unsupported flags: {:?}", flags);
+        return_errno_with_message!(Errno::EINVAL, "unsupported flags");
     }
 
-    old_dir_dentry.rename(&old_name, &new_dir_dentry, &new_name)?;
+    let fs_ref = ctx.thread_local.borrow_fs();
+    let path_resolver = fs_ref.resolver().read();
+
+    let old_path_name = old_path_name.to_string_lossy();
+    let (old_parent_path, old_name) = {
+        let (old_parent_path_name, old_name) = old_path_name.split_dirname_and_basename()?;
+        let old_fs_path =
+            FsPath::from_fd_at(old_dirfd, old_parent_path_name, EmptyPathStr::Reject)?;
+        (path_resolver.lookup(&old_fs_path)?, old_name)
+    };
+    let old_path = path_resolver.lookup_at_path(&old_parent_path, old_name)?;
+    if old_path.type_() != InodeType::Dir && old_path_name.ends_with('/') {
+        return_errno_with_message!(Errno::ENOTDIR, "the old path is not a directory");
+    }
+
+    let new_path_name = new_path_name.to_string_lossy();
+    let (new_parent_path, new_name) = {
+        if old_path.type_() != InodeType::Dir && new_path_name.ends_with('/') {
+            return_errno_with_message!(Errno::EISDIR, "the new path is a directory");
+        }
+        let (new_parent_path_name, new_name) = new_path_name.split_dirname_and_basename()?;
+        let new_parent_fs_path =
+            FsPath::from_fd_at(new_dirfd, new_parent_path_name, EmptyPathStr::Reject)?;
+        (
+            path_resolver.lookup(&new_parent_fs_path)?,
+            new_name.to_string(),
+        )
+    };
+
+    if old_path.type_() == InodeType::Dir && new_parent_path.is_equal_or_descendant_of(&old_path) {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "the new path is inside the old directory or its subtree"
+        );
+    }
+
+    old_parent_path.rename(old_name, &new_parent_path, &new_name)?;
 
     Ok(SyscallReturn::Return(0))
+}
+
+pub fn sys_renameat(
+    old_dirfd: RawFileDesc,
+    old_path_addr: Vaddr,
+    new_dirfd: RawFileDesc,
+    new_path_addr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    self::sys_renameat2(old_dirfd, old_path_addr, new_dirfd, new_path_addr, 0, ctx)
 }
 
 pub fn sys_rename(
@@ -74,5 +90,16 @@ pub fn sys_rename(
     new_path_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    self::sys_renameat(AT_FDCWD, old_path_addr, AT_FDCWD, new_path_addr, ctx)
+    self::sys_renameat2(AT_FDCWD, old_path_addr, AT_FDCWD, new_path_addr, 0, ctx)
+}
+
+bitflags! {
+    /// Flags used in the `renameat2` system call.
+    ///
+    /// Reference: <https://elixir.bootlin.com/linux/v6.16.3/source/include/uapi/linux/fcntl.h#L140-L143>.
+    struct Flags: u32 {
+        const NOREPLACE = 1 << 0;
+        const EXCHANGE  = 1 << 1;
+        const WHITEOUT  = 1 << 2;
+    }
 }
