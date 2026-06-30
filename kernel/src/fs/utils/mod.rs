@@ -1,51 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VFS components
+//! Miscellaneous filesystem utilities shared across `fs` modules.
 
-pub use access_mode::AccessMode;
-pub use creation_flags::CreationFlags;
-pub use dirent_visitor::DirentVisitor;
+pub use dirent_visitor::{DirentCounter, DirentVisitor};
 pub use direntry_vec::DirEntryVecExt;
 pub use endpoint::{Endpoint, EndpointState};
-pub use falloc_mode::FallocMode;
-pub use file_creation_mask::FileCreationMask;
-pub use flock::{FlockItem, FlockList, FlockType};
-pub use fs::{FileSystem, FsFlags, SuperBlock};
-pub use inode::{Extension, Inode, InodeMode, InodeType, Metadata, MknodType, Permission};
-pub use ioctl::IoctlCmd;
-pub use page_cache::{CachePage, PageCache};
-pub use random_test::{generate_random_operation, new_fs_in_memory};
-pub use range_lock::{
-    FileRange, OFFSET_MAX, RangeLockItem, RangeLockItemBuilder, RangeLockList, RangeLockType,
-};
-pub use status_flags::StatusFlags;
-pub use xattr::{
-    XATTR_LIST_MAX_LEN, XATTR_NAME_MAX_LEN, XATTR_VALUE_MAX_LEN, XattrName, XattrNamespace,
-    XattrSetFlags,
-};
+pub use id_bitmap::IdBitmap;
 
-mod access_mode;
-mod creation_flags;
 mod dirent_visitor;
 mod direntry_vec;
 mod endpoint;
-mod falloc_mode;
-mod file_creation_mask;
-mod flock;
-mod fs;
-mod inode;
-mod ioctl;
-#[cfg(not(baseline_asterinas))]
-mod page_cache;
-#[cfg(baseline_asterinas)]
-#[path = "page_cache_baseline.rs"]
-pub(super) mod page_cache;
-#[cfg(not(baseline_asterinas))]
-mod page_prefetch;
-mod random_test;
-mod range_lock;
-mod status_flags;
-mod xattr;
+mod id_bitmap;
+pub mod systree_inode;
 
 use core::{
     borrow::Borrow,
@@ -53,13 +19,6 @@ use core::{
 };
 
 use crate::prelude::*;
-
-#[derive(Copy, PartialEq, Eq, Clone, Debug)]
-pub enum SeekFrom {
-    Start(usize),
-    End(isize),
-    Current(isize),
-}
 
 /// Maximum bytes in a path
 pub const PATH_MAX: usize = 4096;
@@ -78,7 +37,7 @@ pub type Str64 = FixedStr<64>;
 ///
 /// The string is terminated with a null byte.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Pod)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Pod)]
 pub struct FixedCStr<const N: usize>([u8; N]);
 
 impl<const N: usize> FixedCStr<N> {
@@ -86,6 +45,7 @@ impl<const N: usize> FixedCStr<N> {
         self.0.iter().position(|&b| b == 0).unwrap()
     }
 
+    #[expect(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -158,7 +118,7 @@ impl<const N: usize> Debug for FixedCStr<N> {
 
 /// An owned string with a fixed capacity of `N`.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Pod)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Pod)]
 pub struct FixedStr<const N: usize>([u8; N]);
 
 impl<const N: usize> FixedStr<N> {
@@ -166,6 +126,7 @@ impl<const N: usize> FixedStr<N> {
         self.0.iter().position(|&b| b == 0).unwrap_or(N)
     }
 
+    #[expect(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

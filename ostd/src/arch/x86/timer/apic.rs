@@ -2,23 +2,23 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use log::info;
-
-use super::TIMER_FREQ;
 use crate::{
     arch::{
         kernel::apic::{self, Apic, DivideConfig},
         timer::pit::OperatingMode,
+        trap::TrapFrame,
         tsc_freq,
     },
+    info,
+    irq::IrqLine,
     task::disable_preempt,
-    trap::{TrapFrame, irq::IrqLine},
+    timer::TIMER_FREQ,
 };
 
 /// Initializes APIC with TSC-deadline mode or periodic mode.
 ///
 /// Return the corresponding [`IrqLine`] for the system timer.
-pub(super) fn init_bsp() -> IrqLine {
+pub(super) fn init_on_bsp() -> IrqLine {
     if is_tsc_deadline_mode_supported() {
         init_deadline_mode_config();
     } else {
@@ -33,7 +33,7 @@ pub(super) fn init_bsp() -> IrqLine {
 /// Initializes APIC timer on AP.
 ///
 /// The caller should provide the [`IrqLine`] for the system timer.
-pub(super) fn init_ap(timer_irq: &IrqLine) {
+pub(super) fn init_on_ap(timer_irq: &IrqLine) {
     init_timer(timer_irq);
 }
 
@@ -53,11 +53,9 @@ pub(super) fn timer_callback() {
 
 /// Determines if the current system supports tsc_deadline mode APIC timer
 fn is_tsc_deadline_mode_supported() -> bool {
-    use x86::cpuid::cpuid;
+    use crate::arch::cpu::extension::{IsaExtensions, has_extensions};
 
-    const TSC_DEADLINE_MODE_SUPPORT: u32 = 1 << 24;
-    let cpuid = cpuid!(1);
-    (cpuid.ecx & TSC_DEADLINE_MODE_SUPPORT) > 0
+    has_extensions(IsaExtensions::TSC_DEADLINE)
 }
 
 fn init_timer(timer_irq: &IrqLine) {
@@ -96,14 +94,14 @@ enum Config {
 }
 
 fn init_deadline_mode_config() {
-    info!("[Timer]: Enable APIC TSC deadline mode");
+    info!("Enable APIC TSC deadline mode");
 
     let tsc_interval = tsc_freq() / TIMER_FREQ;
     CONFIG.call_once(|| Config::DeadlineMode { tsc_interval });
 }
 
 fn init_periodic_mode_config() {
-    info!("[Timer]: Enable APIC periodic mode");
+    info!("Enable APIC periodic mode");
 
     // Allocate IRQ
     let mut irq = IrqLine::alloc().unwrap();

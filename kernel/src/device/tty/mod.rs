@@ -1,33 +1,43 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use device_id::{DeviceId, MajorId, MinorId};
 use ostd::sync::LocalIrqDisabled;
 
-use self::line_discipline::LineDiscipline;
+use self::{line_discipline::LineDiscipline, termio::CFontOp};
 use crate::{
-    current_userspace,
+    device::{Device, DeviceType, DevtmpfsInodeMeta},
     events::IoEvents,
-    fs::{
-        device::{Device, DeviceId, DeviceType},
-        inode_handle::FileIo,
-        utils::IoctlCmd,
-    },
+    fs::file::{FileIo, StatusFlags},
     prelude::*,
     process::{
         JobControl, Terminal, broadcast_signal_async,
         signal::{PollHandle, Pollable, Pollee},
     },
+    util::ioctl::{RawIoctl, dispatch_ioctl},
 };
 
 mod device;
 mod driver;
+mod file;
+mod flags;
+mod hvc;
+pub(super) mod ioctl_defs;
 mod line_discipline;
-mod n_tty;
-mod termio;
+mod serial;
+pub(super) mod termio;
+mod vt;
 
-pub use device::TtyDevice;
-pub use driver::{PushCharError, TtyDriver};
-pub(super) use n_tty::init;
-pub use n_tty::{iter_n_tty, system_console};
+pub(super) use driver::TtyDriver;
+pub(super) use flags::TtyFlags;
+
+pub(super) fn init_in_first_process() -> Result<()> {
+    hvc::init_in_first_process()?;
+    serial::init_in_first_process()?;
+    device::init_in_first_process()?;
+    vt::init_in_first_process()?;
+
+    Ok(())
+}
 
 const IO_CAPACITY: usize = 4096;
 
@@ -57,17 +67,19 @@ pub struct Tty<D> {
     ldisc: SpinLock<LineDiscipline, LocalIrqDisabled>,
     job_control: JobControl,
     pollee: Pollee,
+    tty_flags: TtyFlags,
     weak_self: Weak<Self>,
 }
 
 impl<D> Tty<D> {
-    pub fn new(index: u32, driver: D) -> Arc<Self> {
+    pub(super) fn new(index: u32, driver: D) -> Arc<Self> {
         Arc::new_cyclic(move |weak_ref| Tty {
             index,
             driver,
             ldisc: SpinLock::new(LineDiscipline::new()),
             job_control: JobControl::new(),
             pollee: Pollee::new(),
+            tty_flags: TtyFlags::new(),
             weak_self: weak_ref.clone(),
         })
     }
@@ -76,14 +88,14 @@ impl<D> Tty<D> {
         self.index
     }
 
-    pub fn driver(&self) -> &D {
+    pub(super) fn driver(&self) -> &D {
         &self.driver
     }
 
     /// Returns whether new characters can be pushed into the input buffer.
     ///
     /// This method should return `false` if the input buffer is full.
-    pub fn can_push(&self) -> bool {
+    pub(super) fn can_push(&self) -> bool {
         !self.ldisc.lock().is_full()
     }
 
@@ -91,8 +103,18 @@ impl<D> Tty<D> {
     ///
     /// This method should be called when the state of [`TtyDriver::can_push`] changes from `false`
     /// to `true`.
-    pub fn notify_output(&self) {
+    pub(super) fn notify_output(&self) {
         self.pollee.notify(IoEvents::OUT);
+    }
+
+    /// Notifies that the other end has been closed.
+    pub(super) fn notify_hup(&self) {
+        self.pollee.notify(IoEvents::ERR | IoEvents::HUP);
+    }
+
+    /// Returns the TTY flags.
+    pub(super) fn tty_flags(&self) -> &TtyFlags {
+        &self.tty_flags
     }
 }
 
@@ -101,7 +123,7 @@ impl<D: TtyDriver> Tty<D> {
     ///
     /// This method returns the number of bytes pushed or fails with an error if no bytes can be
     /// pushed because the buffer is full.
-    pub fn push_input(&self, chs: &[u8]) -> core::result::Result<usize, PushCharError> {
+    pub fn push_input(&self, chs: &[u8]) -> Result<usize> {
         let mut ldisc = self.ldisc.lock();
         let mut echo = self.driver.echo_callback();
 
@@ -117,7 +139,7 @@ impl<D: TtyDriver> Tty<D> {
                 &mut echo,
             );
             if res.is_err() && len == 0 {
-                return Err(PushCharError);
+                return_errno_with_message!(Errno::EAGAIN, "the line discipline is full");
             } else if res.is_err() {
                 break;
             } else {
@@ -125,7 +147,7 @@ impl<D: TtyDriver> Tty<D> {
             }
         }
 
-        self.pollee.notify(IoEvents::IN);
+        self.pollee.notify(IoEvents::IN | IoEvents::RDNORM);
         Ok(len)
     }
 
@@ -133,11 +155,15 @@ impl<D: TtyDriver> Tty<D> {
         let mut events = IoEvents::empty();
 
         if self.ldisc.lock().buffer_len() > 0 {
-            events |= IoEvents::IN;
+            events |= IoEvents::IN | IoEvents::RDNORM;
         }
 
         if self.driver.can_push() {
             events |= IoEvents::OUT;
+        }
+
+        if self.tty_flags.is_other_closed() {
+            events |= IoEvents::ERR | IoEvents::HUP;
         }
 
         events
@@ -151,14 +177,22 @@ impl<D: TtyDriver> Pollable for Tty<D> {
     }
 }
 
-impl<D: TtyDriver> FileIo for Tty<D> {
-    fn read(&self, writer: &mut VmWriter) -> Result<usize> {
+impl<D: TtyDriver> Tty<D> {
+    pub fn read(&self, writer: &mut VmWriter, status_flags: StatusFlags) -> Result<usize> {
+        if self.tty_flags.is_other_closed() {
+            return Ok(0);
+        }
+
         self.job_control.wait_until_in_foreground()?;
 
-        // TODO: Add support for non-blocking mode and timeout
+        // TODO: Add support for timeout.
         let mut buf = vec![0u8; writer.avail().min(IO_CAPACITY)];
-        let read_len =
-            self.wait_events(IoEvents::IN, None, || self.ldisc.lock().try_read(&mut buf))?;
+        let is_nonblocking = status_flags.contains(StatusFlags::O_NONBLOCK);
+        let read_len = if is_nonblocking {
+            self.ldisc.lock().try_read(&mut buf)?
+        } else {
+            self.wait_events(IoEvents::IN, None, || self.ldisc.lock().try_read(&mut buf))?
+        };
         self.pollee.invalidate();
         self.driver.notify_input();
 
@@ -167,70 +201,108 @@ impl<D: TtyDriver> FileIo for Tty<D> {
         Ok(read_len)
     }
 
-    fn write(&self, reader: &mut VmReader) -> Result<usize> {
+    pub fn write(&self, reader: &mut VmReader, status_flags: StatusFlags) -> Result<usize> {
+        if self.tty_flags.is_other_closed() {
+            return_errno_with_message!(Errno::EIO, "the TTY is closed");
+        }
+
         let mut buf = vec![0u8; reader.remain().min(IO_CAPACITY)];
         let write_len = reader.read_fallible(&mut buf.as_mut_slice().into())?;
 
-        // TODO: Add support for non-blocking mode and timeout
-        let len = self.wait_events(IoEvents::OUT, None, || {
-            Ok(self.driver.push_output(&buf[..write_len])?)
-        })?;
+        // TODO: Add support for timeout.
+        let is_nonblocking = status_flags.contains(StatusFlags::O_NONBLOCK);
+        let len = if is_nonblocking {
+            self.driver.push_output(&buf[..write_len])?
+        } else {
+            self.wait_events(IoEvents::OUT, None, || {
+                self.driver.push_output(&buf[..write_len])
+            })?
+        };
         self.pollee.invalidate();
         Ok(len)
     }
 
-    fn ioctl(&self, cmd: IoctlCmd, arg: usize) -> Result<i32> {
-        match cmd {
-            IoctlCmd::TCGETS => {
+    pub fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        use ioctl_defs::*;
+
+        use crate::util::ioctl::common_defs::GetNumBytesToRead;
+
+        dispatch_ioctl!(match raw_ioctl {
+            cmd @ GetTermios => {
                 let termios = *self.ldisc.lock().termios();
 
-                current_userspace!().write_val(arg, &termios)?;
+                cmd.write(&termios)?;
             }
-            IoctlCmd::TCSETS => {
-                let termios = current_userspace!().read_val(arg)?;
-
-                self.ldisc.lock().set_termios(termios);
-            }
-            IoctlCmd::TCSETSW => {
-                let termios = current_userspace!().read_val(arg)?;
+            cmd @ SetTermios => {
+                let termios = cmd.read()?;
 
                 let mut ldisc = self.ldisc.lock();
+                let old_termios = ldisc.termios();
+                self.driver().on_termios_change(old_termios, &termios);
                 ldisc.set_termios(termios);
-                self.driver.drain_output();
             }
-            IoctlCmd::TCSETSF => {
-                let termios = current_userspace!().read_val(arg)?;
+            cmd @ SetTermiosWait => {
+                let termios = cmd.read()?;
 
+                // TODO: If applicable, wait for the output buffer to drain. For now, we don't need
+                // to do anything here because:
+                //  - Linux does not consider a pty to have an output buffer, so it does not drain
+                //    it. See
+                //    <https://elixir.bootlin.com/linux/v5.10.247/source/drivers/tty/pty.c#L137-L148>.
+                //  - We don't currently have an output buffer for other TTYs.
                 let mut ldisc = self.ldisc.lock();
+                let old_termios = ldisc.termios();
+                self.driver().on_termios_change(old_termios, &termios);
+                ldisc.set_termios(termios);
+            }
+            cmd @ SetTermiosFlush => {
+                let termios = cmd.read()?;
+
+                // TODO: If applicable, wait for the output buffer to drain. (See comments above.)
+                let mut ldisc = self.ldisc.lock();
+                let old_termios = ldisc.termios();
+                self.driver().on_termios_change(old_termios, &termios);
                 ldisc.set_termios(termios);
                 ldisc.drain_input();
-                self.driver.drain_output();
 
                 self.pollee.invalidate();
             }
-            IoctlCmd::TIOCGWINSZ => {
+            cmd @ GetWinSize => {
                 let winsize = self.ldisc.lock().window_size();
 
-                current_userspace!().write_val(arg, &winsize)?;
+                cmd.write(&winsize)?;
             }
-            IoctlCmd::TIOCSWINSZ => {
-                let winsize = current_userspace!().read_val(arg)?;
+            cmd @ SetWinSize => {
+                let winsize = cmd.read()?;
 
                 self.ldisc.lock().set_window_size(winsize);
             }
-            IoctlCmd::TIOCGPTN => {
-                let idx = self.index;
+            cmd @ GetNumBytesToRead => {
+                if self.tty_flags.is_other_closed() {
+                    return_errno_with_message!(Errno::EIO, "the TTY is closed");
+                }
 
-                current_userspace!().write_val(arg, &idx)?;
-            }
-            IoctlCmd::FIONREAD => {
-                let buffer_len = self.ldisc.lock().buffer_len() as u32;
+                let buffer_len = self.ldisc.lock().buffer_len() as i32;
 
-                current_userspace!().write_val(arg, &buffer_len)?;
+                cmd.write(&buffer_len)?;
             }
-            _ => (self.weak_self.upgrade().unwrap() as Arc<dyn Terminal>)
-                .job_ioctl(cmd, arg, false)?,
-        }
+
+            _ => {
+                let terminal = self.weak_self.upgrade().unwrap() as Arc<dyn Terminal>;
+
+                // Process job-control ioctls.
+                if terminal.job_ioctl(raw_ioctl, false)? {
+                    return Ok(0);
+                }
+
+                // Process driver-specific ioctls.
+                if self.driver.ioctl(self, raw_ioctl)? {
+                    return Ok(0);
+                }
+
+                return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
+            }
+        });
 
         Ok(0)
     }
@@ -244,10 +316,21 @@ impl<D: TtyDriver> Terminal for Tty<D> {
 
 impl<D: TtyDriver> Device for Tty<D> {
     fn type_(&self) -> DeviceType {
-        DeviceType::CharDevice
+        DeviceType::Char
     }
 
     fn id(&self) -> DeviceId {
-        DeviceId::new(88, self.index)
+        DeviceId::new(
+            MajorId::new(D::DEVICE_MAJOR_ID as u16),
+            MinorId::new(self.index),
+        )
+    }
+
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
+        self.driver.devtmpfs_meta(self.index)
+    }
+
+    fn open(&self) -> Result<Box<dyn FileIo>> {
+        D::open(self.weak_self.upgrade().unwrap())
     }
 }

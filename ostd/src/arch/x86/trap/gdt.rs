@@ -30,7 +30,7 @@ use crate::cpu::local::{CpuLocal, StaticCpuLocal};
 ///
 /// The caller must ensure that no preemption can occur during the method, otherwise we may
 /// accidentally load a wrong GDT and TSS that actually belongs to another CPU.
-pub(super) unsafe fn init() {
+pub(super) unsafe fn init_on_cpu() {
     let tss_ptr = LOCAL_TSS.as_ptr();
 
     // FIXME: The segment limit in the descriptor created by `tss_segment_unchecked` does not
@@ -59,7 +59,7 @@ pub(super) unsafe fn init() {
 
     // Load the new GDT.
     let gdtr = DescriptorTablePointer {
-        limit: (core::mem::size_of_val(gdt) - 1) as u16,
+        limit: (size_of_val(gdt) - 1) as u16,
         base: VirtAddr::new(gdt.as_ptr().addr() as u64),
     };
     // SAFETY: The GDT is valid to load because:
@@ -94,6 +94,7 @@ pub(super) unsafe fn init() {
 //
 // No other special initialization is required because the kernel stack information is stored in
 // the TSS when we start the userspace program. See `syscall.S` for details.
+// SAFETY: This is properly handled in the linker script.
 #[unsafe(link_section = ".cpu_local_tss")]
 static LOCAL_TSS: StaticCpuLocal<TaskStateSegment> = {
     let tss = TaskStateSegment::new();

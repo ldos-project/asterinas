@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::Metadata,
+        file::file_table::{RawFileDesc, get_file_fast},
+        vfs::{
+            inode::Metadata,
+            path::{AT_FDCWD, EmptyPathStr, FsPath},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
     time::timespec_t,
 };
 
-pub fn sys_fstat(fd: FileDesc, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fd = {}, stat_buf_addr = 0x{:x}", fd, stat_buf_ptr);
+pub fn sys_fstat(raw_fd: RawFileDesc, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+    debug!("fd = {}, stat_buf_addr = 0x{:x}", raw_fd, stat_buf_ptr);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
-    let stat = Stat::from(file.metadata());
+    let stat = Stat::from(file.path().metadata());
     ctx.user_space().write_val(stat_buf_ptr, &stat)?;
 
     Ok(SyscallReturn::Return(0))
@@ -39,7 +43,7 @@ pub fn sys_lstat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Res
 }
 
 pub fn sys_fstatat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     filename_ptr: Vaddr,
     stat_buf_ptr: Vaddr,
     flags: u32,
@@ -54,85 +58,27 @@ pub fn sys_fstatat(
         dirfd, filename, stat_buf_ptr, flags
     );
 
-    if filename.is_empty() {
-        if !flags.contains(StatFlags::AT_EMPTY_PATH) {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
-        }
-        // In this case, the behavior of fstatat() is similar to that of fstat().
+    if flags.contains(StatFlags::AT_EMPTY_PATH) && filename.is_empty() {
         return self::sys_fstat(dirfd, stat_buf_ptr, ctx);
     }
 
-    let dentry = {
+    let path = {
         let filename = filename.to_string_lossy();
-        let fs_path = FsPath::new(dirfd, filename.as_ref())?;
-        let fs = ctx.posix_thread.fs().resolver().read();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
         if flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW) {
-            fs.lookup_no_follow(&fs_path)?
+            path_resolver.lookup_no_follow(&fs_path)?
         } else {
-            fs.lookup(&fs_path)?
+            path_resolver.lookup(&fs_path)?
         }
     };
-    let stat = Stat::from(dentry.metadata());
+
+    let stat = Stat::from(path.metadata());
     user_space.write_val(stat_buf_ptr, &stat)?;
     Ok(SyscallReturn::Return(0))
-}
-
-/// File Stat
-#[derive(Debug, Clone, Copy, Pod, Default)]
-#[repr(C)]
-pub struct Stat {
-    /// ID of device containing file
-    st_dev: u64,
-    /// Inode number
-    st_ino: u64,
-    /// Number of hard links
-    st_nlink: usize,
-    /// File type and mode
-    st_mode: u32,
-    /// User ID of owner
-    st_uid: u32,
-    /// Group ID of owner
-    st_gid: u32,
-    /// Padding bytes
-    __pad0: u32,
-    /// Device ID (if special file)
-    st_rdev: u64,
-    /// Total size, in bytes
-    st_size: isize,
-    /// Block size for filesystem I/O
-    st_blksize: isize,
-    /// Number of 512-byte blocks allocated
-    st_blocks: isize,
-    /// Time of last access
-    st_atime: timespec_t,
-    /// Time of last modification
-    st_mtime: timespec_t,
-    /// Time of last status change
-    st_ctime: timespec_t,
-    /// Unused field
-    __unused: [i64; 3],
-}
-
-impl From<Metadata> for Stat {
-    fn from(info: Metadata) -> Self {
-        Self {
-            st_dev: info.dev,
-            st_ino: info.ino,
-            st_nlink: info.nlinks,
-            st_mode: info.type_ as u32 | info.mode.bits() as u32,
-            st_uid: info.uid.into(),
-            st_gid: info.gid.into(),
-            __pad0: 0,
-            st_rdev: info.rdev,
-            st_size: info.size as isize,
-            st_blksize: info.blk_size as isize,
-            st_blocks: (info.blocks * (info.blk_size / 512)) as isize, // Number of 512B blocks
-            st_atime: info.atime.into(),
-            st_mtime: info.mtime.into(),
-            st_ctime: info.ctime.into(),
-            __unused: [0; 3],
-        }
-    }
 }
 
 bitflags::bitflags! {
@@ -140,5 +86,112 @@ bitflags::bitflags! {
         const AT_EMPTY_PATH = 1 << 12;
         const AT_NO_AUTOMOUNT = 1 << 11;
         const AT_SYMLINK_NOFOLLOW = 1 << 8;
+    }
+}
+
+/// File status; `struct stat` in Linux.
+///
+/// This is the x86_64-specific version.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/arch/x86/include/uapi/asm/stat.h#L83>.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct Stat {
+    /// Device.
+    st_dev: u64,
+    /// File serial number.
+    st_ino: u64,
+    /// Link count.
+    st_nlink: u64,
+    /// File mode.
+    st_mode: u32,
+    /// User ID of the file's owner.
+    st_uid: u32,
+    /// Group ID of the file's group.
+    st_gid: u32,
+    /// Padding bytes.
+    __pad0: u32,
+    /// Device number, if device.
+    st_rdev: u64,
+    /// Total size, in bytes
+    st_size: i64,
+    /// Optimal block size for I/O.
+    st_blksize: i64,
+    /// Number 512-byte blocks allocated.
+    st_blocks: i64,
+    /// Time of last access.
+    st_atime: timespec_t,
+    /// Time of last modification.
+    st_mtime: timespec_t,
+    /// Time of last status change.
+    st_ctime: timespec_t,
+    /// Unused fields.
+    __unused: [i64; 3],
+}
+
+/// File status; `struct stat` in Linux.
+///
+/// This is the generic version that is used by most popular 64-bit architectures except x86_64.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/include/uapi/asm-generic/stat.h#L24>.
+#[cfg(not(target_arch = "x86_64"))]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct Stat {
+    /// Device.
+    st_dev: u64,
+    /// File serial number.
+    st_ino: u64,
+    /// File mode.
+    st_mode: u32,
+    /// Link count.
+    st_nlink: u32,
+    /// User ID of the file's owner.
+    st_uid: u32,
+    /// Group ID of the file's group.
+    st_gid: u32,
+    /// Device number, if device.
+    st_rdev: u64,
+    /// Padding bytes.
+    __pad1: u64,
+    /// Size of file, in bytes.
+    st_size: i64,
+    /// Optimal block size for I/O.
+    st_blksize: i32,
+    /// Padding bytes.
+    __pad2: i32,
+    /// Number 512-byte blocks allocated.
+    st_blocks: i64,
+    /// Time of last access.
+    st_atime: timespec_t,
+    /// Time of last modification.
+    st_mtime: timespec_t,
+    /// Time of last status change.
+    st_ctime: timespec_t,
+    /// Unused fields.
+    __unused4: u32,
+    /// Unused fields.
+    __unused5: u32,
+}
+
+impl From<Metadata> for Stat {
+    fn from(info: Metadata) -> Self {
+        Self {
+            st_dev: info.container_dev_id.as_encoded_u64(),
+            st_ino: info.ino,
+            st_nlink: info.nr_hard_links as _,
+            st_mode: info.type_ as u32 | info.mode.bits() as u32,
+            st_uid: info.uid.into(),
+            st_gid: info.gid.into(),
+            st_rdev: info.self_dev_id.map_or(0, |id| id.as_encoded_u64()),
+            st_size: info.size as i64,
+            st_blksize: info.optimal_block_size as _,
+            st_blocks: info.nr_sectors_allocated as _,
+            st_atime: info.last_access_at.into(),
+            st_mtime: info.last_modify_at.into(),
+            st_ctime: info.last_meta_change_at.into(),
+            ..Default::default()
+        }
     }
 }

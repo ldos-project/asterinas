@@ -3,12 +3,16 @@
 //! MMIO device common definitions or functions.
 
 use int_to_c_enum::TryFromInt;
-use log::info;
-#[cfg(target_arch = "x86_64")]
-use ostd::arch::kernel::MappedIrqLine;
-#[cfg(target_arch = "riscv64")] // TODO: Add `MappedIrqLine` support for RISC-V.
-use ostd::trap::irq::IrqLine as MappedIrqLine;
-use ostd::{Result, error::InvalidArgsSnafu, io::IoMem, mm::VmIoOnce, trap::irq::IrqLine};
+use ostd::{
+    Result,
+    error::InvalidArgsSnafu,
+    info,
+    io::IoMem,
+    irq::IrqLine,
+    mm::{HasPaddr, VmIoOnce},
+};
+
+use super::arch::MappedIrqLine;
 
 /// A MMIO common device.
 #[derive(Debug)]
@@ -23,7 +27,7 @@ impl MmioCommonDevice {
 
         let this = Self { io_mem, irq };
         info!(
-            "[Virtio]: Found MMIO device at {:#x}, device ID {}, IRQ number {}",
+            "Found MMIO device at {:#x}, device ID {}, IRQ number {}",
             this.io_mem.paddr(),
             this.read_device_id().unwrap(),
             this.irq.num(),
@@ -55,8 +59,8 @@ impl MmioCommonDevice {
 }
 
 /// Virtio MMIO version.
-#[derive(Debug, Clone, Copy, TryFromInt, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
 pub enum VirtioMmioVersion {
     /// Legacy
     Legacy = 1,

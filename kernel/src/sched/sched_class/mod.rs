@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
+//! Completely Fair Scheduler (CFS).
+
 #![warn(unused)]
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{fmt, sync::atomic::Ordering, time::Duration};
+use core::{fmt, ops::Bound, sync::atomic::Ordering, time::Duration};
 
 use ostd::{
     arch::read_tsc as sched_clock,
-    cpu::{CpuId, PinCurrentCpu, all_cpus},
-    sync::SpinLock,
+    cpu::{CpuId, CpuSet, PinCurrentCpu, all_cpus},
+    irq::disable_local,
+    sync::{LocalIrqDisabled, SpinLock},
     task::{
         AtomicCpuId, Task,
         scheduler::{
-            EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, info::CommonSchedInfo,
-            inject_scheduler,
+            EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, enable_preemption_on_cpu,
+            info::CommonSchedInfo, inject_scheduler,
         },
     },
-    trap::irq::disable_local,
+    util::id_set::Id,
 };
 
 use super::{
@@ -53,11 +56,20 @@ pub fn init() {
     set_stats_from_scheduler(scheduler);
 }
 
+pub fn init_on_each_cpu() {
+    enable_preemption_on_cpu();
+}
+
 /// Represents the middle layer between scheduling classes and generic scheduler
 /// traits. It consists of all the sets of run queues for CPU cores. Other global
 /// information may also be stored here.
 pub struct ClassScheduler {
-    rqs: Box<[SpinLock<PerCpuClassRqSet>]>,
+    /// The per-CPU runqueues.
+    ///
+    /// We use the `LocalIrqDisabled` marker for this spinlock to ensure local IRQs are always disabled,
+    /// preventing potential deadlocks due to the fact that
+    /// the runqueues may be accessed in both the task and interrupt context (L1 and L2).
+    rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
     last_chosen_cpu: AtomicCpuId,
 }
 
@@ -119,6 +131,9 @@ trait SchedClassRq: Send + fmt::Debug {
     fn pick_next(&mut self) -> Option<Arc<Task>>;
 
     /// Update the information of the current task.
+    ///
+    /// The return value of this method indicates whether there is another task
+    /// **in this run queue** to replace the current one.
     fn update_current(&mut self, rt: &CurrentRuntime, attr: &SchedAttr, flags: UpdateFlags)
     -> bool;
 }
@@ -183,7 +198,17 @@ impl SchedAttr {
     }
 
     pub fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
-        self.policy.update(f)
+        self.policy.update(|policy| {
+            let ret = f(policy);
+            match *policy {
+                SchedPolicy::RealTime { rt_prio, rt_policy } => {
+                    self.real_time.update(rt_prio.get(), rt_policy);
+                }
+                SchedPolicy::Fair(nice) => self.fair.update(nice),
+                _ => {}
+            }
+            ret
+        })
     }
 
     /// The CPU that the thread is running on or was most recently scheduled on.
@@ -213,7 +238,7 @@ impl Scheduler for ClassScheduler {
             }
         };
 
-        let mut rq = self.rqs[cpu.as_usize()].disable_irq().lock();
+        let mut rq = self.rqs[cpu.as_usize()].lock();
 
         // Note: call set_if_is_none again to prevent a race condition.
         if still_in_rq && task.cpu().set_if_is_none(cpu).is_err() {
@@ -234,7 +259,7 @@ impl Scheduler for ClassScheduler {
         should_preempt.then_some(cpu)
     }
 
-    fn local_mut_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
+    fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
         let guard = disable_local();
         let mut lock = self.rqs[guard.current_cpu().as_usize()].lock();
         f(&mut *lock)
@@ -280,43 +305,50 @@ impl ClassScheduler {
             return last_cpu;
         }
         debug_assert!(flags == EnqueueFlags::Spawn);
+
         let guard = disable_local();
-        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+
         let mut selected = guard.current_cpu();
         let mut minimum_load = u32::MAX;
-        let last_chosen = match self.last_chosen_cpu.get() {
-            Some(cpu) => cpu.as_usize() as isize,
-            None => -1,
-        };
-        // Simulate a round-robin selection starting from the last chosen CPU.
-        //
-        // It still checks every CPU to find the one with the minimum load, but
-        // avoids keeping selecting the same CPU when there are multiple equally
-        // idle CPUs.
 
-        // Create a rotation of affinity so that the first element is the one after last_chosen.
-        // Create an iterator: CPUs after the last_chosen, then CPUs before last_chosen.
-        let affinity_iter = affinity
-            .iter()
-            .filter(|&cpu| cpu.as_usize() as isize > last_chosen)
-            .chain(
-                affinity
-                    .iter()
-                    .filter(|&cpu| cpu.as_usize() as isize <= last_chosen),
-            );
-
-        // Select the candidate with the minimum load. TODO(amp): Use fold and min_by_key
-        for candidate in affinity_iter {
-            let rq = self.rqs[candidate.as_usize()].lock();
-            let (load, _) = rq.nr_queued_and_running();
+        // Set `selected` as `candidate` if the candidate's load is smaller.
+        let test_candidate = |candidate: CpuId| {
+            let PerCpuLoadStats { queue_len, .. } =
+                self.rqs[candidate.as_usize()].lock().load_stats();
+            let load = queue_len;
             if load < minimum_load {
                 minimum_load = load;
                 selected = candidate;
             }
+        };
+
+        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+        match self.last_chosen_cpu.get() {
+            Some(cpu) => {
+                // Perform a round-robin selection starting after the last chosen CPU.
+                //
+                // It still checks every CPU in the affinity set to find the one with the
+                // minimum load, but avoids selecting the same CPU again in case of a tie.
+                Self::cycle_after(cpu, &affinity).for_each(test_candidate)
+            }
+            None => affinity.iter().for_each(test_candidate),
         }
 
         self.last_chosen_cpu.set_anyway(selected);
         selected
+    }
+
+    /// Returns a cycling iterator over the CPUs in the [`CpuSet`], starting *after*
+    /// the given [`CpuId`].
+    ///
+    /// The iteration order is ascending up to the wrapping point, after which it
+    /// continues from the first CPU in the set in ascending order again.
+    ///
+    /// If the given [`CpuId`] is in the set, it will be the last element yielded.
+    fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
+        cpu_set
+            .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
+            .chain(cpu_set.iter_in(..=cpu))
     }
 }
 
@@ -341,10 +373,13 @@ impl PerCpuClassRqSet {
         }
     }
 
-    fn nr_queued_and_running(&self) -> (u32, u32) {
-        let queued = self.stop.len() + self.real_time.len() + self.fair.len() + self.idle.len();
-        let running = usize::from(self.current.is_some());
-        (queued as u32, running as u32)
+    fn load_stats(&self) -> PerCpuLoadStats {
+        let queue_len = (self.stop.len() + self.real_time.len() + self.fair.len()) as u32;
+        let is_idle = match &self.current {
+            Some(((_, thread), _)) => thread.sched_attr().policy_kind() == SchedPolicyKind::Idle,
+            None => true,
+        };
+        PerCpuLoadStats { queue_len, is_idle }
     }
 }
 
@@ -353,7 +388,7 @@ impl LocalRunQueue for PerCpuClassRqSet {
         self.current.as_ref().map(|((task, _), _)| task)
     }
 
-    fn pick_next_current(&mut self) -> Option<&Arc<Task>> {
+    fn try_pick_next(&mut self) -> Option<&Arc<Task>> {
         self.pick_next_entity().and_then(|next| {
             // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
             // as the current task here.
@@ -365,24 +400,29 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
-        if let Some(((_, cur), rt)) = &mut self.current {
+        let (should_preempt, mut lookahead) = if let Some(((_, cur), rt)) = &mut self.current {
             rt.update();
             let attr = &cur.sched_attr();
 
-            let (current_expired, lookahead) = match attr.policy_kind() {
+            match attr.policy_kind() {
                 SchedPolicyKind::Stop => (self.stop.update_current(rt, attr, flags), 0),
                 SchedPolicyKind::RealTime => (self.real_time.update_current(rt, attr, flags), 1),
                 SchedPolicyKind::Fair => (self.fair.update_current(rt, attr, flags), 2),
                 SchedPolicyKind::Idle => (self.idle.update_current(rt, attr, flags), 3),
-            };
-
-            current_expired
-                || (lookahead >= 1 && !self.stop.is_empty())
-                || (lookahead >= 2 && !self.real_time.is_empty())
-                || (lookahead >= 3 && !self.fair.is_empty())
+            }
         } else {
-            true
+            (false, 4)
+        };
+
+        if matches!(flags, UpdateFlags::Wait | UpdateFlags::Exit) {
+            lookahead = 4;
         }
+
+        should_preempt
+            || (lookahead >= 1 && !self.stop.is_empty())
+            || (lookahead >= 2 && !self.real_time.is_empty())
+            || (lookahead >= 3 && !self.fair.is_empty())
+            || (lookahead >= 4 && !self.idle.is_empty())
     }
 
     fn dequeue_current(&mut self) -> Option<Arc<Task>> {
@@ -393,11 +433,23 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 }
 
+/// Holds per-CPU load information.
+struct PerCpuLoadStats {
+    /// The length of the run queue (excluding the idle task).
+    queue_len: u32,
+    /// If the CPU is currently idle.
+    ///
+    /// A CPU is said to be idle when it is running the idle task, or it is not
+    /// running any task at all. The latter case is very unlikely to happen
+    /// (almost a bug if it happens) as the idle task should always be runnable.
+    is_idle: bool,
+}
+
 impl SchedulerStats for ClassScheduler {
     fn nr_queued_and_running(&self) -> (u32, u32) {
         self.rqs.iter().fold((0, 0), |(queued, running), rq| {
-            let (q, r) = rq.lock().nr_queued_and_running();
-            (queued + q, running + r)
+            let PerCpuLoadStats { queue_len, is_idle } = rq.lock().load_stats();
+            (queued + queue_len, running + u32::from(!is_idle))
         })
     }
 }

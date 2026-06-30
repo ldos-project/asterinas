@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! The console device of Asterinas.
+
 #![no_std]
 #![deny(unsafe_code)]
-#![feature(fn_traits)]
 
 extern crate alloc;
+
+pub mod font;
+pub mod mode;
 
 use alloc::{collections::BTreeMap, fmt::Debug, string::String, sync::Arc, vec::Vec};
 use core::any::Any;
@@ -19,14 +22,58 @@ use spin::Once;
 
 pub type ConsoleCallback = dyn Fn(VmReader<Infallible>) + Send + Sync;
 
+/// An error returned by [`AnyConsoleDevice::set_font`].
+#[derive(Clone, Copy, Debug)]
+pub enum ConsoleSetFontError {
+    InappropriateDevice,
+    InvalidFont,
+}
+
 pub trait AnyConsoleDevice: Send + Sync + Any + Debug {
+    /// Sends data to the console device.
     fn send(&self, buf: &[u8]);
-    /// Registers callback to the console device.
-    /// The callback will be called once the console device receive data.
+
+    /// Registers a callback that will be invoked when the console device receives data.
     ///
-    /// Since the callback will be called in interrupt context,
-    /// the callback should NEVER sleep.
+    /// The callback may be called in the interrupt context. Therefore, it should _never_ sleep.
     fn register_callback(&self, callback: &'static ConsoleCallback);
+
+    /// Sets the font of the console device.
+    fn set_font(&self, _font: font::BitmapFont) -> Result<(), ConsoleSetFontError> {
+        Err(ConsoleSetFontError::InappropriateDevice)
+    }
+
+    // TODO: Add support for getting the font of the console device.
+
+    /// Sets the console mode (text or graphics, see [`mode::ConsoleMode`]).
+    ///
+    /// Returns true if the mode was changed, false if the mode is not supported.
+    #[must_use]
+    fn set_mode(&self, _mode: mode::ConsoleMode) -> bool {
+        false
+    }
+
+    /// Gets the current console mode.
+    ///
+    /// Returns the current console mode, or `None` if mode switching is not supported.
+    fn mode(&self) -> Option<mode::ConsoleMode> {
+        None
+    }
+
+    /// Sets the keyboard mode (see [`mode::KeyboardMode`]).
+    ///
+    /// Returns true if the mode was changed, false if the mode is not supported.
+    #[must_use]
+    fn set_keyboard_mode(&self, _mode: mode::KeyboardMode) -> bool {
+        false
+    }
+
+    /// Gets the current keyboard mode.
+    ///
+    /// Returns the current keyboard mode, or `None` if mode switching is not supported.
+    fn keyboard_mode(&self) -> Option<mode::KeyboardMode> {
+        None
+    }
 }
 
 pub fn register_device(name: String, device: Arc<dyn AnyConsoleDevice>) {
@@ -34,42 +81,35 @@ pub fn register_device(name: String, device: Arc<dyn AnyConsoleDevice>) {
         .get()
         .unwrap()
         .console_device_table
-        .disable_irq()
         .lock()
         .insert(name, device);
 }
 
 pub fn all_devices() -> Vec<(String, Arc<dyn AnyConsoleDevice>)> {
-    let console_devs = COMPONENT
-        .get()
-        .unwrap()
-        .console_device_table
-        .disable_irq()
-        .lock();
-    console_devs
+    let console_devices = COMPONENT.get().unwrap().console_device_table.lock();
+    console_devices
         .iter()
         .map(|(name, device)| (name.clone(), device.clone()))
         .collect()
 }
 
-type ConsoleDeviceTable = BTreeMap<String, Arc<dyn AnyConsoleDevice>>;
-
-pub fn all_devices_lock<'a>() -> Option<SpinLockGuard<'a, ConsoleDeviceTable, LocalIrqDisabled>> {
-    Some(COMPONENT.get()?.console_device_table.disable_irq().lock())
+pub fn all_devices_lock<'a>()
+-> SpinLockGuard<'a, BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled> {
+    COMPONENT.get().unwrap().console_device_table.lock()
 }
 
 static COMPONENT: Once<Component> = Once::new();
 
 #[init_component]
 fn component_init() -> Result<(), ComponentInitError> {
-    let a = Component::init()?;
-    COMPONENT.call_once(|| a);
+    let component = Component::init()?;
+    COMPONENT.call_once(|| component);
     Ok(())
 }
 
 #[derive(Debug)]
 struct Component {
-    console_device_table: SpinLock<ConsoleDeviceTable>,
+    console_device_table: SpinLock<BTreeMap<String, Arc<dyn AnyConsoleDevice>>, LocalIrqDisabled>,
 }
 
 impl Component {

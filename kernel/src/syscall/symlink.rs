@@ -2,10 +2,10 @@
 
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{InodeMode, InodeType},
+        file::{InodeType, file_table::RawFileDesc, mkmod},
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
@@ -13,41 +13,37 @@ use crate::{
 
 pub fn sys_symlinkat(
     target_addr: Vaddr,
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     linkpath_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let user_space = ctx.user_space();
     let target = user_space.read_cstring(target_addr, MAX_FILENAME_LEN)?;
-    let linkpath = user_space.read_cstring(linkpath_addr, MAX_FILENAME_LEN)?;
+    let link_path_name = user_space.read_cstring(linkpath_addr, MAX_FILENAME_LEN)?;
     debug!(
         "target = {:?}, dirfd = {}, linkpath = {:?}",
-        target, dirfd, linkpath
+        target, dirfd, link_path_name
     );
 
     let target = target.to_string_lossy();
     if target.is_empty() {
-        return_errno_with_message!(Errno::ENOENT, "target is empty");
+        return_errno_with_message!(Errno::ENOENT, "the symlink path is empty");
     }
-    let (dir_dentry, link_name) = {
-        let linkpath = linkpath.to_string_lossy();
-        if linkpath.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "linkpath is empty");
-        }
-        let fs_path = FsPath::new(dirfd, linkpath.as_ref())?;
-        ctx.posix_thread
-            .fs()
+
+    let (dir_path, link_name) = {
+        let link_path_name = link_path_name.to_string_lossy();
+        let fs_path = FsPath::from_fd_at(dirfd, &link_path_name, EmptyPathStr::Reject)?;
+        ctx.thread_local
+            .borrow_fs()
             .resolver()
             .read()
-            .lookup_dir_and_new_basename(&fs_path, false)?
+            .lookup_unresolved_no_follow(&fs_path)?
+            .into_parent_and_filename()?
     };
 
-    let new_dentry = dir_dentry.new_fs_child(
-        &link_name,
-        InodeType::SymLink,
-        InodeMode::from_bits_truncate(0o777),
-    )?;
-    new_dentry.inode().write_link(&target)?;
+    let new_path = dir_path.new_fs_child(&link_name, InodeType::SymLink, mkmod!(a+rwx))?;
+    new_path.inode().write_link(&target)?;
+    fs::vfs::notify::on_create(&dir_path, || link_name);
     Ok(SyscallReturn::Return(0))
 }
 

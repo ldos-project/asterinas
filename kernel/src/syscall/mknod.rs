@@ -2,65 +2,66 @@
 
 use super::SyscallReturn;
 use crate::{
-    device::get_device,
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{InodeMode, InodeType, MknodType},
+        self,
+        file::{InodeMode, InodeType, file_table::RawFileDesc},
+        vfs::{
+            inode::MknodType,
+            path::{AT_FDCWD, EmptyPathStr, FsPath},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_mknodat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_addr: Vaddr,
     mode: u16,
     dev: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let path = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
-    let current = ctx.posix_thread;
+    let path_name = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
+    let fs_ref = ctx.thread_local.borrow_fs();
     let inode_mode = {
-        let mask_mode = mode & !current.fs().umask().read().get();
+        let mask_mode = mode & !fs_ref.umask().get();
         InodeMode::from_bits_truncate(mask_mode)
     };
     let inode_type = InodeType::from_raw_mode(mode)?;
     debug!(
         "dirfd = {}, path = {:?}, inode_mode = {:?}, inode_type = {:?}, dev = {}",
-        dirfd, path, inode_mode, inode_type, dev
+        dirfd, path_name, inode_mode, inode_type, dev
     );
 
-    let (dir_dentry, name) = {
-        let path = path.to_string_lossy();
-        if path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
-        }
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        current
-            .fs()
+    let (dir_path, name) = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path = FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::Reject)?;
+        fs_ref
             .resolver()
             .read()
-            .lookup_dir_and_new_basename(&fs_path, false)?
+            .lookup_unresolved_no_follow(&fs_path)?
+            .into_parent_and_filename()?
     };
 
     match inode_type {
         InodeType::File => {
-            let _ = dir_dentry.new_fs_child(&name, InodeType::File, inode_mode)?;
+            let _ = dir_path.new_fs_child(&name, InodeType::File, inode_mode)?;
         }
-        InodeType::CharDevice | InodeType::BlockDevice => {
-            let device_inode = get_device(dev)?;
-            let _ = dir_dentry.mknod(&name, inode_mode, device_inode.into())?;
+        InodeType::CharDevice => {
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::CharDevice(dev as u64))?;
+        }
+        InodeType::BlockDevice => {
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::BlockDevice(dev as u64))?;
         }
         InodeType::NamedPipe => {
-            let _ = dir_dentry.mknod(&name, inode_mode, MknodType::NamedPipeNode)?;
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::NamedPipe)?;
         }
         InodeType::Socket => {
             return_errno_with_message!(Errno::EINVAL, "unsupported file types")
         }
         _ => return_errno_with_message!(Errno::EPERM, "unimplemented file types"),
     }
-
+    fs::vfs::notify::on_create(&dir_path, || name);
     Ok(SyscallReturn::Return(0))
 }
 

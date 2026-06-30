@@ -6,7 +6,7 @@ use crate::{
     process::signal::{c_types::siginfo_t, sig_num::SigNum},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaultSignal {
     num: SigNum,
     code: i32,
@@ -25,8 +25,8 @@ impl Signal for FaultSignal {
     }
 
     fn to_info(&self) -> siginfo_t {
-        siginfo_t::new(self.num, self.code)
-        // info.set_si_addr(self.addr.unwrap_or_default() as *const c_void);
-        // info
+        let mut info = siginfo_t::new(self.num, self.code);
+        info.set_si_addr(self.addr.unwrap_or_default() as Vaddr);
+        info
     }
 }

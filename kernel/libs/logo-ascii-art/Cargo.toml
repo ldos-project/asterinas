@@ -1,0 +1,20 @@
+[package]
+name = "logo-ascii-art"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+# This crate is only needed by `main.rs`, not `lib.rs`
+owo-colors = { workspace = true, optional = true }
+
+[features]
+default = []
+color = ["owo-colors"]
+
+[[bin]]
+name = "logo-ascii-art"
+path = "src/main.rs"
+required-features = ["color"]
+
+[lints]
+workspace = true

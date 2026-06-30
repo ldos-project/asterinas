@@ -2,24 +2,28 @@
 
 use crate::{
     fs::{
-        fs_resolver::{FsPath, FsResolver},
-        ramfs::RamFS,
-        utils::{InodeMode, InodeType},
+        file::{InodeType, chmod},
+        ramfs::RamFs,
+        vfs::path::{FsPath, PathResolver, PerMountFlags},
     },
     prelude::*,
 };
 
 /// Initializes "/dev/shm" for POSIX shared memory usage.
-pub fn init() -> Result<()> {
-    let dev_dentry = {
-        let fs = FsResolver::new();
-        fs.lookup(&FsPath::try_from("/dev")?)?
-    };
+pub fn init_in_first_process(path_resolver: &PathResolver, ctx: &Context) -> Result<()> {
+    use crate::fs::file::InodeMode;
+
+    let dev_path = path_resolver.lookup(&FsPath::try_from("/dev")?)?;
 
     // Create the "shm" directory under "/dev" and mount a ramfs on it.
-    let shm_dentry =
-        dev_dentry.new_fs_child("shm", InodeType::Dir, InodeMode::from_bits_truncate(0o1777))?;
-    shm_dentry.mount(RamFS::new())?;
-    log::debug!("Mount RamFS at \"/dev/shm\"");
+    let shm_path =
+        dev_path.new_fs_child("shm", InodeType::Dir, chmod!(InodeMode::S_ISVTX, a+rwx))?;
+    shm_path.mount(
+        RamFs::new(),
+        PerMountFlags::default(),
+        Some("tmpfs".to_string()),
+        ctx,
+    )?;
+    ostd::debug!("Mount ramfs at \"/dev/shm\"");
     Ok(())
 }

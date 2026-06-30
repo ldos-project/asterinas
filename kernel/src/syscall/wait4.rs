@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::{SyscallReturn, getrusage::rusage_t};
 use crate::{
     prelude::*,
-    process::{ProcessFilter, WaitOptions, do_wait},
+    process::{ProcessFilter, WaitOptions, WaitStatus, do_wait, posix_thread::AsPosixThread},
 };
 
 pub fn sys_wait4(
@@ -20,7 +22,16 @@ pub fn sys_wait4(
         wait_pid as i32, status_ptr, wait_options
     );
     debug!("wait4 current pid = {}", ctx.process.pid());
-    let process_filter = ProcessFilter::from_id(wait_pid as _);
+    let process_filter = ProcessFilter::from_id(wait_pid as _)?;
+
+    if wait_options.intersects(WaitOptions::WSTOPPED | WaitOptions::WCONTINUED)
+        && wait_options.contains(WaitOptions::WNOWAIT)
+    {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "WNOWAIT cannot be used toghther with WSTOPPED or WCONTINUED"
+        );
+    }
 
     let wait_status =
         do_wait(process_filter, wait_options, ctx).map_err(|err| match err.error() {
@@ -31,7 +42,7 @@ pub fn sys_wait4(
         return Ok(SyscallReturn::Return(0 as _));
     };
 
-    let (return_pid, status_code) = (wait_status.pid(), wait_status.status_code());
+    let (return_pid, status_code) = (wait_status.pid(), calculate_status_code(&wait_status));
     if status_ptr != 0 {
         ctx.user_space().write_val(status_ptr as _, &status_code)?;
     }
@@ -47,4 +58,15 @@ pub fn sys_wait4(
     }
 
     Ok(SyscallReturn::Return(return_pid as _))
+}
+
+fn calculate_status_code(wait_status: &WaitStatus) -> u32 {
+    match wait_status {
+        WaitStatus::Zombie(process) => process.status().exit_code(),
+        WaitStatus::Stop(_, sig_num) => ((sig_num.as_u8() as u32) << 8) | 0x7f,
+        WaitStatus::Continue(_) => 0xffff,
+        WaitStatus::TraceeExit(thread) => thread.as_posix_thread().unwrap().exit_code(),
+        // TODO: Add `PTRACE_EVENT_*` flags.
+        WaitStatus::TraceeStop(_, sig_num) => ((sig_num.as_u8() as u32) << 8) | 0x7f,
+    }
 }

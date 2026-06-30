@@ -3,14 +3,12 @@
 use core::time::Duration;
 
 use int_to_c_enum::TryFromInt;
+use ostd::mm::VmIo;
 
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{
-        posix_thread::{AsPosixThread, thread_table},
-        process_table,
-    },
+    process::{pid_table, posix_thread::AsPosixThread},
     time::{
         Clock, clockid_t,
         clocks::{
@@ -37,9 +35,9 @@ pub fn sys_clock_gettime(
 }
 
 // The hard-coded clock IDs.
-#[derive(Debug, Copy, Clone, TryFromInt, PartialEq)]
-#[repr(i32)]
 #[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
 pub enum ClockId {
     CLOCK_REALTIME = 0,
     CLOCK_MONOTONIC = 1,
@@ -64,7 +62,7 @@ pub enum ClockId {
 /// - Bits 1 and 0 give the type: PROF=0, VIRT=1, SCHED=2, or FD=3.
 /// - A clock ID is invalid if bits 2, 1, and 0 are all set.
 ///
-/// Ref: https://github.com/torvalds/linux/blob/master/include/linux/posix-timers_types.h
+/// Ref: <https://github.com/torvalds/linux/blob/master/include/linux/posix-timers_types.h>.
 pub enum DynamicClockIdInfo {
     Pid(u32, DynamicClockType),
     Tid(u32, DynamicClockType),
@@ -73,7 +71,7 @@ pub enum DynamicClockIdInfo {
 }
 
 impl TryFrom<clockid_t> for DynamicClockIdInfo {
-    type Error = crate::Error;
+    type Error = Error;
 
     fn try_from(value: clockid_t) -> core::prelude::v1::Result<Self, Self::Error> {
         const CPU_CLOCK_TYPE_MASK: i32 = 0b11;
@@ -99,8 +97,8 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, TryFromInt, PartialEq)]
 #[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
 pub enum DynamicClockType {
     Profiling = 0,
     Virtual = 1,
@@ -128,8 +126,9 @@ pub fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> {
         let dynamic_clockid_info = DynamicClockIdInfo::try_from(clockid)?;
         match dynamic_clockid_info {
             DynamicClockIdInfo::Pid(pid, clock_type) => {
-                let process = process_table::get_process(pid)
-                    .ok_or_else(|| crate::Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
+                let process = pid_table::pid_table_mut()
+                    .get_process(pid)
+                    .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 match clock_type {
                     DynamicClockType::Profiling => Ok(process.prof_clock().read_time()),
                     DynamicClockType::Virtual => Ok(process.prof_clock().user_clock().read_time()),
@@ -138,7 +137,8 @@ pub fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> {
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
-                let thread = thread_table::get_thread(tid)
+                let thread = pid_table::pid_table_mut()
+                    .get_thread(tid)
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clock ID"))?;
                 let posix_thread = thread.as_posix_thread().unwrap();
                 match clock_type {

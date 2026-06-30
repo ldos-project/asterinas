@@ -3,11 +3,12 @@
 use alloc::{collections::BinaryHeap, sync::Arc};
 use core::{
     cmp::{self, Reverse},
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ostd::{
     cpu::{CpuId, num_cpus},
+    sync::SpinLock,
     task::{
         Task,
         scheduler::{EnqueueFlags, UpdateFlags},
@@ -24,6 +25,9 @@ use crate::{
 };
 
 const WEIGHT_0: u64 = 1024;
+
+const HAS_PENDING: u64 = 1 << (u64::BITS - 1);
+
 pub const fn nice_to_weight(nice: Nice) -> u64 {
     // Calculated by the formula below:
     //
@@ -53,6 +57,7 @@ pub const fn nice_to_weight(nice: Nice) -> u64 {
                     WEIGHT_0 * numerator / denominator
                 }
             };
+            assert!(ret[index] & HAS_PENDING == 0);
 
             index += 1;
             nice += 1;
@@ -93,29 +98,82 @@ pub const fn nice_to_weight(nice: Nice) -> u64 {
 ///
 ///     period_delta > time_slice
 ///         || vruntime > rq_min_vruntime + normalized_time_slice
+///
+/// # The weight update process
+///
+/// The weight of a thread can be updated by the `sched_setattr` syscall series in
+/// any thread. This makes it difficult to re-evaluate the data of its run queue
+/// instantly after the update without a direct backward reference (which is
+/// impossible to be represented in safe Rust).
+///
+/// To handle this problem, we use a `pending_weight` field to store the new weight.
+/// When the thread is scheduled within the run queue, we will check if the weight
+/// needs to be updated since both the old and new weights are needed for re-evaluation.
+///
+/// To indicate whether the weight needs to be updated, we pack the `weight` field
+/// with a bit flag `HAS_PENDING`. When accessing the `weight` field:
+///
+/// - If the weight does not need to be updated (i.e. `weight & IS_PENDING == 0`),
+///   we simply return the weight.
+/// - If the weight needs to be updated (i.e. `weight & IS_PENDING != 0`), we try to
+///   store the new weight into the `weight` field, which shouldn't take too much time
+///   since the update frequency is usually relatively low.
+/// - After a successful update, we re-evaluate the data of the run queue.
+///
+/// Most of the time, this mechanism allows the access to the weight lock-free and
+/// ensures that only one load is needed.
 #[derive(Debug)]
 pub struct FairAttr {
+    // Updates to the `weight` field must be serialized with the `pending_weight` lock.
     weight: AtomicU64,
+    pending_weight: SpinLock<u64>,
     vruntime: AtomicU64,
 }
 
 impl FairAttr {
     pub fn new(nice: Nice) -> Self {
+        let weight = nice_to_weight(nice);
         FairAttr {
-            weight: nice_to_weight(nice).into(),
+            weight: weight.into(),
+            pending_weight: SpinLock::new(weight),
             vruntime: Default::default(),
         }
     }
 
     pub fn update(&self, nice: Nice) {
-        self.weight.store(nice_to_weight(nice), Relaxed);
+        let mut pending_weight = self.pending_weight.lock();
+        *pending_weight = nice_to_weight(nice);
+        self.weight.store(
+            self.weight.load(Ordering::Relaxed) | HAS_PENDING,
+            Ordering::Relaxed,
+        );
     }
 
-    fn update_vruntime(&self, delta: u64) -> (u64, u64) {
-        let weight = self.weight.load(Relaxed);
+    fn update_vruntime(&self, delta: u64, weight: u64) -> u64 {
         let delta = delta * WEIGHT_0 / weight;
-        let vruntime = self.vruntime.fetch_add(delta, Relaxed) + delta;
-        (vruntime, weight)
+        self.vruntime.fetch_add(delta, Ordering::Relaxed) + delta
+    }
+
+    fn fetch_weight(&self) -> (u64, u64) {
+        // Synchronization is done via the `pending_weight` lock. Therefore, no additional ordering
+        // is required to access the atomic variable.
+        let weight = self.weight.load(Ordering::Relaxed);
+        if weight & HAS_PENDING == 0 {
+            return (weight, weight);
+        }
+
+        let new_weight = {
+            // `pending_weight` always stores the latest weight.
+            let pending_weight = self.pending_weight.lock();
+            self.weight.store(*pending_weight, Ordering::Relaxed);
+            *pending_weight
+        };
+        let old_weight = weight & !HAS_PENDING;
+
+        // The `vruntime` field is an accumulated value, and we don't update
+        // it here.
+
+        (old_weight, new_weight)
     }
 }
 
@@ -226,12 +284,14 @@ impl SchedClassRq for FairClassRq {
             Some(EnqueueFlags::Spawn) => self.min_vruntime + self.vtime_slice(),
             _ => self.min_vruntime,
         };
+        let (_old_weight, weight) = fair_attr.fetch_weight();
+
         let vruntime = fair_attr
             .vruntime
-            .fetch_max(vruntime, Relaxed)
+            .fetch_max(vruntime, Ordering::Relaxed)
             .max(vruntime);
 
-        self.total_weight += fair_attr.weight.load(Relaxed);
+        self.total_weight += weight;
         self.entities.push(Reverse(FairQueueItem(entity, vruntime)));
     }
 
@@ -247,7 +307,12 @@ impl SchedClassRq for FairClassRq {
         let Reverse(FairQueueItem(entity, _)) = self.entities.pop()?;
 
         let sched_attr = entity.as_thread().unwrap().sched_attr();
-        self.total_weight -= sched_attr.fair.weight.load(Relaxed);
+        let (old_weight, _weight) = sched_attr.fair.fetch_weight();
+        // Equals to:
+        //
+        // self.total_weight = self.total_weight + weight - old_weight;
+        // self.total_weight -= weight;
+        self.total_weight -= old_weight;
 
         Some(entity)
     }
@@ -259,17 +324,23 @@ impl SchedClassRq for FairClassRq {
         flags: UpdateFlags,
     ) -> bool {
         match flags {
-            UpdateFlags::Yield => true,
-            UpdateFlags::Tick | UpdateFlags::Wait => {
-                let (vruntime, weight) = attr.fair.update_vruntime(rt.delta);
-                self.min_vruntime = match self.entities.peek() {
+            UpdateFlags::Tick | UpdateFlags::Yield | UpdateFlags::Wait => {
+                let (_old_weight, weight) = attr.fair.fetch_weight();
+                let vruntime = attr.fair.update_vruntime(rt.delta, weight);
+                let leftmost = self.entities.peek();
+                self.min_vruntime = match leftmost {
                     Some(Reverse(leftmost)) => vruntime.min(leftmost.key()),
                     None => vruntime,
                 };
+                if leftmost.is_none() {
+                    return false;
+                }
 
-                rt.period_delta > self.time_slice(weight)
+                matches!(flags, UpdateFlags::Wait)
+                    || rt.period_delta > self.time_slice(weight)
                     || vruntime > self.min_vruntime + self.vtime_slice()
             }
+            UpdateFlags::Exit => !self.is_empty(),
         }
     }
 }

@@ -12,12 +12,14 @@ pub(crate) use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(ktest)]
 pub use ostd_macros::ktest;
 
+pub use crate::{
+    alert, crit, debug, early_print as print, early_println as println, emerg, error, info,
+    mm::{HasPaddr, HasSize, Paddr, Vaddr},
+    notice,
+    panic::abort,
+    warn,
+};
 #[cfg(ktest)]
 pub use crate::{
     assert_eq_eventually, assert_eventually, assert_matches_eventually, assert_ne_eventually,
-};
-pub use crate::{
-    early_print as print, early_println as println,
-    mm::{Paddr, UntypedMem, Vaddr},
-    panic::abort,
 };

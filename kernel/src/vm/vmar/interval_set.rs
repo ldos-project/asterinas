@@ -70,18 +70,11 @@ where
     /// that contains the point.
     pub fn find_one(&self, point: &K) -> Option<&V> {
         let cursor = self.btree.lower_bound(core::ops::Bound::Excluded(point));
-        // There's one previous element and one following element that may
-        // contain the point. If they don't, there's no other chances.
-        if let Some((_, v)) = cursor.peek_prev() {
-            if v.range().end > *point {
-                return Some(v);
-            }
-        } else if let Some((_, v)) = cursor.peek_next() {
-            if v.range().start <= *point {
-                return Some(v);
-            }
-        }
-        None
+        // There's only one previous element that may contain the point.
+        // If it doesn't, there's no other chances.
+        cursor
+            .peek_prev()
+            .and_then(|(_, v)| (v.range().end > *point).then_some(v))
     }
 
     /// Finds all interval items that intersect with the given range.
@@ -131,11 +124,12 @@ where
             if v.range().end > *point {
                 return Some(cursor.remove_prev().unwrap().1);
             }
-        } else if let Some((_, v)) = cursor.peek_next() {
-            if v.range().start <= *point {
-                return Some(cursor.remove_next().unwrap().1);
-            }
+        } else if let Some((_, v)) = cursor.peek_next()
+            && v.range().start <= *point
+        {
+            return Some(cursor.remove_next().unwrap().1);
         }
+
         None
     }
 
@@ -184,10 +178,10 @@ where
         // There's one previous element that may intersect with the range.
         if !self.peeked_prev {
             self.peeked_prev = true;
-            if let Some((_, v)) = self.cursor.peek_prev() {
-                if v.range().end > self.range.start {
-                    return Some(v);
-                }
+            if let Some((_, v)) = self.cursor.peek_prev()
+                && v.range().end > self.range.start
+            {
+                return Some(v);
             }
         }
 
@@ -204,6 +198,7 @@ where
 }
 
 /// A draining iterator that iterates over intervals in an interval set.
+#[cfg_attr(not(ktest), expect(dead_code))]
 #[derive(Debug)]
 pub struct IntervalDrain<'a, K, V>
 where
@@ -226,10 +221,10 @@ where
         // There's one previous element that may intersect with the range.
         if !self.drained_prev {
             self.drained_prev = true;
-            if let Some((_, v)) = self.cursor.peek_prev() {
-                if v.range().end > self.range.start {
-                    return Some(self.cursor.remove_prev().unwrap().1);
-                }
+            if let Some((_, v)) = self.cursor.peek_prev()
+                && v.range().end > self.range.start
+            {
+                return Some(self.cursor.remove_prev().unwrap().1);
             }
         }
 
@@ -266,7 +261,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_insert_and_find_one() {
+    fn insert_and_find_one() {
         let mut set = IntervalSet::new();
         let interval = TestInterval { range: 10..20 };
         set.insert(interval.clone());
@@ -276,7 +271,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_remove() {
+    fn remove() {
         let mut set = IntervalSet::new();
         let interval = TestInterval { range: 10..20 };
         set.insert(interval.clone());
@@ -286,7 +281,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_iter() {
+    fn iter() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };
         let interval2 = TestInterval { range: 30..40 };
@@ -298,7 +293,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_find() {
+    fn find() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };
         let interval2 = TestInterval { range: 30..40 };
@@ -314,7 +309,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_take_one() {
+    fn take_one() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };
         let interval2 = TestInterval { range: 20..30 };
@@ -326,7 +321,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_take() {
+    fn take() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };
         let interval2 = TestInterval { range: 30..40 };
@@ -342,7 +337,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_clear() {
+    fn clear() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };
         let interval2 = TestInterval { range: 20..30 };

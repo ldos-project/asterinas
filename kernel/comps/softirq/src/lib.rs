@@ -9,23 +9,31 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use aster_util::per_cpu_counter::PerCpuCounter;
 use component::{ComponentInitError, init_component};
 use lock::is_softirq_enabled;
 use ostd::{
+    cpu::CpuId,
     cpu_local_cell,
-    trap::{
-        irq::{DisabledLocalIrqGuard, disable_local},
-        register_bottom_half_handler,
+    irq::{
+        DisabledLocalIrqGuard, disable_local, register_bottom_half_handler_l1,
+        register_bottom_half_handler_l2,
     },
 };
 use spin::Once;
-
+use stats::IRQ_COUNTERS;
+pub use stats::{
+    iter_irq_counts_across_all_cpus, iter_softirq_counts_across_all_cpus,
+    iter_softirq_counts_on_cpu,
+};
 mod lock;
 pub mod softirq_id;
+mod stats;
 mod taskless;
-
 pub use lock::{BottomHalfDisabled, DisableLocalBottomHalfGuard};
 pub use taskless::Taskless;
+
+use crate::stats::{NR_IRQ_LINES, process_statistic};
 
 /// A representation of a software interrupt (softirq) line.
 ///
@@ -57,6 +65,7 @@ pub use taskless::Taskless;
 pub struct SoftIrqLine {
     id: u8,
     callback: Once<Box<dyn Fn() + 'static + Sync + Send>>,
+    counter: Once<PerCpuCounter>,
 }
 
 impl SoftIrqLine {
@@ -74,6 +83,7 @@ impl SoftIrqLine {
         Self {
             id,
             callback: Once::new(),
+            counter: Once::new(),
         }
     }
 
@@ -93,13 +103,14 @@ impl SoftIrqLine {
     ///
     /// # Panics
     ///
-    /// Each softirq can only be enabled once.
+    /// Each softirq can only be enabled once. Subsequent calls will panic.
     pub fn enable<F>(&self, callback: F)
     where
         F: Fn() + 'static + Sync + Send,
     {
         assert!(!self.is_enabled());
 
+        self.counter.call_once(PerCpuCounter::new);
         self.callback.call_once(|| Box::new(callback));
         ENABLED_MASK.fetch_or(1 << self.id, Ordering::Release);
     }
@@ -118,8 +129,13 @@ fn init() -> Result<(), ComponentInitError> {
     let lines: [SoftIrqLine; SoftIrqLine::NR_LINES as usize] =
         core::array::from_fn(|i| SoftIrqLine::new(i as u8));
     LINES.call_once(|| lines);
-    register_bottom_half_handler(process_pending);
 
+    let interrupt_counter: [PerCpuCounter; NR_IRQ_LINES] =
+        core::array::from_fn(|_| PerCpuCounter::new());
+    IRQ_COUNTERS.call_once(|| interrupt_counter);
+
+    register_bottom_half_handler_l1(process_pending);
+    register_bottom_half_handler_l2(process_statistic);
     taskless::init();
     Ok(())
 }
@@ -131,11 +147,11 @@ cpu_local_cell! {
 }
 
 /// Processes pending softirqs.
-fn process_pending(irq_guard: DisabledLocalIrqGuard) -> DisabledLocalIrqGuard {
+fn process_pending(irq_guard: DisabledLocalIrqGuard, irq_num: u8) -> DisabledLocalIrqGuard {
     if !is_softirq_enabled() {
         return irq_guard;
     }
-
+    process_statistic(irq_num);
     process_all_pending(irq_guard)
 }
 
@@ -146,7 +162,7 @@ fn process_pending(irq_guard: DisabledLocalIrqGuard) -> DisabledLocalIrqGuard {
 fn process_all_pending(mut irq_guard: DisabledLocalIrqGuard) -> DisabledLocalIrqGuard {
     const SOFTIRQ_RUN_TIMES: u8 = 5;
 
-    for _i in 0..SOFTIRQ_RUN_TIMES {
+    for _ in 0..SOFTIRQ_RUN_TIMES {
         let mut action_mask = {
             let pending_mask = PENDING_MASK.load();
             PENDING_MASK.store(0);
@@ -161,7 +177,16 @@ fn process_all_pending(mut irq_guard: DisabledLocalIrqGuard) -> DisabledLocalIrq
 
         while action_mask > 0 {
             let action_id = u8::trailing_zeros(action_mask) as u8;
-            SoftIrqLine::get(action_id).callback.get().unwrap()();
+
+            let softirq_line = SoftIrqLine::get(action_id);
+            softirq_line
+                .counter
+                .get()
+                .unwrap()
+                // No races because we are in IRQs.
+                .add_on_cpu(CpuId::current_racy(), 1);
+            softirq_line.callback.get().unwrap()();
+
             action_mask &= action_mask - 1;
         }
 

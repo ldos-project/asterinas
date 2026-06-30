@@ -34,15 +34,15 @@ use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range};
 use align_ext::AlignExt;
 
 use super::{
-    Child, ChildRef, Entry, PageTable, PageTableConfig, PageTableError, PageTableGuard,
-    PagingConstsTrait, PagingLevel, page_size, pte_index,
+    Entry, PageTable, PageTableConfig, PageTableError, PageTableGuard, PagingConstsTrait,
+    PagingLevel, PteState, PteStateRef, page_size, pte_index,
 };
 use crate::{
     mm::{
         PageProperty, Vaddr,
-        frame::{Frame, meta::AnyFrameMeta},
-        page_table::is_valid_range,
+        page_table::{PageTableNode, is_valid_range},
     },
+    sync::RcuDrop,
     task::atomic_mode::InAtomicMode,
 };
 
@@ -79,36 +79,20 @@ pub(crate) struct Cursor<'rcu, C: PageTableConfig> {
 const MAX_NR_LEVELS: usize = 4;
 
 /// A fragment of a page table that can be taken out of the page table.
-#[derive(Debug)]
 #[must_use]
+#[derive(Debug)]
 pub(crate) enum PageTableFrag<C: PageTableConfig> {
     /// A mapped page table item.
-    Mapped { va: Vaddr, item: C::Item },
+    Mapped { va: Vaddr, item: RcuDrop<C::Item> },
     /// A sub-tree of a page table that is taken out of the page table.
     ///
     /// The caller is responsible for dropping it after TLB coherence.
     StrayPageTable {
-        pt: Frame<dyn AnyFrameMeta>,
+        pt: RcuDrop<PageTableNode<C>>,
         va: Vaddr,
         len: usize,
         num_frames: usize,
     },
-}
-
-impl<C: PageTableConfig> PageTableFrag<C> {
-    #[cfg(ktest)]
-    pub(crate) fn va_range(&self) -> Range<Vaddr> {
-        match self {
-            PageTableFrag::Mapped { va, item } => {
-                let (pa, level, prop) = C::item_into_raw(item.clone());
-                // SAFETY: All the arguments match those returned from the previous call
-                // to `item_into_raw`, and we are taking ownership of the cloned item.
-                drop(unsafe { C::item_from_raw(pa, level, prop) });
-                *va..*va + page_size::<C>(level)
-            }
-            PageTableFrag::StrayPageTable { va, len, .. } => *va..*va + *len,
-        }
-    }
 }
 
 impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
@@ -125,7 +109,8 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         if !is_valid_range::<C>(va) || va.is_empty() {
             return Err(PageTableError::InvalidVaddrRange(va.start, va.end));
         }
-        if va.start % C::BASE_PAGE_SIZE != 0 || va.end % C::BASE_PAGE_SIZE != 0 {
+        if !va.start.is_multiple_of(C::BASE_PAGE_SIZE) || !va.end.is_multiple_of(C::BASE_PAGE_SIZE)
+        {
             return Err(PageTableError::UnalignedVaddr);
         }
 
@@ -143,7 +128,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     ///
     /// If the cursor is pointing to a valid virtual address that is locked,
     /// it will return the virtual address range and the item at that slot.
-    pub fn query(&mut self) -> Result<PagesState<C>, PageTableError> {
+    pub fn query(&mut self) -> Result<PagesState<'rcu, C>, PageTableError> {
         if self.va >= self.barrier_va.end {
             return Err(PageTableError::InvalidVaddr(self.va));
         }
@@ -151,33 +136,16 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         let rcu_guard = self.rcu_guard;
 
         loop {
-            let level = self.level;
-
             let cur_entry = self.cur_entry();
             let item = match cur_entry.to_ref() {
-                ChildRef::PageTable(pt) => {
+                PteStateRef::PageTable(pt) => {
                     // SAFETY: The `pt` must be locked and no other guards exist.
                     let guard = unsafe { pt.make_guard_unchecked(rcu_guard) };
                     self.push_level(guard);
                     continue;
                 }
-                ChildRef::None => None,
-                ChildRef::Frame(pa, ch_level, prop) => {
-                    debug_assert_eq!(ch_level, level);
-
-                    // SAFETY:
-                    // This is part of (if `split_huge` happens) a page table item mapped
-                    // with a previous call to `C::item_into_raw`, where:
-                    //  - The physical address and the paging level match it;
-                    //  - The item part is still mapped so we don't take its ownership.
-                    //
-                    // For page table configs that require the `AVAIL1` flag to be kept
-                    // (currently, only kernel page tables), the callers of the unsafe
-                    // `protect_next` method uphold this invariant.
-                    let item = ManuallyDrop::new(unsafe { C::item_from_raw(pa, level, prop) });
-                    // TODO: Provide a `PageTableItemRef` to reduce copies.
-                    Some((*item).clone())
-                }
+                PteStateRef::Absent => None,
+                PteStateRef::Mapped(item) => Some(item),
             };
 
             return Ok((self.cur_va_range(), item));
@@ -246,6 +214,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         split_huge: bool,
     ) -> Option<Vaddr> {
         assert_eq!(len % C::BASE_PAGE_SIZE, 0);
+
         let end = self.va + len;
         assert!(end <= self.barrier_va.end);
         debug_assert_eq!(end % C::BASE_PAGE_SIZE, 0);
@@ -259,7 +228,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
 
             let mut cur_entry = self.cur_entry();
             match cur_entry.to_ref() {
-                ChildRef::PageTable(pt) => {
+                PteStateRef::PageTable(pt) => {
                     if find_unmap_subtree
                         && cur_entry_fits_range
                         && (C::TOP_LEVEL_CAN_UNMAP || self.level != C::NR_LEVELS)
@@ -279,18 +248,18 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
                     }
                     continue;
                 }
-                ChildRef::None => {
+                PteStateRef::Absent => {
                     self.move_forward();
                     continue;
                 }
-                ChildRef::Frame(_, _, _) => {
+                PteStateRef::Mapped(_) => {
                     if cur_entry_fits_range || !split_huge {
                         return Some(cur_va);
                     }
 
                     let split_child = cur_entry
                         .split_if_mapped_huge_all(rcu_guard)
-                        .expect("The entry must be a huge page");
+                        .expect("the entry must be a huge page");
                     self.push_level(split_child);
                     continue;
                 }
@@ -301,22 +270,35 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     }
 
     /// Jumps to the given virtual address.
+    ///
     /// If the target address is out of the range, this method will return `Err`.
     ///
     /// # Panics
     ///
     /// This method panics if the address has bad alignment.
     pub fn jump(&mut self, va: Vaddr) -> Result<(), PageTableError> {
-        assert!(va % C::BASE_PAGE_SIZE == 0);
+        assert!(va.is_multiple_of(C::BASE_PAGE_SIZE));
         if !self.barrier_va.contains(&va) {
             return Err(PageTableError::InvalidVaddr(va));
         }
+
+        // FIXME: Maintain the `self.barrier_va.contains(self.va)` invariant:
+        // <https://github.com/asterinas/asterinas/pull/2613>.
+        if self.va == self.barrier_va.end {
+            while self.level < self.guard_level {
+                self.pop_level();
+            }
+            self.va = va;
+            return Ok(());
+        }
+        debug_assert!(self.barrier_va.contains(&self.va));
 
         loop {
             let node_size = page_size::<C>(self.level + 1);
             let node_start = self.va.align_down(node_size);
             // If the address is within the current node, we can jump directly.
-            if node_start <= va && va < node_start + node_size {
+            // Note that `node_start + node_size` may overflow.
+            if node_start <= va && va - node_start < node_size {
                 self.va = va;
                 return Ok(());
             }
@@ -341,7 +323,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     fn pop_level(&mut self) {
         let taken = self.path[self.level as usize - 1]
             .take()
-            .expect("Popping a level without a lock");
+            .expect("popping a level without a lock");
         let _ = ManuallyDrop::new(taken);
 
         debug_assert!(self.level < self.guard_level);
@@ -379,19 +361,7 @@ impl<C: PageTableConfig> Drop for Cursor<'_, C> {
 /// The state of virtual pages represented by a page table.
 ///
 /// This is the return type of the [`Cursor::query`] method.
-pub type PagesState<C> = (Range<Vaddr>, Option<<C as PageTableConfig>::Item>);
-
-impl<C: PageTableConfig> Iterator for Cursor<'_, C> {
-    type Item = PagesState<C>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = self.query();
-        if result.is_ok() {
-            self.move_forward();
-        }
-        result.ok()
-    }
-}
+pub type PagesState<'a, C> = (Range<Vaddr>, Option<<C as PageTableConfig>::ItemRef<'a>>);
 
 /// The cursor of a page table that is capable of map, unmap or protect pages.
 ///
@@ -436,8 +406,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     ///
     /// # Panics
     ///
-    /// This method panics if the address is out of the range where the cursor is required to operate,
-    /// or has bad alignment.
+    /// This method panics if the address has bad alignment.
     pub fn jump(&mut self, va: Vaddr) -> Result<(), PageTableError> {
         self.0.jump(va)
     }
@@ -451,19 +420,13 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     ///
     /// If the cursor is pointing to a valid virtual address that is locked,
     /// it will return the virtual address range and the item at that slot.
-    pub fn query(&mut self) -> Result<PagesState<C>, PageTableError> {
+    pub fn query(&mut self) -> Result<PagesState<'rcu, C>, PageTableError> {
         self.0.query()
     }
 
     /// Maps the item starting from the current address to a physical address range.
     ///
-    /// If the current address has already mapped pages, it will do a re-map,
-    /// taking out the old physical address and replacing it with the new one.
-    /// This function will return [`Err`] with a [`PageTableFrag`], the not
-    /// mapped item. The caller should drop it after TLB coherence.
-    ///
-    /// If there is no mapped pages in the specified virtual address range,
-    /// the function will return [`None`].
+    /// The current virtual address should not be mapped.
     ///
     /// # Panics
     ///
@@ -471,20 +434,32 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     ///  - the virtual address range to be mapped is out of the locked range;
     ///  - the current virtual address is not aligned to the page size of the
     ///    item to be mapped;
+    ///  - the virtual address range contains mappings that conflicts with the item.
     ///
     /// # Safety
     ///
     /// The caller should ensure that
     ///  - the range being mapped does not affect kernel's memory safety;
-    ///  - the physical address to be mapped is valid and safe to use;
-    pub unsafe fn map(&mut self, item: C::Item) -> Result<(), PageTableFrag<C>> {
+    ///  - the physical address to be mapped is valid and safe to use.
+    pub unsafe fn map(&mut self, item: C::Item) {
         assert!(self.0.va < self.0.barrier_va.end);
-        let (pa, level, prop) = C::item_into_raw(item);
-        assert!(level <= C::HIGHEST_TRANSLATION_LEVEL);
+
+        let (_, level, _) = C::item_raw_info(&item);
+        assert!(
+            level <= C::HIGHEST_TRANSLATION_LEVEL,
+            "cursor level not suitable for mapping"
+        );
         let size = page_size::<C>(level);
-        assert_eq!(self.0.va % size, 0);
+        assert_eq!(
+            self.0.va % size,
+            0,
+            "cursor virtual address not aligned for mapping"
+        );
         let end = self.0.va + size;
-        assert!(end <= self.0.barrier_va.end);
+        assert!(
+            end <= self.0.barrier_va.end,
+            "cursor virtual address out-of-bound for mapping"
+        );
 
         let rcu_guard = self.0.rcu_guard;
 
@@ -497,31 +472,29 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
             // We are at a higher level, go down.
             let mut cur_entry = self.0.cur_entry();
             match cur_entry.to_ref() {
-                ChildRef::PageTable(pt) => {
+                PteStateRef::PageTable(pt) => {
                     // SAFETY: The `pt` must be locked and no other guards exist.
                     let pt_guard = unsafe { pt.make_guard_unchecked(rcu_guard) };
                     self.0.push_level(pt_guard);
                 }
-                ChildRef::None => {
+                PteStateRef::Absent => {
                     let child_guard = cur_entry.alloc_if_none(rcu_guard).unwrap();
                     self.0.push_level(child_guard);
                 }
-                ChildRef::Frame(_, _, _) => {
+                PteStateRef::Mapped(_) => {
                     let split_child = cur_entry.split_if_mapped_huge_all(rcu_guard).unwrap();
                     self.0.push_level(split_child);
                 }
             }
         }
 
-        let frag = self.replace_cur_entry(Child::Frame(pa, level, prop));
+        if !matches!(self.0.cur_entry().to_ref(), PteStateRef::Absent) {
+            panic!("mapping over an already mapped page");
+        }
+
+        let _ = self.replace_cur_entry(PteState::Mapped(RcuDrop::new(item)));
 
         self.0.move_forward();
-
-        if let Some(frag) = frag {
-            Err(frag)
-        } else {
-            Ok(())
-        }
     }
 
     /// Finds and removes the first page table fragment in the following range.
@@ -544,8 +517,10 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     ///
     /// # Safety
     ///
-    /// The caller should ensure that the range being unmapped does not affect
-    /// kernel's memory safety.
+    /// The caller should ensure that:
+    ///  - the range being unmapped does not affect kernel's memory safety.
+    ///  - the items mapped in `PageTableFrag` must outlive any TLB entries
+    ///    that cache the mappings.
     ///
     /// # Panics
     ///
@@ -555,7 +530,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     pub unsafe fn take_next(&mut self, len: usize) -> Option<PageTableFrag<C>> {
         self.0.find_next_impl(len, true, true)?;
 
-        let frag = self.replace_cur_entry(Child::None);
+        let frag = self.replace_cur_entry(PteState::Absent);
 
         self.0.move_forward();
 
@@ -580,8 +555,8 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     /// The caller should ensure that:
     ///  - the range being protected with the operation does not affect
     ///    kernel's memory safety;
-    ///  - the privileged flag `AVAIL1` should not be altered if in the kernel
-    ///    page table (the restriction may be lifted in the futures).
+    ///  - the privileged flag `AVAIL1` should not be altered, since this flag
+    ///    is reserved for all page tables.
     ///
     /// # Panics
     ///
@@ -604,7 +579,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         Some(protected_va)
     }
 
-    fn replace_cur_entry(&mut self, new_child: Child<C>) -> Option<PageTableFrag<C>> {
+    fn replace_cur_entry(&mut self, new_child: PteState<C>) -> Option<PageTableFrag<C>> {
         let rcu_guard = self.0.rcu_guard;
 
         let va = self.0.va;
@@ -612,28 +587,14 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
 
         let old = self.0.cur_entry().replace(new_child);
         match old {
-            Child::None => None,
-            Child::Frame(pa, ch_level, prop) => {
-                debug_assert_eq!(ch_level, level);
-
-                // SAFETY:
-                // This is part of (if `split_huge` happens) a page table item mapped
-                // with a previous call to `C::item_into_raw`, where:
-                //  - The physical address and the paging level match it;
-                //  - The item part is now unmapped so we can take its ownership.
-                //
-                // For page table configs that require the `AVAIL1` flag to be kept
-                // (currently, only kernel page tables), the callers of the unsafe
-                // `protect_next` method uphold this invariant.
-                let item = unsafe { C::item_from_raw(pa, level, prop) };
-                Some(PageTableFrag::Mapped { va, item })
-            }
-            Child::PageTable(pt) => {
+            PteState::Absent => None,
+            PteState::Mapped(item) => Some(PageTableFrag::Mapped { va, item }),
+            PteState::PageTable(pt) => {
                 debug_assert_eq!(pt.level(), level - 1);
 
                 if !C::TOP_LEVEL_CAN_UNMAP && level == C::NR_LEVELS {
                     let _ = ManuallyDrop::new(pt); // leak it to make shared PTs stay `'static`.
-                    panic!("Unmapping shared kernel page table nodes");
+                    panic!("unmapping shared kernel page table nodes");
                 }
 
                 // SAFETY: We must have locked this node.
@@ -645,7 +606,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
                     unsafe { locking::dfs_mark_stray_and_unlock(rcu_guard, locked_pt) };
 
                 Some(PageTableFrag::StrayPageTable {
-                    pt: (*pt).clone().into(),
+                    pt,
                     va,
                     len: page_size::<C>(self.0.level),
                     num_frames,

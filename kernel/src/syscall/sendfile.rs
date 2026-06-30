@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
-    fs::file_table::{FileDesc, WithFileTable},
+    fs,
+    fs::file::file_table::{RawFileDesc, WithFileTable},
     prelude::*,
 };
 
 pub fn sys_sendfile(
-    out_fd: FileDesc,
-    in_fd: FileDesc,
+    out_fd: RawFileDesc,
+    in_fd: RawFileDesc,
     offset_ptr: Vaddr,
     count: isize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    trace!("raw offset ptr = 0x{:x}", offset_ptr);
+    debug!("raw offset ptr = 0x{:x}", offset_ptr);
 
     let offset = if offset_ptr == 0 {
         None
@@ -40,9 +43,9 @@ pub fn sys_sendfile(
         .thread_local
         .borrow_file_table_mut()
         .read_with(|inner| {
-            let out_file = inner.get_file(out_fd)?.clone();
+            let out_file = inner.get_file(out_fd.try_into()?)?.clone();
             // FIXME: the in_file must support mmap-like operations (i.e., it cannot be a socket).
-            let in_file = inner.get_file(in_fd)?.clone();
+            let in_file = inner.get_file(in_fd.try_into()?)?.clone();
             Ok::<_, Error>((out_file, in_file))
         })?;
 
@@ -116,6 +119,9 @@ pub fn sys_sendfile(
     if let Some(offset) = offset {
         ctx.user_space().write_val(offset_ptr, &(offset as isize))?;
     }
+
+    fs::vfs::notify::on_access(&in_file);
+    fs::vfs::notify::on_modify(&out_file);
 
     Ok(SyscallReturn::Return(total_len as _))
 }

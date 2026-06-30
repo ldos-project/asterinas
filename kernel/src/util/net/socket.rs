@@ -2,16 +2,19 @@
 
 use super::read_socket_addr_from_user;
 use crate::{
-    net::socket::util::SocketAddr,
+    net::socket::util::{ControlMessage, SocketAddr},
     prelude::*,
-    util::{VmReaderArray, VmWriterArray, net::write_socket_addr_with_max_len},
+    util::{
+        VmReaderArray, VmWriterArray, iovec::MAX_IO_VECTOR_LENGTH,
+        net::write_socket_addr_with_max_len,
+    },
 };
 
 /// Standard well-defined IP protocols.
-/// From https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/linux/in.h.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+/// From <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/linux/in.h>.
 #[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub enum Protocol {
     IPPROTO_IP = 0,         /* Dummy protocol for TCP		*/
     IPPROTO_ICMP = 1,       /* Internet Control Message Protocol	*/
@@ -42,10 +45,10 @@ pub enum Protocol {
 }
 
 /// Socket types.
-/// From https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/net.h
-#[repr(i32)]
+/// From <https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/net.h>.
 #[expect(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub enum SockType {
     /// Stream socket
     SOCK_STREAM = 1,
@@ -74,8 +77,9 @@ bitflags! {
     }
 }
 
+#[padding_struct]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct CUserMsgHdr {
     /// Pointer to socket address structure
     pub msg_name: Vaddr,
@@ -84,11 +88,11 @@ pub struct CUserMsgHdr {
     /// Scatter/Gather iov array
     pub msg_iov: Vaddr,
     /// The # of elements in msg_iov
-    pub msg_iovlen: u32,
+    pub msg_iovlen: usize,
     /// Ancillary data
     pub msg_control: Vaddr,
     /// Ancillary data buffer length
-    pub msg_controllen: u32,
+    pub msg_controllen: usize,
     /// Flags on received message
     pub msg_flags: u32,
 }
@@ -103,26 +107,72 @@ impl CUserMsgHdr {
         Ok(Some(socket_addr))
     }
 
-    pub fn write_socket_addr_to_user(&self, addr: &SocketAddr) -> Result<()> {
+    pub fn write_socket_addr_to_user(&self, addr: Option<&SocketAddr>) -> Result<i32> {
         if self.msg_name == 0 {
-            return Ok(());
+            // The length field will not be touched if the name pointer is NULL.
+            // See <https://elixir.bootlin.com/linux/v6.15.6/source/net/socket.c#L2792>.
+            return Ok(self.msg_namelen);
         }
 
-        write_socket_addr_with_max_len(addr, self.msg_name, self.msg_namelen)?;
-        Ok(())
+        let actual_len = if let Some(addr) = addr {
+            write_socket_addr_with_max_len(addr, self.msg_name, self.msg_namelen)?
+        } else {
+            0
+        };
+        Ok(actual_len)
+    }
+
+    pub fn read_control_messages_from_user(
+        &self,
+        user_space: &CurrentUserSpace,
+    ) -> Result<Vec<ControlMessage>> {
+        if self.msg_control == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut reader = user_space.reader(self.msg_control, self.msg_controllen)?;
+        let control_messages = ControlMessage::read_all_from(&mut reader)?;
+        Ok(control_messages)
+    }
+
+    pub fn write_control_messages_to_user(
+        &self,
+        control_messages: &[ControlMessage],
+        user_space: &CurrentUserSpace,
+    ) -> Result<u32> {
+        if self.msg_control == 0 {
+            if !control_messages.is_empty() {
+                warn!("setting MSG_CTRUNC is not supported");
+            }
+            // The length field will be set even if the control message pointer is NULL.
+            // See <https://elixir.bootlin.com/linux/v6.15.6/source/net/socket.c#L2807>.
+            return Ok(0);
+        }
+
+        let mut writer = user_space.writer(self.msg_control, self.msg_controllen)?;
+        let write_len = ControlMessage::write_all_to(control_messages, &mut writer) as u32;
+        Ok(write_len)
     }
 
     pub fn copy_reader_array_from_user<'a>(
         &self,
         user_space: &'a CurrentUserSpace<'a>,
     ) -> Result<VmReaderArray<'a>> {
-        VmReaderArray::from_user_io_vecs(user_space, self.msg_iov, self.msg_iovlen as usize)
+        if self.msg_iovlen > MAX_IO_VECTOR_LENGTH {
+            return_errno_with_message!(Errno::EMSGSIZE, "the I/O vector contains too many buffers");
+        }
+
+        VmReaderArray::from_user_io_vecs(user_space, self.msg_iov, self.msg_iovlen)
     }
 
     pub fn copy_writer_array_from_user<'a>(
         &self,
         user_space: &'a CurrentUserSpace<'a>,
     ) -> Result<VmWriterArray<'a>> {
-        VmWriterArray::from_user_io_vecs(user_space, self.msg_iov, self.msg_iovlen as usize)
+        if self.msg_iovlen > MAX_IO_VECTOR_LENGTH {
+            return_errno_with_message!(Errno::EMSGSIZE, "the I/O vector contains too many buffers");
+        }
+
+        VmWriterArray::from_user_io_vecs(user_space, self.msg_iov, self.msg_iovlen)
     }
 }

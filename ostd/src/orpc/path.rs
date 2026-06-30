@@ -7,7 +7,7 @@
 //! immediately after a name. This not required by the [`Path`] and [`PathPattern`] types, but is
 //! enforced in the syntax.
 
-use alloc::{borrow::ToOwned, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use core::{fmt::Display, hash::Hash};
 
 // TODO(arthurp): PERFORMANCE: Paths are constructed inefficiently with a lot of potential
@@ -69,7 +69,7 @@ impl Hash for PathComponent {
 
 impl PathComponent {
     /// Returns a ref (-like) value which provides uniform access to names as a `&str`.
-    pub fn borrow(&self) -> PathComponentRef {
+    pub fn borrow(&self) -> PathComponentRef<'_> {
         match self {
             PathComponent::Name(s) => PathComponentRef::Name(s),
             PathComponent::OwnedName(s) => PathComponentRef::Name(s),
@@ -126,7 +126,7 @@ impl Path {
     #[cfg(ktest)]
     /// Create an arbitrary path to use for testing.
     pub fn test() -> Path {
-        Path::new(vec![PathComponent::Name("TESTING_OQUEUE")])
+        Path::new(alloc::vec![PathComponent::Name("TESTING_OQUEUE")])
     }
 }
 
@@ -428,19 +428,19 @@ mod test {
     use crate::prelude::*;
 
     #[ktest]
-    fn test_path_display() {
+    fn path_display() {
         let path = path!(a.b[3].j);
         assert_eq!(path.to_string(), "a.b[3].j");
     }
 
     #[ktest]
-    fn test_path_pattern_display() {
+    fn path_pattern_display() {
         let pattern = path_pattern!(*[*].d[*].f);
         assert_eq!(pattern.to_string(), "*[*].d[*].f");
     }
 
     #[ktest]
-    fn test_path_component_display() {
+    fn path_component_display() {
         let name_component = PathComponent::Name("test");
         assert_eq!(name_component.to_string(), "test");
 
@@ -452,7 +452,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_component_pattern_display() {
+    fn path_component_pattern_display() {
         let fixed_name_pattern = PathComponentPattern::Fixed(PathComponent::Name("fixed"));
         assert_eq!(fixed_name_pattern.to_string(), "fixed");
 
@@ -464,7 +464,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_component_equality() {
+    fn path_component_equality() {
         let static_name = PathComponent::Name("test");
         let owned_name = PathComponent::OwnedName("test".to_string());
         assert_eq!(static_name, owned_name);
@@ -478,7 +478,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_component_pattern_matching() {
+    fn path_component_pattern_matching() {
         let fixed_name = PathComponentPattern::Fixed(PathComponent::Name("test"));
         assert!(fixed_name.matches(&PathComponent::Name("test")));
         assert!(fixed_name.matches(&PathComponent::OwnedName("test".to_string())));
@@ -494,7 +494,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_pattern_matching() {
+    fn path_pattern_matching() {
         let pattern = path_pattern!(a.b[*].d);
 
         assert!(pattern.matches(&path!(a.b[3].d)));
@@ -507,7 +507,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_pattern_prefix_matching() {
+    fn path_pattern_prefix_matching() {
         let pattern = path_pattern!(a.*[3]);
         let path = path!(a.b[3].d[2]);
         let suffix = pattern.matches_prefix(&path);
@@ -516,7 +516,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_pattern_suffix_matching() {
+    fn path_pattern_suffix_matching() {
         let pattern = path_pattern!(b[*].d);
         let path = path!(a.x[1].b[3].d);
         let prefix = pattern.matches_suffix(&path);
@@ -525,7 +525,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_path_concat() {
+    fn path_concat() {
         let path1 = path!(a.b[1]);
         let path2 = path!(c.d[2]);
         let concatenated = path1.append(&path2);
@@ -539,20 +539,20 @@ mod test {
     }
 
     #[ktest]
-    fn test_unique_index() {
+    fn unique_index() {
         let paths: [_; 2] = array::from_fn(|_| path!(a.b[unique]));
         assert_ne!(paths[0], paths[1]);
         assert!(path_pattern!(a.b[*]).matches(&paths[0]));
     }
 
     #[ktest]
-    fn test_dynamic_index() {
+    fn dynamic_index() {
         let index = 42;
         assert_eq!(path!(a[{ index }].b[{ 1 + 2 }]), path!(a[42].b[3]));
     }
 
     #[ktest]
-    fn test_dynamic_index_pattern() {
+    fn dynamic_index_pattern() {
         let index = 42;
         assert_eq!(
             path_pattern!(a[{ index }].b[{ 1 + 2 }]),
@@ -561,7 +561,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_dynamic_name() {
+    fn dynamic_name() {
         let name_a = "a";
         let name_b = "b".to_owned();
         let x = path!({name_a}.{name_b});
@@ -570,7 +570,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_dynamic_name_pattern() {
+    fn dynamic_name_pattern() {
         let name_a = "a";
         let name_b = "b".to_owned();
         assert_eq!(path_pattern!({name_a}.{name_b}), path_pattern!(a.b));

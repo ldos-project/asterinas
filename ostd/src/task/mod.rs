@@ -28,12 +28,18 @@ pub use self::{
     preempt::{DisabledPreemptGuard, disable_preempt, halt_cpu},
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
-pub(crate) use crate::arch::task::{TaskContext, context_switch};
 #[cfg(not(baseline_asterinas))]
 use crate::orpc::framework::Server;
-use crate::{cpu::context::UserContext, prelude::*, trap::in_interrupt_context};
+use crate::{arch::task::TaskContext, irq::InterruptLevel, prelude::*};
+
+static PRE_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
+
+/// Injects a handler to be executed before scheduling.
+pub fn inject_pre_schedule_handler(handler: fn()) {
+    PRE_SCHEDULE_HANDLER.call_once(|| handler);
+}
 
 /// Injects a handler to be executed after scheduling.
 pub fn inject_post_schedule_handler(handler: fn()) {
@@ -47,6 +53,7 @@ static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
 /// Each task is associated with per-task data and an optional user space.
 /// If having a user space, the task can switch to the user space to
 /// execute user code. Multiple tasks can share a single user space.
+#[derive(Debug)]
 pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
@@ -54,7 +61,6 @@ pub struct Task {
     data: Box<dyn Any + Send + Sync>,
     local_data: ForceSync<Box<dyn Any + Send>>,
 
-    user_ctx: Option<Arc<UserContext>>,
     ctx: SyncUnsafeCell<TaskContext>,
     /// kernel stack, note that the top is SyscallFrame/TrapFrame
     kstack: KernelStack,
@@ -85,23 +91,6 @@ impl PartialEq for Task {
 
 impl Eq for Task {}
 
-impl core::fmt::Debug for Task {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Task")
-            .field("func", &self.func)
-            .field("data", &self.data)
-            .field("local_data", &self.local_data)
-            .field("user_ctx", &self.user_ctx)
-            .field("ctx", &self.ctx)
-            .field("kstack", &self.kstack)
-            .field("switched_to_cpu", &self.switched_to_cpu)
-            .field("id", &self.id)
-            .field("schedule_info", &self.schedule_info)
-            // server's implementation might not be Debug, so omit it for now
-            .finish()
-    }
-}
-
 impl Task {
     /// Gets the current task.
     ///
@@ -125,22 +114,6 @@ impl Task {
 
     pub(super) fn ctx(&self) -> &SyncUnsafeCell<TaskContext> {
         &self.ctx
-    }
-
-    /// Sets thread-local storage pointer.
-    pub fn set_tls_pointer(&self, tls: usize) {
-        let ctx_ptr = self.ctx.get();
-
-        // SAFETY: it's safe to set user tls pointer in kernel context.
-        unsafe { (*ctx_ptr).set_tls_pointer(tls) }
-    }
-
-    /// Gets thread-local storage pointer.
-    pub fn tls_pointer(&self) -> usize {
-        let ctx_ptr = self.ctx.get();
-
-        // SAFETY: it's safe to get user tls pointer in kernel context.
-        unsafe { (*ctx_ptr).tls_pointer() }
     }
 
     /// Yields execution so that another task may be scheduled.
@@ -170,31 +143,6 @@ impl Task {
         &self.schedule_info
     }
 
-    /// Returns the user context of this task, if it has.
-    pub fn user_ctx(&self) -> Option<&Arc<UserContext>> {
-        if self.user_ctx.is_some() {
-            Some(self.user_ctx.as_ref().unwrap())
-        } else {
-            None
-        }
-    }
-
-    /// Saves the FPU state for user task.
-    pub fn save_fpu_state(&self) {
-        let Some(user_ctx) = self.user_ctx.as_ref() else {
-            return;
-        };
-        user_ctx.fpu_state().save();
-    }
-
-    /// Restores the FPU state for user task.
-    pub fn restore_fpu_state(&self) {
-        let Some(user_ctx) = self.user_ctx.as_ref() else {
-            return;
-        };
-        user_ctx.fpu_state().restore();
-    }
-
     /// Get an opaque ID for the thread. There are no guarantees about the ID other than that it is
     /// unique and stable. This is non-zero to allow compact representations of `Option<id>` in
     /// errors.
@@ -208,7 +156,6 @@ pub struct TaskOptions {
     func: Option<Box<dyn FnOnce() + Send>>,
     data: Option<Box<dyn Any + Send + Sync>>,
     local_data: Option<Box<dyn Any + Send>>,
-    user_ctx: Option<Arc<UserContext>>,
 }
 
 impl TaskOptions {
@@ -221,7 +168,6 @@ impl TaskOptions {
             func: Some(Box::new(func)),
             data: None,
             local_data: None,
-            user_ctx: None,
         }
     }
 
@@ -252,25 +198,25 @@ impl TaskOptions {
         self
     }
 
-    /// Sets the user context associated with the task.
-    pub fn user_ctx(mut self, user_ctx: Option<Arc<UserContext>>) -> Self {
-        self.user_ctx = user_ctx;
-        self
-    }
-
     /// Builds a new task without running it immediately.
     pub fn build(self) -> Result<Task> {
-        /// all task will entering this function
-        /// this function is mean to executing the task_fn in Task
-        extern "C" fn kernel_task_entry() -> ! {
+        // All tasks will enter this function. It is meant to execute the `task_fn` in `Task`.
+        //
+        // We provide an assembly wrapper for this function as the end of call stack so we
+        // have to disable name mangling for it.
+        //
+        // # Safety
+        //
+        // This function must be called from `switch.S` when the context is prepared correctly.
+        // SAFETY: The name does not collide with other symbols.
+        #[unsafe(no_mangle)]
+        unsafe extern "C" fn kernel_task_entry() -> ! {
             // SAFETY: The new task is switched on a CPU for the first time, `after_switching_to`
             // hasn't been called yet.
             unsafe { processor::after_switching_to() };
 
             let current_task = Task::current()
                 .expect("no current task, it should have current task in kernel task entry");
-
-            current_task.restore_fpu_state();
 
             // SAFETY: The `func` field will only be accessed by the current task in the task
             // context, so the data won't be accessed concurrently.
@@ -291,12 +237,10 @@ impl TaskOptions {
 
         let kstack = KernelStack::new_with_guard_page()?;
 
-        let mut ctx = SyncUnsafeCell::new(TaskContext::default());
-        if let Some(user_ctx) = self.user_ctx.as_ref() {
-            ctx.get_mut().set_tls_pointer(user_ctx.tls_pointer());
-        };
-        ctx.get_mut()
-            .set_instruction_pointer(kernel_task_entry as usize);
+        let mut ctx = TaskContext::new();
+        ctx.set_instruction_pointer(
+            crate::arch::task::kernel_task_entry_wrapper as *const () as usize,
+        );
         // We should reserve space for the return address in the stack, otherwise
         // we will write across the page boundary due to the implementation of
         // the context switch.
@@ -305,14 +249,13 @@ impl TaskOptions {
         // to at least 16 bytes. And a larger alignment is needed if larger arguments
         // are passed to the function. The `kernel_task_entry` function does not
         // have any arguments, so we only need to align the stack pointer to 16 bytes.
-        ctx.get_mut().set_stack_pointer(kstack.end_vaddr() - 16);
+        ctx.set_stack_pointer(kstack.end_vaddr() - 16);
 
         let new_task = Task {
             func: ForceSync::new(Cell::new(self.func)),
             data: self.data.unwrap_or_else(|| Box::new(())),
             local_data: ForceSync::new(self.local_data.unwrap_or_else(|| Box::new(()))),
-            user_ctx: self.user_ctx,
-            ctx,
+            ctx: SyncUnsafeCell::new(ctx),
             kstack,
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
@@ -367,7 +310,7 @@ impl CurrentTask {
     ///
     /// This method will panic if called in a non-task context.
     pub fn local_data(&self) -> &(dyn Any + Send) {
-        assert!(!in_interrupt_context());
+        assert!(InterruptLevel::current().is_task_context());
 
         let local_data = &self.local_data;
 
@@ -417,19 +360,13 @@ impl Borrow<Task> for CurrentTask {
     }
 }
 
-/// Trait for manipulating the task context.
-pub trait TaskContextApi {
-    /// Sets instruction pointer
+/// A trait that provides methods to manipulate the task context.
+pub(crate) trait TaskContextApi {
+    /// Sets the instruction pointer.
     fn set_instruction_pointer(&mut self, ip: usize);
 
-    /// Gets instruction pointer
-    fn instruction_pointer(&self) -> usize;
-
-    /// Sets stack pointer
+    /// Sets the stack pointer.
     fn set_stack_pointer(&mut self, sp: usize);
-
-    /// Gets stack pointer
-    fn stack_pointer(&self) -> usize;
 }
 
 #[cfg(ktest)]

@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! This mod defines mmap flags and the handler to syscall mmap
-
 use align_ext::AlignExt;
-use aster_rights::Rights;
 
 use super::SyscallReturn;
 use crate::{
-    fs::{
-        file_handle::FileLike,
-        file_table::{FileDesc, get_file_fast},
-    },
+    fs::file::file_table::{RawFileDesc, get_file_fast},
     prelude::*,
-    vm::{perms::VmPerms, vmar::is_userspace_vaddr, vmo::VmoOptions},
+    vm::{
+        perms::VmPerms,
+        vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, VmarMapOffset},
+        vmo::VmoOptions,
+    },
 };
 
 pub fn sys_mmap(
@@ -24,7 +22,7 @@ pub fn sys_mmap(
     offset: u64,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let perms = VmPerms::from_bits_truncate(perms as u32);
+    let perms = VmPerms::from_user_bits_truncate(perms as u32);
     let option = MMapOptions::try_from(flags as u32)?;
     let res = do_sys_mmap(
         addr as usize,
@@ -42,106 +40,91 @@ fn do_sys_mmap(
     addr: Vaddr,
     len: usize,
     vm_perms: VmPerms,
-    mut option: MMapOptions,
-    fd: FileDesc,
+    option: MMapOptions,
+    raw_fd: RawFileDesc,
     offset: usize,
     ctx: &Context,
 ) -> Result<Vaddr> {
     debug!(
-        "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, option = {:?}, fd = {}, offset = 0x{:x}",
-        addr, len, vm_perms, option, fd, offset
+        "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, option = {:?}, raw_fd = {}, offset = 0x{:x}",
+        addr, len, vm_perms, option, raw_fd, offset
     );
 
-    if option.flags.contains(MMapFlags::MAP_FIXED_NOREPLACE) {
-        option.flags.insert(MMapFlags::MAP_FIXED);
-    }
+    let len = check_len(len)?;
+    let addr = if option.flags().is_fixed() {
+        check_addr(addr, len)?;
+        addr
+    } else {
+        adjust_addr_hint(addr, len)
+    };
+    check_offset(offset, len, option.flags())?;
 
-    check_option(addr, len, &option)?;
-
-    if len == 0 {
-        return_errno_with_message!(Errno::EINVAL, "mmap len cannot be zero");
-    }
-    if len > isize::MAX as usize {
-        return_errno_with_message!(Errno::ENOMEM, "mmap len too large");
-    }
-
-    let len = len.align_up(PAGE_SIZE);
-
-    if offset % PAGE_SIZE != 0 {
-        return_errno_with_message!(Errno::EINVAL, "mmap only support page-aligned offset");
-    }
-    offset.checked_add(len).ok_or(Error::with_message(
-        Errno::EOVERFLOW,
-        "integer overflow when (offset + len)",
-    ))?;
-    if addr > isize::MAX as usize - len {
-        return_errno_with_message!(Errno::ENOMEM, "mmap (addr + len) too large");
-    }
-
-    // On x86, `PROT_WRITE` implies `PROT_READ`.
-    // <https://man7.org/linux/man-pages/man2/mmap.2.html>
-    #[cfg(target_arch = "x86_64")]
+    // On x86_64 and riscv64, `PROT_WRITE` implies `PROT_READ`.
+    // Reference:
+    // <https://man7.org/linux/man-pages/man2/mmap.2.html>,
+    // Section 5.11.3 from <https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf>,
+    // <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#translation>.
+    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
     let vm_perms = if !vm_perms.contains(VmPerms::READ) && vm_perms.contains(VmPerms::WRITE) {
         vm_perms | VmPerms::READ
     } else {
         vm_perms
     };
 
+    let mut vm_may_perms = VmPerms::ALL_MAY_PERMS;
+
     let user_space = ctx.user_space();
-    let root_vmar = user_space.root_vmar();
+    let vmar = user_space.vmar();
     let vm_map_options = {
-        let mut options = root_vmar.new_map(len, vm_perms)?;
-        let flags = option.flags;
-        if flags.contains(MMapFlags::MAP_FIXED) {
-            options = options.offset(addr).can_overwrite(true);
-        } else if flags.contains(MMapFlags::MAP_32BIT) {
-            // TODO: support MAP_32BIT. MAP_32BIT requires the map range to be below 2GB
-            warn!("MAP_32BIT is not supported");
+        let mut options = vmar.new_map(len, vm_perms)?;
+
+        if option.flags().is_fixed() {
+            if option.flags().contains(MMapFlags::MAP_FIXED_NOREPLACE) {
+                options = options.offset(VmarMapOffset::FixedNoReplace(addr));
+            } else {
+                options = options.offset(VmarMapOffset::FixedReplace(addr));
+            }
+        } else {
+            if option.flags().contains(MMapFlags::MAP_32BIT) {
+                // TODO: MAP_32BIT requires the mapping address to be below 2 GiB.
+                warn!("MAP_32BIT is not supported");
+            }
+            if addr != 0 {
+                options = options.offset(VmarMapOffset::Hint(addr))
+            }
         }
 
-        if option.typ() == MMapType::Shared {
+        if option.typ().is_shared() {
             options = options.is_shared(true);
         }
 
-        if option.flags.contains(MMapFlags::MAP_ANONYMOUS) {
-            if offset != 0 {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "offset must be zero for anonymous mapping"
-                );
-            }
-
-            // Anonymous shared mapping should share the same memory pages.
-            if option.typ() == MMapType::Shared {
+        if option.flags().contains(MMapFlags::MAP_ANONYMOUS) {
+            // Anonymous shared mappings should share the same memory pages.
+            if option.typ().is_shared() {
                 let shared_vmo = {
-                    let vmo_options: VmoOptions<Rights> = VmoOptions::new(len);
+                    let vmo_options = VmoOptions::new(len);
                     vmo_options.alloc()?
                 };
                 options = options.vmo(shared_vmo);
             }
         } else {
             let mut file_table = ctx.thread_local.borrow_file_table_mut();
-            let file = get_file_fast!(&mut file_table, fd);
-            let inode_handle = file.as_inode_or_err()?;
+            let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
-            let access_mode = inode_handle.access_mode();
+            let access_mode = file.access_mode();
             if vm_perms.contains(VmPerms::READ) && !access_mode.is_readable() {
-                return_errno!(Errno::EACCES);
+                return_errno_with_message!(Errno::EACCES, "the file is not opened readable");
             }
-            if option.typ() == MMapType::Shared
-                && vm_perms.contains(VmPerms::WRITE)
-                && !access_mode.is_writable()
-            {
-                return_errno!(Errno::EACCES);
-            }
-
-            let inode = inode_handle.dentry().inode();
-            if inode.page_cache().is_none() {
-                return_errno_with_message!(Errno::EBADF, "File does not have page cache");
+            if option.typ() == MMapType::Shared && !access_mode.is_writable() {
+                if vm_perms.contains(VmPerms::WRITE) {
+                    return_errno_with_message!(Errno::EACCES, "the file is not opened writable");
+                }
+                vm_may_perms.remove(VmPerms::MAY_WRITE);
             }
 
             options = options
-                .inode(inode.clone())
+                .may_perms(vm_may_perms)
+                .mappable(file.as_ref().as_ref())?
                 .vmo_offset(offset)
                 .handle_page_faults_around();
         }
@@ -150,44 +133,103 @@ fn do_sys_mmap(
     };
 
     let map_addr = vm_map_options.build()?;
+
     Ok(map_addr)
 }
 
-fn check_option(addr: Vaddr, size: usize, option: &MMapOptions) -> Result<()> {
-    if option.typ() == MMapType::File {
-        return_errno_with_message!(Errno::EINVAL, "Invalid mmap type");
+fn check_len(len: usize) -> Result<usize> {
+    if len == 0 {
+        return_errno_with_message!(Errno::EINVAL, "the mapping length is zero");
     }
 
-    let map_end = addr.checked_add(size).ok_or(Errno::EINVAL)?;
-    if option.flags().contains(MMapFlags::MAP_FIXED)
-        && !(is_userspace_vaddr(addr) && is_userspace_vaddr(map_end - 1))
-    {
-        return_errno_with_message!(Errno::EINVAL, "Invalid mmap fixed addr");
+    if len > VMAR_CAP_ADDR {
+        return_errno_with_message!(Errno::ENOMEM, "the mapping length is too large");
+    }
+
+    Ok(len.align_up(PAGE_SIZE))
+}
+
+fn check_addr(addr: Vaddr, len: usize) -> Result<()> {
+    if !addr.is_multiple_of(PAGE_SIZE) {
+        return_errno_with_message!(Errno::EINVAL, "the mapping address is not aligned");
+    }
+
+    if addr < VMAR_LOWEST_ADDR {
+        return_errno_with_message!(Errno::EPERM, "the mapping address is too low");
+    }
+
+    if addr > VMAR_CAP_ADDR - len {
+        return_errno_with_message!(Errno::ENOMEM, "the mapping address is too high");
     }
 
     Ok(())
 }
 
-// Definition of MMap flags, conforming to the linux mmap interface:
-// https://man7.org/linux/man-pages/man2/mmap.2.html
+fn adjust_addr_hint(mut addr: Vaddr, len: usize) -> Vaddr {
+    addr = addr.align_down(PAGE_SIZE);
+    if addr == 0 {
+        // No hint.
+        return 0;
+    }
+
+    if addr < VMAR_LOWEST_ADDR {
+        // This is Linux behavior.
+        // Reference: <https://elixir.bootlin.com/linux/v6.19.3/source/mm/mmap.c#L219>.
+        addr = VMAR_LOWEST_ADDR;
+    }
+    if addr > VMAR_CAP_ADDR - len {
+        // Illegal hint. Treat it as if there were no hint.
+        addr = 0;
+    }
+
+    addr
+}
+
+fn check_offset(offset: usize, len: usize, flags: MMapFlags) -> Result<()> {
+    if !offset.is_multiple_of(PAGE_SIZE) {
+        return_errno_with_message!(Errno::EINVAL, "the mapping offset is not aligned");
+    }
+
+    if flags.contains(MMapFlags::MAP_ANONYMOUS) {
+        return Ok(());
+    }
+
+    if offset
+        .checked_add(len)
+        .is_none_or(|end| end >= isize::MAX as usize)
+    {
+        return_errno_with_message!(Errno::EOVERFLOW, "the mapping offset overflows");
+    }
+
+    Ok(())
+}
+
+// Definition of mmap flags, conforming to the Linux mmap interface:
+// <https://man7.org/linux/man-pages/man2/mmap.2.html>.
 //
-// The first 4 bits of the flag value represents the type of memory map,
-// while other bits are used as memory map flags.
+// The first 4 bits of the flag value represents the type of the mapping,
+// while other bits are used as the flags of the mapping.
 
-// The map type mask
-const MAP_TYPE: u32 = 0xf;
+/// The mask for the mapping type.
+const MAP_TYPE_MASK: u32 = 0xf;
 
-#[derive(Copy, Clone, PartialEq, Debug, TryFromInt)]
 #[repr(u8)]
-pub enum MMapType {
-    File = 0x0, // Invalid
+#[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
+enum MMapType {
     Shared = 0x1,
     Private = 0x2,
     SharedValidate = 0x3,
 }
 
+impl MMapType {
+    pub(self) fn is_shared(self) -> bool {
+        matches!(self, Self::Shared | Self::SharedValidate)
+    }
+}
+
 bitflags! {
-    pub struct MMapFlags : u32 {
+    // If you update the flags here, please also check and update `LEGACY_MMAP_FLAGS` below.
+    struct MMapFlags : u32 {
         const MAP_FIXED           = 0x10;
         const MAP_ANONYMOUS       = 0x20;
         const MAP_32BIT           = 0x40;
@@ -200,13 +242,32 @@ bitflags! {
         const MAP_NONBLOCK        = 0x10000;
         const MAP_STACK           = 0x20000;
         const MAP_HUGETLB         = 0x40000;
-        const MAP_SYNC            = 0x80000;
         const MAP_FIXED_NOREPLACE = 0x100000;
     }
 }
 
+// Reference: <https://elixir.bootlin.com/linux/v6.18.1/source/include/linux/mman.h#L35-L59>
+const LEGACY_MMAP_FLAGS: MMapFlags = MMapFlags::MAP_FIXED
+    .union(MMapFlags::MAP_ANONYMOUS)
+    .union(MMapFlags::MAP_32BIT)
+    .union(MMapFlags::MAP_GROWSDOWN)
+    .union(MMapFlags::MAP_DENYWRITE)
+    .union(MMapFlags::MAP_EXECUTABLE)
+    .union(MMapFlags::MAP_LOCKED)
+    .union(MMapFlags::MAP_NORESERVE)
+    .union(MMapFlags::MAP_POPULATE)
+    .union(MMapFlags::MAP_NONBLOCK)
+    .union(MMapFlags::MAP_STACK)
+    .union(MMapFlags::MAP_HUGETLB);
+
+impl MMapFlags {
+    pub(self) fn is_fixed(self) -> bool {
+        self.contains(Self::MAP_FIXED) || self.contains(Self::MAP_FIXED_NOREPLACE)
+    }
+}
+
 #[derive(Debug)]
-pub struct MMapOptions {
+struct MMapOptions {
     typ: MMapType,
     flags: MMapFlags,
 }
@@ -215,23 +276,27 @@ impl TryFrom<u32> for MMapOptions {
     type Error = Error;
 
     fn try_from(value: u32) -> Result<Self> {
-        let typ_raw = (value & MAP_TYPE) as u8;
+        let typ_raw = (value & MAP_TYPE_MASK) as u8;
         let typ = MMapType::try_from(typ_raw)?;
 
-        let flags_raw = value & !MAP_TYPE;
-        let Some(flags) = MMapFlags::from_bits(flags_raw) else {
-            return Err(Error::with_message(Errno::EINVAL, "unknown mmap flags"));
-        };
+        // According to the Linux behavior, unknown flags are silently ignored unless
+        // `MAP_SHARED_VALIDATE` is specified.
+        let flags_raw = value & !MAP_TYPE_MASK;
+        if typ == MMapType::SharedValidate && (flags_raw & !LEGACY_MMAP_FLAGS.bits()) != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "the mapping flags are not supported");
+        }
+        let flags = MMapFlags::from_bits_truncate(flags_raw);
+
         Ok(MMapOptions { typ, flags })
     }
 }
 
 impl MMapOptions {
-    pub fn typ(&self) -> MMapType {
+    pub(self) fn typ(&self) -> MMapType {
         self.typ
     }
 
-    pub fn flags(&self) -> MMapFlags {
+    pub(self) fn flags(&self) -> MMapFlags {
         self.flags
     }
 }

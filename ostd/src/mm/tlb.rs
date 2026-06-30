@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 use core::{
+    mem::MaybeUninit,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -14,9 +15,11 @@ use super::{
 };
 use crate::{
     arch::irq,
+    const_assert,
     cpu::{AtomicCpuSet, CpuSet, PinCurrentCpu},
     cpu_local,
-    sync::{LocalIrqDisabled, SpinLock},
+    smp::IpiSender,
+    sync::{LocalIrqDisabled, RcuDrop, SpinLock},
 };
 
 /// A TLB flusher that is aware of which CPUs are needed to be flushed.
@@ -26,6 +29,7 @@ pub struct TlbFlusher<'a, G: PinCurrentCpu> {
     target_cpus: &'a AtomicCpuSet,
     have_unsynced_flush: CpuSet,
     ops_stack: OpsStack,
+    ipi_sender: Option<&'static IpiSender>,
     _pin_current: G,
 }
 
@@ -42,6 +46,7 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
             target_cpus,
             have_unsynced_flush: CpuSet::new_empty(),
             ops_stack: OpsStack::new(),
+            ipi_sender: crate::smp::IPI_SENDER.get(),
             _pin_current: pin_current_guard,
         }
     }
@@ -62,10 +67,13 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
     /// flushed. Otherwise if the page is recycled for other purposes, the user
     /// space program can still access the page through the TLB entries. This
     /// method is designed to be used in such cases.
+    ///
+    /// Furthermore, the frames will be dropped after the RCU grace period to
+    /// ensure that no RCU references are held to the frames.
     pub fn issue_tlb_flush_with(
         &mut self,
         op: TlbFlushOp,
-        drop_after_flush: Frame<dyn AnyFrameMeta>,
+        drop_after_flush: RcuDrop<Frame<dyn AnyFrameMeta>>,
     ) {
         self.ops_stack.push(op, Some(drop_after_flush));
     }
@@ -77,7 +85,7 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
     /// function. But it may not be synchronous. Upon the return of this
     /// function, the TLB entries may not be coherent.
     pub fn dispatch_tlb_flush(&mut self) {
-        let irq_guard = crate::trap::irq::disable_local();
+        let irq_guard = crate::irq::disable_local();
 
         if self.ops_stack.is_empty() {
             return;
@@ -95,20 +103,20 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
             need_flush_on_self = true;
         }
 
-        for cpu in target_cpus.iter() {
-            {
+        if let Some(ipi_sender) = self.ipi_sender {
+            for cpu in target_cpus.iter() {
+                self.have_unsynced_flush.add(cpu);
+
                 let mut flush_ops = FLUSH_OPS.get_on_cpu(cpu).lock();
                 flush_ops.push_from(&self.ops_stack);
-
                 // Clear ACK before dropping the lock to avoid false ACKs.
                 ACK_REMOTE_FLUSH
                     .get_on_cpu(cpu)
                     .store(false, Ordering::Relaxed);
             }
-            self.have_unsynced_flush.add(cpu);
-        }
 
-        crate::smp::inter_processor_call(&target_cpus, do_remote_flush);
+            ipi_sender.inter_processor_call(&target_cpus, do_remote_flush);
+        }
 
         // Flush ourselves after sending all IPIs to save some time.
         if need_flush_on_self {
@@ -134,6 +142,12 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
     /// processed in IRQs, two CPUs may deadlock if they are waiting for each
     /// other's TLB coherence.
     pub fn sync_tlb_flush(&mut self) {
+        if self.ipi_sender.is_none() {
+            // We performed some TLB flushes in the boot context. The AP's boot
+            // process should take care of them.
+            return;
+        }
+
         assert!(
             irq::is_local_enabled(),
             "Waiting for remote flush with IRQs disabled"
@@ -150,39 +164,102 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
 }
 
 /// The operation to flush TLB entries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TlbFlushOp {
-    /// Flush all TLB entries except for the global entries.
-    All,
-    /// Flush the TLB entry for the specified virtual address.
-    Address(Vaddr),
-    /// Flush the TLB entries for the specified virtual address range.
-    Range(Range<Vaddr>),
-}
+///
+/// The variants of this structure are:
+///  - Flushing all TLB entries except for the global entries;
+///  - Flushing the TLB entry associated with an address;
+///  - Flushing the TLB entries for a specific range of virtual addresses;
+///
+/// This is a `struct` instead of an `enum` because if trivially representing
+/// the three variants with an `enum`, it would be 24 bytes. To minimize the
+/// memory footprint, we encode all three variants into an 8-byte integer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlbFlushOp(Vaddr);
+
+// We require the address to be page-aligned, so the in-page offset part of the
+// address can be used to store the length. A sanity check to ensure that we
+// don't allow ranged flush operations with a too long length.
+const_assert!(TlbFlushOp::FLUSH_RANGE_NPAGES_MASK | (PAGE_SIZE - 1) == PAGE_SIZE - 1);
 
 impl TlbFlushOp {
+    const FLUSH_ALL_VAL: Vaddr = Vaddr::MAX;
+    const FLUSH_RANGE_NPAGES_MASK: Vaddr =
+        (1 << (usize::BITS - FLUSH_ALL_PAGES_THRESHOLD.leading_zeros())) - 1;
+
     /// Performs the TLB flush operation on the current CPU.
     pub fn perform_on_current(&self) {
         use crate::arch::mm::{
             tlb_flush_addr, tlb_flush_addr_range, tlb_flush_all_excluding_global,
         };
-        match self {
-            TlbFlushOp::All => tlb_flush_all_excluding_global(),
-            TlbFlushOp::Address(addr) => tlb_flush_addr(*addr),
-            TlbFlushOp::Range(range) => tlb_flush_addr_range(range),
+        match self.0 {
+            Self::FLUSH_ALL_VAL => tlb_flush_all_excluding_global(),
+            addr => {
+                let start = addr & !Self::FLUSH_RANGE_NPAGES_MASK;
+                let num_pages = addr & Self::FLUSH_RANGE_NPAGES_MASK;
+
+                debug_assert!((addr & (PAGE_SIZE - 1)) < FLUSH_ALL_PAGES_THRESHOLD);
+                debug_assert!(num_pages != 0);
+
+                if num_pages == 1 {
+                    tlb_flush_addr(start);
+                } else {
+                    tlb_flush_addr_range(&(start..start + num_pages * PAGE_SIZE));
+                }
+            }
         }
     }
 
-    fn optimize_for_large_range(self) -> Self {
-        match self {
-            TlbFlushOp::Range(range) => {
-                if range.len() > FLUSH_ALL_RANGE_THRESHOLD {
-                    TlbFlushOp::All
-                } else {
-                    TlbFlushOp::Range(range)
-                }
-            }
-            _ => self,
+    /// Creates a new TLB flush operation that flushes all TLB entries except
+    /// for the global entries.
+    pub const fn for_all() -> Self {
+        TlbFlushOp(Self::FLUSH_ALL_VAL)
+    }
+
+    /// Creates a new TLB flush operation that flushes the TLB entry associated
+    /// with the provided virtual address.
+    pub const fn for_single(addr: Vaddr) -> Self {
+        TlbFlushOp(addr | 1)
+    }
+
+    /// Creates a new TLB flush operation that flushes the TLB entries for the
+    /// specified virtual address range.
+    ///
+    /// If the range is too large, the resulting [`TlbFlushOp`] will flush all
+    /// TLB entries instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is not page-aligned or if the range is empty.
+    pub const fn for_range(range: Range<Vaddr>) -> Self {
+        assert!(
+            range.start.is_multiple_of(PAGE_SIZE),
+            "Range start must be page-aligned"
+        );
+        assert!(
+            range.end.is_multiple_of(PAGE_SIZE),
+            "Range end must be page-aligned"
+        );
+        assert!(range.start < range.end, "Range must not be empty");
+        let num_pages = (range.end - range.start) / PAGE_SIZE;
+        if num_pages >= FLUSH_ALL_PAGES_THRESHOLD {
+            return TlbFlushOp::for_all();
+        }
+        TlbFlushOp(range.start | (num_pages as Vaddr))
+    }
+
+    /// Returns the number of pages to flush.
+    ///
+    /// If it returns `u32::MAX`, it means to flush all the entries. Otherwise
+    /// the return value should be less than [`FLUSH_ALL_PAGES_THRESHOLD`] and
+    /// non-zero.
+    fn num_pages(&self) -> u32 {
+        if self.0 == Self::FLUSH_ALL_VAL {
+            u32::MAX
+        } else {
+            debug_assert!((self.0 & (PAGE_SIZE - 1)) < FLUSH_ALL_PAGES_THRESHOLD);
+            let num_pages = (self.0 & Self::FLUSH_RANGE_NPAGES_MASK) as u32;
+            debug_assert!(num_pages != 0);
+            num_pages
         }
     }
 }
@@ -214,88 +291,124 @@ fn do_remote_flush() {
     new_op_queue.flush_all();
 }
 
-/// If a TLB flushing request exceeds this threshold, we flush all.
-const FLUSH_ALL_RANGE_THRESHOLD: usize = 32 * PAGE_SIZE;
-
-/// If the number of pending requests exceeds this threshold, we flush all the
+/// If the number of pending pages to flush exceeds this threshold, we flush all the
 /// TLB entries instead of flushing them one by one.
-const FLUSH_ALL_OPS_THRESHOLD: usize = 32;
+const FLUSH_ALL_PAGES_THRESHOLD: usize = 32;
 
 struct OpsStack {
-    ops: [Option<TlbFlushOp>; FLUSH_ALL_OPS_THRESHOLD],
-    need_flush_all: bool,
-    size: usize,
-    page_keeper: Vec<Frame<dyn AnyFrameMeta>>,
+    /// From 0 to `num_ops`, the array entry must be initialized.
+    ops: [MaybeUninit<TlbFlushOp>; FLUSH_ALL_PAGES_THRESHOLD],
+    num_ops: u32,
+    /// If this is `u32::MAX`, we should flush all entries irrespective of the
+    /// contents of `ops`. And in this case `num_ops` must be zero.
+    ///
+    /// Otherwise, it counts the number of pages to flush in `ops`.
+    num_pages_to_flush: u32,
+    /// Keeps all the to-be-dropped frames.
+    ///
+    /// The elements cannot be modified after being pushed. And they must be
+    /// dropped after the RCU grace period and the TLB flushes.
+    frame_keeper: Vec<Frame<dyn AnyFrameMeta>>,
 }
 
 impl OpsStack {
     const fn new() -> Self {
         Self {
-            ops: [const { None }; FLUSH_ALL_OPS_THRESHOLD],
-            need_flush_all: false,
-            size: 0,
-            page_keeper: Vec::new(),
+            ops: [const { MaybeUninit::uninit() }; FLUSH_ALL_PAGES_THRESHOLD],
+            num_ops: 0,
+            num_pages_to_flush: 0,
+            frame_keeper: Vec::new(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        !self.need_flush_all && self.size == 0
+        self.num_ops == 0 && self.num_pages_to_flush == 0
     }
 
-    fn push(&mut self, op: TlbFlushOp, drop_after_flush: Option<Frame<dyn AnyFrameMeta>>) {
+    fn need_flush_all(&self) -> bool {
+        self.num_pages_to_flush == u32::MAX
+    }
+
+    fn push(&mut self, op: TlbFlushOp, drop_after_flush: Option<RcuDrop<Frame<dyn AnyFrameMeta>>>) {
         if let Some(frame) = drop_after_flush {
-            self.page_keeper.push(frame);
+            // SAFETY: By pushing into the `frame_keeper`, the frame will be
+            // dropped after the RCU grace period.
+            let (frame, panic_guard) = unsafe { RcuDrop::into_inner(frame) };
+            self.frame_keeper.push(frame);
+            panic_guard.forget();
         }
 
-        if self.need_flush_all {
+        if self.need_flush_all() {
             return;
         }
-        let op = op.optimize_for_large_range();
-        if op == TlbFlushOp::All || self.size >= FLUSH_ALL_OPS_THRESHOLD {
-            self.need_flush_all = true;
-            self.size = 0;
+        let op_num_pages = op.num_pages();
+        if op == TlbFlushOp::for_all()
+            || self.num_pages_to_flush + op_num_pages >= FLUSH_ALL_PAGES_THRESHOLD as u32
+        {
+            self.num_pages_to_flush = u32::MAX;
+            self.num_ops = 0;
             return;
         }
 
-        self.ops[self.size] = Some(op);
-        self.size += 1;
+        self.ops[self.num_ops as usize].write(op);
+        self.num_ops += 1;
+        self.num_pages_to_flush += op_num_pages;
     }
 
     fn push_from(&mut self, other: &OpsStack) {
-        self.page_keeper.extend(other.page_keeper.iter().cloned());
+        self.frame_keeper.extend(other.frame_keeper.iter().cloned());
 
-        if self.need_flush_all {
+        if self.need_flush_all() {
             return;
         }
-        if other.need_flush_all || self.size + other.size >= FLUSH_ALL_OPS_THRESHOLD {
-            self.need_flush_all = true;
-            self.size = 0;
+        if other.need_flush_all()
+            || self.num_pages_to_flush + other.num_pages_to_flush
+                >= FLUSH_ALL_PAGES_THRESHOLD as u32
+        {
+            self.num_pages_to_flush = u32::MAX;
+            self.num_ops = 0;
             return;
         }
 
-        for i in 0..other.size {
-            self.ops[self.size] = other.ops[i].clone();
-            self.size += 1;
+        for other_op in other.ops_iter() {
+            self.ops[self.num_ops as usize].write(other_op.clone());
+            self.num_ops += 1;
         }
+        self.num_pages_to_flush += other.num_pages_to_flush;
     }
 
     fn flush_all(&mut self) {
-        if self.need_flush_all {
+        if self.need_flush_all() {
             crate::arch::mm::tlb_flush_all_excluding_global();
         } else {
-            for i in 0..self.size {
-                if let Some(op) = &self.ops[i] {
-                    op.perform_on_current();
-                }
-            }
+            self.ops_iter().for_each(|op| {
+                op.perform_on_current();
+            });
         }
 
         self.clear_without_flush();
     }
 
     fn clear_without_flush(&mut self) {
-        self.need_flush_all = false;
-        self.size = 0;
-        self.page_keeper.clear();
+        self.num_pages_to_flush = 0;
+        self.num_ops = 0;
+        if !self.frame_keeper.is_empty() {
+            let _ = RcuDrop::new(core::mem::take(&mut self.frame_keeper));
+        }
+    }
+
+    fn ops_iter(&self) -> impl Iterator<Item = &TlbFlushOp> {
+        self.ops.iter().take(self.num_ops as usize).map(|op| {
+            // SAFETY: From 0 to `num_ops`, the array entry must be initialized.
+            unsafe { op.assume_init_ref() }
+        })
+    }
+}
+
+impl Drop for OpsStack {
+    fn drop(&mut self) {
+        if !self.frame_keeper.is_empty() {
+            let _ = RcuDrop::new(core::mem::take(&mut self.frame_keeper));
+        }
     }
 }

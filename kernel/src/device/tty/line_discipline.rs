@@ -2,11 +2,9 @@
 
 use ostd::const_assert;
 
-use super::{
-    PushCharError,
-    termio::{CCtrlCharId, CTermios, CWinSize},
-};
+use super::termio::{CCtrlCharId, CTermios, CWinSize};
 use crate::{
+    device::tty::termio::{CInputFlags, CLocalFlags},
     prelude::*,
     process::signal::{
         constants::{SIGINT, SIGQUIT},
@@ -100,8 +98,8 @@ impl LineDiscipline {
         ch: u8,
         mut signal_callback: F1,
         echo_callback: F2,
-    ) -> core::result::Result<(), PushCharError> {
-        let ch = if self.termios.contains_icrnl() && ch == b'\r' {
+    ) -> Result<()> {
+        let ch = if self.termios.input_flags().contains(CInputFlags::ICRNL) && ch == b'\r' {
             b'\n'
         } else {
             ch
@@ -114,7 +112,7 @@ impl LineDiscipline {
 
         // Typically, a TTY in raw mode does not echo. But the TTY can also be in a CBREAK mode,
         // with ICANON closed and ECHO opened.
-        if self.termios.contain_echo() {
+        if self.termios.local_flags().contains(CLocalFlags::ECHO) {
             self.output_char(ch, echo_callback);
         }
 
@@ -122,7 +120,7 @@ impl LineDiscipline {
             // If the buffer is full, we should not push the character into the buffer. The caller
             // can silently ignore the error (if the input comes from the keyboard) or block the
             // user space (if the input comes from the pseduoterminal master).
-            return Err(PushCharError);
+            return_errno_with_message!(Errno::EAGAIN, "the buffer is full");
         }
 
         // Raw mode
@@ -147,9 +145,7 @@ impl LineDiscipline {
         if is_line_terminator(ch, &self.termios) {
             // A new line is met. Move all bytes in `current_line` to `read_buffer`.
             // Note that `unwrap()` below won't fail because we checked `is_full()` above.
-            for line_ch in self.current_line.drain() {
-                self.read_buffer.push(*line_ch).unwrap();
-            }
+            self.flush_line().unwrap();
             self.read_buffer.push(ch).unwrap();
         }
 
@@ -167,11 +163,11 @@ impl LineDiscipline {
             b'\n' => echo_callback(b"\n"),
             b'\r' => echo_callback(b"\r\n"),
             ch if ch == self.termios.special_char(CCtrlCharId::VERASE) => {
-                // Write a space to overwrite the current character
-                echo_callback(b"\x08 \x08");
+                // The driver should erase the current character
+                echo_callback(b"\x08");
             }
             ch if is_printable_char(ch) => echo_callback(&[ch]),
-            ch if is_ctrl_char(ch) && self.termios.contains_echo_ctl() => {
+            ch if is_ctrl_char(ch) && self.termios.local_flags().contains(CLocalFlags::ECHOCTL) => {
                 echo_callback(&[b'^', ctrl_char_to_printable(ch)]);
             }
             _ => {}
@@ -242,6 +238,19 @@ impl LineDiscipline {
 
     pub fn set_termios(&mut self, termios: CTermios) {
         self.termios = termios;
+
+        // When switching to raw mode, any pending input bytes should become immediately available.
+        // Note that `unwrap()` below won't fail because we checked `is_full()` in `push_char`.
+        // TODO: Define the correct behavior for pending bytes when switching back to canonical mode.
+        if !self.termios.is_canonical_mode() {
+            self.flush_line().unwrap();
+        }
+    }
+
+    /// Flushes the bytes in the current line into the read buffer.
+    fn flush_line(&mut self) -> Option<()> {
+        let bytes = self.current_line.drain();
+        self.read_buffer.push_slice(bytes)
     }
 
     pub fn window_size(&self) -> CWinSize {
@@ -261,7 +270,9 @@ fn is_line_terminator(ch: u8, termios: &CTermios) -> bool {
         return true;
     }
 
-    if termios.contains_iexten() && ch == termios.special_char(CCtrlCharId::VEOL2) {
+    if termios.local_flags().contains(CLocalFlags::IEXTEN)
+        && ch == termios.special_char(CCtrlCharId::VEOL2)
+    {
         return true;
     }
 
@@ -285,7 +296,7 @@ fn is_ctrl_char(ch: u8) -> bool {
 }
 
 fn char_to_signal(ch: u8, termios: &CTermios) -> Option<SigNum> {
-    if !termios.is_canonical_mode() || !termios.contains_isig() {
+    if !termios.is_canonical_mode() || !termios.local_flags().contains(CLocalFlags::ISIG) {
         return None;
     }
 

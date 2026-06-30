@@ -2,13 +2,13 @@
 
 use ostd::{
     cpu_local_cell,
+    irq::{InterruptLevel, disable_local},
     sync::{GuardTransfer, SpinGuardian},
     task::{
         DisabledPreemptGuard,
         atomic_mode::{AsAtomicModeGuard, InAtomicMode},
         disable_preempt,
     },
-    trap::{in_interrupt_context, irq::disable_local},
 };
 
 use crate::process_all_pending;
@@ -38,10 +38,11 @@ impl AsAtomicModeGuard for DisableLocalBottomHalfGuard {
 
 impl Drop for DisableLocalBottomHalfGuard {
     fn drop(&mut self) {
+        let in_task_context = InterruptLevel::current().is_task_context();
         // Once the guard is dropped, we will process pending items within
         // the current thread's context if softirq is going to be enabled.
         // This behavior is similar to how Linux handles pending softirqs.
-        if DISABLE_SOFTIRQ_COUNT.load() == 1 && !in_interrupt_context() {
+        if DISABLE_SOFTIRQ_COUNT.load() == 1 && in_task_context {
             // Preemption and softirq are not really enabled at the moment,
             // so we can guarantee that we'll process any pending softirqs for the current CPU.
             let irq_guard = disable_local();

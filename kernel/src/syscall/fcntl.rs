@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_handle::FileLike,
-        file_table::{FdFlags, FileDesc, WithFileTable, get_file_fast},
-        utils::{
-            FileRange, OFFSET_MAX, RangeLockItem, RangeLockItemBuilder, RangeLockType, StatusFlags,
+        file::{
+            FileLike, StatusFlags,
+            file_table::{FdFlags, FileDesc, RawFileDesc, WithFileTable, get_file_fast},
         },
+        ramfs::memfd::{FileSeals, MemfdInodeHandle},
+        vfs::range_lock::{FileRange, OFFSET_MAX, RangeLockItem, RangeLockType},
     },
     prelude::*,
-    process::{Pid, process_table},
+    process::{Pid, pid_table},
 };
 
-pub fn sys_fcntl(fd: FileDesc, cmd: i32, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
+pub fn sys_fcntl(raw_fd: RawFileDesc, cmd: i32, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
+    let fd = FileDesc::try_from(raw_fd)?;
     let fcntl_cmd = FcntlCmd::try_from(cmd)?;
     debug!("fd = {}, cmd = {:?}, arg = {}", fd, fcntl_cmd, arg);
     match fcntl_cmd {
@@ -31,16 +35,18 @@ pub fn sys_fcntl(fd: FileDesc, cmd: i32, arg: u64, ctx: &Context) -> Result<Sysc
         }),
         FcntlCmd::F_GETOWN => handle_getown(fd, ctx),
         FcntlCmd::F_SETOWN => handle_setown(fd, arg, ctx),
+        FcntlCmd::F_ADD_SEALS => handle_addseal(fd, arg, ctx),
+        FcntlCmd::F_GET_SEALS => handle_getseal(fd, ctx),
     }
 }
 
 fn handle_dupfd(fd: FileDesc, arg: u64, flags: FdFlags, ctx: &Context) -> Result<SyscallReturn> {
     let file_table = ctx.thread_local.borrow_file_table();
-    let new_fd = file_table
-        .unwrap()
-        .write()
-        .dup(fd, arg as FileDesc, flags)?;
-    Ok(SyscallReturn::Return(new_fd as _))
+    let ceil_fd = (arg as RawFileDesc)
+        .try_into()
+        .map_err(|_| Error::with_message(Errno::EINVAL, "invalid fd"))?;
+    let new_fd = file_table.unwrap().write().dup_ceil(fd, ceil_fd, flags)?;
+    Ok(SyscallReturn::Return(new_fd.into()))
 }
 
 fn handle_getfd(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
@@ -98,11 +104,8 @@ fn handle_getlk(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> 
     if lock_type == RangeLockType::Unlock {
         return_errno_with_message!(Errno::EINVAL, "invalid flock type for getlk");
     }
-    let mut lock = RangeLockItemBuilder::new()
-        .type_(lock_type)
-        .range(from_c_flock_and_file(&lock_mut_c, &**file)?)
-        .build()?;
-    let inode_file = file.as_inode_or_err()?;
+    let mut lock = RangeLockItem::new(lock_type, from_c_flock_and_file(&lock_mut_c, &**file)?);
+    let inode_file = file.as_inode_handle_or_err()?;
     lock = inode_file.test_range_lock(lock)?;
     lock_mut_c.copy_from_range_lock(&lock);
     ctx.user_space().write_val(lock_mut_ptr, &lock_mut_c)?;
@@ -120,11 +123,8 @@ fn handle_setlk(
     let lock_mut_ptr = arg as Vaddr;
     let lock_mut_c = ctx.user_space().read_val::<c_flock>(lock_mut_ptr)?;
     let lock_type = RangeLockType::try_from(lock_mut_c.l_type)?;
-    let lock = RangeLockItemBuilder::new()
-        .type_(lock_type)
-        .range(from_c_flock_and_file(&lock_mut_c, &**file)?)
-        .build()?;
-    let inode_file = file.as_inode_or_err()?;
+    let lock = RangeLockItem::new(lock_type, from_c_flock_and_file(&lock_mut_c, &**file)?);
+    let inode_file = file.as_inode_handle_or_err()?;
     inode_file.set_range_lock(&lock, is_nonblocking)?;
     Ok(SyscallReturn::Return(0))
 }
@@ -149,10 +149,14 @@ fn handle_setown(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn>
     let owner_process = if pid == 0 {
         None
     } else {
-        Some(process_table::get_process(pid).ok_or(Error::with_message(
-            Errno::ESRCH,
-            "cannot set_owner with an invalid pid",
-        ))?)
+        Some(
+            pid_table::pid_table_mut()
+                .get_process(pid)
+                .ok_or(Error::with_message(
+                    Errno::ESRCH,
+                    "cannot set_owner with an invalid pid",
+                ))?,
+        )
     };
 
     let file_table = ctx.thread_local.borrow_file_table();
@@ -162,9 +166,30 @@ fn handle_setown(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn>
     Ok(SyscallReturn::Return(0))
 }
 
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+fn handle_addseal(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
+    let new_seals = FileSeals::from_bits(arg as u32)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid seals"))?;
+
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    file.as_inode_handle_or_err()?.add_seals(new_seals)?;
+
+    Ok(SyscallReturn::Return(0))
+}
+
+fn handle_getseal(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    let file_seals = file.as_inode_handle_or_err()?.get_seals()?;
+
+    Ok(SyscallReturn::Return(file_seals.bits() as _))
+}
+
 #[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 enum FcntlCmd {
     F_DUPFD = 0,
     F_GETFD = 1,
@@ -177,14 +202,16 @@ enum FcntlCmd {
     F_SETOWN = 8,
     F_GETOWN = 9,
     F_DUPFD_CLOEXEC = 1030,
+    F_ADD_SEALS = 1033,
+    F_GET_SEALS = 1034,
 }
 
 #[expect(non_camel_case_types)]
 pub type off_t = i64;
 
 #[expect(non_camel_case_types)]
-#[derive(Debug, Copy, Clone, TryFromInt)]
 #[repr(u16)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub enum RangeLockWhence {
     SEEK_SET = 0,
     SEEK_CUR = 1,
@@ -192,8 +219,9 @@ pub enum RangeLockWhence {
 }
 
 /// C struct for a file range lock in Libc
+#[padding_struct]
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct c_flock {
     /// Type of lock: F_RDLCK, F_WRLCK, or F_UNLCK
     pub l_type: u16,
@@ -229,15 +257,19 @@ fn from_c_flock_and_file(lock: &c_flock, file: &dyn FileLike) -> Result<FileRang
         let whence = RangeLockWhence::try_from(lock.l_whence)?;
         match whence {
             RangeLockWhence::SEEK_SET => lock.l_start,
-            RangeLockWhence::SEEK_CUR => (file.as_inode_or_err()?.offset() as off_t)
+            RangeLockWhence::SEEK_CUR => (file.as_inode_handle_or_err()?.offset() as off_t)
                 .checked_add(lock.l_start)
                 .ok_or(Error::with_message(Errno::EOVERFLOW, "start overflow"))?,
 
-            RangeLockWhence::SEEK_END => (file.metadata().size as off_t)
+            RangeLockWhence::SEEK_END => (file.path().inode().metadata().size as off_t)
                 .checked_add(lock.l_start)
                 .ok_or(Error::with_message(Errno::EOVERFLOW, "start overflow"))?,
         }
     };
+
+    if start < 0 {
+        return Err(Error::with_message(Errno::EINVAL, "invalid start"));
+    }
 
     let (start, end) = match lock.l_len {
         len if len > 0 => {
@@ -249,6 +281,7 @@ fn from_c_flock_and_file(lock: &c_flock, file: &dyn FileLike) -> Result<FileRang
         0 => (start as usize, OFFSET_MAX),
         len if len < 0 => {
             let end = start;
+            // `start + len` won't overflow because `start >= 0` and `len < 0`.
             let new_start = start + len;
             if new_start < 0 {
                 return Err(Error::with_message(Errno::EINVAL, "invalid len"));

@@ -5,6 +5,7 @@ use std::{
     ffi::OsStr,
     fs::{self, File},
     io::{BufRead, BufReader, Result, Write},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::Command,
     sync::{LazyLock, Mutex},
@@ -14,12 +15,19 @@ use crate::{error::Errno, error_msg};
 
 use quote::ToTokens;
 
-/// The version of OSTD on crates.io.
-///
-/// OSTD shares the same version with OSDK, so just use the version of OSDK here.
-pub const OSTD_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn ostd_dep() -> String {
-    format!("ostd = {{ version = \"{}\" }}", OSTD_VERSION)
+    if let Some("1") = option_env!("OSDK_LOCAL_DEV") {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CARGO_MANIFEST_DIR should have a parent directory")
+            .join("ostd");
+        let path = path.to_string_lossy();
+        format!("ostd = {{ path = \"{}\" }}", path)
+    } else {
+        // OSTD shares the same version with OSDK, so just use the version of OSDK here.
+        const OSTD_VERSION: &str = env!("CARGO_PKG_VERSION");
+        format!("ostd = {{ version = \"{}\" }}", OSTD_VERSION)
+    }
 }
 
 fn cargo() -> Command {
@@ -76,7 +84,7 @@ pub fn get_target_directory() -> PathBuf {
 }
 
 /// Information about an OSDK crate.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct CrateInfo {
     pub name: String,
     pub version: String,
@@ -289,7 +297,7 @@ pub fn trace_panic_from_log(qemu_log: File, bin_path: PathBuf) {
     let exe = bin_path.to_string_lossy();
 
     let mut addr2line = new_command_checked_exists("addr2line");
-    addr2line.args(["-e", &exe]);
+    addr2line.args(["-e", &exe, "-f", "-C"]);
     let mut addr2line_proc = addr2line
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -301,22 +309,47 @@ pub fn trace_panic_from_log(qemu_log: File, bin_path: PathBuf) {
             println!("[OSDK] The kernel seems panicked. Parsing stack trace for source lines:");
             trace_exists = true;
         }
-        if trace_exists {
-            if let Some(cap) = pc_matcher.captures(&line) {
-                let pc = cap.get(1).unwrap().as_str();
-                let mut stdin = addr2line_proc.stdin.as_ref().unwrap();
-                stdin.write_all(pc.as_bytes()).unwrap();
-                stdin.write_all(b"\n").unwrap();
-                let mut line = String::new();
-                let mut stdout = BufReader::new(addr2line_proc.stdout.as_mut().unwrap());
-                stdout.read_line(&mut line).unwrap();
-                stack_num += 1;
-                println!("({: >3}) {}", stack_num, line.trim());
-            }
+        if trace_exists && let Some(cap) = pc_matcher.captures(&line) {
+            let pc = cap.get(1).unwrap().as_str();
+            let mut stdin = addr2line_proc.stdin.as_ref().unwrap();
+            stdin.write_all(pc.as_bytes()).unwrap();
+            stdin.write_all(b"\n").unwrap();
+            let mut function = String::new();
+            let mut line = String::new();
+            let mut stdout = BufReader::new(addr2line_proc.stdout.as_mut().unwrap());
+            stdout.read_line(&mut function).unwrap();
+            stdout.read_line(&mut line).unwrap();
+            stack_num += 1;
+            println!("({: >3}) {}", stack_num, function.trim());
+            println!("          at {}", line.trim());
         }
     }
     addr2line_proc.kill().unwrap();
     addr2line_proc.wait().unwrap();
+}
+
+/// Dump the coverage data from QEMU if the coverage information is found in the log.
+pub fn dump_coverage_from_qemu(qemu_log: File, monitor_socket: &mut UnixStream) {
+    const COVERAGE_SIGNATRUE: &str = "#### Coverage: ";
+    let reader = rev_buf_reader::RevBufReader::new(qemu_log);
+
+    let Some(line) = reader
+        .lines()
+        .find(|l| l.as_ref().unwrap().starts_with(COVERAGE_SIGNATRUE))
+        .map(|l| l.unwrap())
+    else {
+        return;
+    };
+
+    let line = line.strip_prefix(COVERAGE_SIGNATRUE).unwrap();
+    let (addr, size) = line.split_once(' ').unwrap();
+    let addr = usize::from_str_radix(addr.strip_prefix("0x").unwrap(), 16).unwrap();
+    let size: usize = size.parse().unwrap();
+
+    let cmd = format!("memsave 0x{addr:x} {size} coverage.profraw\n");
+    if monitor_socket.write_all(cmd.as_bytes()).is_ok() {
+        info!("Coverage data saved to coverage.profraw");
+    }
 }
 
 /// A guard that ensures the current working directory is restored

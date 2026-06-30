@@ -2,24 +2,39 @@
 
 use ostd::sync::SpinLock;
 
+use super::file::PtySlaveFile;
 use crate::{
-    device::tty::{PushCharError, Tty, TtyDriver},
+    device::{
+        DevtmpfsInodeMeta,
+        pty::packet::{PacketCtrl, PacketStatus},
+        tty::{
+            Tty, TtyDriver, TtyFlags,
+            termio::{CCtrlCharId, CInputFlags, CLocalFlags, CTermios},
+        },
+    },
     events::IoEvents,
-    prelude::{Errno, Result, return_errno_with_message},
+    fs::file::FileIo,
+    prelude::*,
     process::signal::Pollee,
-    util::ring_buffer::RingBuffer,
+    util::{
+        ioctl::{RawIoctl, dispatch_ioctl},
+        ring_buffer::RingBuffer,
+    },
 };
 
 const BUFFER_CAPACITY: usize = 8192;
 
 /// A pseudoterminal driver.
 ///
-/// This is contained in the PTY slave, but it maintains the output buffer and the pollee of the
+/// This is contained in the pty slave, but it maintains the output buffer and the pollee of the
 /// master. The pollee of the slave is part of the [`Tty`] structure (see the definition of
 /// [`PtySlave`]).
 pub struct PtyDriver {
     output: SpinLock<RingBuffer<u8>>,
     pollee: Pollee,
+    opened_slaves: SpinLock<usize>,
+    tty_flags: TtyFlags,
+    packet_ctrl: PacketCtrl,
 }
 
 /// A pseudoterminal slave.
@@ -27,9 +42,14 @@ pub type PtySlave = Tty<PtyDriver>;
 
 impl PtyDriver {
     pub(super) fn new() -> Self {
+        let tty_flags = TtyFlags::new();
+        tty_flags.set_pty_locked();
         Self {
             output: SpinLock::new(RingBuffer::new(BUFFER_CAPACITY)),
             pollee: Pollee::new(),
+            opened_slaves: SpinLock::new(0),
+            tty_flags,
+            packet_ctrl: PacketCtrl::new(),
         }
     }
 
@@ -38,14 +58,37 @@ impl PtyDriver {
             return Ok(0);
         }
 
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/drivers/tty/n_tty.c#L2245>.
+        match self.packet_ctrl.take_status() {
+            None => {
+                // Packet mode is disabled.
+                self.read_output(buf)
+            }
+            Some(packet_status) if !packet_status.is_empty() => {
+                // Some packet status is pending.
+                buf[0] = packet_status.bits();
+                Ok(1)
+            }
+            Some(_) => {
+                // There's no pending packet status.
+                let data_len = self.read_output(&mut buf[1..])?;
+                buf[0] = 0;
+                Ok(data_len + 1)
+            }
+        }
+    }
+
+    fn read_output(&self, buf: &mut [u8]) -> Result<usize> {
         let mut output = self.output.lock();
         if output.is_empty() {
+            if self.tty_flags.is_other_closed() {
+                return_errno_with_message!(Errno::EIO, "the pty slave has been closed");
+            }
             return_errno_with_message!(Errno::EAGAIN, "the buffer is empty");
         }
 
         let read_len = output.len().min(buf.len());
         output.pop_slice(&mut buf[..read_len]).unwrap();
-
         Ok(read_len)
     }
 
@@ -56,10 +99,33 @@ impl PtyDriver {
     pub(super) fn buffer_len(&self) -> usize {
         self.output.lock().len()
     }
+
+    pub(super) fn opened_slaves(&self) -> &SpinLock<usize> {
+        &self.opened_slaves
+    }
+
+    pub(super) fn tty_flags(&self) -> &TtyFlags {
+        &self.tty_flags
+    }
+
+    pub(super) fn packet_ctrl(&self) -> &PacketCtrl {
+        &self.packet_ctrl
+    }
 }
 
 impl TtyDriver for PtyDriver {
-    fn push_output(&self, chs: &[u8]) -> core::result::Result<usize, PushCharError> {
+    // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/linux/major.h#L147>.
+    const DEVICE_MAJOR_ID: u32 = 136;
+
+    fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsInodeMeta<'_>> {
+        None
+    }
+
+    fn open(tty: Arc<Tty<Self>>) -> Result<Box<dyn FileIo>> {
+        Ok(Box::new(PtySlaveFile::new(tty)?))
+    }
+
+    fn push_output(&self, chs: &[u8]) -> Result<usize> {
         let mut output = self.output.lock();
 
         let mut len = 0;
@@ -72,20 +138,15 @@ impl TtyDriver for PtyDriver {
             } else if *ch != b'\n' && !output.is_full() {
                 output.push(*ch).unwrap();
             } else if len == 0 {
-                return Err(PushCharError);
+                return_errno_with_message!(Errno::EAGAIN, "the output buffer is full");
             } else {
                 break;
             }
             len += 1;
         }
 
-        self.pollee.notify(IoEvents::IN);
+        self.pollee.notify(IoEvents::IN | IoEvents::RDNORM);
         Ok(len)
-    }
-
-    fn drain_output(&self) {
-        self.output.lock().clear();
-        self.pollee.invalidate();
     }
 
     fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
@@ -98,7 +159,7 @@ impl TtyDriver for PtyDriver {
             }
 
             if !has_notified {
-                self.pollee.notify(IoEvents::IN);
+                self.pollee.notify(IoEvents::IN | IoEvents::RDNORM);
                 has_notified = true;
             }
         }
@@ -111,5 +172,58 @@ impl TtyDriver for PtyDriver {
 
     fn notify_input(&self) {
         self.pollee.notify(IoEvents::OUT);
+    }
+
+    fn on_termios_change(&self, old_termios: &CTermios, new_termios: &CTermios) {
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/drivers/tty/pty.c#L246>.
+        let extproc = old_termios.local_flags().contains(CLocalFlags::EXTPROC)
+            || new_termios.local_flags().contains(CLocalFlags::EXTPROC);
+        let old_flow = old_termios.input_flags().contains(CInputFlags::IXON)
+            && old_termios.special_char(CCtrlCharId::VSTOP) == 0o23
+            && old_termios.special_char(CCtrlCharId::VSTART) == 0o21;
+        let new_flow = new_termios.input_flags().contains(CInputFlags::IXON)
+            && new_termios.special_char(CCtrlCharId::VSTOP) == 0o23
+            && new_termios.special_char(CCtrlCharId::VSTART) == 0o21;
+
+        if (old_flow == new_flow) && !extproc {
+            return;
+        }
+
+        let has_set = self.packet_ctrl.set_status(|packet_status| {
+            if old_flow != new_flow {
+                *packet_status &= !(PacketStatus::DOSTOP | PacketStatus::NOSTOP);
+                if new_flow {
+                    *packet_status |= PacketStatus::DOSTOP;
+                } else {
+                    *packet_status |= PacketStatus::NOSTOP;
+                }
+            }
+
+            if extproc {
+                *packet_status |= PacketStatus::IOCTL;
+            }
+        });
+
+        if has_set {
+            self.pollee
+                .notify(IoEvents::PRI | IoEvents::IN | IoEvents::RDNORM);
+        }
+    }
+
+    fn ioctl(&self, tty: &Tty<Self>, raw_ioctl: RawIoctl) -> Result<bool>
+    where
+        Self: Sized,
+    {
+        use super::ioctl_defs::*;
+
+        dispatch_ioctl!(match raw_ioctl {
+            cmd @ GetPtyNumber => {
+                let idx = tty.index();
+                cmd.write(&idx)?;
+            }
+            _ => return Ok(false),
+        });
+
+        Ok(true)
     }
 }

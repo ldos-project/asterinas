@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(unused_variables)]
-
-use rand::{Error as RandError, RngCore, rngs::StdRng};
+use rand::{RngCore, SeedableRng, rngs::StdRng};
 use spin::Once;
 
 use crate::prelude::*;
@@ -12,48 +10,51 @@ static RNG: Once<SpinLock<StdRng>> = Once::new();
 /// Fill `dest` with random bytes.
 ///
 /// It's cryptographically secure, as documented in [`rand::rngs::StdRng`].
-pub fn getrandom(dst: &mut [u8]) -> Result<()> {
-    Ok(RNG.get().unwrap().lock().try_fill_bytes(dst)?)
+pub fn getrandom(dst: &mut [u8]) {
+    RNG.get().unwrap().lock().fill_bytes(dst);
 }
 
 pub fn init() {
     // The seed used to initialize the RNG is required to be secure and unpredictable.
+    let seed = get_random_seed();
 
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
-            use rand::SeedableRng;
-            use ostd::arch::read_random;
-
-            let mut seed = <StdRng as SeedableRng>::Seed::default();
-            let mut chunks = seed.as_mut().chunks_exact_mut(size_of::<u64>());
-            for chunk in chunks.by_ref() {
-                let src = read_random().expect("read_random failed multiple times").to_ne_bytes();
-                chunk.copy_from_slice(&src);
-            }
-            let tail = chunks.into_remainder();
-            let n = tail.len();
-            if n > 0 {
-                let src = read_random().expect("read_random failed multiple times").to_ne_bytes();
-                tail.copy_from_slice(&src[..n]);
-            }
-
-            RNG.call_once(|| SpinLock::new(StdRng::from_seed(seed)));
-        } else if #[cfg(target_arch = "riscv64")] {
-            use rand::SeedableRng;
-            use ostd::arch::boot::DEVICE_TREE;
-
-            let chosen = DEVICE_TREE.get().unwrap().find_node("/chosen").unwrap();
-            let seed = chosen.property("rng-seed").unwrap().value.try_into().unwrap();
-
-            RNG.call_once(|| SpinLock::new(StdRng::from_seed(seed)));
-        } else {
-            compile_error!("unsupported target");
-        }
-    }
+    RNG.call_once(|| SpinLock::new(StdRng::from_seed(seed)));
 }
 
-impl From<RandError> for Error {
-    fn from(value: RandError) -> Self {
-        Error::with_message(Errno::ENOSYS, "cannot generate random bytes")
+#[cfg(target_arch = "x86_64")]
+fn get_random_seed() -> <StdRng as SeedableRng>::Seed {
+    use ostd::arch::read_random;
+
+    let mut seed = <StdRng as SeedableRng>::Seed::default();
+
+    // Notes for future refactorings: If hardware randomness cannot be generated (i.e., if
+    // `read_random` fails), we can usually continue with pseudorandomness. However, we should stop
+    // if we are TD guests. For more details, see
+    // <https://intel.github.io/ccc-linux-guest-hardening-docs/security-spec.html#randomness-inside-tdx-guest>.
+    let mut chunks = seed.as_mut().chunks_exact_mut(size_of::<u64>());
+    for chunk in chunks.by_ref() {
+        let src = read_random().expect("`read_random` failed").to_ne_bytes();
+        chunk.copy_from_slice(&src);
     }
+    let tail = chunks.into_remainder();
+    let n = tail.len();
+    if n > 0 {
+        let src = read_random().expect("`read_random` failed").to_ne_bytes();
+        tail.copy_from_slice(&src[..n]);
+    }
+
+    seed
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn get_random_seed() -> <StdRng as SeedableRng>::Seed {
+    use ostd::arch::boot::DEVICE_TREE;
+
+    let chosen = DEVICE_TREE.get().unwrap().find_node("/chosen").unwrap();
+    chosen
+        .property("rng-seed")
+        .unwrap()
+        .value
+        .try_into()
+        .unwrap()
 }

@@ -1,69 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::SyscallReturn;
-use crate::{
-    ipc::{
-        IpcFlags,
-        semaphore::system_v::{
-            PermissionMode,
-            sem_set::{SEMMSL, check_sem, create_sem_set, create_sem_set_with_id},
-        },
-    },
-    prelude::*,
-};
+use crate::{ipc::IpcFlags, prelude::*};
 
-pub fn sys_semget(key: i32, nsems: i32, semflags: i32, ctx: &Context) -> Result<SyscallReturn> {
-    if nsems < 0 || nsems as usize > SEMMSL {
-        return_errno!(Errno::EINVAL);
-    }
-    if key < 0 {
-        return_errno!(Errno::EINVAL);
-    }
-
-    let flags = IpcFlags::from_bits_truncate(semflags as u32);
-    let mode: u16 = (semflags as u32 & 0x1FF) as u16;
-    let nsems = nsems as usize;
-    let credentials = ctx.posix_thread.credentials();
+pub fn sys_semget(key: i32, nsems: i32, semflg: i32, ctx: &Context) -> Result<SyscallReturn> {
+    let num_sems = nsems as usize;
+    let flags = IpcFlags::from_bits_truncate(semflg.cast_unsigned());
+    let mode: u16 = (semflg.cast_unsigned() & 0x1FF) as u16;
 
     debug!(
-        "[sys_semget] key = {}, nsems = {}, flags = {:?}",
-        key, nsems, semflags
+        "semget: key = {}, num_sems = {}, flags = {:?}, mode = {:03o}",
+        key, num_sems, flags, mode
     );
 
-    // Create a new semaphore set directly
-    const IPC_NEW: i32 = 0;
-    if key == IPC_NEW {
-        if nsems == 0 {
-            return_errno!(Errno::EINVAL);
-        }
-        return Ok(SyscallReturn::Return(
-            create_sem_set(nsems, mode, credentials)? as isize,
-        ));
-    }
+    let ns_proxy = ctx.thread_local.borrow_ns_proxy();
+    let ipc_ns = ns_proxy.unwrap().ipc_ns();
 
-    // Get a semaphore set, and create if necessary
-    match check_sem(
-        key,
-        Some(nsems),
-        PermissionMode::ALTER | PermissionMode::READ,
-    ) {
-        Ok(_) => {
-            if flags.contains(IpcFlags::IPC_CREAT | IpcFlags::IPC_EXCL) {
-                return_errno!(Errno::EEXIST);
-            }
-        }
-        Err(err) => {
-            let need_create = err.error() == Errno::ENOENT && flags.contains(IpcFlags::IPC_CREAT);
-            if !need_create {
-                return Err(err);
-            }
-            if nsems == 0 {
-                return_errno!(Errno::EINVAL);
-            }
+    let credentials = ctx.posix_thread.credentials();
+    let semid = ipc_ns.get_or_create_sem_set(key, num_sems, flags, mode, credentials)?;
 
-            create_sem_set_with_id(key, nsems, mode, credentials)?
-        }
-    };
-
-    Ok(SyscallReturn::Return(key as isize))
+    Ok(SyscallReturn::Return(semid.get() as isize))
 }

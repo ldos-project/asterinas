@@ -4,11 +4,13 @@ use aster_rights::{Dup, Read, TRights, Write};
 use aster_rights_proc::require;
 use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
 
-use super::{Credentials, Gid, Uid, capabilities::CapSet, credentials_::Credentials_};
+use super::{Credentials, Gid, SecureBits, Uid, capabilities::CapSet, credentials_::Credentials_};
 use crate::prelude::*;
 
 impl<R: TRights> Credentials<R> {
-    /// Creates a root `Credentials`. This method can only be used when creating the first process
+    /// Creates a root `Credentials`.
+    ///
+    /// This method can only be used when creating the init process.
     pub fn new_root() -> Self {
         let uid = Uid::new_root();
         let gid = Gid::new_root();
@@ -43,9 +45,9 @@ impl<R: TRights> Credentials<R> {
         Credentials(credentials_, R1::new())
     }
 
-    // *********** Uid methods **********
+    // *********** UID methods **********
 
-    /// Gets real user id.
+    /// Gets the real user ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -53,7 +55,7 @@ impl<R: TRights> Credentials<R> {
         self.0.ruid()
     }
 
-    /// Gets effective user id.
+    /// Gets the effective user ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -61,7 +63,7 @@ impl<R: TRights> Credentials<R> {
         self.0.euid()
     }
 
-    /// Gets saved-set user id.
+    /// Gets the saved-set user ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -69,7 +71,7 @@ impl<R: TRights> Credentials<R> {
         self.0.suid()
     }
 
-    /// Gets file system user id.
+    /// Gets the filesystem user ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -77,25 +79,20 @@ impl<R: TRights> Credentials<R> {
         self.0.fsuid()
     }
 
-    /// Gets keep capabilities flag.
+    /// Sets the user ID.
     ///
-    /// This method requires the `Read` right.
-    #[require(R > Read)]
-    pub fn keep_capabilities(&self) -> bool {
-        self.0.keep_capabilities()
-    }
-
-    /// Sets uid. If self is privileged, sets the effective, real, saved-set user ids as `uid`,
-    /// Otherwise, sets effective user id as `uid`.
+    /// If `self` is privileged, sets the real, effective, saved-set user IDs as `uid`, Otherwise,
+    /// sets the effective user ID as `uid`.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn set_uid(&self, uid: Uid) {
-        self.0.set_uid(uid);
+    pub fn set_uid(&self, uid: Uid) -> Result<()> {
+        self.0.set_uid(uid)
     }
 
-    /// Sets real, effective user ids as `ruid`, `euid` respectively. if `ruid` or `euid`
-    /// is `None`, the corresponding user id will leave unchanged.
+    /// Sets the real, effective user IDs as `ruid`, `euid` respectively.
+    ///
+    /// If `ruid` or `euid` is `None`, the corresponding user ID will leave unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -103,8 +100,9 @@ impl<R: TRights> Credentials<R> {
         self.0.set_reuid(ruid, euid)
     }
 
-    /// Sets real, effective, saved-set user ids as `ruid`, `euid`, `suid` respectively. if
-    /// `ruid`, `euid` or `suid` is `None`, the corresponding user id will leave unchanged.
+    /// Sets the real, effective, saved-set user IDs as `ruid`, `euid`, `suid` respectively.
+    ///
+    /// If `ruid`, `euid`, or `suid` is `None`, the corresponding user ID will leave unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -117,17 +115,19 @@ impl<R: TRights> Credentials<R> {
         self.0.set_resuid(ruid, euid, suid)
     }
 
-    /// Sets file system user id as `fsuid`. Returns the original file system user id.
-    /// If `fsuid` is None, leaves file system user id unchanged.
+    /// Sets the filesystem user ID as `fsuid` and returns the original filesystem user ID.
+    ///
+    /// If `fsuid` is `None`, leaves the filesystem user ID unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn set_fsuid(&self, fsuid: Option<Uid>) -> Result<Uid> {
+    pub fn set_fsuid(&self, fsuid: Option<Uid>) -> core::result::Result<Uid, Uid> {
         self.0.set_fsuid(fsuid)
     }
 
-    /// Sets effective user id as `euid`. This method should only be used when executing a file
-    /// whose `setuid` bit is set.
+    /// Sets the effective user ID as `euid`.
+    ///
+    /// This method should only be used when executing a file whose `setuid` bit is set.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -135,8 +135,9 @@ impl<R: TRights> Credentials<R> {
         self.0.set_euid(euid);
     }
 
-    /// Sets saved-set user id as the same of effective user id. This method should only be used when
-    /// executing a new executable file.
+    /// Sets the saved-set user ID as the same of the effective user ID.
+    ///
+    /// This method should only be used when executing a new executable file.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -145,17 +146,9 @@ impl<R: TRights> Credentials<R> {
         self.0.set_suid(euid);
     }
 
-    /// Sets keep capabilities flag.
-    ///
-    /// This method requires the `Write` right.
-    #[require(R > Write)]
-    pub fn set_keep_capabilities(&self, keep_capabilities: bool) {
-        self.0.set_keep_capabilities(keep_capabilities);
-    }
+    // *********** GID methods **********
 
-    // *********** Gid methods **********
-
-    /// Gets real group id.
+    /// Gets the real group ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -163,7 +156,7 @@ impl<R: TRights> Credentials<R> {
         self.0.rgid()
     }
 
-    /// Gets effective group id.
+    /// Gets the effective group ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -171,7 +164,7 @@ impl<R: TRights> Credentials<R> {
         self.0.egid()
     }
 
-    /// Gets saved-set group id.
+    /// Gets the saved-set group ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -179,7 +172,7 @@ impl<R: TRights> Credentials<R> {
         self.0.sgid()
     }
 
-    /// Gets file system group id.
+    /// Gets the filesystem group ID.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -187,17 +180,20 @@ impl<R: TRights> Credentials<R> {
         self.0.fsgid()
     }
 
-    /// Sets gid. If self is privileged, sets the effective, real, saved-set group ids as `gid`,
-    /// Otherwise, sets effective group id as `gid`.
+    /// Sets the group ID.
+    ///
+    /// If `self` is privileged, sets the real, effective, saved-set group IDs as `gid`, Otherwise,
+    /// sets the effective group ID as `gid`.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn set_gid(&self, gid: Gid) {
-        self.0.set_gid(gid);
+    pub fn set_gid(&self, gid: Gid) -> Result<()> {
+        self.0.set_gid(gid)
     }
 
-    /// Sets real, effective group ids as `rgid`, `egid` respectively. if `rgid` or `egid`
-    /// is `None`, the corresponding group id will leave unchanged.
+    /// Sets the real, effective group IDs as `rgid`, `egid` respectively.
+    ///
+    /// If `rgid` or `egid` is `None`, the corresponding group ID will leave unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -205,8 +201,9 @@ impl<R: TRights> Credentials<R> {
         self.0.set_regid(rgid, egid)
     }
 
-    /// Sets real, effective, saved-set group ids as `rgid`, `egid`, `sgid` respectively. if
-    /// `rgid`, `egid` or `sgid` is `None`, the corresponding group id will leave unchanged.
+    /// Sets the real, effective, saved-set group IDs as `rgid`, `egid`, `sgid` respectively.
+    ///
+    /// If `rgid`, `egid`, or `sgid` is `None`, the corresponding group ID will leave unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -219,17 +216,19 @@ impl<R: TRights> Credentials<R> {
         self.0.set_resgid(rgid, egid, sgid)
     }
 
-    /// Sets file system group id as `fsgid`. Returns the original file system group id.
-    /// If `fsgid` is None, leaves file system group id unchanged.
+    /// Sets the filesystem group ID as `fsgid` and returns the original filesystem group ID.
+    ///
+    /// If `fsgid` is `None`, leaves the filesystem group ID unchanged.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn set_fsgid(&self, fsgid: Option<Gid>) -> Result<Gid> {
+    pub fn set_fsgid(&self, fsgid: Option<Gid>) -> core::result::Result<Gid, Gid> {
         self.0.set_fsgid(fsgid)
     }
 
-    /// Sets effective group id as `egid`. This method should only be used when executing a file
-    /// whose `setgid` bit is set.
+    /// Sets the effective group ID as `egid`.
+    ///
+    /// This method should only be used when executing a file whose `setgid` bit is set.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -237,8 +236,9 @@ impl<R: TRights> Credentials<R> {
         self.0.set_egid(egid);
     }
 
-    /// Sets saved-set group id as the same of effective group id. This method should only be used when
-    /// executing a new executable file.
+    /// Sets the saved-set group ID as the same of the effective group ID.
+    ///
+    /// This method should only be used when executing a new executable file.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -247,27 +247,27 @@ impl<R: TRights> Credentials<R> {
         self.0.set_sgid(egid);
     }
 
-    // *********** Supplementary group methods **********
+    // *********** Supplementary Groups methods **********
 
-    /// Acquires the read lock of supplementary group ids.
+    /// Acquires the read lock of supplementary group IDs.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
-    pub fn groups(&self) -> RwLockReadGuard<BTreeSet<Gid>, PreemptDisabled> {
+    pub fn groups(&self) -> RwLockReadGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
         self.0.groups()
     }
 
-    /// Acquires the write lock of supplementary group ids.
+    /// Acquires the write lock of supplementary group IDs.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
-    pub fn groups_mut(&self) -> RwLockWriteGuard<BTreeSet<Gid>, PreemptDisabled> {
+    pub fn groups_mut(&self) -> RwLockWriteGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
         self.0.groups_mut()
     }
 
-    // *********** Linux Capability methods **********
+    // *********** Linux Capabilities methods **********
 
-    /// Gets the capabilities that child process can inherit.
+    /// Gets the capabilities that child processes can inherit.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -275,7 +275,7 @@ impl<R: TRights> Credentials<R> {
         self.0.inheritable_capset()
     }
 
-    /// Gets the capabilities that are permitted.
+    /// Gets the capabilities that a process can potentially be granted.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -283,7 +283,7 @@ impl<R: TRights> Credentials<R> {
         self.0.permitted_capset()
     }
 
-    /// Gets the capabilities that actually use.
+    /// Gets the capabilities that a process can actually use.
     ///
     /// This method requires the `Read` right.
     #[require(R > Read)]
@@ -291,7 +291,15 @@ impl<R: TRights> Credentials<R> {
         self.0.effective_capset()
     }
 
-    /// Sets the capabilities that child process can inherit.
+    /// Gets the capability bounding set.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub fn bounding_capset(&self) -> CapSet {
+        self.0.bounding_capset()
+    }
+
+    /// Sets the capabilities that child processes can inherit.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -299,7 +307,7 @@ impl<R: TRights> Credentials<R> {
         self.0.set_inheritable_capset(inheritable_capset);
     }
 
-    /// Sets the capabilities that are permitted.
+    /// Sets the capabilities that a process can potentially be granted.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
@@ -307,11 +315,60 @@ impl<R: TRights> Credentials<R> {
         self.0.set_permitted_capset(permitted_capset);
     }
 
-    /// Sets the capabilities that actually use.
+    /// Sets the capabilities that a process can actually use.
     ///
     /// This method requires the `Write` right.
     #[require(R > Write)]
     pub fn set_effective_capset(&self, effective_capset: CapSet) {
         self.0.set_effective_capset(effective_capset);
+    }
+
+    /// Drops one capability from the capability bounding set.
+    ///
+    /// If the caller does not have the `CAP_SETPCAP` capability, this method returns an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub fn drop_bounding_capability(&self, capability: CapSet) -> Result<()> {
+        self.0.drop_bounding_capability(capability)
+    }
+
+    /// Gets the keep-capabilities flag.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub fn keep_capabilities(&self) -> bool {
+        self.0.keep_capabilities()
+    }
+
+    /// Sets the keep-capabilities flag.
+    ///
+    /// If the [`SecureBits::KEEP_CAPS_LOCKED`] is set, this method will return an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub fn set_keep_capabilities(&self, keep_capabilities: bool) -> Result<()> {
+        self.0.set_keep_capabilities(keep_capabilities)
+    }
+
+    // *********** Secure Bits methods **********
+
+    /// Gets the secure bits.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub fn securebits(&self) -> SecureBits {
+        self.0.securebits()
+    }
+
+    /// Sets the secure bits.
+    ///
+    /// If the caller does not have the `CAP_SETPCAP` capability, or if it tries to set locked
+    /// bits, this method will return an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub fn set_securebits(&self, securebits: SecureBits) -> Result<()> {
+        self.0.set_securebits(securebits)
     }
 }

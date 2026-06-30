@@ -11,7 +11,7 @@
 //!
 //! without any additional configurations.
 //!
-//! Asterinas diffrentiates the boot protocol by the entry point
+//! Asterinas differentiates the boot protocol by the entry point
 //! chosen by the boot loader. In each entry point function,
 //! the universal callback registration method from
 //! `crate::boot` will be called. Thus the initialization of
@@ -22,7 +22,7 @@ mod linux_boot;
 mod multiboot;
 mod multiboot2;
 
-pub mod smp;
+pub(crate) mod smp;
 
 use core::arch::global_asm;
 

@@ -2,9 +2,14 @@
 
 use core::time::Duration;
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
-    fs::{device::DeviceId, file_table::FileDesc, fs_resolver::FsPath, utils::Metadata},
+    fs::{
+        file::file_table::RawFileDesc,
+        vfs::path::{EmptyPathStr, FsPath, Path},
+    },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
@@ -12,7 +17,7 @@ use crate::{
 const STATX_ATTR_MOUNT_ROOT: u64 = 0x0000_2000;
 
 pub fn sys_statx(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     filename_ptr: Vaddr,
     flags: u32,
     mask: u32,
@@ -29,10 +34,6 @@ pub fn sys_statx(
         dirfd, filename, flags, mask, statx_buf_ptr,
     );
 
-    if filename.is_empty() && !flags.contains(StatxFlags::AT_EMPTY_PATH) {
-        return_errno_with_message!(Errno::ENOENT, "path is empty");
-    }
-
     if flags.contains(StatxFlags::AT_STATX_FORCE_SYNC)
         && flags.contains(StatxFlags::AT_STATX_DONT_SYNC)
     {
@@ -46,26 +47,30 @@ pub fn sys_statx(
         );
     }
 
-    let dentry = {
+    let path = {
         let filename = filename.to_string_lossy();
-        let fs_path = FsPath::new(dirfd, filename.as_ref())?;
-        let fs = ctx.posix_thread.fs().resolver().read();
+        // TODO: We can retrieve the metadata from `FileLike`. See `sys_fstat` as an example.
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
         if flags.contains(StatxFlags::AT_SYMLINK_NOFOLLOW) {
-            fs.lookup_no_follow(&fs_path)?
+            path_resolver.lookup_no_follow(&fs_path)?
         } else {
-            fs.lookup(&fs_path)?
+            path_resolver.lookup(&fs_path)?
         }
     };
 
-    let statx = Statx::from(dentry.metadata());
+    let statx = Statx::new(&path);
 
     user_space.write_val(statx_buf_ptr, &statx)?;
     Ok(SyscallReturn::Return(0))
 }
 
 /// Structures for the extended file attribute retrieval system call statx.
-#[derive(Debug, Clone, Copy, Pod, Default)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct Statx {
     /// Indicates which fields in the `statx` structure were successfully filled,
     /// reflecting the state information supported by the filesystem.
@@ -116,52 +121,50 @@ pub struct Statx {
     __spare3: [u64; 12],
 }
 
-impl From<Metadata> for Statx {
-    fn from(info: Metadata) -> Self {
-        let devid = DeviceId::from(info.dev);
-        let rdevid = DeviceId::from(info.rdev);
+impl Statx {
+    fn new(path: &Path) -> Self {
+        let info = path.metadata();
 
-        // FIXME: We assume it is always not mount_root.
-        let stx_attributes = 0;
+        let (stx_dev_major, stx_dev_minor) =
+            device_id::decode_device_numbers(info.container_dev_id.as_encoded_u64());
+        let (stx_rdev_major, stx_rdev_minor) =
+            device_id::decode_device_numbers(info.self_dev_id.map_or(0, |id| id.as_encoded_u64()));
 
+        // TODO: Support more `stx_attributes` flags.
         let stx_attributes_mask = STATX_ATTR_MOUNT_ROOT;
 
-        let stx_mask = StatxMask::STATX_TYPE.bits()
-            | StatxMask::STATX_MODE.bits()
-            | StatxMask::STATX_NLINK.bits()
-            | StatxMask::STATX_UID.bits()
-            | StatxMask::STATX_GID.bits()
-            | StatxMask::STATX_ATIME.bits()
-            | StatxMask::STATX_MTIME.bits()
-            | StatxMask::STATX_CTIME.bits()
-            | StatxMask::STATX_INO.bits()
-            | StatxMask::STATX_SIZE.bits()
-            | StatxMask::STATX_BLOCKS.bits()
-            | StatxMask::STATX_BTIME.bits();
+        let mut stx_attributes = 0;
+        if path.is_mount_root() {
+            stx_attributes |= STATX_ATTR_MOUNT_ROOT;
+        }
+
+        let stx_mask = StatxMask::STATX_BASIC_STATS.bits()
+            | StatxMask::STATX_BTIME.bits()
+            | StatxMask::STATX_MNT_ID.bits();
 
         Self {
             // FIXME: All zero fields below are dummy implementations that need to be improved in the future.
             stx_mask,
-            stx_blksize: info.blk_size as u32,
+            stx_blksize: info.optimal_block_size as u32,
             stx_attributes,
-            stx_nlink: info.nlinks as u32,
+            stx_nlink: info.nr_hard_links as u32,
             stx_uid: info.uid.into(),
             stx_gid: info.gid.into(),
             stx_mode: info.type_ as u16 | info.mode.bits(),
             __spare0: [0; 1],
             stx_ino: info.ino,
             stx_size: info.size as u64,
-            stx_blocks: (info.blocks * (info.blk_size / 512)) as u64,
+            stx_blocks: info.nr_sectors_allocated as u64,
             stx_attributes_mask,
-            stx_atime: StatxTimestamp::from(info.atime),
-            stx_btime: StatxTimestamp::from(info.atime),
-            stx_ctime: StatxTimestamp::from(info.ctime),
-            stx_mtime: StatxTimestamp::from(info.ctime),
-            stx_rdev_major: rdevid.major(),
-            stx_rdev_minor: rdevid.minor(),
-            stx_dev_major: devid.major(),
-            stx_dev_minor: devid.minor(),
-            stx_mnt_id: 0,
+            stx_atime: StatxTimestamp::from(info.last_access_at),
+            stx_btime: StatxTimestamp::from(Duration::ZERO), // TODO: Metadata do not track birth time for now.
+            stx_ctime: StatxTimestamp::from(info.last_meta_change_at),
+            stx_mtime: StatxTimestamp::from(info.last_modify_at),
+            stx_rdev_major,
+            stx_rdev_minor,
+            stx_dev_major,
+            stx_dev_minor,
+            stx_mnt_id: path.mount_node().id() as u64,
             stx_dio_mem_align: 0,
             stx_dio_offset_align: 0,
             __spare3: [0; 12],
@@ -170,8 +173,8 @@ impl From<Metadata> for Statx {
 }
 
 /// Statx Timestamp (seconds and nanoseconds)
-#[derive(Debug, Clone, Copy, Pod, Default)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct StatxTimestamp {
     /// Seconds
     tv_sec: i64,
@@ -242,15 +245,21 @@ bitflags! {
         const STATX_BASIC_STATS     = 0x000007ff;
         /// Want stx_btime
         const STATX_BTIME           = 0x00000800;
-        /// Deprecated: The same as STATX_BASIC_STATS | STATX_BTIME
-        const STATX_ALL             = 0x00000fff;
         /// Want stx_mnt_id
         const STATX_MNT_ID          = 0x00001000;
         /// Want stx_dio_mem_align and stx_dio_offset_align
         const STATX_DIOALIGN        = 0x00002000;
+        /// Want extended stx_mount_id
+        const STATX_MNT_ID_UNIQUE   = 0x00004000;
+        /// Want stx_subvol
+        const STATX_SUBVOL          = 0x00008000;
+        /// Want stx_write_atomic
+        const STATX_WRITE_ATOMIC    = 0x00010000;
+        /// Wand dio read alignment info
+        const STATX_DIO_READ_ALIGN  = 0x00020000;
         /// Reserved for future struct statx expansion
         const STATX_RESERVED		= 0x80000000;
-        /// Want/got stx_change_attr
-        const STATX_CHANGE_COOKIE   = 0x40000000;
+        /// Deprecated: The same as STATX_BASIC_STATS | STATX_BTIME
+        const STATX_ALL             = 0x00000fff;
     }
 }

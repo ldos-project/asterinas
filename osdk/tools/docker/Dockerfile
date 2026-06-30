@@ -1,18 +1,33 @@
 # SPDX-License-Identifier: MPL-2.0
 
-FROM ubuntu:22.04 AS build-base
+FROM ubuntu:24.04 AS build-base
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG TARGETARCH
 
 RUN apt update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
     git \
-    python3-pip \
-    python-is-python3 \
+    python3 \
+    pipx \
     wget
 
-RUN pip3 install yq tomli
+RUN PIP_NO_CACHE_DIR=1 pipx install yq==3.4.3 \
+    && rm -rf /root/.cache/pip /root/.cache/pipx
+ENV PATH="/root/.local/bin:${PATH}"
+
+#= Install Cross Compilation Tools ============================================
+
+FROM build-base AS build-cross-tools
+
+ARG TARGETARCH
+
+# If we are on ARM64, we need to cross compile to x86_64 for x86 development.
+RUN if [ "${TARGETARCH}" = "arm64" ]; then \
+        apt-get install -y --no-install-recommends \
+            gcc-multilib-x86-64-linux-gnu; \
+    fi
 
 #= Build QEMU =================================================================
 
@@ -21,6 +36,7 @@ FROM build-base AS build-qemu
 RUN apt update && apt-get install -y --no-install-recommends \
     libgcrypt-dev   `# optional build dependency` \
     libglib2.0-dev  `# build dependency` \
+    libnuma-dev     `# optional build dependency` \
     libpixman-1-dev `# build dependency` \
     libusb-dev      `# optional build dependency` \
     meson \
@@ -29,18 +45,18 @@ RUN apt clean && rm -rf /var/lib/apt/lists/*
 
 FROM build-qemu AS qemu
 
-# Fetch and install QEMU from the official source
+# Fetch and install a later version of QEMU from the official source.
 #
-# The QEMU version in the Ubuntu 22.04 repository is 6.*, which has a bug to cause OVMF debug to fail.
+# The QEMU version in the Ubuntu 24.04 repository is 8.*, which has known problems.
 # The libslirp dependency is for QEMU's network backend.
 WORKDIR /root
 
-RUN wget -O qemu.tar.xz https://download.qemu.org/qemu-10.0.2.tar.xz \
+RUN wget -O qemu.tar.xz https://download.qemu.org/qemu-10.2.1.tar.xz \
     && mkdir /root/qemu \
     && tar xf qemu.tar.xz --strip-components=1 -C /root/qemu \
     && rm qemu.tar.xz
 WORKDIR /root/qemu
-RUN ./configure --target-list=x86_64-softmmu,riscv64-softmmu --prefix=/usr/local/qemu --enable-slirp \
+RUN ./configure --target-list=x86_64-softmmu,riscv64-softmmu,loongarch64-softmmu --prefix=/usr/local/qemu --enable-slirp --enable-numa \
     && make -j \
     && make install
 WORKDIR /root
@@ -48,7 +64,7 @@ RUN rm -rf /root/qemu
 
 #= Build OVMF =================================================================
 
-FROM build-base AS build-ovmf
+FROM build-cross-tools AS build-ovmf
 
 RUN apt update && apt-get install -y --no-install-recommends \
     bison \
@@ -57,22 +73,26 @@ RUN apt update && apt-get install -y --no-install-recommends \
     nasm \
     uuid-dev
 RUN apt clean && rm -rf /var/lib/apt/lists/*
-RUN git --version
 
 FROM build-ovmf AS ovmf
 
+ARG TARGETARCH
+
 # Fetch and build OVMF from the EDK2 official source
 WORKDIR /root
-RUN git clone --depth 1 --branch stable/202408 --recurse-submodules --shallow-submodules https://github.com/tianocore/edk2.git
+RUN git clone --depth 1 --branch edk2-stable202508 --recurse-submodules --shallow-submodules https://github.com/tianocore/edk2.git
 WORKDIR /root/edk2
-RUN /bin/bash -c "source ./edksetup.sh \
+RUN if [ "${TARGETARCH}" = "arm64" ]; then \
+        export GCC5_BIN=x86_64-linux-gnu-; \
+    fi \
+    && /bin/bash -c "source ./edksetup.sh \
     && make -C BaseTools \
-    && build -a X64 -t GCC5 -b DEBUG -p OvmfPkg/OvmfPkgX64.dsc -D DEBUG_ON_SERIAL_PORT \
-    && build -a X64 -t GCC5 -b RELEASE -p OvmfPkg/OvmfPkgX64.dsc"
+    && build -a X64 -t GCC5 -b RELEASE -p OvmfPkg/OvmfPkgX64.dsc \
+    && build -a X64 -t GCC5 -b RELEASE -p OvmfPkg/Microvm/MicrovmX64.dsc"
 
 #= Build GRUB =================================================================
 
-FROM build-base AS build-grub
+FROM build-cross-tools AS build-grub
 
 RUN apt update && apt-get install -y --no-install-recommends \
     autoconf \
@@ -88,11 +108,14 @@ RUN apt clean && rm -rf /var/lib/apt/lists/*
 
 FROM build-grub AS grub
 
+ARG TARGETARCH
+
 # Fetch and install GRUB from the GNU official source
 #
-# We have installed grub-efi-amd64-bin just for the unicode.pf2 file, which is not included
-# in the GRUB release. The Ubuntu release notoriously modifies the GRUB source code and enforce
-# EFI handover boot, which is deprecated. So we have to build GRUB from source.
+# We have installed grub-efi-amd64-bin for the unicode.pf2 file, which is not
+# included in the GRUB release. The Ubuntu release modifies the GRUB source
+# code and enforces EFI handover boot, which is deprecated. To test general EFI
+# boot we have to build GRUB from source.
 WORKDIR /root
 # See also: https://github.com/asterinas/asterinas/pull/1710
 RUN git clone --single-branch -b asterinas/2.12 https://github.com/ldos-project/grub.git \
@@ -104,7 +127,18 @@ RUN wget -O unifont.pcf.gz https://ftp.gnu.org/gnu/unifont/unifont-15.1.04/unifo
     && rm unifont.pcf.gz
 WORKDIR /root/grub
 
-RUN echo depends bli part_gpt > grub-core/extra_deps.lst \
+# Use GitHub mirror for `gnulib` to improve connection stability because
+# `git.savannah.gnu.org` repository may have unstable connections.
+RUN git config --global url."https://github.com/coreutils/gnulib".insteadOf "https://git.savannah.gnu.org/git/gnulib"
+
+RUN if [ "${TARGETARCH}" = "arm64" ]; then \
+        export TARGET_CC=x86_64-linux-gnu-gcc; \
+        export TARGET_OBJCOPY=x86_64-linux-gnu-objcopy; \
+        export TARGET_STRIP=x86_64-linux-gnu-strip; \
+        export TARGET_NM=x86_64-linux-gnu-nm; \
+        export TARGET_RANLIB=x86_64-linux-gnu-ranlib; \
+    fi \
+    && echo depends bli part_gpt > grub-core/extra_deps.lst \
     && ./bootstrap \
     && ./configure \
         --target=x86_64 \
@@ -120,16 +154,43 @@ RUN rm -rf /root/grub
 
 #= The final stages to produce the OSDK development image ====================
 
-FROM build-base AS rust
+FROM build-base AS osdk-final
+
+ARG TARGETARCH
+
+# For x86 kernel development on ARM, we need to add the sources. So that we can
+# install x86 grub binaries from the Ubuntu repository.
+RUN <<EOF
+    if [ "${TARGETARCH}" = "arm64" ]; then
+        dpkg --add-architecture 'amd64';
+        sed -i '/^Components:/a Architectures: arm64' /etc/apt/sources.list.d/ubuntu.sources;
+        cat >> /etc/apt/sources.list.d/ubuntu-amd64.sources <<EOF_SOURCES
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: noble noble-updates noble-backports
+Components: main restricted universe multiverse
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: noble-security
+Components: main restricted universe multiverse
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF_SOURCES
+    fi
+EOF
 
 # Install all OSDK dependent packages
 RUN apt update \
-    && apt install -y \
-    build-essential \
+    && apt install -y --no-install-recommends \
+    clang \
     curl \
     gdb \
     grub-efi-amd64 \
     grub2-common \
+    libnuma1            `# running dependency for QEMU` \
     libpixman-1-dev     `# running dependency for QEMU` \
     mtools              `# used by grub-mkrescue` \
     xorriso \
@@ -141,30 +202,44 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 ARG ASTER_RUST_VERSION
 RUN curl https://sh.rustup.rs -sSf | \
         sh -s -- --default-toolchain ${ASTER_RUST_VERSION} -y \
-    && rustup toolchain install stable \
     && rm -rf /root/.cargo/registry && rm -rf /root/.cargo/git \
     && cargo -V \
     && rustup component add rust-src rustc-dev llvm-tools-preview
 
+# Let Github runners reuse the Rust toolchain installed in the Dockerfile and
+# also the Cargo crates downloaded subsequently in the Docker build process.
+RUN mkdir -p /github/home \
+    && ln -s /root/.cargo /github/home/.cargo \
+    && ln -s /root/.rustup /github/home/.rustup
+
 # Install cargo tools
-RUN cargo install \
+RUN cargo install --locked \
     cargo-binutils \
-    mdbook \
-    typos-cli
+    mdbook@0.5.2 \
+    mdbook-mermaid@0.17.0 \
+    typos-cli@1.39.0
 
 # Install QEMU built from the previous stages
 COPY --from=qemu /usr/local/qemu /usr/local/qemu
 ENV PATH="/usr/local/qemu/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/usr/local/qemu/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+# Buildx `TARGETARCH` (amd64 and arm64) is different from QEMU's target (x86_64
+# and aarch64). Create aliases so the lib path always exists.
+RUN if [ -d /usr/local/qemu/lib/aarch64-linux-gnu ] && [ ! -e /usr/local/qemu/lib/arm64-linux-gnu ]; then \
+        ln -s /usr/local/qemu/lib/aarch64-linux-gnu /usr/local/qemu/lib/arm64-linux-gnu; \
+    fi \
+    && if [ -d /usr/local/qemu/lib/x86_64-linux-gnu ] && [ ! -e /usr/local/qemu/lib/amd64-linux-gnu ]; then \
+        ln -s /usr/local/qemu/lib/x86_64-linux-gnu /usr/local/qemu/lib/amd64-linux-gnu; \
+    fi
+ENV LD_LIBRARY_PATH="/usr/local/qemu/lib/${TARGETARCH}-linux-gnu${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 # Install OVMF built from the previous stages
-COPY --from=ovmf /root/edk2/Build/OvmfX64/DEBUG_GCC5/FV/ /root/ovmf/debug
 COPY --from=ovmf /root/edk2/Build/OvmfX64/RELEASE_GCC5/FV/ /root/ovmf/release
+COPY --from=ovmf /root/edk2/Build/MicrovmX64/RELEASE_GCC5/FV/ /root/ovmf/release/microvm/
 
 # Install GRUB built from the previous stages
 COPY --from=grub /usr/local/grub /usr/local/grub
 ENV PATH="/usr/local/grub/bin:${PATH}"
-# Make a symbolic link for `unicode.pf2` from Ubuntu 22.04 package
+# Make a symbolic link for `unicode.pf2` from the APT package
 RUN ln -sf /usr/share/grub/unicode.pf2 /usr/local/grub/share/grub/unicode.pf2
 
 VOLUME [ "/root/asterinas" ]

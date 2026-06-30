@@ -2,21 +2,25 @@
 
 //! System call handlers.
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(dead_code)
+)]
+
 pub use clock_gettime::ClockId;
-use ostd::cpu::context::UserContext;
+use ostd::arch::cpu::context::UserContext;
 pub use timer_create::create_timer;
 
 use crate::{context::Context, cpu::LinuxAbi, prelude::*};
 
+#[cfg_attr(target_arch = "x86_64", path = "arch/x86.rs")]
+#[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
+#[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch.rs")]
+mod arch;
+
 mod accept;
 mod access;
 mod alarm;
-#[cfg(target_arch = "x86_64")]
-#[path = "arch/x86.rs"]
-mod arch;
-#[cfg(target_arch = "riscv64")]
-#[path = "arch/riscv.rs"]
-mod arch;
 mod arch_prctl;
 mod bind;
 mod brk;
@@ -37,12 +41,14 @@ mod eventfd;
 mod execve;
 mod exit;
 mod exit_group;
+mod fadvise64;
 mod fallocate;
 mod fcntl;
 mod flock;
 mod fork;
 mod fsync;
 mod futex;
+mod get_ioprio;
 mod get_priority;
 mod getcpu;
 mod getcwd;
@@ -67,6 +73,7 @@ mod gettid;
 mod gettimeofday;
 mod getuid;
 mod getxattr;
+mod inotify;
 mod ioctl;
 mod kill;
 mod link;
@@ -74,6 +81,7 @@ mod listen;
 mod listxattr;
 mod lseek;
 mod madvise;
+mod memfd_create;
 mod mkdir;
 mod mknod;
 mod mmap;
@@ -85,7 +93,11 @@ mod munmap;
 mod nanosleep;
 mod open;
 mod pause;
+mod pidfd_getfd;
+mod pidfd_open;
+mod pidfd_send_signal;
 mod pipe;
+mod pivot_root;
 mod poll;
 mod ppoll;
 mod prctl;
@@ -93,10 +105,12 @@ mod pread64;
 mod preadv;
 mod prlimit64;
 mod pselect6;
+mod ptrace;
 mod pwrite64;
 mod pwritev;
 mod read;
 mod readlink;
+mod reboot;
 mod recvfrom;
 mod recvmsg;
 mod removexattr;
@@ -107,6 +121,7 @@ mod rt_sigpending;
 mod rt_sigprocmask;
 mod rt_sigreturn;
 mod rt_sigsuspend;
+mod rt_sigtimedwait;
 mod sched_affinity;
 mod sched_get_priority_max;
 mod sched_get_priority_min;
@@ -122,16 +137,21 @@ mod semctl;
 mod semget;
 mod semop;
 mod sendfile;
+mod sendmmsg;
 mod sendmsg;
 mod sendto;
+mod set_ioprio;
 mod set_priority;
 mod set_robust_list;
 mod set_tid_address;
+mod setdomainname;
 mod setfsgid;
 mod setfsuid;
 mod setgid;
 mod setgroups;
+mod sethostname;
 mod setitimer;
+mod setns;
 mod setpgid;
 mod setregid;
 mod setresgid;
@@ -164,6 +184,7 @@ mod umask;
 mod umount;
 mod uname;
 mod unlink;
+mod unshare;
 mod utimens;
 mod wait4;
 mod waitid;
@@ -297,18 +318,21 @@ macro_rules! impl_syscall_nums_and_dispatch_fn {
             syscall_number: u64,
             args: [u64; 6],
             ctx: &crate::context::Context,
-            user_ctx: &mut ostd::cpu::context::UserContext,
+            user_ctx: &mut ostd::arch::cpu::context::UserContext,
         ) -> $crate::prelude::Result<$crate::syscall::SyscallReturn> {
             match syscall_number {
                 $(
                     $num => {
-                        $crate::log_syscall_entry!($name);
+                        $crate::syscall::log_syscall_entry!($name);
                         $crate::syscall::dispatch_fn_inner!(args, ctx, user_ctx, $handler $args)
                     }
                 )*
                 _ => {
-                    log::warn!("Unimplemented syscall number: {}", syscall_number);
-                    $crate::return_errno_with_message!($crate::error::Errno::ENOSYS, "Syscall was unimplemented");
+                    ostd::warn!("Unimplemented syscall number: {}", syscall_number);
+                    $crate::error::return_errno_with_message!(
+                        $crate::error::Errno::ENOSYS,
+                        "Syscall was unimplemented"
+                    );
                 }
             }
         }
@@ -326,7 +350,7 @@ pub struct SyscallArgument {
 }
 
 /// Syscall return
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum SyscallReturn {
     /// return isize, this value will be used to set rax
     Return(isize),
@@ -368,17 +392,19 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     }
 }
 
-#[macro_export]
 macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
-        if log::log_enabled!(log::Level::Info) {
+        if ostd::log_enabled!(ostd::log::Level::Info) {
             let syscall_name_str = stringify!($syscall_name);
-            let pid = $crate::current!().pid();
+            let pid = $crate::context::current!().pid();
             let tid = {
                 use $crate::process::posix_thread::AsPosixThread;
-                $crate::current_thread!().as_posix_thread().unwrap().tid()
+                $crate::context::current_thread!()
+                    .as_posix_thread()
+                    .unwrap()
+                    .tid()
             };
-            log::trace!(
+            ostd::info!(
                 "[pid={}][tid={}][id={}][{}]",
                 pid,
                 tid,
@@ -398,16 +424,18 @@ pub mod oqueue {
     use serde::Serialize;
     use spin::Once;
 
+    use crate::fs::file::file_table::FileDesc;
+
     #[derive(Clone, Copy, Serialize)]
     pub struct SocketOQueueMessage {
-        pub fd: i32,
+        pub fd: FileDesc,
         pub is_close: u8,
         pub timestamp: Duration,
     }
 
     static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
 
-    pub fn init() {
+    pub fn init_in_first_kthread() {
         SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
     }
 
@@ -416,8 +444,9 @@ pub mod oqueue {
     }
 }
 
-pub(super) fn init() {
-    uname::init();
+pub(super) fn init_in_first_kthread() {
     #[cfg(not(baseline_asterinas))]
-    oqueue::init();
+    oqueue::init_in_first_kthread();
 }
+
+use log_syscall_entry;

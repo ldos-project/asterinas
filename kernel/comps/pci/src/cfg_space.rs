@@ -1,0 +1,561 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The PCI configuration space.
+//!
+//! Reference: <https://wiki.osdev.org/PCI>
+
+use bitflags::bitflags;
+use ostd::{
+    Result,
+    arch::device::io_port::{PortRead, PortWrite},
+    error::{InvalidArgsSnafu, IoSnafu},
+    io::IoMem,
+    mm::{PodOnce, VmIoOnce},
+};
+
+use super::PciDeviceLocation;
+
+/// Offset in PCI device's common configuration space.
+#[repr(u16)]
+pub enum PciCommonCfgOffset {
+    /// Vendor ID
+    VendorId = 0x00,
+    /// Device ID
+    DeviceId = 0x02,
+    /// PCI Command
+    Command = 0x04,
+    /// PCI Status
+    Status = 0x06,
+    /// Revision ID
+    RevisionId = 0x08,
+    /// Programming Interface
+    ProgIf = 0x09,
+    /// Subclass code
+    SubclassCode = 0x0A,
+    /// Base class code
+    BaseClassCode = 0x0B,
+    /// Cache Line Size
+    CacheLineSize = 0x0C,
+    /// Latency Timer
+    LatencyTimer = 0x0D,
+    /// Header Type: Identifies the layout of the header.
+    HeaderType = 0x0E,
+    /// BIST: Represents the status and allows control of a devices BIST(built-in self test).
+    Bist = 0x0F,
+    /// Interrupt Line
+    InterruptLine = 0x3C,
+    /// Interrupt Pin
+    InterruptPin = 0x3D,
+}
+
+/// Offset in PCI general device's configuration space (Not the PCI bridge or Cardbus bridge).
+#[repr(u16)]
+pub enum PciGeneralDeviceCfgOffset {
+    /// Base Address Register #0
+    Bar0 = 0x10,
+    /// Base Address Register #1
+    Bar1 = 0x14,
+    /// Base Address Register #2
+    Bar2 = 0x18,
+    /// Base Address Register #3
+    Bar3 = 0x1C,
+    /// Base Address Register #4
+    Bar4 = 0x20,
+    /// Base Address Register #5
+    Bar5 = 0x24,
+    /// Cardbus CIS Pointer
+    CardbusCisPtr = 0x28,
+    /// Subsystem Vendor ID
+    SubsystemVendorId = 0x2C,
+    /// Subsystem ID
+    SubsystemId = 0x2E,
+    /// Expansion ROM base address
+    XromBar = 0x30,
+    /// Capabilities pointer
+    CapabilitiesPointer = 0x34,
+    /// Min Grant
+    MinGrant = 0x3E,
+    /// Max latency
+    MaxLatency = 0x3F,
+}
+
+/// Offset in PCI-to-PCI bridge's configuration space.
+#[repr(u16)]
+pub enum PciBridgeCfgOffset {
+    /// Base Address Register #0
+    Bar0 = 0x10,
+    /// Base Address Register #1
+    Bar1 = 0x14,
+    /// Primary bus number
+    PrimaryBusNumber = 0x18,
+    /// Secondary bus number
+    SecondaryBusNumber = 0x19,
+    /// Subordinate bus number
+    SubordinateBusNumber = 0x1A,
+    /// Secondary latency timer
+    SecondaryLatencyTimer = 0x1B,
+    /// I/O base
+    IoBase = 0x1C,
+    /// I/O limit
+    IoLimit = 0x1D,
+    /// Secondary status
+    SecondaryStatus = 0x1E,
+    /// Memory base
+    MemoryBase = 0x20,
+    /// Memory limit
+    MemoryLimit = 0x22,
+    /// Prefetchable memory base
+    PrefetchableMemoryBase = 0x24,
+    /// Prefetchable memory limit
+    PrefetchableMemoryLimit = 0x26,
+    /// Prefetchable memory base upper 32 bits
+    PrefetchableMemoryBaseUpper32 = 0x28,
+    /// Prefetchable memory limit upper 32 bits
+    PrefetchableMemoryLimitUpper32 = 0x2C,
+    /// I/O base upper 16 bits
+    IoBaseUpper16 = 0x30,
+    /// I/O limit upper 16 bits
+    IoLimitUpper16 = 0x32,
+    /// Capabilities pointer
+    CapabilitiesPointer = 0x34,
+    /// Bridge control
+    BridgeControl = 0x3E,
+}
+
+/// Offset in PCI-to-Cardbus bridge's configuration space.
+#[repr(u16)]
+pub enum PciCardbusBridgeCfgOffset {
+    /// Cardbus socket/ExCA base address
+    CardbusSocketExcaBaseAddress = 0x10,
+    /// Capabilities pointer
+    CapabilitiesPointer = 0x14,
+    /// Secondary status
+    SecondaryStatus = 0x16,
+    /// Cardbus latency timer
+    CardbusLatencyTimer = 0x17,
+    /// Memory base 0
+    MemoryBase0 = 0x18,
+    /// Memory limit 0
+    MemoryLimit0 = 0x1C,
+    /// Memory base 1
+    MemoryBase1 = 0x20,
+    /// Memory limit 1
+    MemoryLimit1 = 0x24,
+    /// I/O base 0
+    IoBase0 = 0x28,
+    /// I/O limit 0
+    IoLimit0 = 0x2C,
+    /// I/O base 1
+    IoBase1 = 0x30,
+    /// I/O limit 1
+    IoLimit1 = 0x34,
+    /// Bridge control
+    BridgeControl = 0x3E,
+    /// Subsystem device ID
+    SubsystemDeviceId = 0x40,
+    /// Subsystem Vendor ID
+    SubsystemVendorId = 0x42,
+    /// Legacy mode base address
+    LegacyModeBaseAddress = 0x44,
+}
+
+bitflags! {
+    /// PCI device common config space command register.
+    pub struct Command: u16 {
+        /// Sets to 1 if the device can respond to I/O Space accesses.
+        const IO_SPACE                  =  1 << 0;
+        /// Sets to 1 if the device can respond to Memory SPace accesses.
+        const MEMORY_SPACE              =  1 << 1;
+        /// Sets to 1 if the device can behave as a bus master.
+        const BUS_MASTER                =  1 << 2;
+        /// Sets to 1 if the device can monitor Special Cycle operations.
+        const SPECIAL_CYCLES            =  1 << 3;
+        /// Memory Write and Invalidate Enable. Set to 1 if the device can
+        /// generate the Memory Write and Invalidate command.
+        const MWI_ENABLE                =  1 << 4;
+        /// Sets to 1 if the device does not respond to palette register writes
+        /// and will snoop the data.
+        const VGA_PALETTE_SNOOP         =  1 << 5;
+        /// Sets to 1 if the device will takes its normal action when a parity
+        /// error is detected.
+        const PARITY_ERROR_RESPONSE     =  1 << 6;
+        /// Sets to 1 if the SERR# driver is enabled.
+        const SERR_ENABLE               =  1 << 8;
+        /// Sets to 1 if the device is allowed to generate fast back-to-back
+        /// transactions
+        const FAST_BACK_TO_BACK_ENABLE  =  1 << 9;
+        /// Sets to 1 if the assertion of the devices INTx# signal is disabled.
+        const INTERRUPT_DISABLE         =  1 << 10;
+    }
+}
+
+bitflags! {
+    /// PCI device common config space status register.
+    pub struct Status: u16 {
+        /// The status of the device's INTx# signal.
+        const INTERRUPT_STATUS          = 1 << 3;
+        /// Sets to 1 if the device support capabilities.
+        const CAPABILITIES_LIST         = 1 << 4;
+        /// Sets to 1 if the device is capable of running at 66 MHz.
+        const MHZ66_CAPABLE             = 1 << 5;
+        /// Sets to 1 if the device can accept fast back-to-back transactions
+        /// that are not from the same agent.
+        const FAST_BACK_TO_BACK_CAPABLE = 1 << 7;
+        /// This bit is only set when the following conditions are met:
+        /// 1. The bus agent asserted PERR# on a read or observed an assertion
+        /// of PERR# on a write
+        /// 2. The agent setting the bit acted as the bus master for the
+        /// operation in which the error occurred
+        /// 3. Bit 6 of the Command register (Parity Error Response bit) is set
+        ///  to 1.
+        const MASTER_DATA_PARITY_ERROR  = 1 << 8;
+        /// The read-only bit that represent the slowest time that a device will
+        /// assert DEVSEL# for any bus command except Configuration Space read
+        /// and writes.
+        ///
+        /// If both `DEVSEL_MEDIUM_TIMING` and `DEVSEL_SLOW_TIMING` are not set,
+        /// then it represents fast timing
+        const DEVSEL_MEDIUM_TIMING      = 1 << 9;
+        /// Check `DEVSEL_MEDIUM_TIMING`
+        const DEVSEL_SLOW_TIMING        = 1 << 10;
+        /// Sets to 1 when a target device terminates a transaction with Target-
+        /// Abort.
+        const SIGNALED_TARGET_ABORT     = 1 << 11;
+        /// Sets to 1 by a master device when its transaction is terminated with
+        /// Target-Abort
+        const RECEIVED_TARGET_ABORT     = 1 << 12;
+        /// Sets to 1 by a master device when its transaction (except for Special
+        /// Cycle transactions) is terminated with Master-Abort.
+        const RECEIVED_MASTER_ABORT     = 1 << 13;
+        /// Sets to 1 when the device asserts SERR#
+        const SIGNALED_SYSTEM_ERROR     = 1 << 14;
+        /// Sets to 1 when the device detects a parity error, even if parity error
+        /// handling is disabled.
+        const DETECTED_PARITY_ERROR     = 1 << 15;
+    }
+}
+
+/// BAR space in PCI common config space.
+#[derive(Debug)]
+pub enum Bar {
+    /// Memory BAR
+    Memory(MemoryBar),
+    /// I/O BAR
+    Io(IoBar),
+}
+
+impl Bar {
+    /// Acquires access to the BAR.
+    pub fn acquire(&mut self) -> Result<BarAccess> {
+        match self {
+            Self::Memory(mem_bar) => mem_bar.acquire().cloned().map(BarAccess::Memory),
+            // TODO: Implement the `acquire` operation based on `IoPortAllocator`.
+            Self::Io(_) => Ok(BarAccess::Io),
+        }
+    }
+
+    /// Returns access to the BAR.
+    ///
+    /// This method will return `None` if the access is not [`acquire`]d before.
+    ///
+    /// [`acquire`]: Self::acquire
+    pub fn access(&self) -> Option<BarAccess> {
+        match self {
+            Self::Memory(mem_bar) => mem_bar.access().cloned().map(BarAccess::Memory),
+            // TODO: Implement the `access` operation based on `IoPortAllocator`.
+            Self::Io(_) => Some(BarAccess::Io),
+        }
+    }
+
+    pub(super) fn new(location: PciDeviceLocation, index: u8) -> Result<Self> {
+        if index >= 6 {
+            return InvalidArgsSnafu.fail();
+        }
+
+        let offset = index as u16 * 4 + PciGeneralDeviceCfgOffset::Bar0 as u16;
+        let raw = location.read32(offset);
+
+        // Check the "Space Indicator" bit.
+        let result = if raw & 1 == 0 {
+            // Memory BAR
+            Self::Memory(MemoryBar::new(&location, index, raw)?)
+        } else {
+            // I/O port BAR
+            Self::Io(IoBar::new(&location, index, raw)?)
+        };
+        Ok(result)
+    }
+}
+
+/// Access to memory or I/O port BAR.
+#[derive(Clone, Debug)]
+pub enum BarAccess {
+    /// Memory BAR
+    Memory(IoMem),
+    /// I/O BAR
+    Io,
+}
+
+impl BarAccess {
+    /// Reads a value of a specified type at a specified offset.
+    pub fn read_once<T: PodOnce + PortRead>(&self, offset: usize) -> Result<T> {
+        match self {
+            Self::Memory(io_mem) => io_mem.read_once(offset),
+            // TODO: Implement the `read` operation based on `IoPortAllocator`.
+            Self::Io => IoSnafu.fail(),
+        }
+    }
+
+    /// Writes a value of a specified type at a specified offset.
+    pub fn write_once<T: PodOnce + PortWrite>(&self, offset: usize, value: T) -> Result<()> {
+        match self {
+            Self::Memory(io_mem) => io_mem.write_once(offset, &value),
+            // TODO: Implement the `write` operation based on `IoPortAllocator`.
+            Self::Io => IoSnafu.fail(),
+        }
+    }
+}
+
+/// Memory BAR.
+#[derive(Debug)]
+pub struct MemoryBar {
+    base: u64,
+    size: u64,
+    prefetchable: bool,
+    address_length: AddrLen,
+    io_memory: Option<IoMem>,
+}
+
+impl MemoryBar {
+    /// Returns the BAR's address length (32 bits or 64 bits).
+    pub fn address_length(&self) -> AddrLen {
+        self.address_length
+    }
+
+    /// Returns whether the BAR is prefetchable, i.e., whether the CPU is allowed to get the data
+    /// in advance.
+    pub fn prefetchable(&self) -> bool {
+        self.prefetchable
+    }
+
+    /// Returns the BAR's base address.
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
+    /// Returns the BAR's size.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Acquires access to the memory BAR.
+    pub fn acquire(&mut self) -> Result<&IoMem> {
+        if self.io_memory.is_none() {
+            // Use the `Uncacheable` cache policy for PCI device BARs by default.
+            // Device-specific drivers may remap with different cache policies if needed.
+            self.io_memory = Some(IoMem::acquire(
+                (self.base as usize)..((self.base + self.size) as usize),
+            )?);
+        }
+
+        Ok(self.io_memory.as_ref().unwrap())
+    }
+
+    /// Returns access to the memory BAR.
+    ///
+    /// This method will return `None` if the access is not [`acquire`]d before.
+    ///
+    /// [`acquire`]: Self::acquire
+    pub fn access(&self) -> Option<&IoMem> {
+        self.io_memory.as_ref()
+    }
+
+    /// Creates a memory BAR structure.
+    fn new(location: &PciDeviceLocation, index: u8, raw: u32) -> Result<Self> {
+        debug_assert_eq!(raw & 1, 0);
+
+        // Quoted sentences below are from "7.5.1.2.1 Base Address Registers (Offset 10h - 24h)" in
+        // "PCI Express(R) Base Specification Revision 5.0 Version 1.0".
+
+        // Check the "Memory Type" bitfield.
+        let address_length = match (raw >> 1) & 3 {
+            // "Base register is 32 bits wide and can be mapped anywhere in the 32 address bit
+            // Memory Space."
+            0b00 => AddrLen::Bits32,
+            // "Base register is 64 bits wide and can be mapped anywhere in the 64 address bit
+            // Memory Space."
+            0b10 => AddrLen::Bits64,
+            // "Reserved."
+            _ => return InvalidArgsSnafu.fail(),
+        };
+
+        let offset = index as u16 * 4 + PciGeneralDeviceCfgOffset::Bar0 as u16;
+
+        // "Software saves the original value of the Base Address register, writes a value of all
+        // 1's to the register, then reads it back."
+        location.write32(offset, !0);
+
+        let size_encoded = location.read32(offset);
+
+        // "Unimplemented Base Address registers are hardwired to zero."
+        if size_encoded == 0 {
+            return InvalidArgsSnafu.fail();
+        }
+
+        // "64-bit (memory) Base Address registers can be handled the same, except that the second
+        // 32 bit register is considered an extension of the first (i.e., bits 63:32). Software
+        // writes a value of all 1's to both registers, reads them back, and combines the result
+        // into a 64-bit value."
+        #[cfg_attr(target_arch = "loongarch64", expect(unused_variables))]
+        let (raw64, size_encoded64) = match address_length {
+            AddrLen::Bits32 => (raw as u64, size_encoded as u64 | ((u32::MAX as u64) << 32)),
+            AddrLen::Bits64 => {
+                let raw64 = raw as u64 | ((location.read32(offset + 4) as u64) << 32);
+                location.write32(offset + 4, !0);
+                let size_encoded64 =
+                    size_encoded as u64 | ((location.read32(offset + 4) as u64) << 32);
+                (raw64, size_encoded64)
+            }
+        };
+
+        // Decode the BAR's size.
+        let size = decode_size(size_encoded64, BarKind::Memory);
+
+        // Restore the original base address.
+        #[cfg(not(target_arch = "loongarch64"))]
+        let base = raw64 & MEMORY_ADDRESS_MASK;
+        // In LoongArch, the BAR base address needs to be allocated manually.
+        #[cfg(target_arch = "loongarch64")]
+        let base = {
+            use core::alloc::Layout;
+            crate::arch::alloc_mmio(Layout::from_size_align(size as usize, size as usize).unwrap())
+                .unwrap() as u64
+        };
+        match address_length {
+            AddrLen::Bits32 => location.write32(offset, base as u32),
+            AddrLen::Bits64 => {
+                location.write32(offset, base as u32);
+                location.write32(offset + 4, (base >> 32) as u32);
+            }
+        }
+
+        // FIXME: At least on some x86 laptops, it has been found that the BIOS does not properly
+        // initialize all PCI devices. Consequently, the base address reported by uninitialized PCI
+        // devices is zero. To address this, we may need to add the ability to manually allocate
+        // the base address.
+        #[cfg(not(target_arch = "loongarch64"))]
+        if base == 0 {
+            ostd::info!(
+                "presumably uninitialized BAR {} (Memory {:?}, size={}) of PCI device {:?}",
+                index,
+                address_length,
+                size,
+                location,
+            );
+            return InvalidArgsSnafu.fail();
+        }
+
+        // Check the "Prefetchable" bit.
+        let prefetchable = raw & 0b1000 != 0;
+
+        Ok(MemoryBar {
+            base,
+            size,
+            prefetchable,
+            address_length,
+            io_memory: None,
+        })
+    }
+}
+
+/// The address length of a memory BAR (32 bits or 64 bits).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddrLen {
+    /// 32 bits
+    Bits32,
+    /// 64 bits
+    Bits64,
+}
+
+/// I/O port BAR.
+#[derive(Clone, Copy, Debug)]
+pub struct IoBar {
+    base: u32,
+    size: u32,
+}
+
+impl IoBar {
+    /// Returns the BAR's base port.
+    pub fn base(&self) -> u32 {
+        self.base
+    }
+
+    /// Returns the BAR's size.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Creates an I/O port BAR structure.
+    fn new(location: &PciDeviceLocation, index: u8, raw: u32) -> Result<Self> {
+        debug_assert_eq!(raw & 1, 1);
+
+        let offset = index as u16 * 4 + PciGeneralDeviceCfgOffset::Bar0 as u16;
+
+        // "Software saves the original value of the Base Address register, writes a value of all
+        // 1's to the register, then reads it back."
+        location.write32(offset, !0);
+        let size_encoded = location.read32(offset);
+
+        // Decode the BAR's size.
+        let size = decode_size(size_encoded as u64, BarKind::Io) as u32;
+
+        // Restore the original base address.
+        let base = raw & IO_ADDRESS_MASK;
+        location.write32(offset, base);
+
+        // FIXME: As with the memory BAR check, we assume that a zero base address means that the
+        // BAR has not been initialized. In the future, we may need to add the ability to manually
+        // allocate the base address.
+        if base == 0 {
+            ostd::info!(
+                "presumably uninitialized BAR {} (I/O, size={}) of PCI device {:?}",
+                index,
+                size,
+                location,
+            );
+            return InvalidArgsSnafu.fail();
+        }
+
+        Ok(Self { base, size })
+    }
+}
+
+/// The kind of a BAR (memory or I/O).
+enum BarKind {
+    Memory,
+    Io,
+}
+
+const MEMORY_ADDRESS_MASK: u64 = !0xF;
+const IO_ADDRESS_MASK: u32 = !0x3;
+
+/// Decodes a BAR's size from the encoded value.
+fn decode_size(size_encoded: u64, kind: BarKind) -> u64 {
+    let mask = match kind {
+        BarKind::Memory => MEMORY_ADDRESS_MASK,
+        BarKind::Io => IO_ADDRESS_MASK as u64,
+    };
+
+    // "Size calculation can be done from the 32 bit value read by first clearing encoding
+    // information bits (bits 1:0 for I/O, bits 3:0 for memory), inverting all 32 bits (logical
+    // NOT), then incrementing by 1. [..] 64-bit (memory) Base Address registers can be handled the
+    // same, [..]"
+    //
+    // However, some devices may hardwire the high bits of the address as zero. In that case, the
+    // approach outlined in the PCI specification quoted above can result in a size of something
+    // like `0xfffffc0000100000`. As a result, after clearing information bits, we use the least
+    // significant bit for the size. This approach is also used in Linux. For more details, see
+    // <https://github.com/asterinas/asterinas/pull/2893>.
+    let size_masked = size_encoded & mask;
+    size_masked & !(size_masked - 1)
+}

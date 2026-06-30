@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 use core::fmt::Debug;
 
+use aster_pci::{cfg_space::BarAccess, common_device::PciCommonDevice};
 use aster_util::safe_ptr::SafePtr;
-use log::{info, warn};
 use ostd::{
-    bus::{
-        BusProbeError,
-        pci::{capability::CapabilityData, cfg_space::Bar, common_device::PciCommonDevice},
-    },
+    bus::BusProbeError,
+    info,
     io::IoMem,
-    mm::{DmaCoherent, HasDaddr, PAGE_SIZE},
-    trap::irq::IrqCallbackFunction,
+    irq::IrqCallbackFunction,
+    mm::{HasDaddr, PAGE_SIZE, dma::DmaCoherent},
+    warn,
 };
 
 use crate::{
@@ -65,7 +64,7 @@ const DEVICE_CONFIG_OFFSET_WITH_MSIX: usize = 0x18;
 pub struct VirtioPciLegacyTransport {
     device_type: VirtioDeviceType,
     common_device: PciCommonDevice,
-    config_bar: Bar,
+    config_bar: BarAccess,
     num_queues: u16,
     msix_manager: VirtioMsixManager,
 }
@@ -75,7 +74,7 @@ impl VirtioPciLegacyTransport {
 
     #[expect(clippy::result_large_err)]
     pub(super) fn new(
-        common_device: PciCommonDevice,
+        mut common_device: PciCommonDevice,
     ) -> Result<Self, (BusProbeError, PciCommonDevice)> {
         let device_type = match common_device.device_id().device_id {
             0x1000 => VirtioDeviceType::Network,
@@ -87,15 +86,20 @@ impl VirtioPciLegacyTransport {
             0x1009 => VirtioDeviceType::Transport9P,
             _ => {
                 warn!(
-                    "Unrecognized virtio-pci device id:{:x?}",
+                    "Unrecognized virtio-pci device ID: {:x?}",
                     common_device.device_id().device_id
                 );
                 return Err((BusProbeError::ConfigurationSpaceError, common_device));
             }
         };
-        info!("[Virtio]: Found device:{:?}", device_type);
+        info!("Found device: {:?}", device_type);
 
-        let config_bar = common_device.bar_manager().bar(0).clone().unwrap();
+        let config_bar = common_device
+            .bar_manager_mut()
+            .bar_mut(0)
+            .unwrap()
+            .acquire()
+            .unwrap();
 
         let mut num_queues = 0u16;
         while num_queues < u16::MAX {
@@ -109,17 +113,8 @@ impl VirtioPciLegacyTransport {
             num_queues += 1;
         }
 
-        // TODO: Support interrupt without MSI-X
-        let mut msix = None;
-        for cap in common_device.capabilities().iter() {
-            match cap.capability_data() {
-                CapabilityData::Msix(data) => {
-                    msix = Some(data.clone());
-                }
-                _ => continue,
-            }
-        }
-        let Some(msix) = msix else {
+        // TODO: Support interrupt without MSI-X.
+        let Ok(Some(msix)) = common_device.acquire_msix_capability() else {
             return Err((BusProbeError::ConfigurationSpaceError, common_device));
         };
         let msix_manager = VirtioMsixManager::new(msix);
@@ -163,9 +158,9 @@ impl VirtioTransport for VirtioPciLegacyTransport {
         &mut self,
         idx: u16,
         _queue_size: u16,
-        descriptor_ptr: &SafePtr<Descriptor, DmaCoherent>,
-        _avail_ring_ptr: &SafePtr<AvailRing, DmaCoherent>,
-        _used_ring_ptr: &SafePtr<UsedRing, DmaCoherent>,
+        descriptor_ptr: &SafePtr<Descriptor, Arc<DmaCoherent>>,
+        _avail_ring_ptr: &SafePtr<AvailRing, Arc<DmaCoherent>>,
+        _used_ring_ptr: &SafePtr<UsedRing, Arc<DmaCoherent>>,
     ) -> Result<(), VirtioTransportError> {
         // When using the legacy interface, there was no mechanism to negotiate
         // the queue size! The transitional driver MUST retrieve the `Queue Size`
@@ -204,7 +199,7 @@ impl VirtioTransport for VirtioPciLegacyTransport {
         None
     }
 
-    fn device_config_bar(&self) -> Option<(Bar, usize)> {
+    fn device_config_bar(&self) -> Option<(BarAccess, usize)> {
         let bar = self.config_bar.clone();
         let base = if self.msix_manager.is_enabled() {
             DEVICE_CONFIG_OFFSET_WITH_MSIX

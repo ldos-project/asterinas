@@ -32,32 +32,30 @@
 #[macro_export]
 macro_rules! ignore_err {
     ($result:expr) => {
-        ignore_err!($result, ::log::Level::Error)
+        ignore_err!($result, ::ostd::log::Level::Error)
     };
     ($result:expr, $level:expr) => {{
         if let Err(e) = $result {
-            ::log::log!($level, "error ignored: {}", e)
+            ::ostd::log!($level, "error ignored: {}", e)
         }
     }};
     ($result:expr, $level:expr, $($args:tt)+) => {{
         if let Err(e) = $result {
-            ::log::log!($level, "error ignored: {}: {}", alloc::format!($($args)+), e)
+            ::ostd::log!($level, "error ignored: {}: {}", alloc::format!($($args)+), e)
         }
     }};
 }
 
 #[cfg(ktest)]
 mod test {
-    use log::Level;
-
     use crate::prelude::*;
 
     static ERROR: core::result::Result<u16, usize> = Err(32);
 
     #[ktest]
-    fn test_ignore_err() {
+    fn ignore_err() {
         ignore_err!(ERROR);
-        ignore_err!(ERROR, Level::Info);
-        ignore_err!(ERROR, Level::Info, "not able to {}", "test");
+        ignore_err!(ERROR, ostd::log::Level::Info);
+        ignore_err!(ERROR, ostd::log::Level::Info, "not able to {}", "test");
     }
 }

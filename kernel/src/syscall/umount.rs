@@ -2,35 +2,40 @@
 
 use super::SyscallReturn;
 use crate::{
-    fs::fs_resolver::{AT_FDCWD, FsPath},
+    fs::vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_umount(path_addr: Vaddr, flags: u64, ctx: &Context) -> Result<SyscallReturn> {
-    let path = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
+    let path_name = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
     let umount_flags = UmountFlags::from_bits_truncate(flags as u32);
-    debug!("path = {:?}, flags = {:?}", path, umount_flags);
+    debug!("path = {:?}, flags = {:?}", path_name, umount_flags);
 
     umount_flags.check_unsupported_flags()?;
 
-    let path = path.to_string_lossy();
-    if path.is_empty() {
-        return_errno_with_message!(Errno::ENOENT, "path is empty");
-    }
-    let fs_path = FsPath::new(AT_FDCWD, path.as_ref())?;
+    let path_name = path_name.to_string_lossy();
+    let fs_path = FsPath::from_fd_at(AT_FDCWD, &path_name, EmptyPathStr::Reject)?;
 
-    let target_dentry = if umount_flags.contains(UmountFlags::UMOUNT_NOFOLLOW) {
-        ctx.posix_thread
-            .fs()
+    let target_path = if umount_flags.contains(UmountFlags::UMOUNT_NOFOLLOW) {
+        ctx.thread_local
+            .borrow_fs()
             .resolver()
             .read()
             .lookup_no_follow(&fs_path)?
     } else {
-        ctx.posix_thread.fs().resolver().read().lookup(&fs_path)?
+        ctx.thread_local
+            .borrow_fs()
+            .resolver()
+            .read()
+            .lookup(&fs_path)?
     };
 
-    target_dentry.unmount()?;
+    // The path resolution of the umount syscall ensures that the final `Path` must correspond
+    // to the topmost mount. If there is a mount stacked above the current thread's `cwd`, normal
+    // path lookup through "." cannot access the upper mount, but umount through "." can operate
+    // on the upper mount.
+    target_path.get_top_path().unmount(ctx)?;
 
     Ok(SyscallReturn::Return(0))
 }

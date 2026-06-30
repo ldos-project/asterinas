@@ -7,32 +7,28 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use spin::Once;
+
 use crate::{
-    arch::{self, boot::DEVICE_TREE},
-    cpu::{CpuId, IsaExtensions, PinCurrentCpu},
-    timer::INTERRUPT_CALLBACKS,
-    trap,
+    arch::{self, boot::DEVICE_TREE, cpu::extension::IsaExtensions, trap::TrapFrame},
+    irq::IrqLine,
+    timer::TIMER_FREQ,
 };
 
-/// The timer frequency (Hz). Here we choose 1000Hz since 1000Hz is easier for
-/// unit conversion and convenient for timer. What's more, the frequency cannot
-/// be set too high or too low, 1000Hz is a modest choice.
-///
-/// For system performance reasons, this rate cannot be set too high, otherwise
-/// most of the time is spent executing timer code.
-pub const TIMER_FREQ: u64 = 1000;
+pub(super) static TIMER_IRQ: Once<IrqLine> = Once::new();
 
 static TIMEBASE_FREQ: AtomicU64 = AtomicU64::new(0);
 static TIMER_INTERVAL: AtomicU64 = AtomicU64::new(0);
 
-/// Initializes the timer module.
+/// Initializes the timer module on the BSP.
 ///
 /// # Safety
 ///
 /// This function is safe to call on the following conditions:
-/// 1. It is called once and at most once at a proper timing in the boot context.
-/// 2. It is called before any other public functions of this module is called.
-pub(super) unsafe fn init() {
+///  1. It is called once and at most once at a proper timing in the boot context
+///     of the BSP.
+///  2. It is called before any other public functions of this module is called.
+pub(super) unsafe fn init_on_bsp() {
     TIMEBASE_FREQ.store(
         DEVICE_TREE
             .get()
@@ -47,7 +43,6 @@ pub(super) unsafe fn init() {
         TIMEBASE_FREQ.load(Ordering::Relaxed) / TIMER_FREQ,
         Ordering::Relaxed,
     );
-
     if is_sstc_enabled() {
         // SAFETY: Mutating the static variable `SET_NEXT_TIMER_FN` is safe here
         // because we ensure that it is only modified during the initialization
@@ -56,6 +51,36 @@ pub(super) unsafe fn init() {
             SET_NEXT_TIMER_FN = set_next_timer_sstc;
         }
     }
+
+    TIMER_IRQ.call_once(|| {
+        let mut timer_irq = IrqLine::alloc().unwrap();
+        timer_irq.on_active(timer_callback);
+
+        timer_irq
+    });
+
+    // SAFETY: The caller ensures that this is only called once on the
+    // bootstrapping hart.
+    unsafe { init_current_hart() };
+}
+
+/// Initializes the timer on this AP.
+///
+/// # Safety
+///
+/// This function must be called on an AP that hasn't called this function.
+pub(super) unsafe fn init_on_ap() {
+    // SAFETY: The caller ensures that this is only called once on the
+    // current application hart.
+    unsafe { init_current_hart() };
+}
+
+/// Initializes the timer on the current hart.
+///
+/// # Safety
+///
+/// This function must be called on a hart that hasn't called this function.
+unsafe fn init_current_hart() {
     set_next_timer();
     // SAFETY: Accessing the `sie` CSR to enable the timer interrupt is safe
     // here because this function is only called during timer initialization,
@@ -66,17 +91,8 @@ pub(super) unsafe fn init() {
     }
 }
 
-pub(super) fn handle_timer_interrupt() {
-    let irq_guard = trap::irq::disable_local();
-    if irq_guard.current_cpu() == CpuId::bsp() {
-        crate::timer::jiffies::ELAPSED.fetch_add(1, Ordering::Relaxed);
-    }
-
-    let callbacks_guard = INTERRUPT_CALLBACKS.get_with(&irq_guard);
-    for callback in callbacks_guard.borrow().iter() {
-        (callback)();
-    }
-    drop(callbacks_guard);
+fn timer_callback(trapframe: &TrapFrame) {
+    crate::timer::call_timer_callback_functions(trapframe);
 
     set_next_timer();
 }
@@ -93,7 +109,7 @@ fn set_next_timer() {
 static mut SET_NEXT_TIMER_FN: fn() = set_next_timer_sbi;
 
 fn set_next_timer_sbi() {
-    sbi_rt::set_timer(TIMER_INTERVAL.load(Ordering::Relaxed));
+    sbi_rt::set_timer(get_next_when());
 }
 
 fn set_next_timer_sstc() {
@@ -107,7 +123,7 @@ fn set_next_timer_sstc() {
 }
 
 fn is_sstc_enabled() -> bool {
-    arch::cpu::has_extensions(IsaExtensions::SSTC)
+    arch::cpu::extension::has_extensions(IsaExtensions::SSTC)
 }
 
 fn get_next_when() -> u64 {

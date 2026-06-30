@@ -12,7 +12,7 @@ use aster_block::{
     id::Bid,
 };
 use minicbor_serde::Serializer;
-use ostd::orpc::path::Path;
+use ostd::{mm::io::util::HasVmReaderWriter as _, orpc::path::Path};
 use serde::Serialize;
 use snafu::ensure;
 
@@ -125,7 +125,9 @@ impl ChunkingWriteWrapper {
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         let mut writer = bio_segment.writer().expect("segment direction known");
         let n_written = writer.write(&mut raw_data.into());
-        writer.fill(0xffu8);
+        if writer.avail() > 1 {
+            writer.write_val(&0xffu8).expect("Space was available");
+        }
         let _ = self
             .block_device
             .write_blocks_async(self.current_bid, bio_segment)?;
@@ -171,13 +173,13 @@ mod test {
     use super::*;
 
     #[ktest]
-    fn test_new() {
+    fn new() {
         let buf = DataBuf::new(10);
         assert_eq!(buf.len(), 0);
     }
 
     #[ktest]
-    fn test_write_value() {
+    fn write_value() {
         #[derive(Debug, PartialEq, Eq, Serialize)]
         struct TestStruct {
             a: u32,
@@ -203,7 +205,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_write_bytes() {
+    fn write_bytes() {
         let mut buf = DataBuf::new(5);
         buf.write_bytes(b"hello");
 
@@ -212,7 +214,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_delete() {
+    fn delete() {
         let mut buf = DataBuf::new(10);
         buf.write_bytes(b"1234567890");
 
@@ -228,7 +230,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_write_header() {
+    fn write_header() {
         let paths = vec![path!(test)];
         let block_device = Arc::new(MemoryDisk::new(4096 * 8));
         let mut wrapper = ChunkingWriteWrapper {
@@ -246,7 +248,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_flush_if_needed() {
+    fn flush_if_needed() {
         let block_device = Arc::new(MemoryDisk::new(4096 * 2));
         let mut wrapper = ChunkingWriteWrapper {
             data_buf: DataBuf::new(4096),

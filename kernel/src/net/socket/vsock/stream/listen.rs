@@ -1,73 +1,46 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::connected::Connected;
 use crate::{
     events::IoEvents,
-    net::socket::vsock::addr::VsockSocketAddr,
+    net::socket::vsock::{
+        addr::VsockSocketAddr,
+        stream::ConnectedStream,
+        transport::{BoundPort, Listener},
+    },
     prelude::*,
-    process::signal::{PollHandle, Pollee},
+    process::signal::Pollee,
 };
-pub struct Listen {
-    addr: VsockSocketAddr,
-    backlog: usize,
-    incoming_connection: SpinLock<VecDeque<Arc<Connected>>>,
-    pollee: Pollee,
+
+pub(super) struct ListenStream {
+    listener: Listener,
 }
 
-impl Listen {
-    pub fn new(addr: VsockSocketAddr, backlog: usize) -> Self {
-        Self {
-            addr,
-            // FIXME: We should reuse `Pollee` from `Init`.
-            pollee: Pollee::new(),
-            backlog,
-            incoming_connection: SpinLock::new(VecDeque::with_capacity(backlog)),
-        }
+impl ListenStream {
+    pub(super) fn new(
+        bound_port: BoundPort,
+        backlog: usize,
+        pollee: &Pollee,
+    ) -> core::result::Result<Self, (Error, BoundPort)> {
+        bound_port
+            .listen(backlog, pollee)
+            .map(|listener| Self { listener })
     }
 
-    pub fn addr(&self) -> VsockSocketAddr {
-        self.addr
+    pub(super) fn try_accept(&self) -> Result<ConnectedStream> {
+        self.listener
+            .try_accept()
+            .map(|connection| ConnectedStream::new(connection, false))
     }
 
-    pub fn push_incoming(&self, connect: Arc<Connected>) -> Result<()> {
-        let mut incoming_connections = self.incoming_connection.disable_irq().lock();
-        if incoming_connections.len() >= self.backlog {
-            return_errno_with_message!(Errno::ECONNREFUSED, "queue in listenging socket is full")
-        }
-
-        // FIXME: check if the port is already used
-        incoming_connections.push_back(connect);
-        self.pollee.notify(IoEvents::IN);
-
-        Ok(())
+    pub(super) fn set_backlog(&self, backlog: usize) {
+        self.listener.set_backlog(backlog);
     }
 
-    pub fn try_accept(&self) -> Result<Arc<Connected>> {
-        let connection = self
-            .incoming_connection
-            .disable_irq()
-            .lock()
-            .pop_front()
-            .ok_or_else(|| {
-                Error::with_message(Errno::EAGAIN, "no pending connection is available")
-            })?;
-        self.pollee.invalidate();
-
-        Ok(connection)
+    pub(super) fn local_addr(&self) -> VsockSocketAddr {
+        self.listener.local_addr()
     }
 
-    pub fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.pollee
-            .poll_with(mask, poller, || self.check_io_events())
-    }
-
-    fn check_io_events(&self) -> IoEvents {
-        let incoming_connection = self.incoming_connection.disable_irq().lock();
-
-        if !incoming_connection.is_empty() {
-            IoEvents::IN
-        } else {
-            IoEvents::empty()
-        }
+    pub(super) fn check_io_events(&self) -> IoEvents {
+        self.listener.check_io_events()
     }
 }

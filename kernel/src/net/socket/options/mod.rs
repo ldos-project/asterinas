@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::util::LingerOption;
-use crate::{impl_socket_options, net::socket::unix::CUserCred, prelude::*, process::Gid};
+use macros::impl_socket_options;
 
-mod macros;
+use super::util::LingerOption;
+use crate::{net::socket::unix::CUserCred, prelude::*, process::Gid};
+
+pub(in crate::net) mod macros;
 
 /// Socket options. This trait represents all options that can be set or got for a socket, including
 /// socket level options and options for specific socket type like tcp socket.
@@ -14,13 +16,15 @@ pub trait SocketOption: Any + Send + Sync + Debug {
 
 impl_socket_options!(
     pub struct ReuseAddr(bool);
-    pub struct ReusePort(bool);
+    pub struct Error(Option<crate::error::Error>);
+    pub struct Broadcast(bool);
     pub struct SendBuf(u32);
     pub struct RecvBuf(u32);
-    pub struct Error(Option<crate::error::Error>);
+    pub struct KeepAlive(bool);
     pub struct Priority(i32);
     pub struct Linger(LingerOption);
-    pub struct KeepAlive(bool);
+    pub struct ReusePort(bool);
+    pub struct PassCred(bool);
     pub struct PeerCred(CUserCred);
     pub struct AcceptConn(bool);
     pub struct SendBufForce(u32);

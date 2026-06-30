@@ -14,56 +14,49 @@
 //! refer to the man 2 eventfd documentation.
 //!
 
+use core::fmt::Display;
+
 use ostd::sync::WaitQueue;
 
 use super::SyscallReturn;
 use crate::{
     events::IoEvents,
     fs::{
-        file_handle::FileLike,
-        file_table::{FdFlags, FileDesc},
-        utils::{CreationFlags, InodeMode, InodeType, Metadata, StatusFlags},
+        file::{CreationFlags, FileLike, StatusFlags, file_table::FdFlags},
+        pseudofs::AnonInodeFs,
+        vfs::path::Path,
     },
     prelude::*,
-    process::{
-        Gid, Uid,
-        signal::{PollHandle, Pollable, Pollee},
-    },
-    time::clocks::RealTimeClock,
+    process::signal::{PollHandle, Pollable, Pollee},
 };
 
 pub fn sys_eventfd(init_val: u64, ctx: &Context) -> Result<SyscallReturn> {
     debug!("init_val = 0x{:x}", init_val);
 
-    let fd = do_sys_eventfd2(init_val, Flags::empty(), ctx);
-
-    Ok(SyscallReturn::Return(fd as _))
+    do_sys_eventfd2(init_val, Flags::empty(), ctx)
 }
 
 pub fn sys_eventfd2(init_val: u64, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
-    trace!("raw flags = {}", flags);
+    debug!("raw flags = {}", flags);
     let flags = Flags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown flags"))?;
     debug!("init_val = 0x{:x}, flags = {:?}", init_val, flags);
 
-    let fd = do_sys_eventfd2(init_val, flags, ctx);
-
-    Ok(SyscallReturn::Return(fd as _))
+    do_sys_eventfd2(init_val, flags, ctx)
 }
 
-fn do_sys_eventfd2(init_val: u64, flags: Flags, ctx: &Context) -> FileDesc {
+fn do_sys_eventfd2(init_val: u64, flags: Flags, ctx: &Context) -> Result<SyscallReturn> {
     let event_file = EventFile::new(init_val, flags);
-    let fd = {
-        let file_table = ctx.thread_local.borrow_file_table();
-        let mut file_table_locked = file_table.unwrap().write();
-        let fd_flags = if flags.contains(Flags::EFD_CLOEXEC) {
-            FdFlags::CLOEXEC
-        } else {
-            FdFlags::empty()
-        };
-        file_table_locked.insert(Arc::new(event_file), fd_flags)
+    let file_table = ctx.thread_local.borrow_file_table();
+    let mut file_table_locked = file_table.unwrap().write();
+    let fd_flags = if flags.contains(Flags::EFD_CLOEXEC) {
+        FdFlags::CLOEXEC
+    } else {
+        FdFlags::empty()
     };
-    fd
+
+    let fd = file_table_locked.insert(Arc::new(event_file), fd_flags);
+    Ok(SyscallReturn::Return(fd.into()))
 }
 
 bitflags! {
@@ -79,6 +72,8 @@ struct EventFile {
     pollee: Pollee,
     flags: Mutex<Flags>,
     write_wait_queue: WaitQueue,
+    /// The pseudo path associated with this eventfd file.
+    pseudo_path: Path,
 }
 
 impl EventFile {
@@ -88,11 +83,13 @@ impl EventFile {
         let counter = Mutex::new(init_val);
         let pollee = Pollee::new();
         let write_wait_queue = WaitQueue::new();
+        let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[eventfd]".to_string());
         Self {
             counter,
             pollee,
             flags: Mutex::new(flags),
             write_wait_queue,
+            pseudo_path,
         }
     }
 
@@ -173,7 +170,7 @@ impl Pollable for EventFile {
 
 impl FileLike for EventFile {
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        let read_len = core::mem::size_of::<u64>();
+        let read_len = size_of::<u64>();
 
         if writer.avail() < read_len {
             return_errno_with_message!(Errno::EINVAL, "buf len is less len u64 size");
@@ -189,7 +186,7 @@ impl FileLike for EventFile {
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
-        let write_len = core::mem::size_of::<u64>();
+        let write_len = size_of::<u64>();
         if reader.remain() < write_len {
             return_errno_with_message!(Errno::EINVAL, "buf len is less than the size of u64");
         }
@@ -234,25 +231,34 @@ impl FileLike for EventFile {
         Ok(())
     }
 
-    fn metadata(&self) -> Metadata {
-        // This is a dummy implementation.
-        // TODO: Add "anonymous inode fs" and link `EventFile` to it.
-        let now = RealTimeClock::get().read_time();
-        Metadata {
-            dev: 0,
-            ino: 0,
-            size: 0,
-            blk_size: 0,
-            blocks: 0,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            type_: InodeType::NamedPipe,
-            mode: InodeMode::from_bits_truncate(0o200),
-            nlinks: 1,
-            uid: Uid::new_root(),
-            gid: Gid::new_root(),
-            rdev: 0,
+    fn path(&self) -> &Path {
+        &self.pseudo_path
+    }
+
+    fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
+        struct FdInfo {
+            inner: Arc<EventFile>,
+            fd_flags: FdFlags,
         }
+
+        impl Display for FdInfo {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let mut flags = self.inner.status_flags().bits() | self.inner.access_mode() as u32;
+                if self.fd_flags.contains(FdFlags::CLOEXEC) {
+                    flags |= CreationFlags::O_CLOEXEC.bits();
+                }
+
+                writeln!(f, "pos:\t{}", 0)?;
+                writeln!(f, "flags:\t0{:o}", flags)?;
+                writeln!(f, "mnt_id:\t{}", AnonInodeFs::mount_node().id())?;
+                writeln!(f, "ino:\t{}", AnonInodeFs::shared_inode().ino())?;
+                writeln!(f, "eventfd-count: {:16x}", *self.inner.counter.lock())
+            }
+        }
+
+        Box::new(FdInfo {
+            inner: self,
+            fd_flags,
+        })
     }
 }

@@ -16,7 +16,7 @@
 //!     ```
 //!   The `oqueues` and `length` fields are optional.
 //! * A series of CBOR objects serialized from type `TypeName` using Serde. The CBOR objects are not
-//!   part of a list, instead just being concatinated. In Python, they can be read using repeated
+//!   part of a list, instead just being concatenated. In Python, they can be read using repeated
 //!   calls to
 //!   [`cbor2.CBORDecoder.decode`](https://cbor2.readthedocs.io/en/latest/api.html#cbor2.CBORDecoder.decode).
 //!
@@ -91,7 +91,7 @@ mod tests {
     };
 
     #[ktest]
-    fn test_capture_server() {
+    fn capture_server() {
         // Create memory disk with space for 4 blocks
         let block_device = Arc::new(MemoryDisk::new(4096 * 4));
         let device = DataCaptureDeviceServer::new(block_device.clone());

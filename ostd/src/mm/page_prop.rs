@@ -7,7 +7,7 @@ use core::fmt::Debug;
 use bitflags::bitflags;
 
 /// The property of a mapped virtual memory page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageProperty {
     /// The flags associated with the page,
     pub flags: PageFlags,
@@ -26,15 +26,6 @@ impl PageProperty {
         }
     }
 
-    /// Creates a page property that implies an invalid page without mappings.
-    pub fn new_absent() -> Self {
-        Self {
-            flags: PageFlags::empty(),
-            cache: CachePolicy::Writeback,
-            priv_flags: PrivilegedPageFlags::empty(),
-        }
-    }
-
     /// Return if two `PageProperty`s are equal ignoring the ACCESSED and DIRTY flag bits
     pub fn equal_ignoring_accessed_dirty(&self, other: &Self) -> bool {
         let effective_self_flags = self.flags & PageFlags::ACCESSED & PageFlags::DIRTY;
@@ -49,7 +40,7 @@ impl PageProperty {
 /// A type to control the cacheability of the main memory.
 ///
 /// The type currently follows the definition as defined by the AMD64 manual.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CachePolicy {
     /// Uncacheable (UC).
     ///
@@ -126,8 +117,6 @@ bitflags! {
         /// Has the memory page been written.
         const DIRTY     = 0b00010000;
 
-        /// The first bit available for software use.
-        const AVAIL1    = 0b01000000;
         /// The second bit available for software use.
         const AVAIL2    = 0b10000000;
     }
@@ -141,9 +130,24 @@ bitflags! {
         /// Global page that won't be evicted from TLB with normal TLB flush.
         const GLOBAL    = 0b00000010;
 
+        /// The first bit available for software use.
+        /// This flag is reserved for OSTD to distinguish between tracked
+        /// mappings and untracked mappings in the page table.
+        const AVAIL1    = 0b01000000;
+
         /// (TEE only) If the page is shared with the host.
         /// Otherwise the page is ensured confidential and not visible outside the guest.
         #[cfg(all(target_arch = "x86_64", feature = "cvm_guest"))]
         const SHARED    = 0b10000000;
+    }
+}
+
+bitflags! {
+    /// Flags that can be stored on intermediate page table entries.
+    pub(crate) struct PageTableFlags: u8 {
+        /// The first bit available for software use.
+        const AVAIL1    = 0b01000000;
+        /// The second bit available for software use.
+        const AVAIL2    = 0b10000000;
     }
 }

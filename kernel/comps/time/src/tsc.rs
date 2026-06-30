@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! This module provide a instance of `ClockSource` based on TSC.
-//!
-//! Use `init` to initialize this module.
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::{
-    arch::{read_tsc, timer::TIMER_FREQ, tsc_freq},
-    timer,
+    arch::{read_tsc, tsc_freq},
+    timer::{self, TIMER_FREQ},
 };
 use spin::Once;
 
@@ -17,12 +16,12 @@ use crate::{
     clocksource::{ClockSource, Instant},
 };
 
-/// A instance of TSC clocksource.
-pub static CLOCK: Once<Arc<ClockSource>> = Once::new();
+/// An instance of the TSC clocksource.
+pub(super) static CLOCK: Once<Arc<ClockSource>> = Once::new();
 
 const MAX_DELAY_SECS: u64 = 100;
 
-/// Init tsc clocksource module.
+/// Initializes the TSC clocksource module.
 pub(super) fn init() {
     init_clock();
     calibrate();
@@ -39,15 +38,15 @@ fn init_clock() {
     });
 }
 
-/// Calibrate the TSC and system time based on the RTC time.
+/// Calibrates the TSC and system time based on the RTC time.
 fn calibrate() {
     let clock = CLOCK.get().unwrap();
     let cycles = clock.read_cycles();
     clock.calibrate(cycles);
-    START_TIME.call_once(crate::read);
+    START_TIME.call_once(|| crate::RTC_DRIVER.get().unwrap().read_rtc());
 }
 
-/// Read an `Instant` of tsc clocksource.
+/// Reads an `Instant` of the TSC clocksource.
 pub(super) fn read_instant() -> Instant {
     let clock = CLOCK.get().unwrap();
     clock.read_instant()
@@ -57,7 +56,7 @@ fn update_clocksource() {
     let clock = CLOCK.get().unwrap();
     clock.update();
 
-    // Update vdso data.
+    // Update vDSO data.
     if let Some(update_fn) = VDSO_DATA_HIGH_RES_UPDATE_FN.get() {
         let (last_instant, last_cycles) = clock.last_record();
         update_fn(last_instant, last_cycles);
@@ -79,11 +78,11 @@ fn init_timer() {
     let update = move || {
         let counter = TSC_UPDATE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-        if counter % delay_counts == 0 {
+        if counter.is_multiple_of(delay_counts) {
             update_clocksource();
         }
     };
 
-    // TODO: re-organize the code structure and use the `Timer` to achieve the updating.
-    timer::register_callback(update);
+    // TODO: Re-organize the code structure and use the `Timer` to achieve the updating.
+    timer::register_callback_on_cpu(update);
 }

@@ -1,0 +1,2 @@
+// Do not expect access in the near future and free associated resources
+madvise(addr, length, advice = MADV_DONTNEED);

@@ -19,7 +19,6 @@ use alloc::{
 };
 use core::{any::type_name, str::FromStr};
 
-use log::error;
 use spin::Once;
 
 #[derive(PartialEq, Debug, Clone)]
@@ -46,18 +45,6 @@ pub struct KCmdlineArg {
 }
 
 impl KCmdlineArg {
-    /// Gets the path of the initprocess.
-    pub fn get_initproc_path(&self) -> Option<&str> {
-        self.initproc.path.as_deref()
-    }
-    /// Gets the argument vector(argv) of the initprocess.
-    pub fn get_initproc_argv(&self) -> &Vec<CString> {
-        &self.initproc.argv
-    }
-    /// Gets the environment vector(envp) of the initprocess.
-    pub fn get_initproc_envp(&self) -> &Vec<CString> {
-        &self.initproc.envp
-    }
     /// Gets the argument vector of a kernel module.
     pub fn get_module_args(&self, module: &str) -> Option<&Vec<ModuleArg>> {
         self.module_args.get(module)
@@ -84,19 +71,19 @@ impl KCmdlineArg {
             let mut vals: Vec<_> = module_args.iter().filter_map(|arg| {
                 match arg {
                     ModuleArg::Arg(name) if name.as_bytes() == arg_name.as_bytes() => {
-                        error!("Argument {arg_name} (expected type {}) was provided without an value. Ignored.", type_name::<T>());
+                        ostd::error!("Argument {arg_name} (expected type {}) was provided without an value. Ignored.", type_name::<T>());
                         None
                     },
                     ModuleArg::KeyVal(name, val) if name.as_bytes() == arg_name.as_bytes() => {
                         match String::from_utf8(val.as_bytes().to_vec()).map(|s| T::from_str(&s)) {
                             Ok(Ok(v)) => Some(v),
                             Ok(Err(e)) => {
-                                error!("Argument {arg_name} (expected type {}) with value {:?} could not be parsed. Ignored.", type_name::<T>(), val);
+                                ostd::error!("Argument {arg_name} (expected type {}) with value {:?} could not be parsed. Ignored.", type_name::<T>(), val);
                                 None
                             },
                             Err(e) => {
                                 // This should be unreachable given that a version to and from str has already happened, but no reason to crash.
-                                error!("Argument {arg_name} with value {:?} could not be converted into str with error {}. Ignored.", val, e);
+                                ostd::error!("Argument {arg_name} with value {:?} could not be converted into str with error {}. Ignored.", val, e);
                                 None
                             }
 
@@ -106,7 +93,9 @@ impl KCmdlineArg {
                 }
             }).collect();
             if vals.len() > 1 {
-                error!("Argument {arg_name} provided more than once. Discarding all but last.");
+                ostd::error!(
+                    "Argument {arg_name} provided more than once. Discarding all but last."
+                );
             }
             vals.pop()
         } else {
@@ -128,7 +117,7 @@ impl KCmdlineArg {
             module_args.iter().any(|arg| match arg {
                 ModuleArg::Arg(name) if name.as_bytes() == arg_name.as_bytes() => true,
                 ModuleArg::KeyVal(name, val) if name.as_bytes() == arg_name.as_bytes() => {
-                    error!(
+                    ostd::error!(
                         "Flag {arg_name} was provided with a value {:?}. Ignored.",
                         val
                     );
@@ -194,7 +183,7 @@ impl From<&str> for KCmdlineArg {
                 1 => (arg_pattern[0], None),
                 2 => (arg_pattern[0], Some(arg_pattern[1])),
                 _ => {
-                    log::warn!(
+                    ostd::warn!(
                         "[KCmdline] Unable to parse kernel argument {}, skip for now",
                         arg
                     );
@@ -207,7 +196,7 @@ impl From<&str> for KCmdlineArg {
                 1 => (None, entry_pattern[0]),
                 2 => (Some(entry_pattern[0]), entry_pattern[1]),
                 _ => {
-                    log::warn!(
+                    ostd::warn!(
                         "[KCmdline] Unable to parse entry {} in argument {}, skip for now",
                         entry,
                         arg
@@ -267,7 +256,7 @@ static KERNEL_CMD_LINE: Once<KCmdlineArg> = Once::new();
 // Set the global kernel command line. This call will be ignored if the command line has already been set.
 pub(crate) fn set_kernel_cmd_line(cmd_line: KCmdlineArg) {
     if let Some(first) = KERNEL_CMD_LINE.get() {
-        error!(
+        ostd::error!(
             "Kernel command line was set more than once. The first was: {first:?}\nThe second was: {cmd_line:?}"
         );
     }
@@ -294,7 +283,7 @@ mod test {
     use super::*;
 
     #[ktest]
-    fn test_get_module_arg_by_name_with_value() {
+    fn get_module_arg_by_name_with_value() {
         let cmdline = "module.arg=value";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -305,7 +294,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_arg_by_name_second_with_value() {
+    fn get_module_arg_by_name_second_with_value() {
         let cmdline = "module.other module.arg=value";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -316,7 +305,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_arg_by_name_with_multiple_values() {
+    fn get_module_arg_by_name_with_multiple_values() {
         let cmdline = "module.arg=value module.arg=value2";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -327,7 +316,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_arg_by_name_with_value_to_type() {
+    fn get_module_arg_by_name_with_value_to_type() {
         let cmdline = "module.arg=42";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -338,7 +327,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_arg_by_name_with_invalid_value() {
+    fn get_module_arg_by_name_with_invalid_value() {
         let cmdline = "module.arg=notanint";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -349,7 +338,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_arg_by_name_missing() {
+    fn get_module_arg_by_name_missing() {
         let cmdline = "module.arg=value";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -360,7 +349,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_flag_by_name() {
+    fn get_module_flag_by_name() {
         let cmdline = "module.arg";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -368,7 +357,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_flag_by_name_second() {
+    fn get_module_flag_by_name_second() {
         let cmdline = "module.other module.arg";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -376,7 +365,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_flag_by_name_missing() {
+    fn get_module_flag_by_name_missing() {
         let cmdline = "module.arg";
         let kcmdline = KCmdlineArg::from(cmdline);
 
@@ -384,7 +373,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_get_module_flag_by_name_with_value() {
+    fn get_module_flag_by_name_with_value() {
         let cmdline = "module.arg=value";
         let kcmdline = KCmdlineArg::from(cmdline);
 

@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
-use core::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use aster_rights::ReadOp;
-use id_alloc::IdAlloc;
-use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
-use spin::Once;
 
-use super::{
-    PermissionMode,
-    sem::{PendingOp, Status, update_pending_alter, wake_const_ops},
+use super::sem::{
+    PendingBlocker, PendingOp, Semaphore, Status, update_pending_alter, wake_const_ops,
 };
 use crate::{
-    ipc::{IpcPermission, key_t, semaphore::system_v::sem::Semaphore},
+    ipc::{IpcKey, IpcPermission},
     prelude::*,
     process::{Credentials, Pid},
     time::clocks::RealTimeCoarseClock,
@@ -28,27 +21,78 @@ use crate::{
 pub const SEMMNI: usize = 32000;
 /// Maximum number of semaphores per semaphore ID.
 pub const SEMMSL: usize = 32000;
-/// Maximum number of seaphores in all semaphore sets.
+/// Maximum number of semaphores in all semaphore sets.
+#[expect(dead_code)]
 pub const SEMMNS: usize = SEMMNI * SEMMSL;
 /// Maximum number of operations for semop.
 pub const SEMOPM: usize = 500;
-/// MAximum semaphore value.
+/// Maximum semaphore value.
 pub const SEMVMX: i32 = 32767;
 /// Maximum value that can be recorded for semaphore adjustment (SEM_UNDO).
+#[expect(dead_code)]
 pub const SEMAEM: i32 = SEMVMX;
 
 #[derive(Debug)]
 pub struct SemaphoreSet {
     /// Number of semaphores in the set
-    nsems: usize,
+    num_sems: usize,
     /// Inner
-    inner: SpinLock<SemSetInner>,
+    inner: Mutex<SemSetInner>,
     /// Semaphore permission
     permission: IpcPermission,
     /// Creation time or last modification via `semctl`
     sem_ctime: AtomicU64,
-    /// Last semop time.
+    /// Last `semop` time
     sem_otime: AtomicU64,
+}
+
+// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ipcbuf.h#L22>.
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct IpcPerm {
+    key: u32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u16,
+    _pad1: u16,
+    seq: u16,
+    _pad2: u16,
+    _unused1: u64,
+    _unused2: u64,
+}
+
+// In Linux, most popular 64-bit architectures except x86_64 adopt the same
+// layout of `semid_ds`.
+// Reference: <https://elixir.bootlin.com/linux/v6.16.9/A/ident/semid64_ds>.
+#[cfg(target_arch = "x86_64")]
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct SemidDs {
+    sem_perm: IpcPerm,
+    sem_otime: u64,
+    _unused1: u64,
+    sem_ctime: u64,
+    _unused2: u64,
+    sem_nsems: u64,
+    _unused3: u64,
+    _unused4: u64,
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct SemidDs {
+    sem_perm: IpcPerm,
+    sem_otime: u64,
+    sem_ctime: u64,
+    sem_nsems: u64,
+    _unused3: u64,
+    _unused4: u64,
 }
 
 #[derive(Debug)]
@@ -62,7 +106,7 @@ pub(super) struct SemSetInner {
 }
 
 impl SemSetInner {
-    pub fn field_mut(
+    pub(super) fn field_mut(
         &mut self,
     ) -> (
         &mut Box<[Semaphore]>,
@@ -78,106 +122,130 @@ impl SemSetInner {
 }
 
 impl SemaphoreSet {
-    pub fn pending_const_count(&self, sem_num: u16) -> usize {
-        let inner = self.inner.lock();
-        let pending_const = &inner.pending_const;
-        let mut count = 0;
-        for i in pending_const.iter() {
-            for sem_buf in i.sops_iter() {
-                if sem_buf.sem_num() == sem_num {
-                    count += 1;
-                }
-            }
+    /// Counts the number of pending operations waiting for the semaphore at `sem_num` to become
+    /// zero.
+    pub fn pending_zero_count(&self, sem_num: usize) -> Result<usize> {
+        if sem_num >= self.num_sems {
+            return_errno_with_message!(Errno::EINVAL, "the semaphore number is out of bounds");
         }
-        count
+
+        let inner = self.inner.lock();
+        let count_const = inner
+            .pending_const
+            .iter()
+            .filter(|op| op.blocker(&inner.sems) == Ok(PendingBlocker::Zero(sem_num)))
+            .count();
+        let count_alter = inner
+            .pending_alter
+            .iter()
+            .filter(|op| op.blocker(&inner.sems) == Ok(PendingBlocker::Zero(sem_num)))
+            .count();
+        Ok(count_const + count_alter)
     }
 
-    pub fn pending_alter_count(&self, sem_num: u16) -> usize {
-        let inner = self.inner.lock();
-        let pending_alter = &inner.pending_alter;
-        let mut count = 0;
-        for i in pending_alter.iter() {
-            for sem_buf in i.sops_iter() {
-                if sem_buf.sem_num() == sem_num {
-                    count += 1;
-                }
-            }
+    /// Counts the number of pending operations waiting for the semaphore at `sem_num` to be able to
+    /// decrease by a certain amount.
+    pub fn pending_decrease_count(&self, sem_num: usize) -> Result<usize> {
+        if sem_num >= self.num_sems {
+            return_errno_with_message!(Errno::EINVAL, "the semaphore number is out of bounds");
         }
-        count
+
+        let inner = self.inner.lock();
+        let count = inner
+            .pending_alter
+            .iter()
+            .filter(|op| op.blocker(&inner.sems) == Ok(PendingBlocker::Decrease(sem_num)))
+            .count();
+        Ok(count)
     }
 
-    pub fn nsems(&self) -> usize {
-        self.nsems
+    pub fn num_sems(&self) -> usize {
+        self.num_sems
     }
 
     pub fn setval(&self, sem_num: usize, val: i32, pid: Pid) -> Result<()> {
-        if !(0..SEMVMX).contains(&val) {
-            return_errno!(Errno::ERANGE);
+        if !(0..=SEMVMX).contains(&val) {
+            return_errno_with_message!(Errno::ERANGE, "the semaphore value exceeds SEMVMX");
         }
 
         let mut inner = self.inner();
         let (sems, pending_alter, pending_const) = inner.field_mut();
-        let sem = sems.get_mut(sem_num).ok_or(Error::new(Errno::EINVAL))?;
+        let Some(sem) = sems.get_mut(sem_num) else {
+            return_errno_with_message!(Errno::EINVAL, "the semaphore number is out of bounds");
+        };
 
         sem.set_val(val);
         sem.set_latest_modified_pid(pid);
 
         let mut wake_queue = LinkedList::new();
+        let mut has_completed_op = false;
         if val == 0 {
-            wake_const_ops(sems, pending_const, &mut wake_queue);
-        } else {
-            update_pending_alter(sems, pending_alter, pending_const, &mut wake_queue);
+            has_completed_op |= wake_const_ops(sems, pending_const, &mut wake_queue);
         }
+        has_completed_op |=
+            update_pending_alter(sems, pending_alter, pending_const, &mut wake_queue);
 
         for wake_op in wake_queue {
-            wake_op.set_status(Status::Normal);
             if let Some(waker) = wake_op.waker() {
                 waker.wake_up();
             }
         }
 
         self.update_ctime();
+        if has_completed_op {
+            self.update_otime();
+        }
+
         Ok(())
     }
 
-    pub fn get<T>(&self, sem_num: usize, func: &dyn Fn(&Semaphore) -> T) -> Result<T> {
+    pub fn get<T>(&self, sem_num: usize, func: fn(&Semaphore) -> T) -> Result<T> {
         let inner = self.inner();
-        Ok(func(
-            inner.sems.get(sem_num).ok_or(Error::new(Errno::EINVAL))?,
-        ))
+        let Some(sem) = inner.sems.get(sem_num) else {
+            return_errno_with_message!(Errno::EINVAL, "the semaphore number is out of bounds");
+        };
+
+        let result = func(sem);
+        Ok(result)
     }
 
     pub fn permission(&self) -> &IpcPermission {
         &self.permission
     }
 
-    pub fn sem_ctime(&self) -> Duration {
-        Duration::from_secs(self.sem_ctime.load(Ordering::Relaxed))
-    }
-
-    pub fn update_ctime(&self) {
+    fn update_ctime(&self) {
         self.sem_ctime.store(
             RealTimeCoarseClock::get().read_time().as_secs(),
             Ordering::Relaxed,
         );
     }
 
-    pub fn update_otime(&self) {
+    pub(super) fn update_otime(&self) {
         self.sem_otime.store(
             RealTimeCoarseClock::get().read_time().as_secs(),
             Ordering::Relaxed,
         );
     }
 
-    pub(super) fn inner(&self) -> SpinLockGuard<SemSetInner, PreemptDisabled> {
+    pub(super) fn inner(&self) -> MutexGuard<'_, SemSetInner> {
         self.inner.lock()
     }
 
-    fn new(key: key_t, nsems: usize, mode: u16, credentials: Credentials<ReadOp>) -> Result<Self> {
-        debug_assert!(nsems <= SEMMSL);
+    pub(in crate::ipc) fn new(
+        key: IpcKey,
+        num_sems: usize,
+        mode: u16,
+        credentials: &Credentials<ReadOp>,
+    ) -> Result<Self> {
+        if num_sems == 0 {
+            return_errno_with_message!(Errno::EINVAL, "the number of semaphores is zero")
+        }
+        if num_sems > SEMMSL {
+            return_errno_with_message!(Errno::EINVAL, "the number of semaphores exceeds SEMMSL");
+        }
 
-        let mut sems = Vec::with_capacity(nsems);
-        for _ in 0..nsems {
+        let mut sems = Vec::with_capacity(num_sems);
+        for _ in 0..num_sems {
             sems.push(Semaphore::new(0));
         }
 
@@ -185,22 +253,43 @@ impl SemaphoreSet {
             IpcPermission::new_sem_perm(key, credentials.euid(), credentials.egid(), mode);
 
         Ok(Self {
-            nsems,
+            num_sems,
             permission,
             sem_ctime: AtomicU64::new(RealTimeCoarseClock::get().read_time().as_secs()),
             sem_otime: AtomicU64::new(0),
-            inner: SpinLock::new(SemSetInner {
+            inner: Mutex::new(SemSetInner {
                 sems: sems.into_boxed_slice(),
                 pending_alter: LinkedList::new(),
                 pending_const: LinkedList::new(),
             }),
         })
     }
+
+    pub fn semid_ds(&self) -> SemidDs {
+        let ipc_perm = IpcPerm {
+            key: self.permission.key().cast_unsigned(),
+            uid: self.permission.uid().into(),
+            gid: self.permission.gid().into(),
+            cuid: self.permission.cuid().into(),
+            cgid: self.permission.cguid().into(),
+            mode: self.permission.mode(),
+            ..IpcPerm::default()
+        };
+
+        SemidDs {
+            sem_perm: ipc_perm,
+            sem_otime: self.sem_otime.load(Ordering::Relaxed),
+            sem_ctime: self.sem_ctime.load(Ordering::Relaxed),
+            sem_nsems: self.num_sems as u64,
+            ..SemidDs::default()
+        }
+    }
 }
 
 impl Drop for SemaphoreSet {
     fn drop(&mut self) {
-        let mut inner = self.inner();
+        let inner = self.inner.get_mut();
+
         let pending_alter = &mut inner.pending_alter;
         for pending_alter in pending_alter.iter_mut() {
             pending_alter.set_status(Status::Removed);
@@ -218,97 +307,5 @@ impl Drop for SemaphoreSet {
             }
         }
         pending_const.clear();
-
-        ID_ALLOCATOR
-            .get()
-            .unwrap()
-            .lock()
-            .free(self.permission.key() as usize);
     }
-}
-
-pub fn create_sem_set_with_id(
-    id: key_t,
-    nsems: usize,
-    mode: u16,
-    credentials: Credentials<ReadOp>,
-) -> Result<()> {
-    debug_assert!(nsems <= SEMMSL);
-    debug_assert!(id > 0);
-    if id as usize > SEMMNI {
-        return_errno_with_message!(Errno::ENOENT, "id larger than SEMMNI");
-    }
-
-    ID_ALLOCATOR
-        .get()
-        .unwrap()
-        .lock()
-        .alloc_specific(id as usize)
-        .ok_or(Error::new(Errno::EEXIST))?;
-
-    let mut sem_sets = SEMAPHORE_SETS.write();
-    sem_sets.insert(id, SemaphoreSet::new(id, nsems, mode, credentials)?);
-
-    Ok(())
-}
-
-/// Checks the semaphore. Return Ok if the semaphore exists and pass the check.
-pub fn check_sem(id: key_t, nsems: Option<usize>, required_perm: PermissionMode) -> Result<()> {
-    debug_assert!(id > 0);
-
-    let sem_sets = SEMAPHORE_SETS.read();
-    let sem_set = sem_sets.get(&id).ok_or(Error::new(Errno::ENOENT))?;
-
-    if let Some(nsems) = nsems {
-        debug_assert!(nsems <= SEMMSL);
-        if nsems > sem_set.nsems() {
-            return_errno!(Errno::EINVAL);
-        }
-    }
-
-    if !required_perm.is_empty() {
-        // TODO: Support permission check
-        warn!("Semaphore doesn't support permission check now");
-    }
-
-    Ok(())
-}
-
-pub fn create_sem_set(nsems: usize, mode: u16, credentials: Credentials<ReadOp>) -> Result<key_t> {
-    debug_assert!(nsems <= SEMMSL);
-
-    let id = ID_ALLOCATOR
-        .get()
-        .unwrap()
-        .lock()
-        .alloc()
-        .ok_or(Error::new(Errno::ENOSPC))? as i32;
-
-    let mut sem_sets = SEMAPHORE_SETS.write();
-    sem_sets.insert(id, SemaphoreSet::new(id, nsems, mode, credentials)?);
-
-    Ok(id)
-}
-
-pub fn sem_sets<'a>() -> RwLockReadGuard<'a, BTreeMap<key_t, SemaphoreSet>, PreemptDisabled> {
-    SEMAPHORE_SETS.read()
-}
-
-pub fn sem_sets_mut<'a>() -> RwLockWriteGuard<'a, BTreeMap<key_t, SemaphoreSet>, PreemptDisabled> {
-    SEMAPHORE_SETS.write()
-}
-
-static ID_ALLOCATOR: Once<SpinLock<IdAlloc>> = Once::new();
-
-/// Semaphore sets in system
-static SEMAPHORE_SETS: RwLock<BTreeMap<key_t, SemaphoreSet>> = RwLock::new(BTreeMap::new());
-
-pub(super) fn init() {
-    ID_ALLOCATOR.call_once(|| {
-        let mut id_alloc = IdAlloc::with_capacity(SEMMNI + 1);
-        // Remove the first index 0
-        id_alloc.alloc();
-
-        SpinLock::new(id_alloc)
-    });
 }

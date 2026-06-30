@@ -18,7 +18,7 @@ use ostd_pod::Pod;
 ///
 /// A DRHD structure uniquely represents a remapping hardware unit present in the platform.
 /// There must be at least one instance of this structure for each PCI segment in the platform.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Drhd {
     header: DrhdHeader,
     device_scopes: Vec<DeviceScope>,
@@ -31,7 +31,7 @@ impl Drhd {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct DrhdHeader {
     typ: u16,
     length: u16,
@@ -46,14 +46,14 @@ pub struct DrhdHeader {
 /// BIOS allocated reserved memory ranges that may be DMA targets.
 /// It may report each such reserved memory region through the RMRR structures, along
 /// with the devices that requires access to the specified reserved memory region.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Rmrr {
     header: RmrrHeader,
     device_scopes: Vec<DeviceScope>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct RmrrHeader {
     typ: u16,
     length: u16,
@@ -67,14 +67,14 @@ pub struct RmrrHeader {
 ///
 /// This structure is applicable only for platforms supporting Device-TLBs as reported through the
 /// Extended Capability Register.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Atsr {
     header: AtsrHeader,
     device_scopes: Vec<DeviceScope>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct AtsrHeader {
     typ: u16,
     length: u16,
@@ -88,9 +88,10 @@ pub struct AtsrHeader {
 /// It is applicable for platforms supporting non-uniform memory (NUMA),
 /// where Remapping hardware units spans across nodes.
 /// This optional structure provides the association between each Remapping hardware unit (identified
-/// by its espective Base Address) and the proximity domain to which that hardware unit belongs.
+/// by its respective Base Address) and the proximity domain to which that hardware unit belongs.
+#[padding_struct]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct Rhsa {
     typ: u16,
     length: u16,
@@ -103,14 +104,14 @@ pub struct Rhsa {
 ///
 /// An ANDD structure uniquely represents an ACPI name-space
 /// enumerated device capable of issuing DMA requests in the platform.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Andd {
     header: AnddHeader,
     acpi_object_name: String,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct AnddHeader {
     typ: u16,
     length: u16,
@@ -122,14 +123,14 @@ pub struct AnddHeader {
 ///
 /// The SATC reporting structure identifies devices that have address translation cache (ATC),
 /// as defined by the PCI Express Base Specification.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Satc {
     header: SatcHeader,
     device_scopes: Vec<DeviceScope>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct SatcHeader {
     typ: u16,
     length: u16,
@@ -143,14 +144,14 @@ pub struct SatcHeader {
 /// The (SIDP) reporting structure identifies devices that have special
 /// properties and that may put restrictions on how system software must configure remapping
 /// structures that govern such devices in a platform where remapping hardware is enabled.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct Sidp {
     header: SidpHeader,
     device_scopes: Vec<DeviceScope>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct SidpHeader {
     typ: u16,
     length: u16,
@@ -160,14 +161,14 @@ pub struct SidpHeader {
 
 /// The Device Scope Structure is made up of Device Scope Entries. Each Device Scope Entry may be
 /// used to indicate a PCI endpoint device
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct DeviceScope {
     header: DeviceScopeHeader,
     path: Vec<(u8, u8)>,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct DeviceScopeHeader {
     typ: u8,
     length: u8,
@@ -190,10 +191,10 @@ macro_rules! impl_from_bytes {
                 "`].",
             )]
             pub fn from_bytes(bytes: &[u8]) -> Self {
-                let header = $header_struct::from_bytes(bytes);
+                let header = $header_struct::from_first_bytes(bytes);
                 debug_assert_eq!(header.length as usize, bytes.len());
 
-                let mut index = core::mem::size_of::<$header_struct>();
+                let mut index = size_of::<$header_struct>();
                 let mut device_scopes = Vec::new();
                 while index != (header.length as usize) {
                     let val = DeviceScope::from_bytes_prefix(&bytes[index..]);
@@ -225,10 +226,10 @@ impl DeviceScope {
     ///
     /// This method may panic if the byte prefix does not represent a valid [`DeviceScope`].
     fn from_bytes_prefix(bytes: &[u8]) -> Self {
-        let header = DeviceScopeHeader::from_bytes(bytes);
+        let header = DeviceScopeHeader::from_first_bytes(bytes);
         debug_assert!((header.length as usize) <= bytes.len());
 
-        let mut index = core::mem::size_of::<DeviceScopeHeader>();
+        let mut index = size_of::<DeviceScopeHeader>();
         debug_assert!((header.length as usize) >= index);
 
         let mut path = Vec::new();
@@ -249,7 +250,7 @@ impl Rhsa {
     ///
     /// This method may panic if the bytes do not represent a valid [`Rhsa`].
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let val = <Self as Pod>::from_bytes(bytes);
+        let val = <Self as Pod>::from_first_bytes(bytes);
         debug_assert_eq!(val.length as usize, bytes.len());
 
         val
@@ -263,10 +264,10 @@ impl Andd {
     ///
     /// This method may panic if the bytes do not represent a valid [`Andd`].
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        let header = AnddHeader::from_bytes(bytes);
+        let header = AnddHeader::from_first_bytes(bytes);
         debug_assert_eq!(header.length as usize, bytes.len());
 
-        let header_len = core::mem::size_of::<AnddHeader>();
+        let header_len = size_of::<AnddHeader>();
         let acpi_object_name = core::str::from_utf8(&bytes[header_len..])
             .unwrap()
             .to_owned();

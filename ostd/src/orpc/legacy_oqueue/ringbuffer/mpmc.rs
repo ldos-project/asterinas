@@ -817,62 +817,62 @@ mod test {
     use super::*;
     use crate::{orpc::legacy_oqueue::generic_test, prelude::*};
     #[ktest]
-    fn test_produce_consume() {
+    fn produce_consume() {
         generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 0));
     }
 
     #[ktest]
-    fn test_produce_strong_observe() {
+    fn produce_strong_observe() {
         generic_test::test_produce_strong_observe(MPMCOQueue::<_>::new(1, 1));
     }
 
     #[ktest]
-    fn test_produce_weak_observe() {
+    fn produce_weak_observe() {
         generic_test::test_produce_weak_observe(MPMCOQueue::<_>::new(2, 1));
     }
 
     #[ktest]
-    fn test_all() {
+    fn all() {
         generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 1));
         generic_test::test_produce_strong_observe(MPMCOQueue::<_>::new(1, 1));
         generic_test::test_produce_weak_observe(MPMCOQueue::<_>::new(2, 1));
     }
 
     #[ktest]
-    fn test_send_receive_blocker_observable_mpmc() {
+    fn send_receive_blocker_observable_mpmc() {
         let oqueue = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_receive_blocker(oqueue, 100, 5);
     }
 
     #[ktest]
-    fn test_send_multi_receive_blocker_observable_mpmc() {
+    fn send_multi_receive_blocker_observable_mpmc() {
         let oqueue1 = MPMCOQueue::<_>::new(16, 5);
         let oqueue2 = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
     #[ktest]
-    fn test_produce_strong_observe_only() {
+    fn produce_strong_observe_only() {
         generic_test::test_produce_strong_observe_only(MPMCOQueue::<_>::new(1, 1));
     }
 
     #[ktest]
-    fn test_consumer_late_attach() {
+    fn consumer_late_attach() {
         generic_test::test_consumer_late_attach(MPMCOQueue::<_>::new(2, 1));
     }
 
     #[ktest]
-    fn test_consumer_detach() {
+    fn consumer_detach() {
         generic_test::test_consumer_detach(MPMCOQueue::<_>::new(2, 1));
     }
 
     #[ktest]
-    fn test_strong_observer_detach() {
+    fn strong_observer_detach() {
         generic_test::test_strong_observer_detach(MPMCOQueue::<_>::new(2, 1));
     }
 
     #[ktest]
-    fn test_strong_observer_late_attach() {
+    fn strong_observer_late_attach() {
         generic_test::test_strong_observer_late_attach(MPMCOQueue::<_>::new(2, 1));
     }
 }

@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use aster_util::printer::VmPrinter;
+use ostd::task::Task;
+
+use crate::{
+    fs::{
+        cgroupfs::{CgroupSysNode, CgroupSystem},
+        file::mkmod,
+        procfs::{
+            pid::TidDirOps,
+            template::{FileOps, ProcFile},
+        },
+        vfs::inode::Inode,
+    },
+    prelude::*,
+    process::posix_thread::AsThreadLocal,
+};
+
+/// Represents the inode at `/proc/[pid]/task/[tid]/cgroup` (and also `/proc/[pid]/cgroup`).
+pub struct CgroupFileOps(TidDirOps);
+
+impl CgroupFileOps {
+    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3379>
+        ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
+    }
+}
+
+impl FileOps for CgroupFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let Some(process) = self.0.process() else {
+            return_errno_with_message!(Errno::ESRCH, "the process does not exist");
+        };
+
+        let cgroup: Arc<dyn CgroupSysNode> = match process.cgroup().get() {
+            Some(cgroup) => cgroup.clone(),
+            None => CgroupSystem::singleton().clone(),
+        };
+
+        let current_task = Task::current().unwrap();
+        let thread_local = current_task.as_thread_local().unwrap();
+        let ns_proxy = thread_local.borrow_ns_proxy();
+        let cgroup_ns = ns_proxy.unwrap().cgroup_ns();
+        let path = cgroup_ns.virtualize_path(cgroup);
+
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer, "0::{}", path)?;
+
+        Ok(printer.bytes_written())
+    }
+}

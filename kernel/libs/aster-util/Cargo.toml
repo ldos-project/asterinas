@@ -1,17 +1,21 @@
 [package]
 name = "aster-util"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ostd = { path = "../../../ostd" }
-typeflags-util = { path = "../typeflags-util" }
-aster-rights-proc = { path = "../aster-rights-proc" }
-aster-rights = { path = "../aster-rights" }
-inherit-methods-macro = { git = "https://github.com/ldos-project/inherit-methods-macro", rev = "98f7e3e" }
-snafu = { workspace = true }
+snafu.workspace = true
+aster-rights.workspace = true
+aster-rights-proc.workspace = true
+inherit-methods-macro.workspace = true
+osdk-heap-allocator.workspace = true
+ostd.workspace = true
+ostd-pod.workspace = true
+serde.workspace = true
+typeflags-util.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

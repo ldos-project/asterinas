@@ -6,7 +6,7 @@ branding:
 inputs:
   # Test Configuration
   auto_test:
-    description: 'Test type (general, osdk, boot, syscall, test)'
+    description: 'Test type (general, osdk, boot, conformance, regression)'
     required: true
   release:
     description: 'Whether to run in release mode'
@@ -35,19 +35,19 @@ inputs:
 
   # Test Parameters
   arch:
-    description: 'Architecture (x86_64/riscv64)'
+    description: 'Architecture (x86_64/riscv64/loongarch64)'
     required: false
   extra_blocklists:
-    description: 'Extra blocklists directories'
+    description: 'Extra blocklists directories or files'
     required: false
-  syscall_test_suite:
-    description: 'Selected syscall test suite'
+  conformance_test_suite:
+    description: 'Selected conformance test suite'
     required: false
-  syscall_test_workdir:
-    description: 'Syscall test working directory'
+  conformance_test_workdir:
+    description: 'Conformance test working directory'
     required: false
   boot_protocol:
-    description: 'Boot protocol (linux-efi-handover64/multiboot/multiboot2/linux-legacy32)'
+    description: 'Boot protocol (linux-efi-handover64/linux-efi-pe64/linux-legacy32/multiboot/multiboot2)'
     required: false
 
 runs:
@@ -73,13 +73,13 @@ runs:
       shell: bash
       run: |
         CMD=""
-        [[ "${{ matrix.id }}" == "lint" ]] && CMD+="make --keep-going check"
-        [[ "${{ matrix.id }}" == "compile" ]] && CMD+="make build FEATURES=all"
+        [[ "${{ matrix.id }}" == "lint" ]] && CMD+="make check"
+        [[ "${{ matrix.id }}" == "compile" ]] && CMD+="make kernel"
         [[ "${{ matrix.id }}" == "usermode_test" ]] && CMD+="make test"
         [[ "${{ matrix.id }}" == "ktest" ]] && CMD+="make ktest NETDEV=tap"
         [[ "${{ matrix.id }}" == "early_boot_test" ]] && CMD+="make early_boot_test"
         [[ "${{ inputs.baseline_asterinas }}" == "true" ]] && CMD+=" BASELINE_ASTERINAS=1"
-        [[ -n "${{ inputs.arch }}" ]] && CMD+=" ARCH=${{ inputs.arch }}"
+        [[ -n "${{ inputs.arch }}" ]] && CMD+=" OSDK_TARGET_ARCH=${{ inputs.arch }}"
 
         echo "Executing: $CMD"
         eval $CMD
@@ -88,7 +88,7 @@ runs:
       if: ${{ !(inputs.auto_test == 'general' || inputs.auto_test == 'osdk') }}
       shell: bash
       run: |
-        CMD="make run AUTO_TEST=${{ inputs.auto_test }}"
+        CMD="make run_kernel AUTO_TEST=${{ inputs.auto_test }}"
         [[ "${{ inputs.intel_tdx }}" == "true" ]] && CMD+=" INTEL_TDX=1"
         [[ "${{ inputs.release }}" == "true" ]] && CMD+=" RELEASE=1"
         [[ "${{ inputs.baseline_asterinas }}" == "true" ]] && CMD+=" BASELINE_ASTERINAS=1"
@@ -96,10 +96,10 @@ runs:
         [[ -n "${{ inputs.smp }}" ]] && CMD+=" SMP=${{ inputs.smp }}"
         [[ -n "${{ inputs.netdev }}" ]] && CMD+=" NETDEV=${{ inputs.netdev }}"
         [[ -n "${{ inputs.scheme }}" ]] && CMD+=" SCHEME=${{ inputs.scheme }}"
-        [[ -n "${{ inputs.arch }}" ]] && CMD+=" ARCH=${{ inputs.arch }}"
-        [[ -n "${{ inputs.extra_blocklists }}" ]] && CMD+=" EXTRA_BLOCKLISTS_DIRS=${{ inputs.extra_blocklists }}"
-        [[ -n "${{ inputs.syscall_test_suite }}" ]] && CMD+=" SYSCALL_TEST_SUITE=${{ inputs.syscall_test_suite }}"
-        [[ -n "${{ inputs.syscall_test_workdir }}" ]] && CMD+=" SYSCALL_TEST_WORKDIR=${{ inputs.syscall_test_workdir }}"
+        [[ -n "${{ inputs.arch }}" ]] && CMD+=" OSDK_TARGET_ARCH=${{ inputs.arch }}"
+        [[ -n "${{ inputs.extra_blocklists }}" ]] && CMD+=" EXTRA_BLOCKLISTS=${{ inputs.extra_blocklists }}"
+        [[ -n "${{ inputs.conformance_test_suite }}" ]] && CMD+=" CONFORMANCE_TEST_SUITE=${{ inputs.conformance_test_suite }}"
+        [[ -n "${{ inputs.conformance_test_workdir }}" ]] && CMD+=" CONFORMANCE_TEST_WORKDIR=${{ inputs.conformance_test_workdir }}"
         [[ -n "${{ inputs.boot_protocol }}" ]] && CMD+=" BOOT_PROTOCOL=${{ inputs.boot_protocol }}"
 
         echo "Executing: $CMD"

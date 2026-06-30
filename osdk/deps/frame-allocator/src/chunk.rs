@@ -2,7 +2,7 @@
 
 use ostd::{
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, Paddr, UniqueFrame, frame::linked_list::Link},
+    mm::{HasPaddr, PAGE_SIZE, Paddr, UniqueFrame, frame::linked_list::Link},
 };
 
 /// The order of a buddy chunk.
@@ -46,8 +46,8 @@ pub(crate) fn split_to_chunks(
     addr: Paddr,
     size: usize,
 ) -> impl Iterator<Item = (Paddr, BuddyOrder)> {
-    assert!(addr % PAGE_SIZE == 0);
-    assert!(size % PAGE_SIZE == 0);
+    assert!(addr.is_multiple_of(PAGE_SIZE));
+    assert!(size.is_multiple_of(PAGE_SIZE));
 
     struct SplitChunks {
         addr: Paddr,
@@ -187,7 +187,7 @@ impl FreeChunk {
 
     /// Returns the address of the buddy chunk.
     pub(crate) fn addr(&self) -> Paddr {
-        self.head.start_paddr()
+        self.head.paddr()
     }
 
     /// Gets the address of the buddy of this chunk.
@@ -210,7 +210,7 @@ impl FreeChunk {
         let right_child_addr = addr ^ size_of_order(new_order);
 
         let mut unique_head = self.into_unique_head();
-        debug_assert_eq!(unique_head.start_paddr(), left_child_addr);
+        debug_assert_eq!(unique_head.paddr(), left_child_addr);
         unique_head.meta_mut().order = new_order;
 
         let left_child = FreeChunk { head: unique_head };
@@ -257,7 +257,7 @@ mod test {
     use ostd::prelude::ktest;
 
     #[ktest]
-    fn test_greater_order_of() {
+    fn greater_order_of_works() {
         #[track_caller]
         fn assert_greater_order_of(nframes: usize, expected: BuddyOrder) {
             assert_eq!(greater_order_of(nframes * PAGE_SIZE), expected);
@@ -275,7 +275,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_lesser_order_of() {
+    fn lesser_order_of_works() {
         #[track_caller]
         fn assert_lesser_order_of(nframes: usize, expected: BuddyOrder) {
             assert_eq!(lesser_order_of(nframes * PAGE_SIZE), expected);
@@ -293,7 +293,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_max_order_from() {
+    fn max_order_from_works() {
         #[track_caller]
         fn assert_max_order_from(frame_num: usize, expected: BuddyOrder) {
             assert_eq!(max_order_from(frame_num * PAGE_SIZE), expected);
@@ -315,7 +315,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_split_to_chunks() {
+    fn split_to_chunks_works() {
         use alloc::{vec, vec::Vec};
 
         #[track_caller]
@@ -346,7 +346,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_split_to_order() {
+    fn split_to_order_works() {
         use alloc::{vec, vec::Vec};
 
         #[track_caller]
@@ -374,11 +374,11 @@ mod test {
     }
 
     #[ktest]
-    fn test_free_chunk_ops() {
+    fn free_chunk_ops() {
         let order = 3;
         let size = size_of_order(order);
         let region = MockMemoryRegion::alloc(size);
-        let addr1 = region.start_paddr();
+        let addr1 = region.paddr();
         let addr2 = addr1 + size_of_order(order - 2);
         let addr3 = addr1 + size_of_order(order - 2) * 2;
 

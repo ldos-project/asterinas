@@ -7,14 +7,21 @@ use spin::Once;
 
 use crate::arch::boot::DEVICE_TREE;
 
-/// Detect available RISC-V ISA extensions.
-pub fn init() {
+/// Detects available RISC-V ISA extensions.
+pub(in crate::arch) fn init() {
     let mut global_isa_extensions = IsaExtensions::all();
 
     let device_tree = DEVICE_TREE.get().expect("Device tree not initialized");
     let mut cpu_count = 0;
 
     for cpu in device_tree.cpus() {
+        // FIXME: We should find a robust method to identify the management
+        // harts. Here we simply skip those harts without MMU, which is supposed
+        // to work in most cases.
+        if cpu.property("mmu-type").is_none() {
+            continue;
+        }
+
         cpu_count += 1;
 
         let cpu_isa_extensions = if let Some(isa_extensions) = cpu.property("riscv,isa-extensions")
@@ -23,7 +30,7 @@ pub fn init() {
         } else if let Some(isa) = cpu.property("riscv,isa") {
             parse_isa_string(&isa)
         } else {
-            log::error!(
+            crate::error!(
                 "CPU {} has no riscv,isa or riscv,isa-extensions property",
                 cpu_count - 1
             );
@@ -33,10 +40,12 @@ pub fn init() {
         global_isa_extensions &= cpu_isa_extensions;
     }
 
+    crate::info!("Detected ISA extensions: {:?}", global_isa_extensions);
+
     GLOBAL_ISA_EXTENSIONS.call_once(|| global_isa_extensions);
 }
 
-/// Check if the specified set of ISA extensions are available.
+/// Checks if the specified set of ISA extensions are available.
 pub fn has_extensions(required: IsaExtensions) -> bool {
     GLOBAL_ISA_EXTENSIONS.get().unwrap().contains(required)
 }
@@ -62,7 +71,7 @@ fn parse_isa_string(isa: &fdt::node::NodeProperty) -> IsaExtensions {
         for ch in first_part.chars() {
             if let Some(ext_data) = EXTENSION_TABLE
                 .iter()
-                .find(|e| e.name.len() == 1 && e.name.chars().next() == Some(ch))
+                .find(|e| e.name.len() == 1 && e.name.starts_with(ch))
             {
                 extensions |= ext_data.flag;
             }
@@ -87,10 +96,10 @@ fn parse_isa_extensions_list(isa_extensions: &fdt::node::NodeProperty) -> IsaExt
         if str.is_empty() {
             continue;
         }
-        if let Ok(ext_name) = core::str::from_utf8(str) {
-            if let Some(ext_data) = EXTENSION_TABLE.iter().find(|e| e.name == ext_name) {
-                extensions |= ext_data.flag;
-            }
+        if let Ok(ext_name) = core::str::from_utf8(str)
+            && let Some(ext_data) = EXTENSION_TABLE.iter().find(|e| e.name == ext_name)
+        {
+            extensions |= ext_data.flag;
         }
     }
 
@@ -99,7 +108,7 @@ fn parse_isa_extensions_list(isa_extensions: &fdt::node::NodeProperty) -> IsaExt
 
 static GLOBAL_ISA_EXTENSIONS: Once<IsaExtensions> = Once::new();
 
-/// Macro for RISC-V ISA extension definition and lookup table generation
+/// A macro for RISC-V ISA extension definition and lookup table generation.
 macro_rules! define_isa_extensions {
     (
         $(
@@ -107,7 +116,7 @@ macro_rules! define_isa_extensions {
         )*
     ) => {
         bitflags! {
-            /// RISC-V ISA extensions
+            /// RISC-V ISA extensions.
             pub struct IsaExtensions: u128 {
                 $(
                     #[doc = $doc]
@@ -270,7 +279,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_string_with_basic() {
+    fn isa_string_with_basic() {
         let result = parse_isa_string_wrapper("rv64imafdc_zicsr_zifencei");
         assert!(result.contains(IsaExtensions::I));
         assert!(result.contains(IsaExtensions::M));
@@ -285,7 +294,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_string_edge_cases() {
+    fn isa_string_edge_cases() {
         // Empty string
         let result = parse_isa_string_wrapper("");
         assert!(result.is_empty());
@@ -308,7 +317,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_string_unknown_extensions() {
+    fn isa_string_unknown_extensions() {
         // Should ignore unknown extensions without crashing
         let result = parse_isa_string_wrapper("rv64imafdc_zunknown_zicsr_zifencei");
         assert!(result.contains(IsaExtensions::I));
@@ -322,7 +331,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_extensions_list_basic() {
+    fn isa_extensions_list_basic() {
         let result =
             parse_isa_extensions_list_wrapper(&["i", "m", "a", "f", "d", "c", "zicsr", "zifencei"]);
         assert!(result.contains(IsaExtensions::I));
@@ -338,7 +347,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_extensions_list_edge_cases() {
+    fn isa_extensions_list_edge_cases() {
         // Empty list
         let result = parse_isa_extensions_list_wrapper(&[]);
         assert!(result.is_empty());
@@ -354,7 +363,7 @@ mod tests {
     }
 
     #[ktest]
-    fn test_isa_extensions_list_unknown_extensions() {
+    fn isa_extensions_list_unknown_extensions() {
         // Should ignore unknown extensions without crashing
         let result = parse_isa_extensions_list_wrapper(&[
             "i", "m", "a", "f", "d", "c", "zunknown", "zicsr", "zifencei",

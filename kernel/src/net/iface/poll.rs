@@ -3,17 +3,16 @@
 use alloc::sync::Arc;
 use core::time::Duration;
 
-use log::trace;
-use ostd::timer::Jiffies;
+use ostd::{debug, timer::Jiffies};
 
 use super::{Iface, iter_all_ifaces};
 use crate::{
-    WaitTimeout,
     sched::{Nice, SchedPolicy},
     thread::kernel_thread::ThreadOptions,
+    time::wait::WaitTimeout,
 };
 
-pub fn lazy_init() {
+pub fn init_in_first_kthread() {
     for iface in iter_all_ifaces() {
         spawn_background_poll_thread(iface.clone());
     }
@@ -27,7 +26,7 @@ pub(super) fn poll_ifaces() {
 
 fn spawn_background_poll_thread(iface: Arc<Iface>) {
     let task_fn = move || {
-        trace!("spawn background poll thread for {}", iface.name());
+        debug!("spawn background poll thread for {}", iface.name());
 
         let sched_poll = iface.sched_poll();
         let wait_queue = sched_poll.polling_wait_queue();

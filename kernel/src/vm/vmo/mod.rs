@@ -7,23 +7,22 @@
 
 use core::{
     ops::Range,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicIsize, AtomicUsize, Ordering},
 };
 
 use align_ext::AlignExt;
-use aster_rights::Rights;
 use ostd::{
-    mm::{FrameAllocOptions, UFrame, UntypedMem, VmReader, VmWriter},
+    mm::{
+        FrameAllocOptions, UFrame, VmIo, VmIoFill, VmReader, VmWriter, io::util::HasVmReaderWriter,
+    },
     task::disable_preempt,
 };
 use xarray::{Cursor, LockedXArray, XArray};
 
 use crate::prelude::*;
 
-mod dyn_cap;
 mod options;
 mod pager;
-mod static_cap;
 
 pub use options::VmoOptions;
 pub use pager::Pager;
@@ -33,14 +32,17 @@ pub use pager::PagerOQueues;
 /// Virtual Memory Objects (VMOs) are a type of capability that represents a
 /// range of memory pages.
 ///
+/// Broadly speaking, there are two types of VMO:
+/// 1. File-backed VMO: the VMO backed by a file and resides in the page cache,
+///    which includes a [`Pager`] to provide it with actual pages.
+/// 2. Anonymous VMO: the VMO without a file backup, which does not have a `Pager`.
+///
 /// # Features
 ///
 ///  * **I/O interface.** A VMO provides read and write methods to access the
 ///    memory pages that it contain.
 ///  * **On-demand paging.** The memory pages of a VMO (except for _contiguous_
 ///    VMOs) are allocated lazily when the page is first accessed.
-///  * **Access control.** As capabilities, VMOs restrict the
-///    accessible range of memory and the allowed I/O operations.
 ///  * **Device driver support.** If specified upon creation, VMOs will be
 ///    backed by physically contiguous memory pages starting at a target address.
 ///  * **File system support.** By default, a VMO's memory pages are initially
@@ -48,22 +50,6 @@ pub use pager::PagerOQueues;
 ///    then its memory pages will be populated by the pager.
 ///    With this pager mechanism, file systems can easily implement page caches
 ///    with VMOs by attaching the VMOs to pagers backed by inodes.
-///
-/// # Capabilities
-///
-/// As a capability, each VMO is associated with a set of access rights,
-/// whose semantics are explained below.
-///
-///  * The Dup right allows duplicating a VMO and creating children out of
-///    a VMO.
-///  * The Read, Write, Exec rights allow creating memory mappings with
-///    readable, writable, and executable access permissions, respectively.
-///  * The Read and Write rights allow the VMO to be read from and written to
-///    directly.
-///  * The Write right allows resizing a resizable VMO.
-///
-/// VMOs are implemented with two flavors of capabilities:
-/// the dynamic one (`Vmo<Rights>`) and the static one (`Vmo<R: TRights>).
 ///
 /// # Examples
 ///
@@ -76,27 +62,35 @@ pub use pager::PagerOQueues;
 /// Compared with `UFrame`,
 /// `Vmo` is easier to use (by offering more powerful APIs) and
 /// harder to misuse (thanks to its nature of being capability).
-#[derive(Debug)]
-pub struct Vmo<R = Rights>(pub(super) Arc<Vmo_>, R);
+pub struct Vmo {
+    pager: Option<Arc<dyn Pager>>,
+    /// Flags
+    flags: VmoFlags,
+    /// The virtual pages where the VMO resides.
+    pages: XArray<UFrame>,
+    /// The size of the VMO.
+    ///
+    /// Note: This size may not necessarily match the size of the `pages`, but it is
+    /// required here that modifications to the size can only be made after locking
+    /// the [`XArray`] in the `pages` field. Therefore, the size read after locking the
+    /// `pages` will be the latest size.
+    size: AtomicUsize,
+    /// The status of writable mappings of the VMO.
+    //
+    // TODO: This field is used only by VMOs belonging to memfd (i.e., `MemfdInode`). But VMOs do
+    // not have the knowledge to determine if they belong to memfd. We may want to enhance
+    // `VmoOptions` to make VMOs aware of whether its writable mappings should be tracked.
+    writable_mapping_status: WritableMappingStatus,
+}
 
-/// Functions exist both for static capbility and dynamic capability
-pub trait VmoRightsOp {
-    /// Returns the access rights.
-    fn rights(&self) -> Rights;
-
-    /// Checks whether current rights meet the input `rights`.
-    fn check_rights(&self, rights: Rights) -> Result<()> {
-        if self.rights().contains(rights) {
-            Ok(())
-        } else {
-            return_errno_with_message!(Errno::EACCES, "VMO rights are insufficient");
-        }
+impl Debug for Vmo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Vmo")
+            .field("flags", &self.flags)
+            .field("size", &self.size)
+            .field("writable_mapping_status", &self.writable_mapping_status)
+            .finish_non_exhaustive()
     }
-
-    /// Converts to a dynamic capability.
-    fn to_dyn(self) -> Vmo<Rights>
-    where
-        Self: Sized;
 }
 
 bitflags! {
@@ -138,36 +132,6 @@ impl From<ostd::Error> for VmoCommitError {
     }
 }
 
-/// `Vmo_` is the structure that actually manages the content of VMO.
-///
-/// Broadly speaking, there are two types of VMO:
-/// 1. File-backed VMO: the VMO backed by a file and resides in the page cache,
-///    which includes a [`Pager`] to provide it with actual pages.
-/// 2. Anonymous VMO: the VMO without a file backup, which does not have a `Pager`.
-pub(super) struct Vmo_ {
-    pager: Option<Arc<dyn Pager>>,
-    /// Flags
-    flags: VmoFlags,
-    /// The virtual pages where the VMO resides.
-    pages: XArray<UFrame>,
-    /// The size of the VMO.
-    ///
-    /// Note: This size may not necessarily match the size of the `pages`, but it is
-    /// required here that modifications to the size can only be made after locking
-    /// the [`XArray`] in the `pages` field. Therefore, the size read after locking the
-    /// `pages` will be the latest size.
-    size: AtomicUsize,
-}
-
-impl Debug for Vmo_ {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Vmo_")
-            .field("flags", &self.flags)
-            .field("size", &self.size())
-            .finish()
-    }
-}
-
 bitflags! {
     /// Commit Flags.
     pub struct CommitFlags: u8 {
@@ -183,7 +147,7 @@ impl CommitFlags {
     }
 }
 
-impl Vmo_ {
+impl Vmo {
     /// Prepares a new `UFrame` for the target index in pages, returns this new frame.
     ///
     /// This operation may involve I/O operations if the VMO is backed by a pager.
@@ -326,6 +290,10 @@ impl Vmo_ {
     }
 
     /// Decommits a range of pages in the VMO.
+    ///
+    /// The range must be within the size of the VMO.
+    ///
+    /// The start and end addresses will be rounded down and up to page boundaries.
     pub fn decommit(&self, range: Range<usize>) -> Result<()> {
         let locked_pages = self.pages.lock();
         if range.end > self.size() {
@@ -403,7 +371,7 @@ impl Vmo_ {
         Ok(())
     }
 
-    /// Clears the target range in current VMO.
+    /// Clears the target range in current VMO by writing zeros.
     pub fn clear(&self, range: Range<usize>) -> Result<()> {
         let buffer = vec![0u8; range.end - range.start];
         let mut reader = VmReader::from(buffer.as_slice()).to_fallible();
@@ -417,6 +385,10 @@ impl Vmo_ {
     }
 
     /// Resizes current VMO to target size.
+    ///
+    /// The VMO must be resizable.
+    ///
+    /// The new size will be rounded up to page boundaries.
     pub fn resize(&self, new_size: usize) -> Result<()> {
         assert!(self.flags.contains(VmoFlags::RESIZABLE));
         let new_size = new_size.align_up(PAGE_SIZE);
@@ -446,19 +418,24 @@ impl Vmo_ {
         let mut cursor = locked_pages.cursor_mut(page_idx_range.start as u64);
 
         let Some(pager) = &self.pager else {
-            for _ in page_idx_range {
+            cursor.remove();
+            while let Some(page_idx) = cursor.next_present()
+                && page_idx < page_idx_range.end as u64
+            {
                 cursor.remove();
-                cursor.next();
             }
             return Ok(());
         };
 
         let mut removed_page_idx = Vec::new();
-        for page_idx in page_idx_range {
-            if cursor.remove().is_some() {
-                removed_page_idx.push(page_idx);
-            }
-            cursor.next();
+        if cursor.remove().is_some() {
+            removed_page_idx.push(page_idx_range.start);
+        }
+        while let Some(page_idx) = cursor.next_present()
+            && page_idx < page_idx_range.end as u64
+        {
+            removed_page_idx.push(page_idx as usize);
+            cursor.remove();
         }
 
         drop(locked_pages);
@@ -475,6 +452,7 @@ impl Vmo_ {
         self.flags
     }
 
+    /// Replaces the page at the `page_idx` in the VMO with the input `page`.
     fn replace(&self, page: UFrame, page_idx: usize) -> Result<()> {
         let mut locked_pages = self.pages.lock();
         if page_idx >= self.size() / PAGE_SIZE {
@@ -484,17 +462,41 @@ impl Vmo_ {
         locked_pages.store(page_idx as u64, page);
         Ok(())
     }
+
+    /// Returns the status of writable mappings of the VMO.
+    pub fn writable_mapping_status(&self) -> &WritableMappingStatus {
+        // Only writable file-backed mappings may need to be tracked.
+        debug_assert!(self.pager.is_some());
+        &self.writable_mapping_status
+    }
 }
 
-impl<R> Vmo<R> {
-    /// Returns the size (in bytes) of a VMO.
-    pub fn size(&self) -> usize {
-        self.0.size()
+impl VmIo for Vmo {
+    fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()> {
+        self.read(offset, writer)?;
+        Ok(())
     }
 
-    /// Returns the flags of a VMO.
-    pub fn flags(&self) -> VmoFlags {
-        self.0.flags()
+    fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()> {
+        self.write(offset, reader)?;
+        Ok(())
+    }
+}
+
+impl VmIoFill for Vmo {
+    fn fill_zeros(
+        &self,
+        offset: usize,
+        len: usize,
+    ) -> core::result::Result<(), (ostd::Error, usize)> {
+        // TODO: Support efficient `fill_zeros()`.
+        for i in 0..len {
+            match self.write_slice(offset + i, &[0u8]) {
+                Ok(()) => continue,
+                Err(err) => return Err((err, i)),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -503,4 +505,59 @@ pub fn get_page_idx_range(vmo_offset_range: &Range<usize>) -> Range<usize> {
     let start = vmo_offset_range.start.align_down(PAGE_SIZE);
     let end = vmo_offset_range.end.align_up(PAGE_SIZE);
     (start / PAGE_SIZE)..(end / PAGE_SIZE)
+}
+
+/// The status of writable mappings of a VMO, i.e., shared mappings that may
+/// include the `PROT_WRITE` permission.
+///
+/// Internally, it uses an `AtomicIsize` counter with the following rules:
+///
+/// - **Positive values**: number of active writable mappings.
+/// - **Zero**: no writable mappings, and writable mappings are still allowed.
+/// - **Negative values**: writable mappings are denied.
+#[derive(Debug, Default)]
+pub struct WritableMappingStatus(AtomicIsize);
+
+impl WritableMappingStatus {
+    /// Builds a new writable mapping.
+    ///
+    /// Fails with `EPERM` if writable mappings have been denied.
+    pub(super) fn map(&self) -> Result<()> {
+        // Increase unless negative
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v >= 0).then(|| v + 1)
+            })
+            .map_err(|_| Error::with_message(Errno::EPERM, "writable mappings have been denied"))?;
+        Ok(())
+    }
+
+    /// Denies any future writable mapping.
+    ///
+    /// Fails with `EBUSY` if there are still active writable mappings.
+    pub fn deny(&self) -> Result<()> {
+        // Decrease unless positive
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v <= 0).then_some(-1)
+            })
+            .map_err(|_| {
+                Error::with_message(Errno::EBUSY, "there are still active writable mappings")
+            })?;
+        Ok(())
+    }
+
+    /// Increments the writable mapping counter.
+    ///
+    /// Typically used when splitting an existing mapping, or forking a process.
+    pub(super) fn increment(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrements the writable mapping counter.
+    ///
+    /// Typically used when unmapping a region, exiting a process, or merging mappings.
+    pub(super) fn decrement(&self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }

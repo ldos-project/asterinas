@@ -6,7 +6,7 @@ use core::{alloc::AllocError, ptr::NonNull};
 
 use super::{slot::HeapSlot, slot_list::SlabSlotList};
 use crate::mm::{
-    FrameAllocOptions, PAGE_SIZE, UniqueFrame,
+    FrameAllocOptions, HasPaddr, HasSize, PAGE_SIZE, UniqueFrame,
     frame::{linked_list::Link, meta::AnyFrameMeta},
     paddr_to_vaddr,
 };
@@ -72,7 +72,7 @@ impl<const SLOT_SIZE: usize> SlabMeta<SLOT_SIZE> {
     /// Allocates a slot from the slab.
     pub fn alloc(&mut self) -> Result<HeapSlot, AllocError> {
         let Some(allocated) = self.free_list.pop() else {
-            log::error!("Allocating a slot from a full slab");
+            crate::error!("Allocating a slot from a full slab");
             return Err(AllocError);
         };
         self.nr_allocated += 1;
@@ -88,7 +88,7 @@ impl<const SLOT_SIZE: usize> Slab<SLOT_SIZE> {
     pub fn new() -> crate::prelude::Result<Self> {
         const { assert!(SLOT_SIZE <= PAGE_SIZE) };
         // To ensure we can store a pointer in each slot.
-        const { assert!(SLOT_SIZE >= core::mem::size_of::<usize>()) };
+        const { assert!(SLOT_SIZE >= size_of::<usize>()) };
         // To ensure `nr_allocated` can be stored in a `u16`.
         const { assert!(PAGE_SIZE / SLOT_SIZE <= u16::MAX as usize) };
 
@@ -101,7 +101,7 @@ impl<const SLOT_SIZE: usize> Slab<SLOT_SIZE> {
             .try_into()
             .unwrap();
 
-        let head_paddr = slab.start_paddr();
+        let head_paddr = slab.paddr();
         let head_vaddr = paddr_to_vaddr(head_paddr);
 
         // Push each slot to the free list.
@@ -121,8 +121,8 @@ impl<const SLOT_SIZE: usize> Slab<SLOT_SIZE> {
     ///
     /// If the slot does not belong to the slab it returns [`AllocError`].
     pub fn dealloc(&mut self, slot: HeapSlot) -> Result<(), AllocError> {
-        if !(self.start_paddr()..self.start_paddr() + self.size()).contains(&slot.paddr()) {
-            log::error!("Deallocating a slot to a slab that does not own the slot");
+        if !(self.paddr()..self.paddr() + self.size()).contains(&slot.paddr()) {
+            crate::error!("Deallocating a slot to a slab that does not own the slot");
             return Err(AllocError);
         }
         debug_assert_eq!(slot.size(), SLOT_SIZE);

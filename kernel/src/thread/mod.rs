@@ -4,8 +4,9 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use aster_util::per_cpu_counter::PerCpuCounter;
 use ostd::{
-    cpu::{AtomicCpuSet, CpuSet},
+    cpu::{AtomicCpuSet, CpuId, CpuSet},
     task::Task,
 };
 
@@ -13,7 +14,9 @@ use crate::{
     prelude::*,
     sched::{SchedAttr, SchedPolicy},
 };
-
+mod stats;
+use stats::CONTEXT_SWITCH_COUNTER;
+pub use stats::collect_context_switch_count;
 pub mod exception;
 pub mod kernel_thread;
 pub mod oops;
@@ -22,19 +25,40 @@ pub mod work_queue;
 
 pub type Tid = u32;
 
+fn pre_schedule_handler() {
+    let Some(task) = Task::current() else {
+        return;
+    };
+    let Some(thread_local) = task.as_thread_local() else {
+        return;
+    };
+
+    thread_local.fpu().before_schedule();
+}
+
 fn post_schedule_handler() {
+    // No races because preemption shouldn't happen in pre-/post-schedule handlers.
+    CONTEXT_SWITCH_COUNTER
+        .get()
+        .unwrap()
+        .add_on_cpu(CpuId::current_racy(), 1);
+
     let task = Task::current().unwrap();
     let Some(thread_local) = task.as_thread_local() else {
         return;
     };
 
-    let root_vmar = thread_local.root_vmar().borrow();
-    if let Some(vmar) = root_vmar.as_ref() {
+    let vmar = thread_local.vmar().borrow();
+    if let Some(vmar) = vmar.as_ref() {
         vmar.vm_space().activate()
     }
+
+    thread_local.fpu().after_schedule();
 }
 
 pub(super) fn init() {
+    CONTEXT_SWITCH_COUNTER.call_once(PerCpuCounter::new);
+    ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);
     ostd::arch::trap::inject_user_page_fault_handler(exception::page_fault_handler);
 }
@@ -82,6 +106,7 @@ impl Thread {
     }
 
     /// Returns the task associated with this thread.
+    #[expect(dead_code)]
     pub fn task(&self) -> Arc<Task> {
         self.task.upgrade().unwrap()
     }
@@ -121,6 +146,7 @@ impl Thread {
     /// Joins the execution of the thread.
     ///
     /// This method will return after the thread exits.
+    #[cfg_attr(not(ktest), expect(dead_code))]
     #[track_caller]
     pub fn join(&self) {
         while !self.is_exited() {

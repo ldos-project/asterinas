@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::{impl_socket_options, prelude::*};
+use crate::{net::socket::options::macros::impl_socket_options, prelude::*};
 
 impl_socket_options!(
     pub struct NoDelay(bool);
@@ -14,7 +14,7 @@ impl_socket_options!(
     pub struct Inq(bool);
 );
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum CongestionControl {
     Reno,
     Cubic,

@@ -217,13 +217,11 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         }
 
         // Register the actual handler
-        let key = inner.inline_strong_observers.insert(Box::new(
-            (move |v| {
-                if let Some(v) = query.call(v) {
-                    f(&v)
-                }
-            }),
-        ));
+        let key = inner.inline_strong_observers.insert(Box::new(move |v| {
+            if let Some(v) = query.call(v) {
+                f(&v)
+            }
+        }));
 
         Ok(key)
     }

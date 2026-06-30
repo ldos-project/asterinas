@@ -4,12 +4,12 @@ use keyable_arc::KeyableArc;
 
 use super::ns::{self, AbstractHandle};
 use crate::{
-    fs::{path::Dentry, utils::Inode},
+    fs::vfs::{inode::Inode, path::Path},
     net::socket::util::SocketAddr,
     prelude::*,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnixSocketAddr {
     Unnamed,
     Path(Arc<str>),
@@ -20,9 +20,9 @@ impl UnixSocketAddr {
     pub(super) fn bind(self) -> Result<UnixSocketAddrBound> {
         let bound = match self {
             Self::Unnamed => UnixSocketAddrBound::Abstract(ns::alloc_ephemeral_abstract_name()?),
-            Self::Path(path) => {
-                let dentry = ns::create_socket_file(&path)?;
-                UnixSocketAddrBound::Path(path, dentry)
+            Self::Path(path_name) => {
+                let path = ns::create_socket_file(&path_name)?;
+                UnixSocketAddrBound::Path(path_name, path)
             }
             Self::Abstract(name) => UnixSocketAddrBound::Abstract(ns::create_abstract_name(name)?),
         };
@@ -72,11 +72,11 @@ impl TryFrom<SocketAddr> for UnixSocketAddr {
 
 #[derive(Clone, Debug)]
 pub(super) enum UnixSocketAddrBound {
-    Path(Arc<str>, Dentry),
+    Path(Arc<str>, Path),
     Abstract(Arc<AbstractHandle>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) enum UnixSocketAddrKey {
     Path(KeyableArc<dyn Inode>),
     Abstract(KeyableArc<AbstractHandle>),
@@ -85,9 +85,7 @@ pub(super) enum UnixSocketAddrKey {
 impl UnixSocketAddrBound {
     pub(super) fn to_key(&self) -> UnixSocketAddrKey {
         match self {
-            Self::Path(_, dentry) => {
-                UnixSocketAddrKey::Path(KeyableArc::from(dentry.inode().clone()))
-            }
+            Self::Path(_, path) => UnixSocketAddrKey::Path(KeyableArc::from(path.inode().clone())),
             Self::Abstract(handle) => UnixSocketAddrKey::Abstract(KeyableArc::from(handle.clone())),
         }
     }

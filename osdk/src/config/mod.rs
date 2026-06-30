@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// The global configuration for the OSDK actions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Config {
     pub work_dir: PathBuf,
     pub target_arch: Arch,
@@ -126,30 +126,30 @@ fn canonicalize_and_eval(action_scheme: &mut ActionScheme, workdir: &PathBuf) {
             canonicalize(initramfs);
         }
 
-        if let Some(ref mut qemu) = action_scheme.qemu {
-            if let Some(ref mut qemu_path) = qemu.path {
-                canonicalize(qemu_path);
-            }
+        if let Some(ref mut qemu) = action_scheme.qemu
+            && let Some(ref mut qemu_path) = qemu.path
+        {
+            canonicalize(qemu_path);
         }
 
-        if let Some(ref mut grub) = action_scheme.grub {
-            if let Some(ref mut grub_mkrescue_path) = grub.grub_mkrescue {
-                canonicalize(grub_mkrescue_path);
-            }
+        if let Some(ref mut grub) = action_scheme.grub
+            && let Some(ref mut grub_mkrescue_path) = grub.grub_mkrescue
+        {
+            canonicalize(grub_mkrescue_path);
         }
     }
 
     // Do evaluations on the need to be evaluated string field, namely,
     // QEMU arguments.
 
-    if let Some(ref mut qemu) = action_scheme.qemu {
-        if let Some(ref mut args) = qemu.args {
-            *args = match eval(workdir, args) {
-                Ok(v) => v,
-                Err(e) => {
-                    error_msg!("Failed to evaluate qemu args: {:#?}", e);
-                    process::exit(Errno::ParseMetadata as _);
-                }
+    if let Some(ref mut qemu) = action_scheme.qemu
+        && let Some(ref mut args) = qemu.args
+    {
+        *args = match eval(workdir, args) {
+            Ok(v) => v,
+            Err(e) => {
+                error_msg!("Failed to evaluate qemu args: {:#?}", e);
+                process::exit(Errno::ParseMetadata as _);
             }
         }
     }
@@ -179,6 +179,10 @@ fn apply_args_after_finalize(action: &mut Action, args: &CommonArgs) {
     action.qemu.apply_qemu_args(&args.qemu_args);
     if args.display_grub_menu {
         action.grub.display_grub_menu = true;
+    }
+    if args.coverage {
+        action.qemu.args += " --no-shutdown";
+        action.qemu.with_monitor = true;
     }
 }
 

@@ -6,9 +6,11 @@
 //! kernel messages back to user space.
 
 mod attr;
+mod result;
 mod segment;
 
 pub(super) use attr::{Attribute, CAttrHeader, noattr::NoAttr};
+pub(super) use result::ContinueRead;
 pub(super) use segment::{
     CSegmentType, SegmentBody,
     ack::{DoneSegment, ErrorSegment},
@@ -16,6 +18,7 @@ pub(super) use segment::{
     header::{CMsgSegHdr, GetRequestFlags, SegHdrCommonFlags},
 };
 
+use super::receiver::QueueableMessage;
 use crate::{
     prelude::*,
     util::{MultiRead, MultiWrite},
@@ -26,32 +29,19 @@ use crate::{
 /// A netlink message can be transmitted to and from user space using a single send/receive syscall.
 /// It consists of one or more [`ProtocolSegment`]s.
 #[derive(Debug)]
-pub struct Message<T: ProtocolSegment> {
+pub struct Message<T> {
     segments: Vec<T>,
 }
 
-impl<T: ProtocolSegment> Message<T> {
+impl<T> Message<T> {
     pub(super) const fn new(segments: Vec<T>) -> Self {
         Self { segments }
     }
+}
 
-    pub(super) fn segments(&self) -> &[T] {
-        &self.segments
-    }
-
-    pub(super) fn segments_mut(&mut self) -> &mut [T] {
-        &mut self.segments
-    }
-
-    pub(super) fn read_from(reader: &mut dyn MultiRead) -> Result<Self> {
-        // FIXME: Does a request contain only one segment? We need to investigate further.
-        let segments = {
-            let segment = T::read_from(reader)?;
-            vec![segment]
-        };
-
-        Ok(Self { segments })
-    }
+impl<T: ProtocolSegment> Message<T> {
+    // We do not provide a `read_from` method here. Netlink sockets should use `T::read_from` to
+    // read the request segments one by one instead.
 
     pub(super) fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {
         for segment in self.segments.iter() {
@@ -60,8 +50,10 @@ impl<T: ProtocolSegment> Message<T> {
 
         Ok(())
     }
+}
 
-    pub(super) fn total_len(&self) -> usize {
+impl<T: ProtocolSegment> QueueableMessage for Message<T> {
+    fn total_len(&self) -> usize {
         self.segments
             .iter()
             .map(|segment| segment.header().len as usize)
@@ -72,7 +64,30 @@ impl<T: ProtocolSegment> Message<T> {
 pub trait ProtocolSegment: Sized {
     fn header(&self) -> &CMsgSegHdr;
     fn header_mut(&mut self) -> &mut CMsgSegHdr;
-    fn read_from(reader: &mut dyn MultiRead) -> Result<Self>;
+
+    /// Reads the segment body from the `reader`.
+    ///
+    /// If the reader encounters an unresolvable page fault, this method will fail with
+    /// [`Errno::EFAULT`]. Netlink sockets should directly report this error code to the user.
+    ///
+    /// If the reader does not contain a valid segment header ([`CMsgSegHdr`]), this method will
+    /// also fail. Netlink sockets should then stop parsing segments from the reader and silently
+    /// ignore the error.
+    ///
+    /// If the reader contains a valid segment header but an invalid segment (e.g., one with an
+    /// invalid body or attributes), this method will succeed with [`ContinueRead::Skipped`] or
+    /// [`ContinueRead::SkippedErr`]. If there is an error segment in [`ContinueRead::SkippedErr`],
+    /// netlink sockets should respond the user with the error segment. The entire segment is
+    /// skipped so it is possible to read the next segment from the reader.
+    ///
+    /// This method will skip the padding bytes, so it can be called multiple times to read
+    /// multiple segments.
+    fn read_from(reader: &mut dyn MultiRead) -> Result<ContinueRead<Self, ErrorSegment>>;
+
+    /// Writes the segment to the `writer`.
+    ///
+    /// This method will skip the padding bytes, so it can be called multiple times to write
+    /// multiple segments.
     fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()>;
 }
 

@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod copy_compact;
+pub mod ioctl;
 mod iovec;
 pub mod net;
-pub mod per_cpu_counter;
+mod padded;
 pub mod random;
+mod read_cstring;
 pub mod ring_buffer;
 #[cfg(not(baseline_asterinas))]
 pub mod timer;
 
+pub use copy_compact::CopyCompat;
 pub use iovec::{MultiRead, MultiWrite, VmReaderArray, VmWriterArray};
+pub use padded::padded;
+pub use read_cstring::ReadCString;

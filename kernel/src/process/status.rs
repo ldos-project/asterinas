@@ -16,7 +16,7 @@ use crate::process::{WaitOptions, signal::sig_num::SigNum};
 /// 2. Whether the process is the vfork child, which shares the user-space virtual memory
 ///    with its parent process;
 /// 3. The exit code of the process;
-/// 4. Whether the process is stopped (by a signal or ptrace).
+/// 4. Whether the process is stopped by a signal.
 #[derive(Debug)]
 pub struct ProcessStatus {
     is_zombie: AtomicBool,
@@ -143,30 +143,36 @@ impl StopStatus {
         self.is_stopped.load(Ordering::Relaxed)
     }
 
-    /// Gets and clears the stop status changes for the `wait` syscall.
+    /// Returns the stop status changes for the `wait` syscall.
     pub(super) fn wait(&self, options: WaitOptions) -> Option<StopWaitStatus> {
         let mut wait_status = self.wait_status.lock();
 
-        if options.contains(WaitOptions::WSTOPPED) {
-            if let Some(StopWaitStatus::Stopped(_)) = wait_status.as_ref() {
-                return wait_status.take();
-            }
+        if options.contains(WaitOptions::WSTOPPED)
+            && let Some(StopWaitStatus::Stopped(_)) = wait_status.as_ref()
+        {
+            return if options.contains(WaitOptions::WNOWAIT) {
+                wait_status.as_ref().cloned()
+            } else {
+                wait_status.take()
+            };
         }
 
-        if options.contains(WaitOptions::WCONTINUED) {
-            if let Some(StopWaitStatus::Continue) = wait_status.as_ref() {
-                return wait_status.take();
-            }
+        if options.contains(WaitOptions::WCONTINUED)
+            && let Some(StopWaitStatus::Continue) = wait_status.as_ref()
+        {
+            return if options.contains(WaitOptions::WNOWAIT) {
+                wait_status.as_ref().cloned()
+            } else {
+                wait_status.take()
+            };
         }
 
         None
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum StopWaitStatus {
-    // FIXME: A process can also be stopped by ptrace.
-    // Extend this enum to support ptrace.
     Stopped(SigNum),
     Continue,
 }

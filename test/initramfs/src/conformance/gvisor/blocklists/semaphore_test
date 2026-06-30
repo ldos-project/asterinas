@@ -1,0 +1,9 @@
+SemaphoreTest.IpcInfo
+SemaphoreTest.SemCtlIpcStat
+SemaphoreTest.SemCtlValAll
+SemaphoreTest.SemInfo
+SemaphoreTest.SemIpcSet
+SemaphoreTest.SemopGetncnt
+SemaphoreTest.SemopGetzcnt
+# TODO: Support multiple operations on the same semaphore in a `semop` syscall
+SemaphoreTest.SemOpMultiNoBlock

@@ -10,7 +10,7 @@ use aster_block::SECTOR_SIZE;
 use aster_util::safe_ptr::SafePtr;
 use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
-use ostd::Pod;
+use ostd_pod::FromZeros;
 
 use crate::transport::{ConfigManager, VirtioTransport};
 
@@ -18,7 +18,7 @@ pub const DEVICE_NAME: &str = "Virtio-Block";
 
 bitflags! {
     /// features for virtio block device
-    pub(crate) struct BlockFeatures : u64 {
+    struct BlockFeatures : u64 {
         const BARRIER       = 1 << 0;
         const SIZE_MAX      = 1 << 1;
         const SEG_MAX       = 1 << 2;
@@ -36,8 +36,8 @@ bitflags! {
 }
 
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, TryFromInt)]
-pub enum ReqType {
+#[derive(Clone, Copy, Debug, TryFromInt)]
+enum ReqType {
     In = 0,
     Out = 1,
     Flush = 4,
@@ -47,8 +47,8 @@ pub enum ReqType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone, TryFromInt)]
-pub enum RespStatus {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+enum RespStatus {
     /// Ok.
     Ok = 0,
     /// IoErr.
@@ -59,9 +59,10 @@ pub enum RespStatus {
     _NotReady = 3,
 }
 
-#[derive(Debug, Copy, Clone, Pod)]
+#[padding_struct]
 #[repr(C)]
-pub struct VirtioBlockConfig {
+#[derive(Clone, Copy, Debug, Pod)]
+struct VirtioBlockConfig {
     /// The number of 512-byte sectors.
     capacity: u64,
     /// The maximum segment size.
@@ -96,17 +97,17 @@ pub struct VirtioBlockConfig {
     unused1: [u8; 3],
 }
 
-#[derive(Debug, Copy, Clone, Pod)]
 #[repr(C)]
-pub struct VirtioBlockGeometry {
+#[derive(Clone, Copy, Debug, Pod)]
+struct VirtioBlockGeometry {
     cylinders: u16,
     heads: u8,
     sectors: u8,
 }
 
-#[derive(Debug, Copy, Clone, Pod)]
 #[repr(C)]
-pub struct VirtioBlockTopology {
+#[derive(Clone, Copy, Debug, Pod)]
+struct VirtioBlockTopology {
     /// Exponent for physical block per logical block.
     physical_block_exp: u8,
     /// Alignment offset in logical blocks.
@@ -117,9 +118,9 @@ pub struct VirtioBlockTopology {
     opt_io_size: u32,
 }
 
-#[derive(Debug, Copy, Clone)]
 #[repr(C)]
-pub struct VirtioBlockFeature {
+#[derive(Clone, Copy, Debug)]
+struct VirtioBlockFeature {
     support_flush: bool,
 }
 
@@ -139,8 +140,8 @@ impl VirtioBlockConfig {
 }
 
 impl ConfigManager<VirtioBlockConfig> {
-    pub(super) fn read_config(&self) -> VirtioBlockConfig {
-        let mut blk_config = VirtioBlockConfig::new_uninit();
+    pub(self) fn read_config(&self) -> VirtioBlockConfig {
+        let mut blk_config = VirtioBlockConfig::new_zeroed();
         // Only following fields are defined in legacy interface.
         let cap_low = self
             .read_once::<u32>(offset_of!(VirtioBlockConfig, capacity))

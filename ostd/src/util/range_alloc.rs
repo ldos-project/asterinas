@@ -3,16 +3,16 @@
 use alloc::collections::btree_map::BTreeMap;
 use core::ops::Range;
 
-use crate::{
-    error::KVirtAreaAllocSnafu,
-    prelude::*,
-    sync::{PreemptDisabled, SpinLock, SpinLockGuard},
-};
+use crate::sync::{PreemptDisabled, SpinLock, SpinLockGuard};
 
 pub struct RangeAllocator {
     fullrange: Range<usize>,
     freelist: SpinLock<Option<BTreeMap<usize, FreeRange>>>,
 }
+
+/// An error returned when allocating from a [`RangeAllocator`].
+#[derive(Debug)]
+pub struct RangeAllocError;
 
 impl RangeAllocator {
     pub const fn new(fullrange: Range<usize>) -> Self {
@@ -27,8 +27,10 @@ impl RangeAllocator {
     }
 
     /// Allocates a specific kernel virtual area.
-    pub fn alloc_specific(&self, allocate_range: &Range<usize>) -> Result<()> {
-        debug_assert!(allocate_range.start < allocate_range.end);
+    pub fn alloc_specific(&self, allocate_range: &Range<usize>) -> Result<(), RangeAllocError> {
+        if allocate_range.is_empty() {
+            return Err(RangeAllocError);
+        }
 
         let mut lock_guard = self.get_freelist_guard();
         let freelist = lock_guard.as_mut().unwrap();
@@ -63,14 +65,14 @@ impl RangeAllocator {
         if target_node.is_some() {
             Ok(())
         } else {
-            KVirtAreaAllocSnafu.fail()
+            Err(RangeAllocError)
         }
     }
 
     /// Allocates a range specific by the `size`.
     ///
     /// This is currently implemented with a simple FIRST-FIT algorithm.
-    pub fn alloc(&self, size: usize) -> Result<Range<usize>> {
+    pub fn alloc(&self, size: usize) -> Result<Range<usize>, RangeAllocError> {
         let mut lock_guard = self.get_freelist_guard();
         let freelist = lock_guard.as_mut().unwrap();
         let mut allocate_range = None;
@@ -84,20 +86,20 @@ impl RangeAllocator {
             }
         }
 
-        if let Some(key) = to_remove {
-            if let Some(freenode) = freelist.get_mut(&key) {
-                if freenode.block.end - size == freenode.block.start {
-                    freelist.remove(&key);
-                } else {
-                    freenode.block.end -= size;
-                }
+        if let Some(key) = to_remove
+            && let Some(freenode) = freelist.get_mut(&key)
+        {
+            if freenode.block.end - size == freenode.block.start {
+                freelist.remove(&key);
+            } else {
+                freenode.block.end -= size;
             }
         }
 
         if let Some(range) = allocate_range {
             Ok(range)
         } else {
-            KVirtAreaAllocSnafu.fail()
+            Err(RangeAllocError)
         }
     }
 
@@ -115,32 +117,31 @@ impl RangeAllocator {
         if let Some((prev_va, prev_node)) = freelist
             .upper_bound_mut(core::ops::Bound::Excluded(&free_range.start))
             .peek_prev()
+            && prev_node.block.end == free_range.start
         {
-            if prev_node.block.end == free_range.start {
-                let prev_va = *prev_va;
-                free_range.start = prev_node.block.start;
-                freelist.remove(&prev_va);
-            }
+            let prev_va = *prev_va;
+            free_range.start = prev_node.block.start;
+            freelist.remove(&prev_va);
         }
+
         freelist.insert(free_range.start, FreeRange::new(free_range.clone()));
 
         // 2. check if we can merge the current block with the next block, if we can, do so.
         if let Some((next_va, next_node)) = freelist
             .lower_bound_mut(core::ops::Bound::Excluded(&free_range.start))
             .peek_next()
+            && free_range.end == next_node.block.start
         {
-            if free_range.end == next_node.block.start {
-                let next_va = *next_va;
-                free_range.end = next_node.block.end;
-                freelist.remove(&next_va);
-                freelist.get_mut(&free_range.start).unwrap().block.end = free_range.end;
-            }
+            let next_va = *next_va;
+            free_range.end = next_node.block.end;
+            freelist.remove(&next_va);
+            freelist.get_mut(&free_range.start).unwrap().block.end = free_range.end;
         }
     }
 
     fn get_freelist_guard(
         &self,
-    ) -> SpinLockGuard<Option<BTreeMap<usize, FreeRange>>, PreemptDisabled> {
+    ) -> SpinLockGuard<'_, Option<BTreeMap<usize, FreeRange>>, PreemptDisabled> {
         let mut lock_guard = self.freelist.lock();
         if lock_guard.is_none() {
             let mut freelist: BTreeMap<usize, FreeRange> = BTreeMap::new();

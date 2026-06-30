@@ -16,7 +16,7 @@ pub fn orpc_trait_macro_impl(
     let mut oqueue_declarations = Vec::new();
     // The field initializers for the above fields. This is used the in the implementation of `Default`.
     let mut oqueue_initializers = Vec::new();
-    // Errors generated whereever. Each elements should be a `compile_error!` invocation.
+    // Errors generated wherever. Each elements should be a `compile_error!` invocation.
     let mut errors = Vec::new();
     // The trait method declarations.
     let mut method_decls = Vec::new();

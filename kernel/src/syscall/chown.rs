@@ -3,16 +3,16 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        fs_resolver::{AT_FDCWD, FsPath},
+        file::file_table::{RawFileDesc, get_file_fast},
         utils::PATH_MAX,
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     },
     prelude::*,
     process::{Gid, Uid},
 };
 
-pub fn sys_fchown(fd: FileDesc, uid: i32, gid: i32, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fd = {}, uid = {}, gid = {}", fd, uid, gid);
+pub fn sys_fchown(raw_fd: RawFileDesc, uid: i32, gid: i32, ctx: &Context) -> Result<SyscallReturn> {
+    debug!("raw_fd = {}, uid = {}, gid = {}", raw_fd, uid, gid);
 
     let uid = to_optional_id(uid, Uid::new)?;
     let gid = to_optional_id(gid, Gid::new)?;
@@ -21,12 +21,13 @@ pub fn sys_fchown(fd: FileDesc, uid: i32, gid: i32, ctx: &Context) -> Result<Sys
     }
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    let path = file.path();
     if let Some(uid) = uid {
-        file.set_owner(uid)?;
+        path.set_owner(uid)?;
     }
     if let Some(gid) = gid {
-        file.set_group(gid)?;
+        path.set_group(gid)?;
     }
     Ok(SyscallReturn::Return(0))
 }
@@ -47,25 +48,22 @@ pub fn sys_lchown(path_ptr: Vaddr, uid: i32, gid: i32, ctx: &Context) -> Result<
 }
 
 pub fn sys_fchownat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_ptr: Vaddr,
     uid: i32,
     gid: i32,
     flags: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let path = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
+    let path_name = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
     let flags = ChownFlags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     debug!(
         "dirfd = {}, path = {:?}, uid = {}, gid = {}, flags = {:?}",
-        dirfd, path, uid, gid, flags
+        dirfd, path_name, uid, gid, flags
     );
 
-    if path.is_empty() {
-        if !flags.contains(ChownFlags::AT_EMPTY_PATH) {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
-        }
+    if flags.contains(ChownFlags::AT_EMPTY_PATH) && path_name.is_empty() {
         return self::sys_fchown(dirfd, uid, gid, ctx);
     }
 
@@ -75,21 +73,25 @@ pub fn sys_fchownat(
         return Ok(SyscallReturn::Return(0));
     }
 
-    let dentry = {
-        let path = path.to_string_lossy();
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        let fs = ctx.posix_thread.fs().resolver().read();
+    let path = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
         if flags.contains(ChownFlags::AT_SYMLINK_NOFOLLOW) {
-            fs.lookup_no_follow(&fs_path)?
+            path_resolver.lookup_no_follow(&fs_path)?
         } else {
-            fs.lookup(&fs_path)?
+            path_resolver.lookup(&fs_path)?
         }
     };
+
     if let Some(uid) = uid {
-        dentry.set_owner(uid)?;
+        path.set_owner(uid)?;
     }
     if let Some(gid) = gid {
-        dentry.set_group(gid)?;
+        path.set_group(gid)?;
     }
     Ok(SyscallReturn::Return(0))
 }

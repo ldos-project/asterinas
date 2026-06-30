@@ -2,64 +2,70 @@
 
 use core::marker::PhantomData;
 
+use align_ext::AlignExt;
+
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        utils::{DirentVisitor, InodeType},
+        file::{
+            InodeType,
+            file_table::{RawFileDesc, get_file_fast},
+        },
+        utils::DirentVisitor,
     },
     prelude::*,
 };
 
 pub fn sys_getdents(
-    fd: FileDesc,
+    raw_fd: RawFileDesc,
     buf_addr: Vaddr,
     buf_len: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     debug!(
-        "fd = {}, buf_addr = 0x{:x}, buf_len = 0x{:x}",
-        fd, buf_addr, buf_len
+        "raw_fd = {}, buf_addr = 0x{:x}, buf_len = 0x{:x}",
+        raw_fd, buf_addr, buf_len
     );
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-    let inode_handle = file.as_inode_or_err()?;
-    if inode_handle.dentry().type_() != InodeType::Dir {
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    let inode_handle = file.as_inode_handle_or_err()?;
+    if inode_handle.path().type_() != InodeType::Dir {
         return_errno!(Errno::ENOTDIR);
     }
-    let mut buffer = vec![0u8; buf_len];
-    let mut reader = DirentBufferReader::<Dirent>::new(&mut buffer); // Use the non-64-bit reader
+    let user_space = ctx.user_space();
+    let writer = user_space.writer(buf_addr, buf_len)?;
+    let mut reader = DirentBufferReader::<Dirent>::new(writer); // Use the non-64-bit reader
     let _ = inode_handle.readdir(&mut reader)?;
     let read_len = reader.read_len();
-    ctx.user_space()
-        .write_bytes(buf_addr, &mut VmReader::from(&buffer[..read_len]))?;
+    fs::vfs::notify::on_access(&file);
     Ok(SyscallReturn::Return(read_len as _))
 }
 
 pub fn sys_getdents64(
-    fd: FileDesc,
+    raw_fd: RawFileDesc,
     buf_addr: Vaddr,
     buf_len: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     debug!(
-        "fd = {}, buf_addr = 0x{:x}, buf_len = 0x{:x}",
-        fd, buf_addr, buf_len
+        "raw_fd = {}, buf_addr = 0x{:x}, buf_len = 0x{:x}",
+        raw_fd, buf_addr, buf_len
     );
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-    let inode_handle = file.as_inode_or_err()?;
-    if inode_handle.dentry().type_() != InodeType::Dir {
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    let inode_handle = file.as_inode_handle_or_err()?;
+    if inode_handle.path().type_() != InodeType::Dir {
         return_errno!(Errno::ENOTDIR);
     }
-    let mut buffer = vec![0u8; buf_len];
-    let mut reader = DirentBufferReader::<Dirent64>::new(&mut buffer);
+    let user_space = ctx.user_space();
+    let writer = user_space.writer(buf_addr, buf_len)?;
+    let mut reader = DirentBufferReader::<Dirent64>::new(writer);
     let _ = inode_handle.readdir(&mut reader)?;
     let read_len = reader.read_len();
-    ctx.user_space()
-        .write_bytes(buf_addr, &mut VmReader::from(&buffer[..read_len]))?;
+    fs::vfs::notify::on_access(&file);
     Ok(SyscallReturn::Return(read_len as _))
 }
 
@@ -70,21 +76,21 @@ trait DirentSerializer {
     /// Get the length of a directory entry.
     fn len(&self) -> usize;
     /// Try to serialize a directory entry into buffer.
-    fn serialize(&self, buf: &mut [u8]) -> Result<()>;
+    fn serialize(&self, writer: &mut VmWriter) -> Result<()>;
 }
 
 /// The Buffered DirentReader to visit the dir entry.
 /// The DirentSerializer T decides how to serialize the data.
 struct DirentBufferReader<'a, T: DirentSerializer> {
-    buffer: &'a mut [u8],
+    writer: VmWriter<'a>,
     read_len: usize,
     phantom: PhantomData<T>,
 }
 
 impl<'a, T: DirentSerializer> DirentBufferReader<'a, T> {
-    pub fn new(buffer: &'a mut [u8]) -> Self {
+    pub fn new(writer: VmWriter<'a>) -> Self {
         Self {
-            buffer,
+            writer,
             read_len: 0,
             phantom: PhantomData,
         }
@@ -98,11 +104,17 @@ impl<'a, T: DirentSerializer> DirentBufferReader<'a, T> {
 impl<T: DirentSerializer> DirentVisitor for DirentBufferReader<'_, T> {
     fn visit(&mut self, name: &str, ino: u64, type_: InodeType, offset: usize) -> Result<()> {
         let dirent_serializer = T::new(ino, offset as u64, type_, CString::new(name)?);
-        if self.read_len >= self.buffer.len() {
-            return_errno_with_message!(Errno::EINVAL, "buffer is too small");
+        let len = dirent_serializer.len();
+        if self.writer.avail() < len {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the buffer is too small for the directory entry"
+            );
         }
-        dirent_serializer.serialize(&mut self.buffer[self.read_len..])?;
-        self.read_len += dirent_serializer.len();
+
+        dirent_serializer.serialize(&mut self.writer)?;
+        self.read_len += len;
+
         Ok(())
     }
 }
@@ -114,7 +126,7 @@ struct Dirent {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, Pod)]
 struct DirentInner {
     d_ino: u64,
     d_off: u64,
@@ -124,9 +136,8 @@ struct DirentInner {
 impl DirentSerializer for Dirent {
     fn new(ino: u64, offset: u64, _type_: InodeType, name: CString) -> Self {
         let d_reclen = {
-            let len =
-                core::mem::size_of::<Dirent64Inner>() + name.as_c_str().to_bytes_with_nul().len();
-            align_up(len, 8) as u16
+            let len = size_of::<DirentInner>() + name.as_c_str().to_bytes_with_nul().len();
+            len.align_up(8) as u16
         };
         Self {
             inner: DirentInner {
@@ -142,26 +153,17 @@ impl DirentSerializer for Dirent {
         self.inner.d_reclen as usize
     }
 
-    fn serialize(&self, buf: &mut [u8]) -> Result<()> {
-        // Ensure buffer is large enough for the directory entry
-        if self.len() > buf.len() {
-            return_errno_with_message!(Errno::EINVAL, "buffer is too small");
-        }
+    fn serialize(&self, writer: &mut VmWriter) -> Result<()> {
+        writer.write_val(&self.inner)?;
 
-        let d_ino = self.inner.d_ino;
-        let d_off = self.inner.d_off;
-        let d_reclen = self.inner.d_reclen;
-        let items: [&[u8]; 4] = [
-            d_ino.as_bytes(),
-            d_off.as_bytes(),
-            d_reclen.as_bytes(),
-            self.name.as_c_str().to_bytes_with_nul(),
-        ];
-        let mut offset = 0;
-        for item in items {
-            buf[offset..offset + item.len()].copy_from_slice(item);
-            offset += item.len();
-        }
+        let name_bytes = self.name.as_c_str().to_bytes_with_nul();
+        let mut reader = VmReader::from(name_bytes);
+        writer.write_fallible(&mut reader)?;
+
+        let written_len = size_of::<DirentInner>() + name_bytes.len();
+        let padding_len = self.len() - written_len;
+        writer.fill_zeros(padding_len)?;
+
         Ok(())
     }
 }
@@ -173,7 +175,7 @@ struct Dirent64 {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, Pod)]
 struct Dirent64Inner {
     d_ino: u64,
     d_off: u64,
@@ -184,9 +186,8 @@ struct Dirent64Inner {
 impl DirentSerializer for Dirent64 {
     fn new(ino: u64, offset: u64, type_: InodeType, name: CString) -> Self {
         let d_reclen = {
-            let len =
-                core::mem::size_of::<Dirent64Inner>() + name.as_c_str().to_bytes_with_nul().len();
-            align_up(len, 8) as u16
+            let len = size_of::<Dirent64Inner>() + name.as_c_str().to_bytes_with_nul().len();
+            len.align_up(8) as u16
         };
         let d_type = DirentType::from(type_) as u8;
         Self {
@@ -204,36 +205,25 @@ impl DirentSerializer for Dirent64 {
         self.inner.d_reclen as usize
     }
 
-    fn serialize(&self, buf: &mut [u8]) -> Result<()> {
-        if self.len() > buf.len() {
-            return_errno_with_message!(Errno::EINVAL, "buffer is too small");
-        }
+    fn serialize(&self, writer: &mut VmWriter) -> Result<()> {
+        writer.write_val(&self.inner)?;
 
-        let d_ino = self.inner.d_ino;
-        let d_off = self.inner.d_off;
-        let d_reclen = self.inner.d_reclen;
-        let d_type = self.inner.d_type;
-        let items: [&[u8]; 5] = [
-            d_ino.as_bytes(),
-            d_off.as_bytes(),
-            d_reclen.as_bytes(),
-            d_type.as_bytes(),
-            self.name.as_c_str().to_bytes_with_nul(),
-        ];
-        let mut offset = 0;
-        for item in items {
-            buf[offset..offset + item.len()].copy_from_slice(item);
-            offset += item.len();
-        }
+        let name_bytes = self.name.as_c_str().to_bytes_with_nul();
+        let mut reader = VmReader::from(name_bytes);
+        writer.write_fallible(&mut reader)?;
+
+        let written_len = size_of::<Dirent64Inner>() + name_bytes.len();
+        let padding_len = self.len() - written_len;
+        writer.fill_zeros(padding_len)?;
+
         Ok(())
     }
 }
 
 #[expect(non_camel_case_types)]
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum DirentType {
-    #[expect(dead_code)]
     DT_UNKNOWN = 0,
     DT_FIFO = 1,
     DT_CHR = 2,
@@ -249,6 +239,7 @@ enum DirentType {
 impl From<InodeType> for DirentType {
     fn from(type_: InodeType) -> Self {
         match type_ {
+            InodeType::Unknown => DirentType::DT_UNKNOWN,
             InodeType::File => DirentType::DT_REG,
             InodeType::Dir => DirentType::DT_DIR,
             InodeType::SymLink => DirentType::DT_LNK,
@@ -258,8 +249,4 @@ impl From<InodeType> for DirentType {
             InodeType::NamedPipe => DirentType::DT_FIFO,
         }
     }
-}
-
-fn align_up(size: usize, align: usize) -> usize {
-    (size + align - 1) & !(align - 1)
 }

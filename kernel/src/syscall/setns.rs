@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! This module implements the `setns` syscall.
+//!
+//! This syscall reassociates the calling thread with a namespace specified by a
+//! file descriptor. The `flags` argument determines which type of namespace can be
+//! joined.
+//!
+//! The file descriptor `fd` can refer to:
+//! 1. A namespace file from `/proc/[pid]/ns/`.
+//! 2. A `PidFile` opened by `pidfd_open` or by opening `/proc/[pid]` directory.
+
+use crate::{
+    fs::{
+        cgroupfs::CgroupNamespace,
+        file::{FileLike, InodeHandle, file_table::RawFileDesc},
+        pseudofs::{NsCommonOps, NsFile},
+        vfs::path::MountNamespace,
+    },
+    ipc::IpcNamespace,
+    net::uts_ns::UtsNamespace,
+    prelude::*,
+    process::{
+        CloneFlags, ContextSetNsAdminApi, NsProxy, NsProxyBuilder, PidFile,
+        check_unsupported_ns_flags, credentials::capabilities::CapSet, posix_thread::AsPosixThread,
+    },
+    syscall::SyscallReturn,
+};
+
+pub fn sys_setns(fd: RawFileDesc, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
+    let ns_type_flags = CloneFlags::from_bits(flags)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid `setns` flags"))?;
+    debug!("setns flags = {:?}", ns_type_flags);
+
+    let file = {
+        let file_table = ctx.thread_local.borrow_file_table();
+        let file_table_locked = file_table.unwrap().read();
+        file_table_locked.get_file(fd.try_into()?)?.clone()
+    };
+
+    let new_ns_proxy = if let Some(pid_file) = file.downcast_ref::<PidFile>() {
+        build_proxy_from_pid_file(pid_file, ns_type_flags, ctx)?
+    } else {
+        build_proxy_from_ns_file(file.as_ref(), ns_type_flags, ctx)?
+    };
+
+    // Install the newly created `NsProxy`.
+    ctx.set_ns_proxy(Arc::new(new_ns_proxy));
+
+    Ok(SyscallReturn::Return(0))
+}
+
+fn build_proxy_from_pid_file(
+    pid_file: &PidFile,
+    flags: CloneFlags,
+    ctx: &Context,
+) -> Result<NsProxy> {
+    if flags.is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "flags must be specified with a PID file");
+    }
+
+    // Check for any flags that are not namespace-related.
+    if !(flags - CloneFlags::CLONE_NS_FLAGS).is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "invalid flags are specified with a PID file");
+    }
+
+    if flags.contains(CloneFlags::CLONE_NEWUSER) {
+        return_errno_with_message!(Errno::EINVAL, "setting a user namespace is not supported");
+    }
+
+    check_unsupported_ns_flags(flags)?;
+
+    let target_thread = pid_file
+        .process_opt()
+        .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process has been reaped"))?
+        .main_thread();
+    let target_proxy = target_thread.as_posix_thread().unwrap().ns_proxy().lock();
+    let Some(target_proxy) = target_proxy.as_ref() else {
+        return_errno_with_message!(Errno::ESRCH, "the target process has exited");
+    };
+
+    let current_proxy = ctx.thread_local.borrow_ns_proxy();
+    let current_proxy = current_proxy.unwrap();
+
+    let mut builder = NsProxyBuilder::new(current_proxy);
+
+    if flags.contains(CloneFlags::CLONE_NEWCGROUP) {
+        let target_ns = target_proxy.cgroup_ns();
+        set_cgroup_ns(&mut builder, target_ns, ctx)?;
+    }
+
+    if flags.contains(CloneFlags::CLONE_NEWIPC) {
+        let target_ns = target_proxy.ipc_ns();
+        set_ipc_ns(&mut builder, target_ns, ctx)?;
+    }
+
+    if flags.contains(CloneFlags::CLONE_NEWNS) {
+        let target_ns = target_proxy.mnt_ns();
+        set_mnt_ns(&mut builder, target_ns, ctx)?;
+    }
+
+    if flags.contains(CloneFlags::CLONE_NEWUTS) {
+        let target_ns = target_proxy.uts_ns();
+        set_uts_ns(&mut builder, target_ns, ctx)?;
+    }
+
+    // TODO: Support setting other namespaces from the target process.
+
+    Ok(builder.build())
+}
+
+fn build_proxy_from_ns_file(
+    file: &dyn FileLike,
+    flags: CloneFlags,
+    ctx: &Context,
+) -> Result<NsProxy> {
+    if flags.contains(CloneFlags::CLONE_NEWUSER) {
+        return_errno_with_message!(Errno::EINVAL, "setting a user namespace is not supported");
+    }
+
+    check_unsupported_ns_flags(flags)?;
+
+    let inode_handle = file
+        .downcast_ref::<InodeHandle>()
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "the file is not a ns file"))?;
+
+    let current_proxy = ctx.thread_local.borrow_ns_proxy();
+    let current_proxy = current_proxy.unwrap();
+
+    let mut builder = NsProxyBuilder::new(current_proxy);
+
+    #[expect(clippy::nonminimal_bool)]
+    let applied = false
+        || try_apply_ns_from_inode::<CgroupNamespace>(inode_handle, flags, |ns| {
+            set_cgroup_ns(&mut builder, &ns, ctx)
+        })?
+        || try_apply_ns_from_inode::<IpcNamespace>(inode_handle, flags, |ns| {
+            set_ipc_ns(&mut builder, &ns, ctx)
+        })?
+        || try_apply_ns_from_inode::<MountNamespace>(inode_handle, flags, |ns| {
+            set_mnt_ns(&mut builder, &ns, ctx)
+        })?
+        || try_apply_ns_from_inode::<UtsNamespace>(inode_handle, flags, |ns| {
+            set_uts_ns(&mut builder, &ns, ctx)
+        })?;
+    // TODO: Support setting other namespaces from the ns file.
+
+    if !applied {
+        return_errno_with_message!(Errno::EINVAL, "invalid flags are specified with a ns file");
+    }
+
+    Ok(builder.build())
+}
+
+fn try_apply_ns_from_inode<T: NsCommonOps>(
+    inode_handle: &InodeHandle,
+    flags: CloneFlags,
+    apply: impl FnOnce(Arc<T>) -> Result<()>,
+) -> Result<bool> {
+    let Some(ns_file) = inode_handle.downcast_file_io::<NsFile<T>>()? else {
+        return Ok(false);
+    };
+
+    if !flags.is_empty() && flags != T::TYPE.into() {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "the flags do not match the type of the ns file"
+        );
+    }
+
+    apply(ns_file.ns().clone())?;
+    Ok(true)
+}
+
+fn set_cgroup_ns(
+    builder: &mut NsProxyBuilder,
+    target_ns: &Arc<CgroupNamespace>,
+    ctx: &Context,
+) -> Result<()> {
+    check_set_ns_perms(target_ns, ctx)?;
+
+    builder.cgroup_ns(target_ns.clone());
+
+    Ok(())
+}
+
+fn set_ipc_ns(
+    builder: &mut NsProxyBuilder,
+    target_ns: &Arc<IpcNamespace>,
+    ctx: &Context,
+) -> Result<()> {
+    check_set_ns_perms(target_ns, ctx)?;
+
+    builder.ipc_ns(target_ns.clone());
+
+    Ok(())
+}
+
+fn set_mnt_ns(
+    builder: &mut NsProxyBuilder,
+    target_ns: &Arc<MountNamespace>,
+    ctx: &Context,
+) -> Result<()> {
+    check_set_ns_perms(target_ns, ctx)?;
+
+    if ctx.thread_local.is_fs_shared() {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "setting a mount namespace is not allowed with shared filesystem information"
+        );
+    }
+
+    // TODO: Are the checks above sufficient?
+
+    builder.mnt_ns(target_ns.clone());
+
+    Ok(())
+}
+
+fn set_uts_ns(
+    builder: &mut NsProxyBuilder,
+    target_ns: &Arc<UtsNamespace>,
+    ctx: &Context,
+) -> Result<()> {
+    check_set_ns_perms(target_ns, ctx)?;
+
+    builder.uts_ns(target_ns.clone());
+
+    Ok(())
+}
+
+fn check_set_ns_perms<T: NsCommonOps>(target_ns: &Arc<T>, ctx: &Context) -> Result<()> {
+    // Verify the thread has SYS_ADMIN capability in the target namespace's owner
+    // and the current user namespace.
+    target_ns
+        .owner_user_ns()
+        .unwrap()
+        .check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
+    ctx.thread_local
+        .borrow_user_ns()
+        .check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
+
+    // TODO: Are the checks above sufficient?
+
+    Ok(())
+}

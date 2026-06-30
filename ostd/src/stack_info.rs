@@ -10,7 +10,7 @@ use core::{fmt::Display, num::NonZeroUsize};
 
 use snafu::GenerateImplicitData;
 
-use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task};
+use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task, util::id_set::Id as _};
 
 /// A location in the code. Unlike, [`snafu::Location`] and [`core::panic::Location`], this can hold
 /// a dynamic string. However, if given a `&'static str`, it will not allocate memory (internally it

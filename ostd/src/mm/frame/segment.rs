@@ -8,7 +8,7 @@ use super::{
     Frame, inc_frame_ref_count,
     meta::{AnyFrameMeta, GetFrameError},
 };
-use crate::mm::{AnyUFrameMeta, PAGE_SIZE, Paddr};
+use crate::mm::{AnyUFrameMeta, HasPaddr, HasSize, PAGE_SIZE, Paddr, Split};
 
 /// A contiguous range of homogeneous physical memory frames.
 ///
@@ -86,7 +86,7 @@ impl<M: AnyFrameMeta> Segment<M> {
     where
         F: FnMut(Paddr) -> M,
     {
-        if range.start % PAGE_SIZE != 0 || range.end % PAGE_SIZE != 0 {
+        if !range.start.is_multiple_of(PAGE_SIZE) || !range.end.is_multiple_of(PAGE_SIZE) {
             return Err(GetFrameError::NotAligned);
         }
         if range.end > super::max_paddr() {
@@ -124,33 +124,9 @@ impl<M: AnyFrameMeta> Segment<M> {
     }
 }
 
-impl<M: AnyFrameMeta + ?Sized> Segment<M> {
-    /// Gets the start physical address of the contiguous frames.
-    pub fn start_paddr(&self) -> Paddr {
-        self.range.start
-    }
-
-    /// Gets the end physical address of the contiguous frames.
-    pub fn end_paddr(&self) -> Paddr {
-        self.range.end
-    }
-
-    /// Gets the length in bytes of the contiguous frames.
-    pub fn size(&self) -> usize {
-        self.range.end - self.range.start
-    }
-
-    /// Splits the frames into two at the given byte offset from the start.
-    ///
-    /// The resulting frames cannot be empty. So the offset cannot be neither
-    /// zero nor the length of the frames.
-    ///
-    /// # Panics
-    ///
-    /// The function panics if the offset is out of bounds, at either ends, or
-    /// not base-page-aligned.
-    pub fn split(self, offset: usize) -> (Self, Self) {
-        assert!(offset % PAGE_SIZE == 0);
+impl<M: AnyFrameMeta + ?Sized> Split for Segment<M> {
+    fn split(self, offset: usize) -> (Self, Self) {
+        assert!(offset.is_multiple_of(PAGE_SIZE));
         assert!(0 < offset && offset < self.size());
 
         let old = ManuallyDrop::new(self);
@@ -167,7 +143,9 @@ impl<M: AnyFrameMeta + ?Sized> Segment<M> {
             },
         )
     }
+}
 
+impl<M: AnyFrameMeta + ?Sized> Segment<M> {
     /// Gets an extra handle to the frames in the byte offset range.
     ///
     /// The sliced byte offset range in indexed by the offset from the start of
@@ -178,7 +156,7 @@ impl<M: AnyFrameMeta + ?Sized> Segment<M> {
     /// The function panics if the byte offset range is out of bounds, or if
     /// any of the ends of the byte offset range is not base-page aligned.
     pub fn slice(&self, range: &Range<usize>) -> Self {
-        assert!(range.start % PAGE_SIZE == 0 && range.end % PAGE_SIZE == 0);
+        assert!(range.start.is_multiple_of(PAGE_SIZE) && range.end.is_multiple_of(PAGE_SIZE));
         let start = self.range.start + range.start;
         let end = self.range.start + range.end;
         assert!(start <= end && end <= self.range.end);
@@ -204,9 +182,45 @@ impl<M: AnyFrameMeta + ?Sized> Segment<M> {
     }
 }
 
+impl Segment<dyn AnyFrameMeta> {
+    /// Converts a [`Segment`] with a specific metadata type into a
+    /// [`Segment<dyn AnyFrameMeta>`].
+    ///
+    /// This exists because:
+    ///
+    /// ```ignore
+    /// impl<M: AnyFrameMeta + ?Sized> From<Segment<M>> for Segment<dyn AnyFrameMeta>
+    /// ```
+    ///
+    /// will conflict with `impl<T> core::convert::From<T> for T` in crate `core`.
+    ///
+    /// See also [`Frame::from_unsized`].
+    pub fn from_unsized<M: AnyFrameMeta + ?Sized>(
+        segment: Segment<M>,
+    ) -> Segment<dyn AnyFrameMeta> {
+        let seg = ManuallyDrop::new(segment);
+        Self {
+            range: seg.range.clone(),
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<M: AnyFrameMeta + ?Sized> HasPaddr for Segment<M> {
+    fn paddr(&self) -> Paddr {
+        self.range.start
+    }
+}
+
+impl<M: AnyFrameMeta + ?Sized> HasSize for Segment<M> {
+    fn size(&self) -> usize {
+        self.range.end - self.range.start
+    }
+}
+
 impl<M: AnyFrameMeta + ?Sized> From<Frame<M>> for Segment<M> {
     fn from(frame: Frame<M>) -> Self {
-        let pa = frame.start_paddr();
+        let pa = frame.paddr();
         let _ = ManuallyDrop::new(frame);
         Self {
             range: pa..pa + PAGE_SIZE,
@@ -235,11 +249,7 @@ impl<M: AnyFrameMeta + ?Sized> Iterator for Segment<M> {
 
 impl<M: AnyFrameMeta> From<Segment<M>> for Segment<dyn AnyFrameMeta> {
     fn from(seg: Segment<M>) -> Self {
-        let seg = ManuallyDrop::new(seg);
-        Self {
-            range: seg.range.clone(),
-            _marker: core::marker::PhantomData,
-        }
+        Self::from_unsized(seg)
     }
 }
 

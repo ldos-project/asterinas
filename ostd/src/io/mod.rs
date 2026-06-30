@@ -7,17 +7,17 @@
 //!  - `IoMem` for memory I/O (MMIO).
 //!  - `IoPort` for port I/O (PIO).
 
-mod io_mem;
-
-use cfg_if::cfg_if;
+pub(crate) mod io_mem;
 
 pub use self::io_mem::IoMem;
-pub(crate) use self::io_mem::IoMemAllocatorBuilder;
+#[cfg_attr(target_arch = "loongarch64", expect(unused_imports))]
+pub(crate) use self::io_mem::{IoMemAllocatorBuilder, Sensitive};
 
-cfg_if!(
+cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] {
         mod io_port;
-        pub use io_port::IoPort;
+
+        pub use self::io_port::IoPort;
         pub(crate) use self::io_port::{reserve_io_port_range, sensitive_io_port, RawIoPortRange};
     }
 );

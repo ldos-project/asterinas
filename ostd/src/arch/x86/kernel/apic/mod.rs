@@ -4,9 +4,12 @@ use alloc::boxed::Box;
 
 use bit_field::BitField;
 use spin::Once;
-use xapic::get_xapic_base_address;
 
-use crate::{cpu::PinCurrentCpu, cpu_local, io::IoMemAllocatorBuilder};
+use crate::{
+    cpu::PinCurrentCpu,
+    cpu_local,
+    io::{IoMem, IoMemAllocatorBuilder, Sensitive},
+};
 
 mod x2apic;
 mod xapic;
@@ -71,12 +74,12 @@ pub fn get_or_init(_guard: &dyn PinCurrentCpu) -> &(dyn Apic + 'static) {
 
     // Initialize the APIC instance now.
     apic_instance.call_once(|| match APIC_TYPE.get().unwrap() {
-        ApicType::XApic => {
-            let mut xapic = xapic::XApic::new().unwrap();
+        ApicType::XApic(io_mem) => {
+            let mut xapic = xapic::XApic::new(io_mem).unwrap();
             xapic.enable();
             let version = xapic.version();
-            log::info!(
-                "xAPIC ID:{:x}, Version:{:x}, Max LVT:{:x}",
+            crate::info!(
+                "xAPIC ID: {:x}, Version: {:x}, Max LVT: {:x}",
                 xapic.id(),
                 version & 0xff,
                 (version >> 16) & 0xff
@@ -87,8 +90,8 @@ pub fn get_or_init(_guard: &dyn PinCurrentCpu) -> &(dyn Apic + 'static) {
             let mut x2apic = x2apic::X2Apic::new().unwrap();
             x2apic.enable();
             let version = x2apic.version();
-            log::info!(
-                "x2APIC ID:{:x}, Version:{:x}, Max LVT:{:x}",
+            crate::info!(
+                "x2APIC ID: {:x}, Version: {:x}, Max LVT: {:x}",
                 x2apic.id(),
                 version & 0xff,
                 (version >> 16) & 0xff
@@ -136,7 +139,7 @@ pub trait ApicTimer {
 }
 
 enum ApicType {
-    XApic,
+    XApic(IoMem<Sensitive>),
     X2Apic,
 }
 
@@ -217,7 +220,7 @@ impl ApicId {
     ///
     /// In x2APIC mode, the 32-bit logical x2APIC ID, which can be read from
     /// LDR, is derived from the 32-bit local x2APIC ID:
-    /// Logical x2APIC ID = [(x2APIC ID[19:4] << 16) | (1 << x2APIC ID[3:0])]
+    /// Logical x2APIC ID = [(x2APIC ID\[19:4\] << 16) | (1 << x2APIC ID\[3:0\])]
     #[expect(unused)]
     pub fn x2apic_logical_id(&self) -> u32 {
         (self.x2apic_logical_cluster_id() << 16) | (1 << self.x2apic_logical_field_id())
@@ -225,7 +228,7 @@ impl ApicId {
 
     /// Returns the logical x2apic cluster ID.
     ///
-    /// Logical cluster ID = x2APIC ID[19:4]
+    /// Logical cluster ID = x2APIC ID\[19:4\]
     pub fn x2apic_logical_cluster_id(&self) -> u32 {
         let apic_id = match *self {
             ApicId::XApic(id) => id as u32,
@@ -238,7 +241,7 @@ impl ApicId {
     ///
     /// Specifically, the 16-bit logical ID sub-field is derived by the lowest
     /// 4 bits of the x2APIC ID, i.e.,
-    /// Logical field ID = x2APIC ID[3:0].
+    /// Logical field ID = x2APIC ID\[3:0\].
     pub fn x2apic_logical_field_id(&self) -> u32 {
         let apic_id = match *self {
             ApicId::XApic(id) => id as u32,
@@ -251,7 +254,7 @@ impl ApicId {
 impl From<u32> for ApicId {
     fn from(value: u32) -> Self {
         match APIC_TYPE.get().unwrap() {
-            ApicType::XApic => ApicId::XApic(value as u8),
+            ApicType::XApic(_) => ApicId::XApic(value as u8),
             ApicType::X2Apic => ApicId::X2Apic(value),
         }
     }
@@ -333,9 +336,9 @@ pub enum ApicInitError {
     NoApic,
 }
 
-#[derive(Debug)]
-#[repr(u32)]
 #[expect(dead_code)]
+#[repr(u32)]
+#[derive(Debug)]
 pub enum DivideConfig {
     Divide1 = 0b1011,
     Divide2 = 0b0000,
@@ -349,21 +352,21 @@ pub enum DivideConfig {
 
 pub fn init(io_mem_builder: &IoMemAllocatorBuilder) -> Result<(), ApicInitError> {
     if x2apic::X2Apic::has_x2apic() {
-        log::info!("x2APIC found!");
+        crate::info!("x2APIC found!");
         APIC_TYPE.call_once(|| ApicType::X2Apic);
         Ok(())
     } else if xapic::XApic::has_xapic() {
-        log::info!("xAPIC found!");
-        let base_address = get_xapic_base_address();
-        io_mem_builder.remove(base_address..(base_address + size_of::<[u32; 256]>()));
-        APIC_TYPE.call_once(|| ApicType::XApic);
+        crate::info!("xAPIC found!");
+        // SAFETY: xAPIC is present.
+        let base_address = unsafe { xapic::read_xapic_base_address() };
+        let io_mem = io_mem_builder.reserve(
+            base_address..(base_address + xapic::XAPIC_MMIO_SIZE),
+            crate::mm::CachePolicy::Uncacheable,
+        );
+        APIC_TYPE.call_once(|| ApicType::XApic(io_mem));
         Ok(())
     } else {
-        log::warn!("Neither x2APIC nor xAPIC found!");
+        crate::warn!("Neither x2APIC nor xAPIC found!");
         Err(ApicInitError::NoApic)
     }
-}
-
-pub fn exists() -> bool {
-    APIC_TYPE.is_completed()
 }

@@ -4,8 +4,7 @@
 
 use alloc::{collections::VecDeque, fmt::Debug, sync::Arc, vec::Vec};
 
-use log::{debug, error};
-use ostd::bus::BusProbeError;
+use ostd::{bus::BusProbeError, debug, error};
 
 use super::common_device::MmioCommonDevice;
 
@@ -41,7 +40,7 @@ pub struct MmioBus {
 impl MmioBus {
     /// Registers a MMIO driver to the MMIO bus.
     pub fn register_driver(&mut self, driver: Arc<dyn MmioDriver>) {
-        debug!("Register driver:{:#x?}", driver);
+        debug!("Register driver: {:#x?}", driver);
         let length = self.common_devices.len();
         for _ in (0..length).rev() {
             let common_device = self.common_devices.pop_front().unwrap();

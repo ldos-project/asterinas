@@ -281,7 +281,7 @@ impl FileMetadata {
 
 /// The type of the file.
 #[repr(u32)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromInt)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, TryFromInt)]
 pub enum FileType {
     /// FIFO special file
     FiFo = 0o010000,
@@ -292,17 +292,12 @@ pub enum FileType {
     /// Block device
     Block = 0o060000,
     /// Regular file
+    #[default]
     File = 0o100000,
     /// Symbolic link
     Link = 0o120000,
     /// Socket
     Socket = 0o140000,
-}
-
-impl Default for FileType {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 const MAGIC: &[u8] = b"070701";
@@ -330,7 +325,7 @@ impl Header {
     where
         R: Read,
     {
-        let mut buf = vec![0u8; core::mem::size_of::<Self>()];
+        let mut buf = vec![0u8; size_of::<Self>()];
         reader.read_exact(&mut buf)?;
 
         let header = Self {
@@ -356,7 +351,7 @@ impl Header {
     }
 
     fn len(&self) -> usize {
-        core::mem::size_of::<Self>()
+        size_of::<Self>()
     }
 }
 

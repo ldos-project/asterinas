@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::cpu::context::UserContext;
+use ostd::arch::cpu::context::UserContext;
 
 use super::SyscallReturn;
 use crate::prelude::*;
@@ -8,7 +8,7 @@ use crate::prelude::*;
 #[expect(non_camel_case_types)]
 #[repr(u64)]
 #[derive(Debug, TryFromInt)]
-pub enum ArchPrctlCode {
+enum ArchPrctlCode {
     ARCH_SET_GS = 0x1001,
     ARCH_SET_FS = 0x1002,
     ARCH_GET_FS = 0x1003,
@@ -18,7 +18,7 @@ pub enum ArchPrctlCode {
 pub fn sys_arch_prctl(
     code: u64,
     addr: u64,
-    ctx: &Context,
+    _ctx: &Context,
     user_ctx: &mut UserContext,
 ) -> Result<SyscallReturn> {
     let arch_prctl_code = ArchPrctlCode::try_from(code)?;
@@ -26,19 +26,13 @@ pub fn sys_arch_prctl(
         "arch_prctl_code: {:?}, addr = 0x{:x}",
         arch_prctl_code, addr
     );
-    let res = do_arch_prctl(arch_prctl_code, addr, ctx, user_ctx).unwrap();
+    let res = do_arch_prctl(arch_prctl_code, addr, user_ctx)?;
     Ok(SyscallReturn::Return(res as _))
 }
 
-pub fn do_arch_prctl(
-    code: ArchPrctlCode,
-    addr: u64,
-    ctx: &Context,
-    user_ctx: &mut UserContext,
-) -> Result<u64> {
+fn do_arch_prctl(code: ArchPrctlCode, addr: u64, user_ctx: &mut UserContext) -> Result<u64> {
     match code {
         ArchPrctlCode::ARCH_SET_FS => {
-            ctx.task.set_tls_pointer(addr as usize);
             user_ctx.set_tls_pointer(addr as usize);
             user_ctx.activate_tls_pointer();
             Ok(0)

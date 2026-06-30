@@ -18,7 +18,8 @@ use core::{
 };
 
 use ostd::{
-    panic::{self, CaughtPanic},
+    panic,
+    panic::CaughtPanic,
     stack_info::{Location, StackInfo},
     task::disable_preempt,
 };
@@ -50,6 +51,7 @@ pub(crate) fn configure() {
 }
 
 /// The kernel "oops" information.
+#[expect(unused)]
 pub struct OopsInfo {
     /// The "oops" message.
     pub message: String,
@@ -76,12 +78,12 @@ where
         Err(err) => {
             let caught_panic = err.downcast::<CaughtPanic>().unwrap();
 
-            log::error!("Oops! {}", caught_panic);
+            ostd::error!("Oops! {}", caught_panic);
 
             let count = OOPS_COUNT.fetch_add(1, Ordering::Relaxed);
             if count >= MAX_OOPS_COUNT {
                 // Too many oops. Abort the kernel.
-                log::error!("Too many oops. The kernel panics.");
+                ostd::error!("Too many oops. The kernel panics.");
                 panic::abort();
             }
 
@@ -127,7 +129,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 
     // Halt the system if the panic is not caught.
 
-    log::error!(
+    ostd::error!(
         "Uncaught panic:\n\t{}\n\t{}\n\tby thread {:?}",
         message,
         context,
@@ -137,7 +139,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     if info.can_unwind() {
         panic::print_stack_trace();
     } else {
-        log::error!("Backtrace is disabled.");
+        ostd::error!("Backtrace is disabled.");
     }
 
     panic::abort();

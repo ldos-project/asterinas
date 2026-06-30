@@ -10,7 +10,7 @@ use super::{
 };
 use crate::prelude::*;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SigAction {
     #[default]
     Dfl, // Default action
@@ -31,13 +31,7 @@ impl From<sigaction_t> for SigAction {
             SIG_IGN => SigAction::Ign,
             _ => {
                 let flags = SigActionFlags::from_bits_truncate(input.flags);
-                let mask = {
-                    let mut sigset = SigSet::from(input.mask);
-                    // SIGSTOP and SIGKILL cannot be masked
-                    sigset -= SIGSTOP;
-                    sigset -= SIGKILL;
-                    sigset
-                };
+                let mask = SigSet::from(input.mask);
                 SigAction::User {
                     handler_addr: input.handler_ptr,
                     flags,
@@ -57,12 +51,14 @@ impl SigAction {
                 flags: 0,
                 restorer_ptr: 0,
                 mask: 0,
+                ..Default::default()
             },
             SigAction::Ign => sigaction_t {
                 handler_ptr: SIG_IGN,
                 flags: 0,
                 restorer_ptr: 0,
                 mask: 0,
+                ..Default::default()
             },
             SigAction::User {
                 handler_addr,
@@ -74,6 +70,7 @@ impl SigAction {
                 flags: flags.as_u32(),
                 restorer_ptr: *restorer_addr,
                 mask: (*mask).into(),
+                ..Default::default()
             },
         }
     }
@@ -129,7 +126,7 @@ impl SigActionFlags {
 }
 
 /// The default action to signals
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SigDefaultAction {
     Term, // Default action is to terminate the process.
     Ign,  // Default action is to ignore the signal.

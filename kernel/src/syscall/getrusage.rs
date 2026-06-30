@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use int_to_c_enum::TryFromInt;
+use ostd::mm::VmIo;
 
 use super::SyscallReturn;
 use crate::{prelude::*, time::timeval_t};
 
-#[derive(Debug, Copy, Clone, TryFromInt, PartialEq)]
 #[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
 enum RusageTarget {
     ForSelf = 0,
     Children = -1,
-    Both = -2,
     Thread = 1,
 }
 
@@ -25,7 +25,7 @@ pub fn sys_getrusage(target: i32, rusage_addr: Vaddr, ctx: &Context) -> Result<S
     if rusage_addr != 0 {
         let rusage = match rusage_target {
             RusageTarget::ForSelf => {
-                let process = ctx.process;
+                let process = ctx.process.as_ref();
                 rusage_t {
                     ru_utime: process.prof_clock().user_clock().read_time().into(),
                     ru_stime: process.prof_clock().kernel_clock().read_time().into(),
@@ -40,11 +40,13 @@ pub fn sys_getrusage(target: i32, rusage_addr: Vaddr, ctx: &Context) -> Result<S
                     ..Default::default()
                 }
             }
-            // To support `Children` and `Both` we need to implement the functionality to
-            // accumulate the resources of a child process back to the parent process
-            // upon the child's termination.
-            _ => {
-                return_errno_with_message!(Errno::EINVAL, "the target type is not supported")
+            RusageTarget::Children => {
+                let (user_time, kernel_time) = ctx.process.reaped_children_stats().lock().get();
+                rusage_t {
+                    ru_utime: user_time.into(),
+                    ru_stime: kernel_time.into(),
+                    ..Default::default()
+                }
             }
         };
 
@@ -55,7 +57,7 @@ pub fn sys_getrusage(target: i32, rusage_addr: Vaddr, ctx: &Context) -> Result<S
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Pod)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
 pub struct rusage_t {
     /// user time used
     pub ru_utime: timeval_t,

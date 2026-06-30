@@ -5,7 +5,3 @@
 
 pub mod posix;
 pub mod system_v;
-
-pub(super) fn init() {
-    system_v::init();
-}

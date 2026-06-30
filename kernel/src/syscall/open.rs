@@ -2,17 +2,21 @@
 
 use super::SyscallReturn;
 use crate::{
+    fs,
     fs::{
-        file_table::{FdFlags, FileDesc},
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{AccessMode, CreationFlags},
+        file::{
+            AccessMode, CreationFlags, FileLike, InodeHandle, InodeMode, InodeType, OpenArgs,
+            StatusFlags,
+            file_table::{FdFlags, RawFileDesc},
+        },
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath, LookupResult, PathResolver},
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_openat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_addr: Vaddr,
     flags: u32,
     mode: u16,
@@ -24,21 +28,24 @@ pub fn sys_openat(
         dirfd, path, flags, mode
     );
 
-    let current = ctx.posix_thread;
     let file_handle = {
         let path = path.to_string_lossy();
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        let mask_mode = mode & !current.fs().umask().read().get();
-        let inode_handle = current
-            .fs()
-            .resolver()
-            .read()
-            .open(&fs_path, flags, mask_mode)
-            .map_err(|err| match err.error() {
-                Errno::EINTR => Error::new(Errno::ERESTARTSYS),
-                _ => err,
-            })?;
-        Arc::new(inode_handle)
+        let fs_path = FsPath::from_fd_at(dirfd, path.as_ref(), EmptyPathStr::Reject)?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let mask_mode = mode & !fs_ref.umask().get();
+
+        let path_resolver = fs_ref.resolver().read();
+        do_open(
+            &path_resolver,
+            &fs_path,
+            flags,
+            InodeMode::from_bits_truncate(mask_mode),
+        )
+        .map_err(|err| match err.error() {
+            Errno::EINTR => Error::new(Errno::ERESTARTSYS),
+            _ => err,
+        })?
     };
 
     let fd = {
@@ -50,10 +57,11 @@ pub fn sys_openat(
             } else {
                 FdFlags::empty()
             };
-        file_table_locked.insert(file_handle, fd_flags)
+        file_table_locked.insert(file_handle.clone(), fd_flags)
     };
-
-    Ok(SyscallReturn::Return(fd as _))
+    let file_like: Arc<dyn FileLike> = file_handle;
+    fs::vfs::notify::on_open(&file_like);
+    Ok(SyscallReturn::Return(fd.into()))
 }
 
 pub fn sys_open(path_addr: Vaddr, flags: u32, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
@@ -64,4 +72,50 @@ pub fn sys_creat(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallRe
     let flags =
         AccessMode::O_WRONLY as u32 | CreationFlags::O_CREAT.bits() | CreationFlags::O_TRUNC.bits();
     self::sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
+}
+
+fn do_open(
+    path_resolver: &PathResolver,
+    fs_path: &FsPath,
+    flags: u32,
+    mode: InodeMode,
+) -> Result<Arc<dyn FileLike>> {
+    let open_args = OpenArgs::from_flags_and_mode(flags, mode)?;
+
+    let lookup_res = if open_args.follow_tail_link() {
+        path_resolver.lookup_unresolved(fs_path)?
+    } else {
+        path_resolver.lookup_unresolved_no_follow(fs_path)?
+    };
+
+    let file_handle: Arc<dyn FileLike> = match lookup_res {
+        LookupResult::Resolved(path) => Arc::new(path.open(open_args)?),
+        LookupResult::AtParent(result) => {
+            if !open_args.creation_flags.contains(CreationFlags::O_CREAT)
+                || open_args.status_flags.contains(StatusFlags::O_PATH)
+            {
+                return_errno_with_message!(Errno::ENOENT, "the file does not exist");
+            }
+            if result.target_is_dir() {
+                return_errno_with_message!(
+                    Errno::EISDIR,
+                    "O_CREAT is specified but the file is a directory"
+                );
+            }
+
+            let (parent, tail_name) = result.into_parent_and_basename();
+            let new_path =
+                parent.new_fs_child(&tail_name, InodeType::File, open_args.inode_mode)?;
+            fs::vfs::notify::on_create(&parent, || tail_name.clone());
+
+            // Don't check access mode for newly created file.
+            Arc::new(InodeHandle::new_unchecked_access(
+                new_path,
+                open_args.access_mode,
+                open_args.status_flags,
+            )?)
+        }
+    };
+
+    Ok(file_handle)
 }

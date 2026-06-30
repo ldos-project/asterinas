@@ -14,7 +14,7 @@ set -e
 # Options:
 #   major, minor, patch, date                        The version part to increment when bumping the Docker image version
 
-# TODO: we may remove the VERSION file in the future, 
+# TODO: we may remove the VERSION file in the future,
 # and retrieve the current version from git tag.
 
 # Update the package version (`version = "{version}"`) in file $1
@@ -33,13 +33,15 @@ update_dep_version() {
     sed -i "0,/${pattern}/s/${pattern}/$2 = { version = \"${new_version}\"/1" $1
 }
 
-# Update Docker image versions (`ldosproject/asterinas:{version}`) in file $1
+# Update Docker image versions in file $1
 update_image_versions() {
     echo "Updating file $1"
-    # Update the version of the development container
+    # Update the version of the Asterinas development container
     sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
-    # Update the test environment described in the OSDK manual
+    # Update the version of ldosproject/osdk container
     sed -i "s/ldosproject\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/osdk:${new_version}/g" $1
+    # Update the version of ldosproject/kata container
+    sed -i "s/ldosproject\/kata:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/kata:${new_version}/g" $1
 }
 
 # Print the help message
@@ -72,7 +74,7 @@ add_one() {
 # Update Docker image version in DOCKER_IMAGE_VERSION file
 update_docker_image_version() {
     local IFS="-"
-    local docker_version_parts=($(cat ${DOCKER_IMAGE_VERSION_PATH}))
+    local docker_version_parts=($(cat "${DOCKER_IMAGE_VERSION_PATH}"))
     local version_part=$1
 
     if [[ -z "$version_part" ]]; then
@@ -118,12 +120,17 @@ update_docker_image_version() {
 update_all_docker_version_refs() {
     new_version=$(cat ${DOCKER_IMAGE_VERSION_PATH})
 
-    # Update Docker image versions in README files
+    # Update Docker image versions in devcontainer.json, README files, and AGENTS.md
+    update_image_versions ${ASTER_SRC_DIR}/.devcontainer/devcontainer.json
     update_image_versions ${ASTER_SRC_DIR}/README.md
-    update_image_versions ${ASTER_SRC_DIR}/README_CN.md
-    update_image_versions ${ASTER_SRC_DIR}/README_JP.md
+    update_image_versions ${ASTER_SRC_DIR}/AGENTS.md
     update_image_versions ${SCRIPT_DIR}/docker/README.md
-    update_image_versions ${DOCS_DIR}/src/kernel/intel_tdx.md
+
+    # Update Docker image versions in the Book
+    update_image_versions ${BOOK_DIR}/src/kernel/intel-tdx.md
+    update_image_versions ${BOOK_DIR}/src/kernel/README.md
+    update_image_versions ${BOOK_DIR}/src/kernel/vm-based-containers/kata.md
+    update_image_versions ${BOOK_DIR}/src/osdk/guide/intel-tdx.md
 
     # Update Docker image versions in workflows
     ALL_WORKFLOWS=$(find "${ASTER_SRC_DIR}/.github/workflows/" -type f -name "*.yml")
@@ -138,37 +145,23 @@ update_all_docker_version_refs() {
             update_image_versions "$workflow"
         fi
     done
-
-    # Update Docker image versions in the documentation
-    GET_STARTED_PATH=${ASTER_SRC_DIR}/docs/src/kernel/README.md
-    update_image_versions $GET_STARTED_PATH
 }
 
 # Update project dependencies (Cargo.toml and Cargo.lock)
 update_project_dependencies() {
     # Update the versions in Cargo.toml
-    update_package_version ${OSTD_TEST_CARGO_TOML_PATH}
-    update_package_version ${OSTD_MACROS_CARGO_TOML_PATH}
-    update_package_version ${OSTD_CARGO_TOML_PATH}
-    update_package_version ${LINUX_BOOT_PARAMS_CARGO_TOML_PATH}
-    update_package_version ${LINUX_BZIMAGE_BUILDER_CARGO_TOML_PATH}
-    update_package_version ${LINUX_BZIMAGE_SETUP_CARGO_TOML_PATH}
+    update_package_version ${WORKSPACE_CARGO_TOML_PATH}
     update_package_version ${OSDK_CARGO_TOML_PATH}
-    update_package_version ${OSDK_TEST_RUNNER_CARGO_TOML_PATH}
-    update_package_version ${OSDK_FRAME_ALLOCATOR_CARGO_TOML_PATH}
-    update_package_version ${OSDK_HEAP_ALLOCATOR_CARGO_TOML_PATH}
+    update_package_version ${SCTRACE_CARGO_TOML_PATH}
 
-    update_dep_version ${OSDK_TEST_RUNNER_CARGO_TOML_PATH} ostd
-    update_dep_version ${OSDK_FRAME_ALLOCATOR_CARGO_TOML_PATH} ostd
-    update_dep_version ${OSDK_HEAP_ALLOCATOR_CARGO_TOML_PATH} ostd
-    update_dep_version ${OSTD_CARGO_TOML_PATH} ostd-test
-    update_dep_version ${OSTD_CARGO_TOML_PATH} linux-boot-params
-    update_dep_version ${OSTD_CARGO_TOML_PATH} ostd-macros
-    update_dep_version ${LINUX_BZIMAGE_SETUP_CARGO_TOML_PATH} linux-boot-params
+    update_dep_version ${WORKSPACE_CARGO_TOML_PATH} linux-boot-params
+    update_dep_version ${WORKSPACE_CARGO_TOML_PATH} ostd
+    update_dep_version ${WORKSPACE_CARGO_TOML_PATH} ostd-test
+    update_dep_version ${WORKSPACE_CARGO_TOML_PATH} ostd-macros
     update_dep_version ${OSDK_CARGO_TOML_PATH} linux-bzimage-builder
 
     # Automatically bump Cargo.lock files
-    cargo update -p aster-nix --precise $new_version # For Cargo.lock
+    cargo update -p aster-kernel --precise $new_version # For Cargo.lock
     cd ${OSDK_DIR} && cargo update -p cargo-osdk --precise $new_version # For osdk/Cargo.lock
 }
 
@@ -196,35 +189,17 @@ sync_project_version() {
 
     update_project_dependencies
 
-    # Update tag version in release_tag workflow
-    RELEASE_TAG_WORKFLOW=${ASTER_SRC_DIR}/.github/workflows/push_git_tag.yml
-    update_tag_version $RELEASE_TAG_WORKFLOW
-
     echo -n "${new_version}" > ${VERSION_PATH}
     echo "Bumped Asterinas OSTD & OSDK version to $new_version"
 }
 
-
-# Update tag version (`v{version}`) in file $1
-update_tag_version() {
-    echo "Updating file $1"
-    sed -i "s/v[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+/v${new_version}/g" $1
-}
-
 SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 ASTER_SRC_DIR=${SCRIPT_DIR}/..
-DOCS_DIR=${ASTER_SRC_DIR}/docs
-OSTD_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/Cargo.toml
-OSTD_TEST_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/libs/ostd-test/Cargo.toml
-OSTD_MACROS_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/libs/ostd-macros/Cargo.toml
-LINUX_BOOT_PARAMS_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/libs/linux-bzimage/boot-params/Cargo.toml
-LINUX_BZIMAGE_BUILDER_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/libs/linux-bzimage/builder/Cargo.toml
-LINUX_BZIMAGE_SETUP_CARGO_TOML_PATH=${ASTER_SRC_DIR}/ostd/libs/linux-bzimage/setup/Cargo.toml
+BOOK_DIR=${ASTER_SRC_DIR}/book
+WORKSPACE_CARGO_TOML_PATH=${ASTER_SRC_DIR}/Cargo.toml
 OSDK_DIR=${ASTER_SRC_DIR}/osdk
 OSDK_CARGO_TOML_PATH=${OSDK_DIR}/Cargo.toml
-OSDK_TEST_RUNNER_CARGO_TOML_PATH=${ASTER_SRC_DIR}/osdk/deps/test-kernel/Cargo.toml
-OSDK_FRAME_ALLOCATOR_CARGO_TOML_PATH=${ASTER_SRC_DIR}/osdk/deps/frame-allocator/Cargo.toml
-OSDK_HEAP_ALLOCATOR_CARGO_TOML_PATH=${ASTER_SRC_DIR}/osdk/deps/heap-allocator/Cargo.toml
+SCTRACE_CARGO_TOML_PATH=${ASTER_SRC_DIR}/tools/sctrace/Cargo.toml
 VERSION_PATH=${ASTER_SRC_DIR}/VERSION
 DOCKER_IMAGE_VERSION_PATH=${ASTER_SRC_DIR}/DOCKER_IMAGE_VERSION
 

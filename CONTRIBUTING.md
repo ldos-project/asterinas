@@ -1,7 +1,7 @@
 # Contributing
 
 This document includes some conventions and style for code and documentation in this repository to
-improve consistency, quality, and maintainablity.
+improve consistency, quality, and maintainability.
 
 Before you submit changes, you are expected to carefully review your own changes. At a minimum, this
 means testing every change manually and reading the entire diff for mistakes or obvious things that

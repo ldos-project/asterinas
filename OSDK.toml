@@ -6,7 +6,7 @@
 method = "grub-rescue-iso"
 
 [grub]
-protocol = "multiboot2"
+boot_protocol = "multiboot2"
 
 [qemu]
 args = "$(./tools/qemu_args.sh normal)"
@@ -19,10 +19,10 @@ kcmd_args = [
     "HOME=/",
     "USER=root",
     "PATH=/bin:/benchmark",
-    "init=/usr/bin/busybox",
+    "init=/init",
 ]
 init_args = ["sh", "-l"]
-initramfs = "test/build/initramfs.cpio.gz"
+initramfs = "test/initramfs/build/initramfs.cpio.gz"
 
 # Special options for testing
 [test.qemu]
@@ -47,28 +47,46 @@ grub.boot_protocol = "linux"
 qemu.args = "$(./tools/qemu_args.sh tdx)"
 
 [scheme."riscv"]
+supported_archs = ["riscv64"]
+boot.method = "qemu-direct"
+build.strip_elf = false
+qemu.args = "$(./tools/qemu_args.sh riscv)"
+
+[scheme."sifive_u"]
+supported_archs = ["riscv64"]
+build.features = ["riscv_sv39_mode"]
+boot.method = "qemu-direct"
+build.strip_elf = false
+qemu.with_monitor = true
+
+qemu.args = """\
+    -machine sifive_u \
+    -m 8G \
+    -smp 5 \
+    -no-reboot \
+    -nographic \
+    -display none \
+    -serial chardev:mux \
+    -monitor chardev:mux \
+    -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log
+"""
+
+[scheme."loongarch"]
 boot.method = "qemu-direct"
 build.strip_elf = false
 
 qemu.args = """\
-    -cpu rv64,zba=true,zbb=true \
     -machine virt \
     -m 8G \
+    -smp 1 \
     --no-reboot \
     -nographic \
     -display none \
     -serial chardev:mux \
     -monitor chardev:mux \
     -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
-    -drive if=none,format=raw,id=x0,file=./test/build/ext2.img \
-    -drive if=none,format=raw,id=x1,file=./test/build/exfat.img \
-    -drive if=none,format=raw,id=r0,file=/dev/nvme0n1p1 \
-    -drive if=none,format=raw,id=r1,file=/dev/nvme1n1p1 \
-    -drive if=none,format=raw,id=r2,file=/dev/nvme2n1p1 \
-    -drive if=none,format=raw,id=d0,file=./test/build/capture.img \
-    -drive if=none,format=raw,id=d1,file=./test/build/capture_legacy.img \
-    -device virtio-blk-device,drive=x0 \
-    -device virtio-keyboard-device \
-    -device virtio-serial-device \
+    -device virtio-keyboard-pci \
+    -device virtio-serial \
     -device virtconsole,chardev=mux \
+    -rtc base=utc
 """

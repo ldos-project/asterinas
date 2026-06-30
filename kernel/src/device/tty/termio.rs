@@ -9,9 +9,9 @@ type CCtrlChar = u8;
 
 bitflags! {
     /// The input flags; `c_iflags` bits in Linux.
-    #[derive(Pod)]
     #[repr(C)]
-    pub(super) struct CInputFlags: u32 {
+    #[derive(Pod)]
+    pub struct CInputFlags: u32 {
         // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h
         const IGNBRK  = 0x001;			/* Ignore break condition */
         const BRKINT  = 0x002;			/* Signal interrupt on break */
@@ -63,7 +63,7 @@ impl Default for COutputFlags {
 
 /// The control flags; `c_cflags` bits in Linux.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub(super) struct CCtrlFlags(u32);
 
 impl Default for CCtrlFlags {
@@ -111,7 +111,7 @@ pub(super) enum CCtrlSize {
 
 /// The baud part of the control flags ([`CCtrlFlags`]).
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
 pub(super) enum CCtrlBaud {
     // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h#L30
     B0 = 0x00000000, /* hang up */
@@ -136,7 +136,7 @@ bitflags! {
     /// The local flags; `c_lflags` bits in Linux.
     #[repr(C)]
     #[derive(Pod)]
-    pub(super) struct CLocalFlags: u32 {
+    pub struct CLocalFlags: u32 {
         // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L127
         const ISIG    = 0x00001;
         const ICANON  = 0x00002;
@@ -171,10 +171,10 @@ impl Default for CLocalFlags {
 }
 
 /// An index for a control character ([`CCtrlChar`]).
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, TryFromInt)]
 #[expect(clippy::upper_case_acronyms)]
-pub(super) enum CCtrlCharId {
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
+pub enum CCtrlCharId {
     // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L42
     VINTR = 0,
     VQUIT = 1,
@@ -228,9 +228,9 @@ impl CCtrlCharId {
 /// The termios; `struct termios` in Linux.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L30>.
-#[derive(Debug, Clone, Copy, Pod)]
 #[repr(C)]
-pub(super) struct CTermios {
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct CTermios {
     c_iflags: CInputFlags,
     c_oflags: COutputFlags,
     c_cflags: CCtrlFlags,
@@ -276,7 +276,7 @@ impl CTermios {
     /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L9>.
     const NUM_CTRL_CHARS: usize = 19;
 
-    pub(super) fn special_char(&self, id: CCtrlCharId) -> CCtrlChar {
+    pub fn special_char(&self, id: CCtrlCharId) -> CCtrlChar {
         self.c_cc[id as usize]
     }
 
@@ -292,38 +292,55 @@ impl CTermios {
         self.c_lflags.contains(CLocalFlags::ICANON)
     }
 
-    /// Returns whether the input flags contain `ICRNL`.
-    ///
-    /// The `ICRNL` flag means the `\r` characters in the input should be mapped to `\n`.
-    pub(super) fn contains_icrnl(&self) -> bool {
-        self.c_iflags.contains(CInputFlags::ICRNL)
+    /// Returns the input flags.
+    pub fn input_flags(&self) -> &CInputFlags {
+        &self.c_iflags
     }
 
-    pub(super) fn contains_isig(&self) -> bool {
-        self.c_lflags.contains(CLocalFlags::ISIG)
-    }
-
-    pub(super) fn contain_echo(&self) -> bool {
-        self.c_lflags.contains(CLocalFlags::ECHO)
-    }
-
-    pub(super) fn contains_echo_ctl(&self) -> bool {
-        self.c_lflags.contains(CLocalFlags::ECHOCTL)
-    }
-
-    pub(super) fn contains_iexten(&self) -> bool {
-        self.c_lflags.contains(CLocalFlags::IEXTEN)
+    /// Returns the local flags.
+    pub fn local_flags(&self) -> &CLocalFlags {
+        &self.c_lflags
     }
 }
 
-/// A window size; `winsize` in Linux.
+/// A window size; `struct winsize` in Linux.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termios.h#L15>.
-#[derive(Debug, Clone, Copy, Default, Pod)]
 #[repr(C)]
-pub(super) struct CWinSize {
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct CWinSize {
     ws_row: u16,
     ws_col: u16,
     ws_xpixel: u16,
     ws_ypixel: u16,
+}
+
+/// A font operation; `struct console_font_op` in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.15/source/include/uapi/linux/kd.h#L159>.
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct CFontOp {
+    pub(super) op: u32,
+    pub(super) flags: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) charcount: u32,
+    pub(super) data: usize,
+}
+
+impl CFontOp {
+    // https://elixir.bootlin.com/linux/v6.15/source/include/uapi/linux/kd.h#L177
+    pub(super) const OP_SET: u32 = 0;
+    pub(super) const OP_SET_DEFAULT: u32 = 2;
+    pub(super) const OP_SET_TALL: u32 = 4;
+
+    // https://elixir.bootlin.com/linux/v6.15/source/drivers/tty/vt/vt.c#L4711
+    pub(super) const MAX_WIDTH: u32 = 64;
+    pub(super) const MAX_HEIGHT: u32 = 128;
+    pub(super) const MAX_CHARCOUNT: u32 = 512;
+
+    // https://elixir.bootlin.com/linux/v6.15/source/drivers/tty/vt/vt.c#L4721
+    pub(super) const NONTALL_VPITCH: u32 = 32;
 }

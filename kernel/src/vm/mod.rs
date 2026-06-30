@@ -3,44 +3,36 @@
 //! Virtual memory (VM).
 //!
 //! There are two primary VM abstractions:
-//!  * Virtual Memory Address Regions (VMARs) a type of capability that manages
-//!    user address spaces.
-//!  * Virtual Memory Objects (VMOs) are are a type of capability that
-//!    represents a set of memory pages.
-//!
-//! The concepts of VMARs and VMOs are originally introduced by
-//! [Zircon](https://fuchsia.dev/fuchsia-src/reference/kernel_objects/vm_object).
-//! As capabilities, the two abstractions are aligned with our goal
-//! of everything-is-a-capability, although their specifications and
-//! implementations in C/C++ cannot apply directly to Asterinas.
-//! In Asterinas, VMARs and VMOs, as well as other capabilities, are implemented
-//! as zero-cost capabilities.
+//!  * The VMAR (used to be Virtual Memory Address Region, now an orphan
+//!    initialism) represents the entire virtual address space of a process;
+//!  * The VMO (Virtual Memory Object) is a set of logically contiguous memory
+//!    frames that can be mapped into one virtual address range. Frames in a
+//!    VMO can be non-contiguous in physical memory.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use align_ext::AlignExt;
 use osdk_frame_allocator::FrameAllocator;
 use osdk_heap_allocator::{HeapAllocator, type_from_layout};
 use ostd::{
-    Error,
     error::InvalidArgsSnafu,
-    mm::{FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame, UntypedMem, page_size},
+    mm::{
+        FrameAllocOptions, PageFlags, PageProperty, PagingConsts, UFrame,
+        io::util::HasVmReaderWriter, page_size,
+    },
     task::disable_preempt,
 };
-use vmar::RssType;
 
 use crate::{
-    INITPROC, Vec,
+    init::get_init_process,
+    prelude::Error,
     process::{PauseProcGuard, Process},
+    vm::vmar::{PageFaultOQueueMessage, RssType, VMAR_CAP_ADDR},
 };
+
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
-#[cfg(not(baseline_asterinas))]
-use vmar::oqueues::PageFaultOQueueMessage;
-
-pub mod page_fault_handler;
 pub mod perms;
-pub mod util;
 pub mod vmar;
 pub mod vmo;
 
@@ -60,13 +52,11 @@ pub fn mem_total() -> usize {
     use ostd::boot::{boot_info, memory_region::MemoryRegionType};
 
     let regions = &boot_info().memory_regions;
-    let total = regions
+    regions
         .iter()
         .filter(|region| region.typ() == MemoryRegionType::Usable)
         .map(|region| region.len())
-        .sum::<usize>();
-
-    total
+        .sum::<usize>()
 }
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
@@ -74,7 +64,7 @@ static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 pub fn num_anon_hugepages() -> i32 {
     let mut count = 0;
     let mut procs: Vec<Arc<Process>> = Vec::new();
-    let Some(initproc) = INITPROC.get() else {
+    let Some(initproc) = get_init_process() else {
         // Handle the case for integration tests when hugepages haven't been allocated
         return 0;
     };
@@ -85,19 +75,17 @@ pub fn num_anon_hugepages() -> i32 {
             .iter()
             .for_each(|c| procs.push(c.clone()));
 
-        let proc_vm = proc.vm();
-        let proc_vm_guard = proc_vm.lock_root_vmar();
+        let proc_vm_guard = proc.lock_vmar();
         let Some(proc_vmar) = proc_vm_guard.as_ref() else {
             continue;
         };
         let preempt_guard = disable_preempt();
-        let space_len = proc_vmar.size();
         let vm_space = proc_vmar.vm_space();
-        let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..space_len)) else {
+        let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..VMAR_CAP_ADDR)) else {
             continue;
         };
         cursor
-            .do_for_each_submapping(0, space_len, |range, _, _| {
+            .do_for_each_submapping(0, VMAR_CAP_ADDR, |range, _, _| {
                 if (range.end - range.start) >= PROMOTED_PAGE_SIZE
                     && range.start % PROMOTED_PAGE_SIZE == 0
                 {
@@ -118,23 +106,20 @@ fn promote_hugepages(
     // Ensure that the current process doesn't run until we have scanned it's mappings
     let _ = PauseProcGuard::new(proc.clone());
 
-    let proc_vm = proc.vm();
-    let proc_vm_guard = proc_vm.lock_root_vmar();
+    let proc_vm_guard = proc.lock_vmar();
     let Some(proc_vmar) = proc_vm_guard.as_ref() else {
         // The process may have exited right as we attempted to pause it.
         return Ok(());
     };
-
     let preempt_guard = disable_preempt();
-    let mut space_len = proc_vmar.size();
     let vm_space = proc_vmar.vm_space();
-    let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..space_len)) else {
+    let Ok(mut cursor) = vm_space.cursor_mut(&preempt_guard, &(0..VMAR_CAP_ADDR)) else {
         return Ok(());
     };
 
     let mut real_rss = 0;
     cursor
-        .do_for_each_submapping(0, space_len, |range, _, _| {
+        .do_for_each_submapping(0, VMAR_CAP_ADDR, |range, _, _| {
             real_rss += range.end - range.start;
             Ok(())
         })
@@ -143,10 +128,13 @@ fn promote_hugepages(
     crate::prelude::info!(
         "proc={} RSS={} real_rss_n_pages={}",
         proc.pid(),
-        proc_vmar.get_rss_counter(RssType::RSS_ANONPAGES),
+        proc_vmar.get_rss_counter(RssType::Anon),
         real_rss / 4096
     );
     cursor.jump(0).unwrap();
+
+    // TODO(arthurp): Because the range is static and as large as possible (0..VMAR_CAP_ADDR), some
+    // of the checks below may be unnecessary.
 
     // If we have an address hint, jump the cursor to that address, and only consider a single
     // region for promotion.
@@ -159,13 +147,15 @@ fn promote_hugepages(
         cursor.jump(addr_hint)?;
         // We need to ensure that we are refining the space, not expanding it
         let huge_region_end = addr_hint + PROMOTED_PAGE_SIZE;
-        if huge_region_end > space_len {
+        if huge_region_end > VMAR_CAP_ADDR {
             return Ok(());
         }
-        space_len = addr_hint + PROMOTED_PAGE_SIZE;
     }
 
-    while cursor.find_next(space_len - cursor.virt_addr()).is_some() {
+    while cursor
+        .find_next(VMAR_CAP_ADDR - cursor.virt_addr())
+        .is_some()
+    {
         let Ok((range, _)) = cursor.query() else {
             return Ok(());
         };
@@ -173,7 +163,7 @@ fn promote_hugepages(
         // If the address is not hugepage aligned go to the next mapping
         if range.start % PROMOTED_PAGE_SIZE != 0 {
             let next = range.start - range.start % PROMOTED_PAGE_SIZE + PROMOTED_PAGE_SIZE;
-            if next < space_len {
+            if next < VMAR_CAP_ADDR {
                 if cursor.jump(next).is_err() {
                     return Ok(());
                 }
@@ -217,7 +207,7 @@ fn promote_hugepages(
                     // Only consider writeable pages to avoid CoW/sharing issues.
                     if !sub_props.flags.contains(PageFlags::W) {
                         should_remap = false;
-                        return InvalidArgsSnafu.fail();
+                        return InvalidArgsSnafu.fail()?;
                     }
                     props = Some(*sub_props);
                 }
@@ -244,7 +234,7 @@ fn promote_hugepages(
             {
                 Ok(f) => f.into(),
                 Err(_) => {
-                    return InvalidArgsSnafu.fail();
+                    return InvalidArgsSnafu.fail()?;
                 }
             };
 
@@ -292,7 +282,7 @@ fn promote_hugepages(
             drop(cursor);
             cursor = match proc_vmar
                 .vm_space()
-                .cursor_mut(&preempt_guard, &(0..space_len))
+                .cursor_mut(&preempt_guard, &(0..VMAR_CAP_ADDR))
             {
                 Ok(cursor) => cursor,
                 _ => {

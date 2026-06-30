@@ -5,7 +5,7 @@
 //! This module provides a mechanism to define CPU-local objects. Users can
 //! define a statically-allocated CPU-local object by the macro
 //! [`crate::cpu_local!`], or allocate a dynamically-allocated CPU-local
-//! object with the function [`osdk_heap_allocator::alloc_cpu_local`].
+//! object with the function `osdk_heap_allocator::alloc_cpu_local`.
 //!
 //! The mechanism for statically-allocated CPU-local objects exploits the fact
 //! that constant values of non-[`Copy`] types can be bitwise copied. For
@@ -51,20 +51,20 @@ pub use cell::CpuLocalCell;
 pub use dyn_cpu_local::DynCpuLocalChunk;
 use dyn_cpu_local::DynamicStorage;
 use spin::Once;
-use static_assertions::assert_not_impl_any;
 use static_cpu_local::StaticStorage;
 
 use super::CpuId;
 use crate::{
+    irq::DisabledLocalIrqGuard,
     mm::{PAGE_SIZE, Paddr, frame::allocator, paddr_to_vaddr},
-    trap::irq::DisabledLocalIrqGuard,
+    util::id_set::Id,
 };
 
 /// Dynamically-allocated CPU-local objects.
 pub type DynamicCpuLocal<T> = CpuLocal<T, DynamicStorage<T>>;
 
 /// Statically-allocated CPU-local objects.
-pub type StaticCpuLocal<T> = CpuLocal<T, static_cpu_local::StaticStorage<T>>;
+pub type StaticCpuLocal<T> = CpuLocal<T, StaticStorage<T>>;
 
 // These symbols are provided by the linker script.
 unsafe extern "C" {
@@ -180,10 +180,6 @@ unsafe impl<T: Send + 'static> Send for CpuLocal<T, DynamicStorage<T>> {}
 impl<T: 'static, S: AnyStorage<T>> !Copy for CpuLocal<T, S> {}
 impl<T: 'static, S: AnyStorage<T>> !Clone for CpuLocal<T, S> {}
 
-// In general, it does not make any sense to send instances of static `CpuLocal`
-// to other tasks as they should live on other CPUs to make sending useful.
-assert_not_impl_any!(CpuLocal<usize, StaticStorage<usize>>: Send);
-
 /// The static CPU-local areas for APs.
 static CPU_LOCAL_STORAGES: Once<&'static [Paddr]> = Once::new();
 
@@ -210,7 +206,7 @@ pub(crate) unsafe fn copy_bsp_for_ap(num_cpus: usize) {
 
     // Allocate a region to store the pointers to the CPU-local storage segments.
     let res = {
-        let size = core::mem::size_of::<Paddr>()
+        let size = size_of::<Paddr>()
             .checked_mul(num_aps)
             .unwrap()
             .align_up(PAGE_SIZE);
@@ -227,8 +223,8 @@ pub(crate) unsafe fn copy_bsp_for_ap(num_cpus: usize) {
         unsafe { core::slice::from_raw_parts_mut(ptr, num_aps) }
     };
 
-    let bsp_base_va = __cpu_local_start as usize;
-    let bsp_end_va = __cpu_local_end as usize;
+    let bsp_base_va = __cpu_local_start as *const () as usize;
+    let bsp_end_va = __cpu_local_end as *const () as usize;
 
     // Allocate the CPU-local storage segments for APs.
     for res_addr_mut in res.iter_mut() {
@@ -321,11 +317,11 @@ mod test {
     use ostd_macros::ktest;
 
     #[ktest]
-    fn test_cpu_local() {
+    fn cpu_local() {
         crate::cpu_local! {
             static FOO: RefCell<usize> = RefCell::new(1);
         }
-        let irq_guard = crate::trap::irq::disable_local();
+        let irq_guard = crate::irq::disable_local();
         let foo_guard = FOO.get_with(&irq_guard);
         assert_eq!(*foo_guard.borrow(), 1);
         *foo_guard.borrow_mut() = 2;
@@ -334,11 +330,11 @@ mod test {
     }
 
     #[ktest]
-    fn test_cpu_local_cell() {
+    fn cpu_local_cell() {
         crate::cpu_local_cell! {
             static BAR: usize = 3;
         }
-        let _guard = crate::trap::irq::disable_local();
+        let _guard = crate::irq::disable_local();
         assert_eq!(BAR.load(), 3);
         BAR.store(4);
         assert_eq!(BAR.load(), 4);

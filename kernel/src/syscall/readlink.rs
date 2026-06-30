@@ -1,45 +1,55 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
+        file::file_table::RawFileDesc,
+        vfs::{
+            inode::SymbolicLink,
+            path::{AT_FDCWD, EmptyPathStr, FsPath},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
 pub fn sys_readlinkat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_addr: Vaddr,
     usr_buf_addr: Vaddr,
     usr_buf_len: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
+    if usr_buf_len == 0 {
+        return_errno_with_message!(Errno::EINVAL, "the buffer length is zero");
+    }
+
     let user_space = ctx.user_space();
-    let path = user_space.read_cstring(path_addr, MAX_FILENAME_LEN)?;
+    let path_name = user_space.read_cstring(path_addr, MAX_FILENAME_LEN)?;
     debug!(
         "dirfd = {}, path = {:?}, usr_buf_addr = 0x{:x}, usr_buf_len = 0x{:x}",
-        dirfd, path, usr_buf_addr, usr_buf_len
+        dirfd, path_name, usr_buf_addr, usr_buf_len
     );
 
-    let dentry = {
-        let path = path.to_string_lossy();
-        if path.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "path is empty");
+    let link_path = {
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
+
+        let path_name = path_name.to_string_lossy();
+        let fs_path = FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::Allow)?;
+        let path = path_resolver.lookup_no_follow(&fs_path)?;
+
+        match path.inode().read_link()? {
+            SymbolicLink::Plain(s) => s,
+            SymbolicLink::Path(path) => path_resolver.make_abs_path(&path).into_string(),
         }
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        ctx.posix_thread
-            .fs()
-            .resolver()
-            .read()
-            .lookup_no_follow(&fs_path)?
     };
-    let linkpath = dentry.inode().read_link()?;
-    let bytes = linkpath.as_bytes();
+
+    let bytes = link_path.as_bytes();
     let write_len = bytes.len().min(usr_buf_len);
-    user_space.write_bytes(usr_buf_addr, &mut VmReader::from(&bytes[..write_len]))?;
+    user_space.write_bytes(usr_buf_addr, &bytes[..write_len])?;
     Ok(SyscallReturn::Return(write_len as _))
 }
 

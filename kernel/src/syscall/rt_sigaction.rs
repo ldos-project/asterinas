@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::{
         posix_thread::AsPosixThread,
         signal::{
+            HandlePendingSignal,
             c_types::sigaction_t,
             constants::{SIGKILL, SIGSTOP},
             sig_action::SigAction,
@@ -35,7 +38,8 @@ pub fn sys_rt_sigaction(
         return_errno_with_message!(Errno::EINVAL, "sigset size is not equal to 8");
     }
 
-    let mut sig_dispositions = ctx.process.sig_dispositions().lock();
+    let sig_dispositions = ctx.process.sig_dispositions().lock();
+    let mut sig_dispositions = sig_dispositions.lock();
 
     let old_action = if sig_action_addr != 0 {
         if sig_num == SIGKILL || sig_num == SIGSTOP {
@@ -47,8 +51,11 @@ pub fn sys_rt_sigaction(
 
         let sig_action_c = ctx.user_space().read_val::<sigaction_t>(sig_action_addr)?;
         let sig_action = SigAction::from(sig_action_c);
-        trace!("sig action = {:?}", sig_action);
-        discard_signals_if_ignored(ctx, sig_num, &sig_action);
+        debug!("sig action = {:?}", sig_action);
+        if sig_action.will_ignore(sig_num) {
+            discard_signals_if_ignored(ctx, sig_num);
+        }
+
         sig_dispositions.set(sig_num, sig_action)?
     } else {
         sig_dispositions.get(sig_num)
@@ -66,21 +73,17 @@ pub fn sys_rt_sigaction(
 /// Discard signals if the new action is to ignore the signal.
 ///
 /// Ref: <https://elixir.bootlin.com/linux/v6.13/source/kernel/signal.c#L4323>
-///
-/// POSIX 3.3.1.3:
-/// Setting a signal action to SIG_IGN for a signal that is
-/// pending shall cause the pending signal to be discarded,
-/// whether or not it is blocked.
-///
-/// Setting a signal action to SIG_DFL for a signal that is
-/// pending and whose default action is to ignore the signal
-/// (for example, SIGCHLD), shall cause the pending signal to
-/// be discarded, whether or not it is blocked
-fn discard_signals_if_ignored(ctx: &Context, signum: SigNum, sig_action: &SigAction) {
-    if !sig_action.will_ignore(signum) {
-        return;
-    }
-
+//
+// POSIX 3.3.1.3:
+// Setting a signal action to SIG_IGN for a signal that is
+// pending shall cause the pending signal to be discarded,
+// whether or not it is blocked.
+//
+// Setting a signal action to SIG_DFL for a signal that is
+// pending and whose default action is to ignore the signal
+// (for example, SIGCHLD), shall cause the pending signal to
+// be discarded, whether or not it is blocked
+fn discard_signals_if_ignored(ctx: &Context, signum: SigNum) {
     let mask = SigSet::new_full() - signum;
 
     for task in ctx.process.tasks().lock().as_slice() {
@@ -88,6 +91,6 @@ fn discard_signals_if_ignored(ctx: &Context, signum: SigNum, sig_action: &SigAct
             continue;
         };
 
-        posix_thread.dequeue_signal(&mask);
+        while posix_thread.dequeue_signal(&mask).is_some() {}
     }
 }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::Ordering;
+use ostd::mm::VmIo;
 
 use super::SyscallReturn;
-use crate::prelude::*;
+use crate::{prelude::*, process::signal::HandlePendingSignal};
 
 pub fn sys_rt_sigpending(
     u_set_ptr: Vaddr,
@@ -23,8 +23,8 @@ pub fn sys_rt_sigpending(
 
 fn do_rt_sigpending(set_ptr: Vaddr, ctx: &Context) -> Result<()> {
     let combined_signals = {
-        let sig_mask_value = ctx.posix_thread.sig_mask().load(Ordering::Relaxed);
-        let sig_pending_value = ctx.posix_thread.sig_pending();
+        let sig_mask_value = ctx.posix_thread.sig_mask();
+        let sig_pending_value = ctx.pending_signals();
         sig_mask_value & sig_pending_value
     };
 

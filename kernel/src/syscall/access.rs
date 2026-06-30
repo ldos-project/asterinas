@@ -3,15 +3,15 @@
 use super::SyscallReturn;
 use crate::{
     fs::{
-        file_table::FileDesc,
-        fs_resolver::{AT_FDCWD, FsPath},
-        utils::{PATH_MAX, Permission},
+        file::{Permission, file_table::RawFileDesc},
+        utils::PATH_MAX,
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
     },
     prelude::*,
 };
 
 pub fn sys_faccessat(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u16,
     ctx: &Context,
@@ -31,7 +31,7 @@ pub fn sys_access(path_ptr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallRe
 }
 
 pub fn sys_faccessat2(
-    dirfd: FileDesc,
+    dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u16,
     flags: u32,
@@ -63,8 +63,8 @@ bitflags! {
     }
 }
 
-pub fn do_faccessat(
-    dirfd: FileDesc,
+fn do_faccessat(
+    dirfd: RawFileDesc,
     path_ptr: Vaddr,
     mode: u16,
     flags: u32,
@@ -75,32 +75,32 @@ pub fn do_faccessat(
     let flags = FaccessatFlags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "Invalid flags"))?;
 
-    let path = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
+    let path_name = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
     debug!(
-        "dirfd = {}, path = {:?}, mode = {:o}, flags = {:?}",
-        dirfd, path, mode, flags
+        "dirfd = {}, path_name = {:?}, mode = {:o}, flags = {:?}",
+        dirfd, path_name, mode, flags
     );
 
-    if path.is_empty() && !flags.contains(FaccessatFlags::AT_EMPTY_PATH) {
-        return_errno_with_message!(Errno::ENOENT, "path is empty");
-    }
+    let path = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
-    let dentry = {
-        let path = path.to_string_lossy();
-        let fs_path = FsPath::new(dirfd, path.as_ref())?;
-        let fs = ctx.posix_thread.fs().resolver().read();
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
         if flags.contains(FaccessatFlags::AT_SYMLINK_NOFOLLOW) {
-            fs.lookup_no_follow(&fs_path)?
+            path_resolver.lookup_no_follow(&fs_path)?
         } else {
-            fs.lookup(&fs_path)?
+            path_resolver.lookup(&fs_path)?
         }
     };
+
     // AccessMode::empty() means F_OK and no more permission check needed.
     if mode.is_empty() {
         return Ok(SyscallReturn::Return(0));
     }
 
-    let inode = dentry.inode();
+    let inode = path.inode();
 
     // FIXME: The current implementation is dummy
     if mode.contains(AccessMode::R_OK) {

@@ -1,0 +1,17 @@
+[package]
+name = "aster-i8042"
+version = "0.1.0"
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+aster-cmdline.workspace = true
+aster-input.workspace = true
+bitflags = "2.5"
+component.workspace = true
+ostd.workspace = true
+spin.workspace = true
+
+[lints]
+workspace = true

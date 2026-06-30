@@ -123,8 +123,7 @@ pub(crate) fn depends_on_local_ostd(manifest_path: impl AsRef<Path>) {
     let mut manifest: Table = toml::from_str(&manifest_content).unwrap();
     let dep = manifest
         .get_mut("dependencies")
-        .map(Value::as_table_mut)
-        .flatten()
+        .and_then(Value::as_table_mut)
         .unwrap();
 
     let mut table = Table::new();
@@ -134,15 +133,49 @@ pub(crate) fn depends_on_local_ostd(manifest_path: impl AsRef<Path>) {
     fs::write(manifest_path, manifest.to_string().as_bytes()).unwrap();
 }
 
+/// Makes crates created by `cargo ostd new` enable coverage features,
+/// adding features = ["coverage"] to ostd dependency and creating a [features] section.
+///
+/// This transforms the manifest to enable coverage support.
+pub(crate) fn depends_on_coverage(manifest_path: impl AsRef<Path>, osdk_path: impl AsRef<Path>) {
+    let manifest_content = fs::read_to_string(&manifest_path).unwrap();
+    let mut manifest: Table = toml::from_str(&manifest_content).unwrap();
+
+    // Add features = ["coverage"] to ostd dependency
+    let dep = manifest
+        .get_mut("dependencies")
+        .and_then(Value::as_table_mut)
+        .unwrap();
+
+    if let Some(ostd_dep) = dep.get_mut("ostd").and_then(Value::as_table_mut) {
+        let features = vec![Value::String("coverage".to_string())];
+        ostd_dep.insert("features".to_string(), Value::Array(features));
+    }
+
+    // Add [features] section with coverage = []
+    let mut features_table = Table::new();
+    features_table.insert("coverage".to_string(), Value::Array(vec![]));
+    manifest.insert("features".to_string(), Value::Table(features_table));
+
+    fs::write(manifest_path, manifest.to_string().as_bytes()).unwrap();
+
+    // Modify OSDK.toml to add logfile=qemu.log to chardev line
+    if osdk_path.as_ref().exists() {
+        let osdk_content = fs::read_to_string(&osdk_path).unwrap();
+        let modified_content = osdk_content.replace(
+            "-chardev stdio,id=mux,mux=on,signal=off \\",
+            "-chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \\",
+        );
+        fs::write(osdk_path, modified_content).unwrap();
+    }
+}
+
 pub(crate) fn add_tdx_scheme(osdk_path: impl AsRef<Path>) -> std::io::Result<()> {
     let template_path = Path::new(file!())
         .parent()
         .unwrap()
         .join("scheme.tdx.template");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(osdk_path)?;
+    let mut file = OpenOptions::new().append(true).open(osdk_path)?;
     let tdx_qemu_cfg = fs::read_to_string(template_path)?;
     file.write_all(format!("\n\n{}", tdx_qemu_cfg).as_bytes())?;
     Ok(())
@@ -157,7 +190,7 @@ fn conditionally_add_tdx_args<T: AsRef<OsStr>, I: IntoIterator<Item = T> + Copy>
     args: I,
 ) {
     if is_tdx_enabled() && contains_build_run_or_test(args) {
-        command.args(&["--scheme", "tdx"]);
+        command.args(["--scheme", "tdx"]);
     }
 }
 

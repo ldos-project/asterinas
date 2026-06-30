@@ -2,7 +2,7 @@
 
 use super::SyscallReturn;
 use crate::{
-    fs::file_table::FdFlags,
+    fs::file::file_table::FdFlags,
     prelude::*,
     time::{
         clockid_t,
@@ -27,5 +27,5 @@ pub fn sys_timerfd_create(clockid: clockid_t, flags: i32, ctx: &Context) -> Resu
         file_table_locked.insert(Arc::new(timerfd_file), fd_flags)
     };
 
-    Ok(SyscallReturn::Return(fd as _))
+    Ok(SyscallReturn::Return(fd.into()))
 }

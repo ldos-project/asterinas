@@ -3,12 +3,11 @@
 //! Block allocation.
 use alloc::vec;
 use core::{
-    mem::size_of,
     num::NonZeroUsize,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ostd_pod::Pod;
+use ostd_pod::{IntoBytes, Pod};
 use serde::{Deserialize, Serialize};
 
 use super::mlsdisk::Hba;
@@ -49,8 +48,8 @@ pub(super) struct BlockAlloc<D> {
 }
 
 /// Incremental diff of block validity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 enum AllocDiff {
     Alloc = 3,
     Dealloc = 7,

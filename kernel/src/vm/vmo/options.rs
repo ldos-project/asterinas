@@ -1,61 +1,49 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(unused_variables)]
-
 //! Options for allocating root and child VMOs.
 
 use core::sync::atomic::AtomicUsize;
 
 use align_ext::AlignExt;
-use aster_rights::{Rights, TRightSet, TRights};
 use ostd::mm::{FrameAllocOptions, UFrame, USegment};
 use xarray::XArray;
 
-use super::{Pager, Vmo, VmoFlags};
-use crate::{prelude::*, vm::vmo::Vmo_};
+use super::{Pager, Vmo, VmoFlags, WritableMappingStatus};
+use crate::prelude::*;
 
 /// Options for allocating a root VMO.
 ///
 /// # Examples
 ///
-/// Creating a VMO as a _dynamic_ capability with full access rights:
+/// Creating a VMO:
 /// ```
-/// use aster_nix::vm::{PAGE_SIZE, VmoOptions};
+/// use ostd::mm::PAGE_SIZE;
 ///
-/// let vmo = VmoOptions::new(PAGE_SIZE)
-///     .alloc()
-///     .unwrap();
-/// ```
+/// use crate::vm::vmo::VmoOptions;
 ///
-/// Creating a VMO as a _static_ capability with all access rights:
-/// ```
-/// use aster_nix::prelude::*;
-/// use aster_nix::vm::{PAGE_SIZE, VmoOptions};
-///
-/// let vmo = VmoOptions::<Full>::new(PAGE_SIZE)
-///     .alloc()
-///     .unwrap();
+/// let vmo = VmoOptions::new(PAGE_SIZE).alloc();
+/// assert!(vmo.is_ok());
 /// ```
 ///
 /// Creating a resizable VMO backed by 10 memory pages that may not be
 /// physically contiguous:
-///
 /// ```
-/// use aster_nix::vm::{PAGE_SIZE, VmoOptions, VmoFlags};
+/// use ostd::mm::PAGE_SIZE;
+///
+/// use crate::vm::vmo::{VmoFlags, VmoOptions};
 ///
 /// let vmo = VmoOptions::new(10 * PAGE_SIZE)
 ///     .flags(VmoFlags::RESIZABLE)
-///     .alloc()
-///     .unwrap();
+///     .alloc();
+/// assert!(vmo.is_ok());
 /// ```
-pub struct VmoOptions<R = Rights> {
+pub struct VmoOptions {
     size: usize,
     flags: VmoFlags,
-    rights: Option<R>,
     pager: Option<Arc<dyn Pager>>,
 }
 
-impl<R> VmoOptions<R> {
+impl VmoOptions {
     /// Creates a default set of options with the specified size of the VMO
     /// (in bytes).
     ///
@@ -64,7 +52,6 @@ impl<R> VmoOptions<R> {
         Self {
             size,
             flags: VmoFlags::empty(),
-            rights: None,
             pager: None,
         }
     }
@@ -86,48 +73,27 @@ impl<R> VmoOptions<R> {
     }
 }
 
-impl VmoOptions<Rights> {
+impl VmoOptions {
     /// Allocates the VMO according to the specified options.
-    ///
-    /// # Access rights
-    ///
-    /// The VMO is initially assigned full access rights.
-    pub fn alloc(self) -> Result<Vmo<Rights>> {
+    pub fn alloc(self) -> Result<Arc<Vmo>> {
         let VmoOptions {
             size, flags, pager, ..
         } = self;
-        let vmo_ = alloc_vmo_(size, flags, pager)?;
-        Ok(Vmo(Arc::new(vmo_), Rights::all()))
+        let vmo = alloc_vmo(size, flags, pager)?;
+        Ok(Arc::new(vmo))
     }
 }
 
-impl<R: TRights> VmoOptions<TRightSet<R>> {
-    /// Allocates the VMO according to the specified options.
-    ///
-    /// # Access rights
-    ///
-    /// The VMO is initially assigned the access rights represented
-    /// by `R: TRights`.
-    pub fn alloc(self) -> Result<Vmo<TRightSet<R>>> {
-        let VmoOptions {
-            size,
-            flags,
-            rights,
-            pager,
-        } = self;
-        let vmo_ = alloc_vmo_(size, flags, pager)?;
-        Ok(Vmo(Arc::new(vmo_), TRightSet(R::new())))
-    }
-}
-
-fn alloc_vmo_(size: usize, flags: VmoFlags, pager: Option<Arc<dyn Pager>>) -> Result<Vmo_> {
+fn alloc_vmo(size: usize, flags: VmoFlags, pager: Option<Arc<dyn Pager>>) -> Result<Vmo> {
     let size = size.align_up(PAGE_SIZE);
     let pages = committed_pages_if_continuous(flags, size)?;
-    Ok(Vmo_ {
+    let writable_mapping_status = WritableMappingStatus::default();
+    Ok(Vmo {
         pager,
         flags,
         pages,
         size: AtomicUsize::new(size),
+        writable_mapping_status,
     })
 }
 
@@ -153,14 +119,13 @@ fn committed_pages_if_continuous(flags: VmoFlags, size: usize) -> Result<XArray<
 
 #[cfg(ktest)]
 mod test {
-    use aster_rights::Full;
     use ostd::{mm::VmIo, prelude::*};
 
     use super::*;
 
     #[ktest]
     fn alloc_vmo() {
-        let vmo = VmoOptions::<Full>::new(PAGE_SIZE).alloc().unwrap();
+        let vmo = VmoOptions::new(PAGE_SIZE).alloc().unwrap();
         assert_eq!(vmo.size(), PAGE_SIZE);
         // the vmo is zeroed once allocated
         assert_eq!(vmo.read_val::<usize>(0).unwrap(), 0);
@@ -168,7 +133,7 @@ mod test {
 
     #[ktest]
     fn alloc_continuous_vmo() {
-        let vmo = VmoOptions::<Full>::new(10 * PAGE_SIZE)
+        let vmo = VmoOptions::new(10 * PAGE_SIZE)
             .flags(VmoFlags::CONTIGUOUS)
             .alloc()
             .unwrap();
@@ -177,7 +142,7 @@ mod test {
 
     #[ktest]
     fn write_and_read() {
-        let vmo = VmoOptions::<Full>::new(PAGE_SIZE).alloc().unwrap();
+        let vmo = VmoOptions::new(PAGE_SIZE).alloc().unwrap();
         let val = 42u8;
         // write val
         vmo.write_val(111, &val).unwrap();
@@ -191,7 +156,7 @@ mod test {
 
     #[ktest]
     fn resize() {
-        let vmo = VmoOptions::<Full>::new(PAGE_SIZE)
+        let vmo = VmoOptions::new(PAGE_SIZE)
             .flags(VmoFlags::RESIZABLE)
             .alloc()
             .unwrap();

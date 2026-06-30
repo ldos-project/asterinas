@@ -18,38 +18,32 @@
 
 use core::arch::global_asm;
 
-use x86::cpuid::CpuId;
 use x86_64::{
     VirtAddr,
     registers::{
-        control::{Cr4, Cr4Flags},
         model_specific::{Efer, EferFlags, LStar, SFMask},
         rflags::RFlags,
     },
 };
 
-use super::UserContext;
+use super::RawUserContext;
+use crate::mm::PagingConstsTrait;
 
 global_asm!(
     include_str!("syscall.S"),
     USER_CS = const super::gdt::USER_CS.0,
     USER_SS = const super::gdt::USER_SS.0,
+    ADDRESS_WIDTH = const crate::arch::mm::PagingConsts::ADDRESS_WIDTH,
 );
 
 /// # Safety
 ///
-/// The caller needs to ensure that `gdt::init` has been called before, so the segment selectors
-/// used in the `syscall` and `sysret` instructions have been properly initialized.
-pub(super) unsafe fn init() {
-    let cpuid = CpuId::new();
-
-    assert!(
-        cpuid
-            .get_extended_processor_and_feature_identifiers()
-            .unwrap()
-            .has_syscall_sysret()
-    );
-    assert!(cpuid.get_extended_feature_info().unwrap().has_fsgsbase());
+/// The caller needs to ensure that `gdt::init_on_cpu` has been called before,
+/// so the segment selectors used in the `syscall` and `sysret` instructions
+/// have been properly initialized.
+pub(super) unsafe fn init_on_cpu() {
+    // We now assume that all x86-64 CPUs should support the `syscall` and `sysret` instructions.
+    // Otherwise, we should check `has_extensions(IsaExtensions::SYSCALL)` here.
 
     // Flags to clear on syscall.
     //
@@ -61,7 +55,7 @@ pub(super) unsafe fn init() {
     // entry point and flags to clear are also correctly set, so enabling the `syscall` and
     // `sysret` instructions is safe.
     unsafe {
-        LStar::write(VirtAddr::new(syscall_entry as usize as u64));
+        LStar::write(VirtAddr::new(syscall_entry as *const () as usize as u64));
         SFMask::write(RFlags::from_bits(RFLAGS_MASK).unwrap());
 
         // Enable the `syscall` and `sysret` instructions.
@@ -69,24 +63,15 @@ pub(super) unsafe fn init() {
             efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
         });
     }
-
-    // SAFETY: Enabling the `rdfsbase`, `wrfsbase`, `rdgsbase`, and `wrgsbase` instructions is safe
-    // as long as the kernel properly deals with the arbitrary base values set by the userspace
-    // program. (FIXME: Do we really need to unconditionally enable them?)
-    unsafe {
-        Cr4::update(|cr4| {
-            cr4.insert(Cr4Flags::FSGSBASE);
-        })
-    };
 }
 
-unsafe extern "sysv64" {
-    fn syscall_entry();
-    fn syscall_return(regs: &mut UserContext);
+unsafe extern "C" {
+    unsafe fn syscall_entry();
+    unsafe fn syscall_return(regs: &mut RawUserContext);
 }
 
-impl UserContext {
-    /// Go to user space with the context, and come back when a trap occurs.
+impl RawUserContext {
+    /// Goes to user space with the context, and comes back when a trap occurs.
     ///
     /// On return, the context will be reset to the status before the trap.
     /// Trap reason and error code will be placed at `trap_num` and `error_code`.
@@ -95,26 +80,10 @@ impl UserContext {
     ///
     /// If `trap_num` is `0x100`, it will go user by `sysret` (`rcx` and `r11` are dropped),
     /// otherwise it will use `iret`.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use trapframe::{UserContext, GeneralRegs};
-    ///
-    /// // init user space context
-    /// let mut context = UserContext {
-    ///     general: GeneralRegs {
-    ///         rip: 0x1000,
-    ///         rsp: 0x10000,
-    ///         ..Default::default()
-    ///     },
-    ///     ..Default::default()
-    /// };
-    /// // go to user
-    /// context.run();
-    /// // back from user
-    /// println!("back from user: {:#x?}", context);
-    /// ```
-    pub fn run(&mut self) {
+    pub(in crate::arch) fn run(&mut self) {
+        // Return to userspace with interrupts disabled. Otherwise, interrupts
+        // after executing `swapgs` will mess up the CPU state.
+        crate::arch::irq::disable_local();
         unsafe {
             syscall_return(self);
         }

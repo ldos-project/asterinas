@@ -2,13 +2,15 @@
 
 //! General netlink message types for all netlink protocols.
 
-use crate::prelude::*;
+use align_ext::AlignExt;
+
+use crate::{net::socket::netlink::message::NLMSG_ALIGN, prelude::*, util::MultiRead};
 
 /// `nlmsghdr` in Linux.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/uapi/linux/netlink.h#L52>.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod)]
+#[derive(Clone, Copy, Debug, Pod)]
 pub struct CMsgSegHdr {
     /// Length of the message, including the header
     pub len: u32,
@@ -20,6 +22,25 @@ pub struct CMsgSegHdr {
     pub seq: u32,
     /// Sending process port ID
     pub pid: u32,
+}
+
+impl CMsgSegHdr {
+    /// Returns the payload length (including padding) in the reader that contains the payload.
+    pub fn calc_payload_len_with_padding(&self, reader: &mut dyn MultiRead) -> Result<usize> {
+        // Validate `self.len`.
+        let payload_len = (self.len as usize)
+            .checked_sub(size_of::<Self>())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the message length is too small"))?;
+
+        // Validate `payload_len`.
+        let reader_len = reader.sum_lens();
+        if reader_len < payload_len {
+            return_errno_with_message!(Errno::EINVAL, "the reader length is too small");
+        }
+
+        // Align `payload_len` up to `NLMSG_ALIGN`.
+        Ok(payload_len.align_up(NLMSG_ALIGN).min(reader_len))
+    }
 }
 
 bitflags! {

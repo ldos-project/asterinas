@@ -27,8 +27,8 @@ pub type SigMask = SigSet;
 ///
 /// Because that all the signal numbers are in the range of 1 to 64, casting
 /// a signal set from `u64` to `SigSet` will always succeed.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Pod)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Pod)]
 pub struct SigSet {
     bits: u64,
 }
@@ -186,10 +186,6 @@ impl From<SigSet> for AtomicSigSet {
 impl AtomicSigSet {
     pub fn new_empty() -> Self {
         AtomicSigSet::new(0)
-    }
-
-    pub fn new_full() -> Self {
-        AtomicSigSet::new(!0)
     }
 
     pub fn contains(&self, signals: impl Into<SigSet>, ordering: Ordering) -> bool {

@@ -75,7 +75,7 @@ pub struct BioReq {
 }
 
 /// The type of a block request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BioType {
     /// A read request.
     Read,
@@ -159,7 +159,7 @@ impl BioReq {
     /// or accessed by block devices and their users. Each of the extension objects
     /// must have a different type. To avoid conflicts, it is recommended to use only
     /// private types for the extension objects.
-    pub fn ext(&self) -> MutexGuard<HashMap<TypeId, Box<dyn Any + Send + Sync>>> {
+    pub fn ext(&self) -> MutexGuard<'_, HashMap<TypeId, Box<dyn Any + Send + Sync>>> {
         self.ext.lock()
     }
 

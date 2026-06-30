@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#![expect(dead_code)]
-
 use crate::prelude::*;
 
 /// Auxiliary Vector.
@@ -15,10 +13,10 @@ use crate::prelude::*;
 ///  > is a table of key-value pairs, where the keys are from the set of ‘AT_’
 ///  > values in elf.h.
 #[expect(non_camel_case_types)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[expect(dead_code)]
 #[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AuxKey {
-    AT_NULL = 0,      /* end of vector */
     AT_IGNORE = 1,    /* entry should be ignored */
     AT_EXECFD = 2,    /* file descriptor of program */
     AT_PHDR = 3,      /* program headers for program */
@@ -51,12 +49,11 @@ pub enum AuxKey {
 }
 
 impl AuxKey {
-    pub fn as_u64(&self) -> u64 {
-        *self as u64
-    }
+    /// A special auxiliary key that denotes the end of the auxiliary vector.
+    pub(super) const AT_NULL: u8 = 0;
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AuxVec {
     table: BTreeMap<AuxKey, u64>,
 }
@@ -67,29 +64,15 @@ impl AuxVec {
             table: BTreeMap::new(),
         }
     }
-}
 
-impl AuxVec {
-    pub fn set(&mut self, key: AuxKey, val: u64) -> Result<()> {
-        if key == AuxKey::AT_NULL || key == AuxKey::AT_IGNORE {
-            return_errno_with_message!(Errno::EINVAL, "Illegal key");
-        }
+    pub fn set(&mut self, key: AuxKey, val: u64) {
         self.table
             .entry(key)
             .and_modify(|val_mut| *val_mut = val)
             .or_insert(val);
-        Ok(())
     }
 
-    pub fn get(&self, key: AuxKey) -> Option<u64> {
-        self.table.get(&key).copied()
-    }
-
-    pub fn del(&mut self, key: AuxKey) -> Option<u64> {
-        self.table.remove(&key)
-    }
-
-    pub fn table(&self) -> &BTreeMap<AuxKey, u64> {
+    pub(super) fn table(&self) -> &BTreeMap<AuxKey, u64> {
         &self.table
     }
 }

@@ -4,9 +4,15 @@ pub mod bin;
 pub mod file;
 pub mod vm_image;
 
-use bin::AsterBin;
+use bin::{AsterBin, AsterBinType};
 use file::{BundleFile, Initramfs};
-use std::process;
+use std::{
+    io::{BufRead, BufReader, Write},
+    os::unix::net::UnixStream,
+    process::{self, ExitStatus},
+    time::Duration,
+};
+use tempfile::NamedTempFile;
 use vm_image::{AsterVmImage, AsterVmImageType};
 
 use std::{
@@ -15,9 +21,10 @@ use std::{
 };
 
 use crate::{
+    arch::Arch,
     config::{
         Config,
-        scheme::{ActionChoice, BootMethod},
+        scheme::{ActionChoice, BootMethod, BootProtocol},
     },
     error::Errno,
     error_msg,
@@ -35,7 +42,7 @@ pub struct Bundle {
 }
 
 /// The osdk bundle artifact manifest that stores as `bundle.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BundleManifest {
     pub initramfs: Option<Initramfs>,
     pub aster_bin: Option<AsterBin>,
@@ -43,6 +50,39 @@ pub struct BundleManifest {
     pub config: Config,
     pub action: ActionChoice,
     pub last_modified: SystemTime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QemuExit {
+    Success,
+    Failed,
+    Unknown,
+}
+
+pub(crate) fn classify_qemu_exit_status(exit_status: ExitStatus) -> QemuExit {
+    if exit_status.success() {
+        return QemuExit::Success;
+    }
+
+    let Some(qemu_exit_code) = exit_status.code() else {
+        return QemuExit::Unknown;
+    };
+
+    // For x86 QEMU with `isa-debug-exit`, the guest exit code is encoded as
+    // `(code << 1) | 1`. Do not decode QEMU's own failure exit code `1`.
+    if qemu_exit_code == 1 {
+        return QemuExit::Unknown;
+    }
+
+    let kernel_exit_code = qemu_exit_code >> 1;
+    match kernel_exit_code {
+        // Corresponds to `ostd::QemuExitCode::Success`.
+        0x10 => QemuExit::Success,
+        // Corresponds to `ostd::QemuExitCode::Failed`.
+        0x20 => QemuExit::Failed,
+        // Unknown exit code, e.g., a triple fault.
+        _ => QemuExit::Unknown,
+    }
 }
 
 impl Bundle {
@@ -86,20 +126,20 @@ impl Bundle {
 
         let _dir_guard = DirGuard::change_dir(&path);
 
-        if let Some(aster_bin) = &manifest.aster_bin {
-            if !aster_bin.validate() {
-                return None;
-            }
+        if let Some(aster_bin) = &manifest.aster_bin
+            && !aster_bin.validate()
+        {
+            return None;
         }
-        if let Some(vm_image) = &manifest.vm_image {
-            if !vm_image.validate() {
-                return None;
-            }
+        if let Some(vm_image) = &manifest.vm_image
+            && !vm_image.validate()
+        {
+            return None;
         }
-        if let Some(initramfs) = &manifest.initramfs {
-            if !initramfs.validate() {
-                return None;
-            }
+        if let Some(initramfs) = &manifest.initramfs
+            && !initramfs.validate()
+        {
+            return None;
         }
 
         Some(Self {
@@ -141,6 +181,19 @@ impl Bundle {
                 if self.manifest.aster_bin.is_none() {
                     return Err("Kernel binary is required for direct QEMU booting".to_owned());
                 };
+
+                // Validate the kernel binary type against the configured boot protocol.
+                // This prevents reusing an incompatible binary (e.g. ELF vs. `bzImage`) when
+                // switching boot methods (for example, from a Grub ISO to `qemu-direct`),
+                // which would otherwise cause boot failures.
+                let aster_bin_type = self.manifest.aster_bin.as_ref().unwrap().typ();
+                let expects_linux = matches!(aster_bin_type, AsterBinType::BzImage(_));
+                let actual_linux = config_action.grub.boot_protocol == BootProtocol::Linux;
+                if expects_linux != actual_linux {
+                    return Err(
+                        "The boot protocol is not compatible with the kernel binary".to_owned()
+                    );
+                }
             }
             BootMethod::GrubRescueIso => {
                 let Some(ref vm_image) = self.manifest.vm_image else {
@@ -187,6 +240,16 @@ impl Bundle {
     }
 
     pub fn run(&self, config: &Config, action: ActionChoice) {
+        let exit_status = self.run_qemu_and_wait(config, action);
+        // FIXME: When panicking it sometimes returns success, why?
+        match classify_qemu_exit_status(exit_status) {
+            QemuExit::Success => {}
+            QemuExit::Failed => std::process::exit(1),
+            QemuExit::Unknown => std::process::exit(2),
+        }
+    }
+
+    pub(crate) fn run_qemu_and_wait(&self, config: &Config, action: ActionChoice) -> ExitStatus {
         match self.can_run_with_config(config, action) {
             Ok(()) => {}
             Err(msg) => {
@@ -258,31 +321,57 @@ impl Bundle {
             }
         }
 
-        info!("Running QEMU: {:#?}", qemu_cmd);
+        let exit_status = if action.qemu.with_monitor {
+            let qemu_monitor_socket_path = NamedTempFile::new().unwrap().into_temp_path();
+            qemu_cmd.arg("-monitor").arg(format!(
+                "unix:{},server,nowait",
+                qemu_monitor_socket_path.to_string_lossy()
+            ));
 
-        let exit_status = qemu_cmd.status().unwrap();
+            info!("Running QEMU: {qemu_cmd:#?}");
+            let mut qemu_child = qemu_cmd.spawn().unwrap();
+            std::thread::sleep(Duration::from_secs(1)); // Wait for QEMU to start
+            let mut qemu_monitor_stream = UnixStream::connect(&qemu_monitor_socket_path).unwrap();
+            wait_until_guest_kernel_shutdown(config, &mut qemu_monitor_stream);
+            info!("VM is paused (shutdown)");
 
-        // Find the QEMU output in "qemu.log", read it and check if it failed with a panic.
-        // Setting a QEMU log is required for source line stack trace because piping the output
-        // is less desirable when running QEMU with serial redirected to standard I/O.
-        let qemu_log_path = config.work_dir.join("qemu.log");
-        if let Ok(file) = std::fs::File::open(qemu_log_path) {
-            if let Some(aster_bin) = &self.manifest.aster_bin {
-                crate::util::trace_panic_from_log(file, self.path.join(aster_bin.path()));
+            self.post_run_action(config, Some(&mut qemu_monitor_stream));
+
+            let _ = qemu_monitor_stream.write_all(b"quit\n");
+            qemu_child.wait().unwrap()
+        } else {
+            info!("Running QEMU: {qemu_cmd:#?}");
+            let exit_status = qemu_cmd.status().unwrap();
+            self.post_run_action(config, None);
+            exit_status
+        };
+
+        fn wait_until_guest_kernel_shutdown(config: &Config, qemu_monitor_stream: &mut UnixStream) {
+            let log_file = std::fs::File::open(config.work_dir.join("qemu.log")).unwrap();
+
+            // Check VM status every 0.1 seconds and break the loop if the VM is stopped or hanging.
+            while qemu_monitor_stream.write_all(b"info status\n").is_ok() {
+                let status = BufReader::new(&mut *qemu_monitor_stream)
+                    .lines()
+                    .find(|line| line.as_ref().is_ok_and(|s| s.starts_with("VM status:")));
+                if status.is_some_and(|msg| msg.unwrap() == "VM status: paused (shutdown)") {
+                    break;
+                }
+
+                if config.target_arch == Arch::RiscV64 {
+                    let log = rev_buf_reader::RevBufReader::new(&log_file);
+                    if log.lines().next().is_some_and(|line| {
+                        line.as_ref().is_ok_and(|s| {
+                            s.contains("SBI system_reset cannot shut down the underlying machine")
+                        })
+                    }) {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
-
-        // FIXME: When panicking it sometimes returns success, why?
-        if !exit_status.success() {
-            // FIXME: Exit code manipulation is not needed when using non-x86 QEMU
-            let qemu_exit_code = exit_status.code().unwrap();
-            let kernel_exit_code = qemu_exit_code >> 1;
-            match kernel_exit_code {
-                0x10 /*ostd::QemuExitCode::Success*/ => { std::process::exit(0); },
-                0x20 /*ostd::QemuExitCode::Failed*/ => { std::process::exit(1); },
-                _ /* unknown, e.g., a triple fault */ => { std::process::exit(2) },
-            }
-        }
+        exit_status
     }
 
     /// Move the vm_image into the bundle.
@@ -308,5 +397,24 @@ impl Bundle {
         let manifest_file_content = toml::to_string(&self.manifest).unwrap();
         let manifest_file_path = self.path.join("bundle.toml");
         std::fs::write(manifest_file_path, manifest_file_content).unwrap();
+    }
+
+    fn post_run_action(&self, config: &Config, qemu_monitor_stream: Option<&mut UnixStream>) {
+        // Find the QEMU output in "qemu.log", read it and check if it failed with a panic.
+        // Setting a QEMU log is required for source line stack trace because piping the output
+        // is less desirable when running QEMU with serial redirected to standard I/O.
+        let qemu_log_path = config.work_dir.join("qemu.log");
+        if let Ok(file) = std::fs::File::open(&qemu_log_path)
+            && let Some(aster_bin) = &self.manifest.aster_bin
+        {
+            crate::util::trace_panic_from_log(file, self.path.join(aster_bin.path()));
+        }
+
+        // Find the coverage data information in "qemu.log", and dump it if found.
+        if let Some(qemu_monitor_stream) = qemu_monitor_stream
+            && let Ok(file) = std::fs::File::open(&qemu_log_path)
+        {
+            crate::util::dump_coverage_from_qemu(file, qemu_monitor_stream);
+        }
     }
 }

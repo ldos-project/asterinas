@@ -2,13 +2,20 @@
 
 //! The IOMMU support.
 
+// Set this module's log prefix for `ostd::log`.
+macro_rules! __log_prefix {
+    () => {
+        "iommu: "
+    };
+}
+
 mod dma_remapping;
 mod fault;
 mod interrupt_remapping;
 mod invalidate;
 mod registers;
 
-pub(crate) use dma_remapping::{has_dma_remapping, map, unmap};
+pub(crate) use dma_remapping::{IommuPtConfig, has_dma_remapping, map, unmap};
 pub(in crate::arch) use interrupt_remapping::{
     IrtEntryHandle, alloc_irt_entry, has_interrupt_remapping,
 };

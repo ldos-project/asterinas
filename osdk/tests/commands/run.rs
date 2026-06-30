@@ -4,6 +4,35 @@
 
 use crate::util::is_tdx_enabled;
 
+mod basic {
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use crate::util::*;
+
+    #[test]
+    fn new_kernel_and_run() {
+        const KERNEL_NAME: &str = "myos";
+
+        // Use a per-test temporary directory to avoid cross-run collisions.
+        let work_dir = tempdir().unwrap();
+
+        // Run `cargo osdk new --kernel KERNEL_NAME` in the workspace directory
+        let mut cmd_new = cargo_osdk(["new", "--kernel", KERNEL_NAME]);
+        cmd_new.current_dir(&work_dir);
+        cmd_new.ok().expect("create kernel fails");
+
+        // Run `cargo osdk run` in the created kernel directory
+        let os_dir = PathBuf::from(work_dir.path()).join(KERNEL_NAME);
+        edit_config_files(&os_dir);
+        let mut cmd_run = cargo_osdk(["run"]);
+        cmd_run.current_dir(&os_dir);
+        let output = cmd_run.ok().unwrap();
+        assert_eq!(output.status.code().unwrap(), 0);
+    }
+}
+
 const WORKSPACE: &str = "/tmp/kernel_test_workspace/run_command";
 
 mod workspace {
@@ -23,8 +52,7 @@ mod workspace {
         cargo_osdk_new
             .ok()
             .expect("Failed to create kernel project");
-        let manifest_path = os_dir.join("Cargo.toml");
-        depends_on_local_ostd(manifest_path);
+        edit_config_files(&os_dir);
     }
 
     fn prepare_workspace(workspace: &str) {
@@ -56,8 +84,34 @@ mod workspace {
     }
     impl Drop for WorkSpace {
         fn drop(&mut self) {
-            remove_dir_all(&self.os_dir()).unwrap();
+            remove_dir_all(self.os_dir()).unwrap();
         }
+    }
+}
+
+mod coverage_feature {
+    use super::*;
+    use crate::util::{cargo_osdk, depends_on_coverage};
+    use std::path::Path;
+
+    #[test]
+    fn basic_coverage() {
+        // Test skipped because TDX is enabled.
+        if is_tdx_enabled() {
+            return;
+        }
+        let workspace = workspace::WorkSpace::new(WORKSPACE, "basic_coverage");
+        let manifest_path = Path::new(&workspace.os_dir()).join("Cargo.toml");
+        let osdk_path = Path::new(&workspace.os_dir()).join("OSDK.toml");
+        depends_on_coverage(&manifest_path, &osdk_path);
+        let mut instance = cargo_osdk(["run", "--coverage"]);
+        instance.current_dir(workspace.os_dir());
+
+        let _output = instance
+            .output()
+            .expect("Failed to wait for QEMU coverage instance");
+        let coverage_file = Path::new(&workspace.os_dir()).join("coverage.profraw");
+        assert!(coverage_file.exists(), "Coverage file not found");
     }
 }
 
@@ -84,7 +138,7 @@ mod qemu_gdb_feature {
             "--gdb-server",
             format!("addr={},wait-client", unix_socket.as_str()).as_str(),
         ]);
-        instance.current_dir(&workspace.os_dir());
+        instance.current_dir(workspace.os_dir());
 
         let sock = unix_socket.clone();
         let _gdb = std::thread::spawn(move || {
@@ -132,7 +186,7 @@ mod qemu_gdb_feature {
                 "--gdb-server",
                 format!("wait-client,vscode,addr={}", addr).as_str(),
             ]);
-            instance.current_dir(&workspace.os_dir());
+            instance.current_dir(workspace.os_dir());
 
             let dir = workspace.os_dir();
             let bin_file_path = Path::new(&workspace.os_dir())
@@ -148,7 +202,7 @@ mod qemu_gdb_feature {
                     check_launch_file_existence(&dir),
                     "VSCode launch config file is not found during debugging session"
                 );
-                gdb_continue_via(&addr);
+                gdb_continue_via(addr);
             });
 
             let output = instance

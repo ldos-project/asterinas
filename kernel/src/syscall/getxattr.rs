@@ -3,14 +3,14 @@
 use super::{
     SyscallReturn,
     setxattr::{
-        XattrFileCtx, check_xattr_namespace, lookup_dentry_for_xattr, parse_xattr_name,
+        XattrFileCtx, check_xattr_namespace, lookup_path_for_xattr, parse_xattr_name,
         read_xattr_name_cstr_from_user,
     },
 };
 use crate::{
     fs::{
-        file_table::{FileDesc, get_file_fast},
-        utils::XATTR_VALUE_MAX_LEN,
+        file::file_table::{RawFileDesc, get_file_fast},
+        vfs::xattr::XATTR_VALUE_MAX_LEN,
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
@@ -61,14 +61,14 @@ pub fn sys_lgetxattr(
 }
 
 pub fn sys_fgetxattr(
-    fd: FileDesc,
+    raw_fd: RawFileDesc,
     name_ptr: Vaddr,
     value_ptr: Vaddr,
     value_len: usize,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
     let user_space = ctx.user_space();
     let len = getxattr(
@@ -98,6 +98,6 @@ fn getxattr(
 
     let mut value_writer = user_space.writer(value_ptr, value_len.min(XATTR_VALUE_MAX_LEN))?;
 
-    let dentry = lookup_dentry_for_xattr(&file_ctx, ctx)?;
-    dentry.get_xattr(xattr_name, &mut value_writer)
+    let path = lookup_path_for_xattr(&file_ctx, ctx)?;
+    path.get_xattr(xattr_name, &mut value_writer)
 }

@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{format, string::String};
+use core::fmt;
 
 use ostd::{
-    Pod,
-    cpu::context::{CpuExceptionInfo, RawGeneralRegs, UserContext},
+    arch::cpu::context::{CpuException, UserContext},
+    cpu::PinCurrentCpu,
+    task::DisabledPreemptGuard,
+    user::UserContextApi,
 };
 
-use crate::{cpu::LinuxAbi, thread::exception::PageFaultInfo, vm::perms::VmPerms};
+use crate::{
+    cpu::LinuxAbi,
+    vm::{perms::VmPerms, vmar::PageFaultInfo},
+};
 
 impl LinuxAbi for UserContext {
     fn syscall_num(&self) -> usize {
         self.a7()
-    }
-
-    fn set_syscall_num(&mut self, num: usize) {
-        self.set_a7(num);
     }
 
     fn syscall_ret(&self) -> usize {
@@ -36,57 +37,10 @@ impl LinuxAbi for UserContext {
             self.a5(),
         ]
     }
-
-    fn set_tls_pointer(&mut self, tls: usize) {
-        self.set_tp(tls);
-    }
-
-    fn tls_pointer(&self) -> usize {
-        self.tp()
-    }
-}
-
-/// General-purpose registers.
-#[derive(Debug, Clone, Copy, Pod, Default)]
-#[repr(C)]
-pub struct GpRegs {
-    pub zero: usize,
-    pub ra: usize,
-    pub sp: usize,
-    pub gp: usize,
-    pub tp: usize,
-    pub t0: usize,
-    pub t1: usize,
-    pub t2: usize,
-    pub s0: usize,
-    pub s1: usize,
-    pub a0: usize,
-    pub a1: usize,
-    pub a2: usize,
-    pub a3: usize,
-    pub a4: usize,
-    pub a5: usize,
-    pub a6: usize,
-    pub a7: usize,
-    pub s2: usize,
-    pub s3: usize,
-    pub s4: usize,
-    pub s5: usize,
-    pub s6: usize,
-    pub s7: usize,
-    pub s8: usize,
-    pub s9: usize,
-    pub s10: usize,
-    pub s11: usize,
-    pub t3: usize,
-    pub t4: usize,
-    pub t5: usize,
-    pub t6: usize,
 }
 
 macro_rules! copy_gp_regs {
     ($src: ident, $dst: ident) => {
-        $dst.zero = $src.zero;
         $dst.ra = $src.ra;
         $dst.sp = $src.sp;
         $dst.gp = $src.gp;
@@ -121,53 +75,108 @@ macro_rules! copy_gp_regs {
     };
 }
 
-impl GpRegs {
-    pub fn copy_to_raw(&self, dst: &mut RawGeneralRegs) {
-        copy_gp_regs!(self, dst);
+/// Represents the context of a signal handler.
+///
+/// This contains the context saved before a signal handler is invoked; it will be restored by
+/// `sys_rt_sigreturn`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/riscv/include/uapi/asm/sigcontext.h#L30>
+#[repr(C)]
+#[repr(align(16))]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct SigContext {
+    pc: usize,
+    ra: usize,
+    sp: usize,
+    gp: usize,
+    tp: usize,
+    t0: usize,
+    t1: usize,
+    t2: usize,
+    s0: usize,
+    s1: usize,
+    a0: usize,
+    a1: usize,
+    a2: usize,
+    a3: usize,
+    a4: usize,
+    a5: usize,
+    a6: usize,
+    a7: usize,
+    s2: usize,
+    s3: usize,
+    s4: usize,
+    s5: usize,
+    s6: usize,
+    s7: usize,
+    s8: usize,
+    s9: usize,
+    s10: usize,
+    s11: usize,
+    t3: usize,
+    t4: usize,
+    t5: usize,
+    t6: usize,
+    // In RISC-V, the signal stack layout places the FPU context directly
+    // after the general-purpose registers.
+}
+
+impl SigContext {
+    pub fn copy_user_regs_to(&self, dst: &mut UserContext) {
+        let gp_regs = dst.general_regs_mut();
+        copy_gp_regs!(self, gp_regs);
+        dst.set_instruction_pointer(self.pc);
     }
 
-    pub fn copy_from_raw(&mut self, src: &RawGeneralRegs) {
-        copy_gp_regs!(src, self);
+    pub fn copy_user_regs_from(&mut self, src: &UserContext) {
+        let gp_regs = src.general_regs();
+        copy_gp_regs!(gp_regs, self);
+        self.pc = src.instruction_pointer();
     }
 }
 
-impl TryFrom<&CpuExceptionInfo> for PageFaultInfo {
-    // [`Err`] indicates that the [`CpuExceptionInfo`] is not a page fault,
-    // with no additional error information.
+impl TryFrom<&CpuException> for PageFaultInfo {
+    // [`Err`] indicates that the [`CpuException`] is not a page fault, with no
+    // additional error information.
     type Error = ();
 
-    fn try_from(value: &CpuExceptionInfo) -> Result<Self, ()> {
-        use riscv::register::scause::Exception;
+    fn try_from(value: &CpuException) -> Result<Self, ()> {
+        use CpuException::*;
 
-        let required_perms = match value.cpu_exception() {
-            Exception::InstructionPageFault => VmPerms::EXEC,
-            Exception::LoadPageFault => VmPerms::READ,
-            Exception::StorePageFault => VmPerms::WRITE,
+        let (fault_addr, required_perms) = match value {
+            InstructionPageFault(addr) => (addr, VmPerms::EXEC),
+            LoadPageFault(addr) => (addr, VmPerms::READ),
+            // On riscv64, writable pages must also be readable.
+            // Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#translation>.
+            StorePageFault(addr) => (addr, VmPerms::READ | VmPerms::WRITE),
             _ => return Err(()),
         };
 
-        Ok(PageFaultInfo {
-            address: value.page_fault_addr,
-            required_perms,
-        })
+        Ok(PageFaultInfo::new(*fault_addr, required_perms))
     }
 }
 
-/// CPU Information structure.
+/// CPU information to be shown in `/proc/cpuinfo`.
+///
+/// Different CPUs may have different information, such as the core ID. Therefore, [`Self::new`]
+/// should be called on every CPU.
+//
 // TODO: Implement CPU information retrieval on RISC-V platforms.
-pub struct CpuInfo {
+pub struct CpuInformation {
     processor: u32,
 }
 
-impl CpuInfo {
-    pub fn new(processor_id: u32) -> Self {
+impl CpuInformation {
+    /// Constructs the information for the current CPU.
+    pub fn new(guard: &DisabledPreemptGuard) -> Self {
         Self {
-            processor: processor_id,
+            processor: guard.current_cpu().into(),
         }
     }
+}
 
-    /// Collect and format CPU information into a `String`.
-    pub fn collect_cpu_info(&self) -> String {
-        format!("processor\t: {}\n", self.processor)
+impl fmt::Display for CpuInformation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "processor\t: {}", self.processor)
     }
 }

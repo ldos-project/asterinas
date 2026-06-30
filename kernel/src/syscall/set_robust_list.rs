@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{prelude::*, process::posix_thread::RobustListHead};
 
@@ -13,7 +15,7 @@ pub fn sys_set_robust_list(
         robust_list_head_ptr, len
     );
 
-    if len != core::mem::size_of::<RobustListHead>() {
+    if len != size_of::<RobustListHead>() {
         return_errno_with_message!(
             Errno::EINVAL,
             "the length is not equal to the size of the robust list head"

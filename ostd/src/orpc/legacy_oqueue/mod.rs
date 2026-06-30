@@ -108,7 +108,7 @@ pub trait StrongObserver<T>: Send + Blocker {
 
 /// A weak-observer handle to a oqueue. This allows looking at the history of the oqueue without affecting any other
 /// producers, consumers, or observers. Weak-observers are not guaranteed to observe every element, so they never block
-/// producers (which can simply overwrite data). However, weak-observers are guaranteed to alway get either nothing or
+/// producers (which can simply overwrite data). However, weak-observers are guaranteed to always get either nothing or
 /// the data at the cursor requested.
 ///
 /// When used as a blocker this will wake if there is unobserved data in the queue. Code using this should make sure
@@ -240,7 +240,7 @@ mod test {
     use crate::orpc::legacy_oqueue::{generic_test::TestMessage, locking::ObservableLockingQueue};
 
     #[ktest]
-    fn test_default_direct_produce_consume() {
+    fn default_direct_produce_consume() {
         let oqueue = Arc::new(ObservableLockingQueue::new(2, 8));
         let consumer = oqueue.attach_consumer().unwrap();
         let test_message = TestMessage { x: 42 };
@@ -255,7 +255,7 @@ mod test {
     }
 
     #[ktest]
-    fn test_default_weak_observe() {
+    fn default_weak_observe() {
         let oqueue = Arc::new(ObservableLockingQueue::<TestMessage>::new(8, 8));
         let producer = oqueue.attach_producer().unwrap();
         let weak_observer = oqueue.attach_weak_observer().unwrap();

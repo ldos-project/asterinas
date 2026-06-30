@@ -3,14 +3,17 @@
 use bitflags::bitflags;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::legacy_oqueue::OQueue;
-use ostd::sync::RwArc;
 
 use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]
 use crate::time::clocks::MonotonicRawClock;
 use crate::{
-    fs::file_table::{FdFlags, FileDesc},
+    fs::{
+        self,
+        file::file_table::{FdFlags, RawFileDesc},
+    },
     prelude::*,
+    process::ContextUnshareAdminApi,
 };
 
 bitflags! {
@@ -20,15 +23,18 @@ bitflags! {
     }
 }
 
-pub fn sys_close(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("fd = {}", fd);
+pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
+    debug!("raw_fd = {}", raw_fd);
 
+    let fd = raw_fd.try_into()?;
     let file = {
         let file_table = ctx.thread_local.borrow_file_table();
         let mut file_table_locked = file_table.unwrap().write();
         let _ = file_table_locked.get_file(fd)?;
         file_table_locked.close_file(fd).unwrap()
     };
+
+    fs::vfs::notify::on_close(&file);
 
     if file.as_socket_or_err().is_ok() {
         #[cfg(not(baseline_asterinas))]
@@ -70,23 +76,21 @@ pub fn sys_close_range(
 
     let flags = CloseRangeFlags::from_bits(raw_flags).ok_or_else(|| Error::new(Errno::EINVAL))?;
 
-    let original_table = ctx.thread_local.borrow_file_table().unwrap().clone();
+    if flags.contains(CloseRangeFlags::UNSHARE) {
+        // FIXME: While directly invoking `unshare_files` is logically correct,
+        // it might not be the most efficient approach.
+        // `unshare_files` clones the entire file table by duplicating all its entries.
+        // However, in the context of `close_range`,
+        // cloning files that are about to be closed is unnecessary overhead.
+        ctx.unshare_files();
+    }
 
-    let file_table = if flags.contains(CloseRangeFlags::UNSHARE) {
-        let new_table = RwArc::new(original_table.get_cloned());
-        let _ = ctx
-            .thread_local
-            .borrow_file_table_mut()
-            .replace(Some(new_table.clone()));
-        new_table
-    } else {
-        original_table
-    };
+    let file_table = ctx.thread_local.borrow_file_table();
 
     let mut files_to_drop = Vec::new();
 
     {
-        let mut file_table_locked = file_table.write();
+        let mut file_table_locked = file_table.unwrap().write();
 
         let table_len = file_table_locked.len() as u32;
         if first >= table_len {
@@ -95,7 +99,8 @@ pub fn sys_close_range(
         let actual_last = last.min(table_len - 1);
 
         for fd in first..=actual_last {
-            let fd = fd as FileDesc;
+            // This is a valid FD as it is smaller than `file_table_locked.len()`.
+            let fd = fd.cast_signed().try_into().unwrap();
 
             if flags.contains(CloseRangeFlags::CLOEXEC) {
                 if let Ok(entry) = file_table_locked.get_entry_mut(fd) {

@@ -1,0 +1,11 @@
+struct pollfd = {
+    events = POLLIN | POLLPRI | POLLOUT | POLLRDHUP | POLLERR |
+             POLLHUP | POLLNVAL | POLLRDNORM,
+    ..
+};
+
+// Wait for I/O event on a set of file descriptors
+poll(fds = [ <pollfd> ], nfds, timeout);
+
+// Wait for I/O event on a set of file descriptors with specified signals temporarily blocked
+ppoll(fds = [ <pollfd> ], nfds, timeout, sigset, sigset_size);

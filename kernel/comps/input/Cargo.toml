@@ -1,15 +1,18 @@
 [package]
 name = "aster-input"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-spin = "0.9.4"
-ostd = { path = "../../../ostd" }
-component = { path = "../../libs/comp-sys/component" }
-int-to-c-enum = { path = "../../libs/int-to-c-enum" }
+component.workspace = true
+bitflags.workspace = true
+bitvec.workspace = true
+ostd.workspace = true
+ostd-pod.workspace = true
+spin.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true

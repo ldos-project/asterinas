@@ -27,41 +27,25 @@ pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
 pub mod server_traits;
 
-use alloc::{borrow::ToOwned, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
 #[cfg(baseline_asterinas)]
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, ops::Range};
 
 use aster_block::{
-    BlockDevice, BlockDeviceMeta,
+    BlockDevice, BlockDeviceMeta, DeviceId,
     bio::{
         Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, ParentGuard, SubmittedBio,
     },
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
-#[cfg(not(baseline_asterinas))]
 use ostd::orpc::orpc_server;
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
-#[cfg(baseline_asterinas)]
-#[derive(Debug)]
-pub struct Raid1Device {
-    /// Member block devices that store identical data (mirrors).
-    members: Vec<Arc<dyn BlockDevice>>,
-    queue: BioRequestSingleQueue,
-
-    /// Basic capacity limits for the logical device (min across members).
-    metadata: BlockDeviceMeta,
-
-    /// A cursor for selecting the next member for read operations (round-robin).
-    read_cursor: AtomicUsize,
-}
-
-#[cfg(not(baseline_asterinas))]
 #[derive(Debug)]
 #[orpc_server]
 pub struct Raid1Device {
@@ -72,13 +56,28 @@ pub struct Raid1Device {
     /// Basic capacity limits for the logical device (min across members).
     metadata: BlockDeviceMeta,
 
+    /// A cursor for selecting the next member for read operations (round-robin).
+    #[cfg(baseline_asterinas)]
+    read_cursor: AtomicUsize,
+
     /// The policy to select the read member.
+    #[cfg(not(baseline_asterinas))]
     selection_policy: Arc<dyn SelectionPolicy>,
+
+    name: String,
+    id: DeviceId,
 }
 
 #[derive(Debug)]
 pub enum Raid1DeviceError {
     NotEnoughMembers,
+    BlockError(aster_block::Error),
+}
+
+impl From<aster_block::Error> for Raid1DeviceError {
+    fn from(v: aster_block::Error) -> Self {
+        Self::BlockError(v)
+    }
 }
 
 impl Raid1Device {
@@ -104,9 +103,11 @@ impl Raid1Device {
             queue,
             metadata,
             read_cursor: AtomicUsize::new(0),
+            name: name.to_owned(),
+            id: DeviceId::null(),
         });
 
-        aster_block::register_device(name.to_owned(), device.clone());
+        aster_block::register(device.clone())?;
 
         Ok(())
     }
@@ -138,9 +139,11 @@ impl Raid1Device {
             queue,
             metadata,
             selection_policy,
+            name: name.to_owned(),
+            id: DeviceId::null(),
         });
 
-        aster_block::register_device(name.to_owned(), device.clone());
+        aster_block::register(device.clone())?;
 
         Ok(())
     }
@@ -158,17 +161,6 @@ impl Raid1Device {
             BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write(request),
             BioType::Flush => self.process_flush(request),
-            BioType::Discard => self.process_discard(request),
-        }
-    }
-
-    /// Processes discard requests by submitting them to all members and completing them after they finish.
-    fn process_discard(&self, request: BioRequest) {
-        for parent in request.bios() {
-            // Submit the same discard to all members.
-            let status =
-                self.fanout_to_members(parent, BioType::Discard, || Self::clone_segments(parent));
-            parent.complete(status);
         }
     }
 
@@ -407,5 +399,13 @@ impl BlockDevice for Raid1Device {
     /// Returns the logical device metadata.
     fn metadata(&self) -> BlockDeviceMeta {
         self.metadata
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn id(&self) -> DeviceId {
+        self.id
     }
 }

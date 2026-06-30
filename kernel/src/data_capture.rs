@@ -3,11 +3,10 @@
 //! OQueue data capture utilities.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::time::Duration;
+use core::{result::Result, time::Duration};
 
-use log::{error, info};
 use ostd::{
-    ignore_err, new_server,
+    error, ignore_err, info, new_server,
     orpc::{
         framework::{notifier::Notifier as _, spawn_thread},
         oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_type},
@@ -18,7 +17,7 @@ use ostd::{
 };
 use serde::Serialize;
 
-use crate::{fs, kcmdline, util::timer::TimerServer};
+use crate::{kcmdline, prelude::*, util::timer::TimerServer};
 
 #[orpc_server]
 struct DataCaptureManager {}
@@ -60,8 +59,18 @@ pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>>
 
 static DATA_CAPTURE_FILE_SYNCERS: Mutex<Vec<Box<dyn Fn() + Send>>> = Mutex::new(Vec::new());
 
+fn find_block_device(device_name: &str) -> Option<Arc<dyn aster_block::BlockDevice>> {
+    aster_block::collect_all()
+        .into_iter()
+        .find(|d| d.name() == device_name)
+}
+
 pub(super) fn start_capture_devices() {
-    match fs::start_block_device("capture_legacy") {
+    // TODO(arthurp): Using fixed names is a hack. We should at least support using a kcmdline arg
+    // to specify the device.
+    match find_block_device("capture_legacy")
+        .ok_or_else(|| Error::with_message(Errno::ENOENT, "Device does not exist"))
+    {
         Ok(capture_block_device) => {
             DATA_CAPTURE_DEVICE_LEGACY.lock().replace(
                 mariposa_data_capture::legacy::DataCaptureDeviceServer::new(capture_block_device),
@@ -74,7 +83,9 @@ pub(super) fn start_capture_devices() {
         ),
     }
 
-    match fs::start_block_device("capture") {
+    match find_block_device("capture")
+        .ok_or_else(|| Error::with_message(Errno::ENOENT, "Device does not exist"))
+    {
         Ok(capture_block_device) => {
             DATA_CAPTURE_DEVICE.lock().replace(
                 mariposa_data_capture::DataCaptureDeviceServer::new(capture_block_device),
@@ -183,7 +194,7 @@ pub fn new_data_capture_data_file_by_type<
 
         for oqueue in oqueues {
             let Some(oqueue_path) = oqueue.path().cloned() else {
-                log::warn!(
+                warn!(
                     "Found anonymous OQueue while collecting OQueues for {}. Not capturing.",
                     capture_path
                 );

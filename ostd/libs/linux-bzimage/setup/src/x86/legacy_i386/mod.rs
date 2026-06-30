@@ -5,12 +5,14 @@ use core::arch::{asm, global_asm};
 use linux_boot_params::BootParams;
 
 pub(super) mod alloc;
+mod efi;
 
 global_asm!(include_str!("setup.S"));
 
 const ASTER_ENTRY_POINT: *const () = 0x8001000 as _;
 
-#[export_name = "main_legacy32"]
+/// SAFETY: The name does not collide with other symbols.
+#[unsafe(export_name = "main_legacy32")]
 extern "cdecl" fn main_legacy32(boot_params_ptr: *mut BootParams) -> ! {
     crate::println!(
         "[setup] Loaded with offset {:#x}",
@@ -18,9 +20,13 @@ extern "cdecl" fn main_legacy32(boot_params_ptr: *mut BootParams) -> ! {
     );
 
     // SAFETY: We get boot parameters from the boot loader, so by contract the pointer is valid and
-    // the underlying memory is initialized. We never mutate the boot parameters, so we can create
-    // an immutable reference of the plain-old-data type.
-    let boot_params = unsafe { &*boot_params_ptr };
+    // the underlying memory is initialized. We are an exclusive owner of the memory region, so we
+    // can create a mutable reference of the plain-old-data type.
+    let boot_params = unsafe { &mut *boot_params_ptr };
+
+    // Fill the ACPI RSDP address in the boot parameters if it is not already filled by the bootloader.
+    efi::fill_acpi_rsdp_addr(boot_params);
+
     // SAFETY: We get boot parameters from the boot loader. By contract they are correct.
     unsafe { alloc::init(boot_params) };
 

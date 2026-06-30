@@ -2,28 +2,12 @@
 
 //! Panic support.
 
-use alloc::string::String;
-use core::{ffi::c_void, fmt::Display};
+use core::fmt::Display;
 
-pub use unwinding::panic::{begin_panic, catch_unwind};
-
-use crate::{
-    arch::qemu::{QemuExitCode, exit_qemu},
-    cpu::CpuId,
-    early_print, early_println,
-    stack_info::StackInfo,
-    stacktrace::CapturedStackTrace,
-    sync::SpinLock,
-};
+use crate::{cpu::CpuId, early_println, stack_info::StackInfo, stacktrace::CapturedStackTrace};
 
 extern crate cfg_if;
 extern crate gimli;
-
-use gimli::Register;
-use unwinding::abi::{
-    _Unwind_Backtrace, _Unwind_FindEnclosingFunction, _Unwind_GetGR, _Unwind_GetIP, UnwindContext,
-    UnwindReasonCode,
-};
 
 /// A panic payload that carries a human-readable message and context information at the panic site.
 #[derive(Debug, Clone)]
@@ -69,9 +53,10 @@ impl Display for CaughtPanic {
 /// The user can override it by defining their own panic handler with the macro
 /// `#[ostd::panic_handler]`.
 #[linkage = "weak"]
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 pub fn __ostd_panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let _irq_guard = crate::trap::irq::disable_local();
+    let _irq_guard = crate::irq::disable_local();
 
     crate::cpu_local_cell! {
         static IN_PANIC: bool = false;
@@ -90,15 +75,67 @@ pub fn __ostd_panic_handler(info: &core::panic::PanicInfo) -> ! {
     abort();
 }
 
-/// Aborts the QEMU
+/// Aborts the system.
+///
+/// This function will first attempt to power off the system. If that fails, it will halt all CPUs.
 pub fn abort() -> ! {
-    exit_qemu(QemuExitCode::Failed);
+    // TODO: The main purpose of powering off here is to allow QEMU to exit. Otherwise, the CI may
+    // freeze after panicking. However, this is unnecessary and may prevent debugging on a real
+    // machine (i.e., the message will disappear afterward).
+    crate::power::poweroff(crate::power::ExitCode::Failure);
 }
+
+/// A guard that aborts the system if dropped.
+///
+/// This is useful to ensure that certain objects will not be dropped during
+/// panic handling.
+#[derive(Debug)]
+pub(crate) struct PanicGuard {
+    _private: (),
+}
+
+impl Drop for PanicGuard {
+    fn drop(&mut self) {
+        early_println!("Panicked in `PanicGuard`, aborting the system");
+        abort();
+    }
+}
+
+impl PanicGuard {
+    /// Creates a panic guard that aborts the system if dropped.
+    pub(crate) fn new() -> Self {
+        PanicGuard { _private: () }
+    }
+
+    /// Finishes panic guarding by forgetting the guard.
+    ///
+    /// After the panic guarding finishes, it no longer aborts the system
+    /// when panic happens.
+    pub(crate) fn forget(self) {
+        core::mem::forget(self);
+    }
+}
+
+use alloc::string::String;
+
+#[cfg(not(target_arch = "loongarch64"))]
+pub use unwinding::panic::{begin_panic, catch_unwind};
 
 /// Prints the stack trace of the current thread to the console.
 ///
 /// The printing procedure is protected by a spin lock to prevent interleaving.
+#[cfg(not(target_arch = "loongarch64"))]
 pub fn print_stack_trace() {
+    use core::ffi::c_void;
+
+    use gimli::Register;
+    use unwinding::abi::{
+        _Unwind_Backtrace, _Unwind_FindEnclosingFunction, _Unwind_GetGR, _Unwind_GetIP,
+        UnwindContext, UnwindReasonCode,
+    };
+
+    use crate::{early_print, sync::SpinLock};
+
     /// We acquire a global lock to prevent the frames in the stack trace from
     /// interleaving. The spin lock is used merely for its simplicity.
     static BACKTRACE_PRINT_LOCK: SpinLock<()> = SpinLock::new(());
@@ -137,7 +174,7 @@ pub fn print_stack_trace() {
                     let reg_name = "unknown";
                 }
             }
-            if i % 4 == 0 {
+            if i.is_multiple_of(4) {
                 early_print!("\n    ");
             }
             early_print!(" {} {:#18x};", reg_name, reg_i);
@@ -148,4 +185,26 @@ pub fn print_stack_trace() {
 
     let mut data = CallbackData { counter: 0 };
     _Unwind_Backtrace(callback, &mut data as *mut _ as _);
+}
+
+/// Catches unwinding panics.
+#[cfg(target_arch = "loongarch64")]
+pub fn catch_unwind<R, F: FnOnce() -> R>(
+    f: F,
+) -> Result<R, alloc::boxed::Box<dyn core::any::Any + Send>> {
+    // TODO: Support unwinding in LoongArch.
+    Ok(f())
+}
+
+/// Begins panic handling
+#[cfg(target_arch = "loongarch64")]
+pub fn begin_panic<R>(_: alloc::boxed::Box<R>) {
+    // TODO: Support panic context in LoongArch.
+}
+
+/// Prints the stack trace of the current thread to the console.
+#[cfg(target_arch = "loongarch64")]
+pub fn print_stack_trace() {
+    // TODO: Support stack trace print in LoongArch.
+    early_println!("Printing stack trace:");
 }

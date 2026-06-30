@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::mm::VmIo;
+
 use super::SyscallReturn;
 use crate::{
     ipc::{
-        IpcControlCmd,
-        semaphore::system_v::{
-            PermissionMode,
-            sem::Semaphore,
-            sem_set::{SemaphoreSet, check_sem, sem_sets, sem_sets_mut},
-        },
+        IpcControlCmd, IpcId,
+        semaphore::system_v::{PermissionMode, sem::Semaphore},
     },
     prelude::*,
     process::Pid,
@@ -17,93 +15,89 @@ use crate::{
 pub fn sys_semctl(
     semid: i32,
     semnum: i32,
-    cmd: i32,
+    op: i32,
     arg: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    if semid <= 0 || semnum < 0 {
-        return_errno!(Errno::EINVAL)
-    }
+    let Ok(semid) = IpcId::try_from(semid.cast_unsigned()) else {
+        return_errno_with_message!(Errno::EINVAL, "non-positive semaphore IDs are invalid");
+    };
+    let cmd = IpcControlCmd::try_from(op)?;
 
-    let cmd = IpcControlCmd::try_from(cmd)?;
     debug!(
-        "[sys_semctl] semid = {}, semnum = {}, cmd = {:?}, arg = {:x}",
+        "semctl: semid = {:?}, semnum = {}, cmd = {:?}, arg = {:x}",
         semid, semnum, cmd, arg
     );
 
+    let ns_proxy = ctx.thread_local.borrow_ns_proxy();
+    let ipc_ns = ns_proxy.unwrap().ipc_ns();
+
     match cmd {
         IpcControlCmd::IPC_RMID => {
-            let mut sem_sets_mut = sem_sets_mut();
-            let sem_set = sem_sets_mut.get(&semid).ok_or(Error::new(Errno::EINVAL))?;
-
             let euid = ctx.posix_thread.credentials().euid();
-            let permission = sem_set.permission();
-            let can_removed = (euid == permission.uid()) || (euid == permission.cuid());
-            if !can_removed {
-                return_errno!(Errno::EPERM);
-            }
+            ipc_ns.remove_sem_set(semid, |sem_set| {
+                // TODO: Consider capabilities in addition to UIDs.
+                let permission = sem_set.permission();
+                let can_remove = (euid == permission.uid()) || (euid == permission.cuid());
+                if !can_remove {
+                    return_errno_with_message!(
+                        Errno::EPERM,
+                        "the process does not have permission to remove the semaphore set"
+                    );
+                }
 
-            sem_sets_mut
-                .remove(&semid)
-                .ok_or(Error::new(Errno::EINVAL))?;
-        }
-        IpcControlCmd::SEM_SETVAL => {
-            // In setval, arg is parse as i32
-            let val = arg as i32;
-            if val < 0 {
-                return_errno!(Errno::ERANGE);
-            }
-
-            check_and_ctl(semid, PermissionMode::ALTER, |sem_set| {
-                sem_set.setval(semnum as usize, val, ctx.process.pid())
+                Ok(())
             })?;
         }
-        IpcControlCmd::SEM_GETVAL => {
-            fn sem_val(sem: &Semaphore) -> i32 {
-                sem.val()
-            }
-            let val: i32 = check_and_ctl(semid, PermissionMode::READ, |sem_set| {
-                sem_set.get(semnum as usize, &sem_val)
+        IpcControlCmd::IPC_STAT => {
+            ipc_ns.with_sem_set(semid, PermissionMode::READ, |sem_set| {
+                let semid_ds = sem_set.semid_ds();
+                Ok(ctx.user_space().write_val(arg as Vaddr, &semid_ds)?)
             })?;
-
-            return Ok(SyscallReturn::Return(val as isize));
         }
         IpcControlCmd::SEM_GETPID => {
             fn sem_pid(sem: &Semaphore) -> Pid {
                 sem.latest_modified_pid()
             }
-            let pid: Pid = check_and_ctl(semid, PermissionMode::READ, |sem_set| {
-                sem_set.get(semnum as usize, &sem_pid)
+            let pid: Pid = ipc_ns.with_sem_set(semid, PermissionMode::READ, |sem_set| {
+                sem_set.get(semnum as usize, sem_pid)
             })?;
 
             return Ok(SyscallReturn::Return(pid as isize));
         }
-        IpcControlCmd::SEM_GETZCNT => {
-            let cnt: usize = check_and_ctl(semid, PermissionMode::READ, |sem_set| {
-                Ok(sem_set.pending_const_count(semnum as u16))
+        IpcControlCmd::SEM_GETVAL => {
+            fn sem_val(sem: &Semaphore) -> i32 {
+                sem.val()
+            }
+            let val: i32 = ipc_ns.with_sem_set(semid, PermissionMode::READ, |sem_set| {
+                sem_set.get(semnum as usize, sem_val)
             })?;
 
-            return Ok(SyscallReturn::Return(cnt as isize));
+            return Ok(SyscallReturn::Return(val as isize));
         }
         IpcControlCmd::SEM_GETNCNT => {
-            let cnt: usize = check_and_ctl(semid, PermissionMode::READ, |sem_set| {
-                Ok(sem_set.pending_alter_count(semnum as u16))
+            let cnt: usize = ipc_ns.with_sem_set(semid, PermissionMode::READ, |sem_set| {
+                sem_set.pending_decrease_count(semnum as usize)
             })?;
 
             return Ok(SyscallReturn::Return(cnt as isize));
         }
-        _ => todo!("Need to support {:?} in SYS_SEMCTL", cmd),
+        IpcControlCmd::SEM_GETZCNT => {
+            let cnt: usize = ipc_ns.with_sem_set(semid, PermissionMode::READ, |sem_set| {
+                sem_set.pending_zero_count(semnum as usize)
+            })?;
+
+            return Ok(SyscallReturn::Return(cnt as isize));
+        }
+        IpcControlCmd::SEM_SETVAL => {
+            // In `SEM_SETVAL`, the argument is parsed as an `i32`.
+            let val = arg as i32;
+
+            ipc_ns.with_sem_set(semid, PermissionMode::ALTER, |sem_set| {
+                sem_set.setval(semnum as usize, val, ctx.process.pid())
+            })?;
+        }
     }
 
     Ok(SyscallReturn::Return(0))
-}
-
-fn check_and_ctl<T, F>(semid: i32, permission: PermissionMode, ctl_func: F) -> Result<T>
-where
-    F: FnOnce(&SemaphoreSet) -> Result<T>,
-{
-    check_sem(semid, None, permission)?;
-    let sem_sets = sem_sets();
-    let sem_set = sem_sets.get(&semid).ok_or(Error::new(Errno::EINVAL))?;
-    ctl_func.call_once((sem_set,))
 }

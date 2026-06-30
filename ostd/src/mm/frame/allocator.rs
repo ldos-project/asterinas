@@ -78,7 +78,7 @@ impl FrameAllocOptions {
             .context(NoMemorySnafu)?;
 
         if self.zeroed {
-            let addr = paddr_to_vaddr(frame.start_paddr()) as *mut u8;
+            let addr = paddr_to_vaddr(frame.paddr()) as *mut u8;
             // SAFETY: The newly allocated frame is guaranteed to be valid.
             unsafe { core::ptr::write_bytes(addr, 0, PAGE_SIZE) }
         }
@@ -115,7 +115,7 @@ impl FrameAllocOptions {
             .context(NoMemorySnafu)?;
 
         if self.zeroed {
-            let addr = paddr_to_vaddr(segment.start_paddr()) as *mut u8;
+            let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
             // SAFETY: The newly allocated segment is guaranteed to be valid.
             unsafe { core::ptr::write_bytes(addr, 0, nframes * PAGE_SIZE) }
         }
@@ -125,7 +125,7 @@ impl FrameAllocOptions {
 }
 
 #[cfg(ktest)]
-#[ktest]
+#[ktest(expect_redundant_test_prefix)]
 fn test_alloc_dealloc() {
     // Here we allocate and deallocate frames in random orders to test the allocator.
     // We expect the test to fail if the underlying implementation panics.
@@ -224,14 +224,14 @@ pub(crate) unsafe fn init() {
 
     for region in regions.iter() {
         if region.typ() == MemoryRegionType::Usable {
-            debug_assert!(region.base() % PAGE_SIZE == 0);
-            debug_assert!(region.len() % PAGE_SIZE == 0);
+            debug_assert!(region.base().is_multiple_of(PAGE_SIZE));
+            debug_assert!(region.len().is_multiple_of(PAGE_SIZE));
 
             // Add global free pages to the frame allocator.
             // Truncate the early allocated frames if there is an overlap.
             for r1 in range_difference(&(region.base()..region.end()), &range_1) {
                 for r2 in range_difference(&r1, &range_2) {
-                    log::info!("Adding free frames to the allocator: {:x?}", r2);
+                    crate::info!("Adding free frames to the allocator: {:x?}", r2);
                     get_global_frame_allocator().add_free_memory(r2.start, r2.len());
                 }
             }
@@ -296,12 +296,12 @@ impl EarlyFrameAllocator {
             }
         }
 
-        log::debug!(
+        crate::debug!(
             "Early frame allocator (below 4G) at: {:#x?}",
             under_4g_range
         );
         if !max_range.is_empty() {
-            log::debug!("Early frame allocator (above 4G) at: {:#x?}", max_range);
+            crate::debug!("Early frame allocator (above 4G) at: {:#x?}", max_range);
         }
 
         Self {

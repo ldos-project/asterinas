@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use aster_logger::println;
+
 use super::{time, *};
+use crate::{kcmdline::KCmdlineArg, time::Clock as _};
 
 mod fn_call;
 mod oqueue;
@@ -24,7 +27,7 @@ pub struct BenchmarkHarness {
 }
 
 impl BenchmarkHarness {
-    pub fn run(karg: &super::KCmdlineArg) {
+    pub fn run(karg: &KCmdlineArg) {
         let mut bench = Self::new(karg);
 
         fn_call::register_benchmarks(&mut bench);
@@ -34,7 +37,7 @@ impl BenchmarkHarness {
         bench.main();
     }
 
-    fn new(karg: &super::KCmdlineArg) -> Self {
+    fn new(karg: &KCmdlineArg) -> Self {
         let n_threads = karg
             .get_module_arg_by_name::<usize>("bench", "n_threads")
             .unwrap_or(ostd::cpu::num_cpus());
@@ -72,7 +75,7 @@ impl BenchmarkHarness {
         let benchmark: &mut alloc::boxed::Box<dyn Benchmark> = match benchmark {
             Some(b) => b,
             None => panic!(
-                "Could not find benchmark {}. Availible benchmarks {:?}",
+                "Could not find benchmark {}. Available benchmarks {:?}",
                 self.benchmark,
                 self.benchmarks.iter().map(|b| b.name()).collect::<Vec<_>>()
             ),
