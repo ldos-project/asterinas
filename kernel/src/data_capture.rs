@@ -38,19 +38,15 @@ impl DataCaptureManager {
 
         let notify_observer = notify_server
             .notification_oqueue()
-            .attach_strong_observer()?;
+            .attach_strong_observer(ObservationQuery::identity())?;
         loop {
-            notify_observer.strong_observe();
+            notify_observer.strong_observe()?;
             for f in DATA_CAPTURE_FILE_SYNCERS.lock().iter() {
                 f();
             }
         }
     }
 }
-
-static DATA_CAPTURE_DEVICE_LEGACY: Mutex<
-    Option<Arc<dyn mariposa_data_capture::legacy::DataCaptureDevice>>,
-> = Mutex::new(None);
 
 static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<dyn mariposa_data_capture::DataCaptureDevice>>> =
     Mutex::new(None);
@@ -98,12 +94,6 @@ fn init_capture_device_from_arg(
 }
 
 pub(super) fn start_capture_devices() {
-    init_capture_device_from_arg("legacy_device", |server| {
-        DATA_CAPTURE_DEVICE_LEGACY.lock().replace(
-            mariposa_data_capture::legacy::DataCaptureDeviceServer::new(server),
-        );
-    });
-
     init_capture_device_from_arg("device", |server| {
         DATA_CAPTURE_DEVICE
             .lock()
@@ -121,33 +111,6 @@ pub(super) fn start_capture_devices() {
     }
 }
 
-/// Create a new data capture file for legacy OQueues.
-pub fn new_legacy_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
-    descriptor: mariposa_data_capture::legacy::FileDescriptor,
-) -> Option<Arc<dyn mariposa_data_capture::legacy::DataCaptureFile<T>>> {
-    let ret = DATA_CAPTURE_DEVICE_LEGACY
-        .lock()
-        .as_ref()?
-        .new_file(descriptor)
-        .unwrap()
-        .build();
-    DATA_CAPTURE_FILE_FINALIZERS.lock().push(Box::new({
-        let ret = ret.clone();
-        move || {
-            ignore_err!(ret.stop());
-            info!("[kernel] Stopped data capture device (capture)");
-        }
-    }));
-    DATA_CAPTURE_FILE_SYNCERS.lock().push(Box::new({
-        let ret = ret.clone();
-        move || {
-            ignore_err!(ret.sync());
-            info!("[kernel] Sync'd data capture device (capture)");
-        }
-    }));
-    Some(ret)
-}
-
 /// Create a new data capture file for OQueues.
 pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
@@ -162,14 +125,14 @@ pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
         let ret = ret.clone();
         move || {
             ignore_err!(ret.stop());
-            info!("[kernel] Stopped legacy data capture device (capture_legacy)");
+            info!("[kernel] Stopped data capture device");
         }
     }));
     DATA_CAPTURE_FILE_SYNCERS.lock().push(Box::new({
         let ret = ret.clone();
         move || {
             ignore_err!(ret.sync());
-            info!("[kernel] Sync'd legacy data capture device (capture_legacy)");
+            info!("[kernel] Sync'd data capture device");
         }
     }));
     Some(ret)

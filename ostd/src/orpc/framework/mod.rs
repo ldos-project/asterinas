@@ -291,7 +291,7 @@ mod test {
 
     use super::*;
     use crate::{
-        orpc::{errors, legacy_oqueue::generic_test, sync::Blocker},
+        orpc::{errors, oqueue::generic_test, sync::Blocker},
         sync::{Waker, WakerKey},
         task::TaskOptions,
     };

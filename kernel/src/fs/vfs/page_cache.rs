@@ -10,13 +10,16 @@ use core::{
 
 use align_ext::AlignExt;
 use lru::LruCache;
-use mariposa_data_capture::legacy::{DataCaptureFile, FileDescriptor};
+use mariposa_data_capture::{DataCaptureFile, FileDescriptor};
 use ostd::{
     impl_untyped_frame_meta_for,
     mm::{Frame, FrameAllocOptions, HasPaddr as _, UFrame, VmIoFill},
     orpc::{
         framework::spawn_thread,
-        legacy_oqueue::{Consumer, OQueueRef, Producer, reply::ReplyQueue},
+        oqueue::{
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
+            OQueueRef, RefProducer, query::ObservationQuery, reply::ReplyQueue,
+        },
         orpc_impl, orpc_server,
     },
     path,
@@ -25,7 +28,7 @@ use ostd::{
 use snafu::OptionExt;
 
 use crate::{
-    data_capture::new_legacy_data_capture_file,
+    data_capture::new_data_capture_file,
     error::{Snafu, UNREACHABLE_SNAFU},
     fs::vfs::{
         page_prefetch::{ReadaheadPrefetcher, StridedPrefetcher},
@@ -98,7 +101,7 @@ static PAGE_CACHE_LOG_FILE: Mutex<Option<Arc<dyn DataCaptureFile<PageCacheReadIn
 pub(super) fn init_in_first_kthread() {
     let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
     if file_guard.is_none() {
-        *file_guard = new_legacy_data_capture_file(FileDescriptor {
+        *file_guard = new_data_capture_file(FileDescriptor {
             length: 200 * 1024 * 1024,
             path: path!(page_cache.read_info),
         });
@@ -364,7 +367,7 @@ impl BuiltinPrefetchPolicy {
 struct OutstandingRequests {
     /// Outstanding requests in the form of the consumers that receive the reply. Each one is
     /// expected to receive exactly one reply.
-    outstanding: Vec<Box<dyn Consumer<PageHandle>>>,
+    outstanding: Vec<Consumer<PageHandle>>,
 }
 
 impl Debug for OutstandingRequests {
@@ -393,7 +396,7 @@ impl OutstandingRequests {
     /// Handle any response for a request and return true iff it has been fully processed.
     fn check_single_request(
         pages: &mut LruCache<usize, Frame<CachePageMeta>>,
-        c: &mut Box<dyn Consumer<PageHandle>>,
+        c: &mut Consumer<PageHandle>,
     ) -> bool {
         if let Some(PageHandle { idx, frame }) = c.try_consume() {
             Self::store_uptodate(pages, idx, frame);
@@ -470,7 +473,7 @@ struct PageCacheManagerInner {
     pages: LruCache<usize, CachePage>,
     builtin_prefetch_policy: Option<BuiltinPrefetchPolicy>,
     outstanding_requests: OutstandingRequests,
-    page_cache_read_info_producer: Option<Box<dyn Producer<PageCacheReadInfo>>>,
+    page_cache_read_info_producer: Option<RefProducer<PageCacheReadInfo>>,
 }
 
 impl PageCacheManagerInner {
@@ -571,13 +574,13 @@ impl PageCacheManager {
                     if inner.pages.get(&idx).is_none() {
                         if inner.page_cache_read_info_producer.is_none() {
                             inner.page_cache_read_info_producer =
-                                Some(server.page_cache_read_info_oqueue().attach_producer()?);
+                                Some(server.page_cache_read_info_oqueue().attach_ref_producer()?);
                         }
                         inner
                             .page_cache_read_info_producer
                             .as_ref()
                             .unwrap()
-                            .produce(PageCacheReadInfo::new(
+                            .produce_ref(&PageCacheReadInfo::new(
                                 idx as u64,
                                 CacheState::Prefetch,
                                 server.as_ref() as *const _ as usize,
@@ -599,10 +602,11 @@ impl PageCacheManager {
         if get_capture_accesses()
             && let Some(file) = get_page_cache_log_file()
         {
-            file.register_observer(mariposa_data_capture::legacy::ObserverRegistration {
+            file.register_observer(mariposa_data_capture::ObserverRegistration {
+                path: path!(page_cache.read_info),
                 observer: server
                     .page_cache_read_info_oqueue()
-                    .attach_strong_observer()?,
+                    .attach_strong_observer(ObservationQuery::identity())?,
             })?;
             file.start()?;
         }
@@ -657,7 +661,7 @@ impl PageCacheManager {
     /// this call. If the built-in prefetch policy is enabled, this will trigger readaheads as
     /// needed.
     fn read_page(&self, idx: usize) -> Result<UFrame> {
-        self.page_reads_oqueue().produce(idx)?;
+        self.page_reads_oqueue().produce_ref(&idx)?;
 
         let frame = {
             let backend = self.backend()?;
@@ -667,7 +671,7 @@ impl PageCacheManager {
             // Lazily initialize page_cache_read_info_producer
             if inner.page_cache_read_info_producer.is_none() {
                 inner.page_cache_read_info_producer =
-                    Some(self.page_cache_read_info_oqueue().attach_producer()?);
+                    Some(self.page_cache_read_info_oqueue().attach_ref_producer()?);
             }
 
             let page_cache_read_info_producer =
@@ -687,7 +691,7 @@ impl PageCacheManager {
                 if let PageState::Uninit = page.load_state() {
                     // Cond 2: We should wait for the previous readahead.
                     // If there is no previous readahead, an error must have occurred somewhere.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                    page_cache_read_info_producer.produce_ref(&PageCacheReadInfo::new(
                         idx as u64,
                         CacheState::Pending,
                         self as *const _ as usize,
@@ -701,7 +705,7 @@ impl PageCacheManager {
                     inner.pages.get(&idx).context(UNREACHABLE_SNAFU)?.clone()
                 } else {
                     // Cond 1.
-                    page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                    page_cache_read_info_producer.produce_ref(&PageCacheReadInfo::new(
                         idx as u64,
                         CacheState::Hit,
                         self as *const _ as usize,
@@ -712,7 +716,7 @@ impl PageCacheManager {
                 }
             } else {
                 // Cond 3.
-                page_cache_read_info_producer.produce(PageCacheReadInfo::new(
+                page_cache_read_info_producer.produce_ref(&PageCacheReadInfo::new(
                     idx as u64,
                     CacheState::Miss,
                     self as *const _ as usize,
@@ -742,7 +746,7 @@ impl PageCacheManager {
             frame
         };
 
-        self.page_reads_reply_oqueue().produce(idx)?;
+        self.page_reads_reply_oqueue().produce_ref(&idx)?;
 
         Ok(frame.into())
     }
@@ -755,7 +759,7 @@ fn flush_page(
     pages: &mut LruCache<usize, Frame<CachePageMeta>>,
     backend: &Arc<dyn PageStore>,
     idx: usize,
-) -> Result<Option<Box<dyn Consumer<PageHandle>>>> {
+) -> Result<Option<Consumer<PageHandle>>> {
     let backend_npages = backend.npages()?;
     if let Some(page) = pages.peek(&idx)
         && page.load_state() == PageState::Dirty
@@ -808,8 +812,8 @@ impl Pager for PageCacheManager {
         if let Some(page) = pages.get_mut(&idx) {
             page.store_state(PageState::Dirty);
             drop(inner);
-            self.page_writes_oqueue().produce(idx)?;
-            self.page_writes_reply_oqueue().produce(idx)?;
+            self.page_writes_oqueue().produce_ref(&idx)?;
+            self.page_writes_reply_oqueue().produce_ref(&idx)?;
         } else {
             warn!("The page {} is not in page cache", idx);
         }
@@ -851,7 +855,7 @@ impl Pager for PageCacheManager {
 
 #[orpc_impl]
 impl server_traits::PageCache for PageCacheManager {
-    fn prefetch_oqueue(&self) -> OQueueRef<usize>;
+    fn prefetch_oqueue(&self) -> ConsumableOQueueRef<usize>;
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>> {
         self.backend()

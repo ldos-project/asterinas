@@ -2,7 +2,7 @@
 
 use bitflags::bitflags;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueue;
+use ostd::orpc::oqueue::OQueue;
 
 use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]
@@ -38,7 +38,7 @@ pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
 
     if file.as_socket_or_err().is_ok() {
         #[cfg(not(baseline_asterinas))]
-        super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+        super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
             fd,
             is_close: 1,
             timestamp: MonotonicRawClock::get().read_time(),

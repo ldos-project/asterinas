@@ -8,7 +8,7 @@ use ostd::{
     new_server,
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
-        oqueue::{OQueue, OQueueRef},
+        oqueue::{OQueue, OQueueBase, OQueueRef, query::ObservationQuery},
         orpc_server,
     },
     path,
@@ -73,9 +73,9 @@ impl PmuServer {
 
         let notify_observer = notify_server
             .notification_oqueue()
-            .attach_strong_observer()?;
+            .attach_strong_observer(ObservationQuery::identity())?;
         loop {
-            notify_observer.strong_observe();
+            notify_observer.strong_observe()?;
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();
             let misses = DtlbMisses {
                 timestamp: aster_time::read_monotonic_time().into(),

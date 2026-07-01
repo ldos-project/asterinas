@@ -11,7 +11,7 @@ use aster_block::bio::BioWaiter;
 use aster_rights::Rights;
 use inherit_methods_macro::inherit_methods;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{oqueue::OQueueRef, orpc_impl};
 use ostd::{new_server, orpc::orpc_server};
 use spin::Once;
 
