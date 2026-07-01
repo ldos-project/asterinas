@@ -23,10 +23,6 @@ use crossbeam_utils::CachePadded;
 use ostd::{
     info,
     orpc::{
-        legacy_oqueue::{
-            Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
-            ringbuffer::MPMCOQueue,
-        },
         oqueue::{
             ConsumableOQueue, ConsumableOQueueRef, OQueue as OtherOQueue, OQueueRef,
             ObservationQuery,
@@ -37,7 +33,14 @@ use ostd::{
 };
 
 use super::{Benchmark, BenchmarkHarness, time, *};
-use crate::{kcmdline::get_kernel_cmd_line, thread::kernel_thread::ThreadOptions};
+use crate::{
+    benchmarks::legacy_oqueue::{
+        Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+        ringbuffer::MPMCOQueue,
+    },
+    kcmdline::get_kernel_cmd_line,
+    thread::kernel_thread::ThreadOptions,
+};
 
 /// A single element (slot for storing a value) in a ring buffer.
 #[derive(Debug)]
@@ -1092,14 +1095,18 @@ impl OQueueLegacyBenchmark {
         let n_messages = input.n_messages;
 
         if q_type == "mpmc_oq" {
-            let q =
-                ostd::orpc::legacy_oqueue::ringbuffer::mpmc::MPMCOQueue::<u64>::new(2 << 20, 16);
+            let q = crate::benchmarks::legacy_oqueue::ringbuffer::mpmc::MPMCOQueue::<u64>::new(
+                2 << 20,
+                16,
+            );
             assert!(q.capacity() >= n_messages);
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else if q_type == "locking" {
-            let q =
-                ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::<u64>::new(2 << 20, 16);
+            let q = crate::benchmarks::legacy_oqueue::locking::ObservableLockingQueue::<u64>::new(
+                2 << 20,
+                16,
+            );
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else {

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-/// The implementation of the `select_legacy!` macro.
+/// The implementation of the `select!` macro.
 ///
 /// TODO(#73): This syntax is probably bad and will be replaced.
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{Block, Expr, ExprLet, Ident, Token, parse::Parse, punctuated::Punctuated, token::Comma};
+use syn::{
+    Block, Expr, ExprLet, ExprMethodCall, Ident, Token, parse::Parse, punctuated::Punctuated,
+    token::Comma,
+};
 
 /// A syn-parsable struct for the syntax:
 ///
@@ -55,24 +58,26 @@ impl Parse for SelectInput {
     }
 }
 
-/// The implementation of the `select!` and `select_legacy!` macros. The `wrap_*` functions are used
-/// for the slightly different reference and error handling in the two cases.
-pub fn select_macro_impl(
-    input: SelectInput,
-    wrap_expr: impl Fn(&Expr) -> TokenStream,
-    wrap_blocker: impl Fn(&Expr) -> TokenStream,
-) -> TokenStream {
+/// The implementation of the `select!` macro.
+pub fn select_macro_impl(input: SelectInput) -> TokenStream {
     let blockers: Vec<_> = input
         .clauses
         .iter()
-        .map(|clause| wrap_blocker(clause.blocker()))
+        .map(|clause| clause.blocker())
         .collect();
 
     // Generate all the check statements which run each time a blocker wakes.
     let check_statements = input.clauses.iter().map(|clause| {
         let attrs = &clause.let_binding.attrs;
         let pat = &clause.let_binding.pat;
-        let blocker_expr = wrap_expr(&clause.let_binding.expr);
+        let e = &clause.let_binding.expr;
+        let blocker_expr = match e.as_ref() {
+            // Special case consume since it cannot return an error.
+            Expr::MethodCall(ExprMethodCall { method, .. }) if method == "try_consume" => {
+                quote! { #e }
+            }
+            _ => quote! { #e ? },
+        };
         let body = &clause.body;
         let tmp = Ident::new("message", Span::mixed_site());
         quote! {
@@ -87,7 +92,7 @@ pub fn select_macro_impl(
 
     let output = quote! {
         {
-            ::ostd::task::Task::current().map(|c| c.block_on(&[#(#blockers),*]));
+            ::ostd::task::Task::current().map(|c| c.block_on(&[#(&#blockers),*]));
             #(#check_statements)*
         }
     };

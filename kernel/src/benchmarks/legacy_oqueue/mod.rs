@@ -2,29 +2,24 @@
 //! OQueue - Observable Queue
 //! OQueue provides an interface for passing data within or between subsystems in a way that can be
 //! Observed by policies.
+#![allow(unsafe_code)]
+#![allow(clippy::allow_attributes)]
 
 #[cfg(ktest)]
 pub mod generic_test;
 
 pub mod locking;
-pub mod registry;
-pub mod reply;
 /// OQueue implementations that use lock-free ringbuffers for efficient space management
 pub mod ringbuffer;
 
-use alloc::string::String;
+use alloc::{boxed::Box, string::String};
 use core::{
     any::Any,
     ops::{Add, AddAssign, Sub, SubAssign},
 };
 
+use ostd::orpc::sync::Blocker;
 use snafu::Snafu;
-
-use super::sync::Blocker;
-use crate::{
-    prelude::{Arc, Box},
-    task::Task,
-};
 
 /// A reference to a specific row in a queue. This refers to an element over the full history of a oqueue, not based on
 /// some implementation defined buffer.
@@ -120,14 +115,6 @@ pub trait WeakObserver<T>: Send + Blocker {
     /// the given index.
     fn weak_observe(&self, index: Cursor) -> Option<T>;
 
-    /// Wait for new data to become available.
-    fn wait(&self)
-    where
-        Self: Sized,
-    {
-        Task::current().unwrap().block_on(&[self]);
-    }
-
     /// Return a cursor pointing to the most recent value in the oqueue. This has very relaxed consistency, the element
     /// may no longer be the most recent or even no longer be available.
     fn recent_cursor(&self) -> Cursor;
@@ -197,38 +184,7 @@ pub trait OQueue<T>: Any + Sync + Send {
     /// no more weak-observer are allowed on this specific oqueue (for example, if there are a limited number of
     /// weak-observer slots on the oqueue.).
     fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError>;
-
-    /// Produce a value into the OQueue directly without attaching. This is equivalent to attaching
-    /// then producing:
-    /// ```ignore
-    /// self.attach_producer()?.produce(v)
-    /// ```
-    ///
-    /// By default, this will actually create an ephemeral attachment, but some OQueues will
-    /// optimize it.
-    fn produce(&self, v: T) -> Result<(), OQueueAttachError> {
-        let producer = self.attach_producer()?;
-        producer.produce(v);
-        Ok(())
-    }
-
-    /// Try to produce a value into the OQueue directly without attaching. This is equivalent to
-    /// attaching then trying to produce:
-    /// ```ignore
-    /// self.attach_producer()?.try_produce(v)
-    /// ```
-    ///
-    /// By default, this will actually create an ephemeral attachment, but some OQueues will
-    /// optimize it.
-    fn try_produce(&self, v: T) -> Result<Option<T>, OQueueAttachError> {
-        let producer = self.attach_producer()?;
-        Ok(producer.try_produce(v))
-    }
 }
-
-/// A reference to an OQueue. This must be cloned when a new reference is needed. It is `Send`, but not `Sync`. (It
-/// behaves similarly to `Arc` and as of writing is implemented as `Arc`.)
-pub type OQueueRef<T> = Arc<dyn OQueue<T>>;
 
 #[cfg(ktest)]
 mod test {
@@ -237,22 +193,9 @@ mod test {
     use ostd::prelude::*;
 
     use super::*;
-    use crate::orpc::legacy_oqueue::{generic_test::TestMessage, locking::ObservableLockingQueue};
-
-    #[ktest]
-    fn default_direct_produce_consume() {
-        let oqueue = Arc::new(ObservableLockingQueue::new(2, 8));
-        let consumer = oqueue.attach_consumer().unwrap();
-        let test_message = TestMessage { x: 42 };
-
-        oqueue.produce(test_message).unwrap();
-        assert!(oqueue.try_produce(test_message).unwrap().is_some());
-
-        assert_eq!(consumer.consume(), test_message);
-
-        assert!(oqueue.try_produce(test_message).unwrap().is_none());
-        assert_eq!(consumer.consume(), test_message);
-    }
+    use crate::benchmarks::legacy_oqueue::{
+        generic_test::TestMessage, locking::ObservableLockingQueue,
+    };
 
     #[ktest]
     fn default_weak_observe() {
