@@ -71,6 +71,8 @@ DNS_SERVER ?= none
 # Docker settings
 # Name that the long-running container will use
 DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
+DOCKER_INTERACTIVE_ARGS ?= -it
+DOCKER_RUN_COMMAND ?=
 # End of docker settings
 
 # Rust cache
@@ -523,7 +525,7 @@ ${DOCKER_RUST_CACHE_LOCATION}/generated:
 
 .PHONY: docker
 docker: | ${DOCKER_RUST_CACHE_LOCATION}/generated
-	docker run --rm -it $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG)
+	docker run --rm $(DOCKER_INTERACTIVE_ARGS) $(DOCKER_RUN_ARGS) $(DOCKER_MOUNTS) $(DOCKER_IMAGE_TAG) $(DOCKER_RUN_COMMAND)
 
 .PHONY: docker_start
 docker_start: | ${DOCKER_RUST_CACHE_LOCATION}/generated
