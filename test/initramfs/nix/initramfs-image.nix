@@ -5,6 +5,7 @@ stdenvNoCC.mkDerivation {
   buildCommand = ''
     pushd $(mktemp -d)
     cp -r ${initramfs}/* ./
+    cp -r ${initramfs}/.ssh ./
     chmod -R 0755 benchmark
     chmod -R 0755 etc
     chmod -R 0755 opt
