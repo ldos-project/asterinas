@@ -9,7 +9,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use device_id::DeviceId;
 use inherit_methods_macro::inherit_methods;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
+};
 use ostd::{
     const_assert, mm::io::util::HasVmReaderWriter, new_server, orpc::orpc_server,
     util::callback_counter::CallbackCounter,
@@ -2060,22 +2063,22 @@ impl server_traits::PageIOObservable for InodeBlockManager {
 impl server_traits::PageStore for InodeBlockManager {
     fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_reads_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
+        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
         self.read_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
             // TODO(arthurp, #120): This can crash if produce blocks.
-            reply_producer.produce(req.handle.idx);
+            reply_producer.produce_ref(&req.handle.idx);
             req.reply_handle.produce(req.handle);
         })
     }
 
     fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
         let bid = req.handle.idx as Ext2Bid;
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
+        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
         self.write_block_async_with_closure(bid, &req.handle.frame.clone(), move || {
             // TODO(arthurp, #120): This can crash if produce blocks.
-            reply_producer.produce(req.handle.idx);
+            reply_producer.produce_ref(&req.handle.idx);
             if let Some(reply_handle) = req.reply_handle {
                 reply_handle.produce(req.handle);
             }

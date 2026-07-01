@@ -40,10 +40,9 @@ pub struct PageFaultOQueueMessage {
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
-    use alloc::sync::Arc;
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
-    use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use ostd::orpc::oqueue::OQueueRef;
     use spin::Once;
 
     use super::PageFaultOQueueMessage;
@@ -66,20 +65,19 @@ pub mod oqueues {
         }
     }
 
-    pub(super) static PAGE_FAULT_OQUEUE: Once<
-        Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>>,
-    > = Once::new();
+    pub(super) static PAGE_FAULT_OQUEUE: Once<OQueueRef<ObservableEvent<PageFaultOQueueMessage>>> =
+        Once::new();
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<Arc<MPMCOQueue<ObservableEvent<isize>>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<OQueueRef<ObservableEvent<isize>>> = Once::new();
 
     #[expect(unused)]
-    pub fn get_rss_delta_oqueue() -> Arc<MPMCOQueue<ObservableEvent<isize>>> {
+    pub fn get_rss_delta_oqueue() -> OQueueRef<ObservableEvent<isize>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
-    pub fn get_page_fault_oqueue() -> Arc<MPMCOQueue<ObservableEvent<PageFaultOQueueMessage>>> {
+    pub fn get_page_fault_oqueue() -> OQueueRef<ObservableEvent<PageFaultOQueueMessage>> {
         PAGE_FAULT_OQUEUE.wait().clone()
     }
 }
@@ -87,9 +85,9 @@ pub mod oqueues {
 pub fn init_in_first_kthread() {
     #[cfg(not(baseline_asterinas))]
     {
-        use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+        use ostd::orpc::oqueue::OQueueRef;
         // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
-        oqueues::RSS_DELTA_OQUEUE.call_once(|| MPMCOQueue::new(64, 1));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| OQueueRef::new_anonymous(64));
+        oqueues::RSS_DELTA_OQUEUE.call_once(|| OQueueRef::new_anonymous(64));
     }
 }

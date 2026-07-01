@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, format};
 
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueAttachError, oqueue::OQueueError};
+use ostd::orpc::oqueue::OQueueError;
 use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
 use snafu::Snafu;
 
@@ -374,21 +374,6 @@ impl From<RPCError> for Error {
 }
 
 #[cfg(not(baseline_asterinas))]
-impl From<OQueueAttachError> for Error {
-    #[track_caller]
-    fn from(value: OQueueAttachError) -> Self {
-        match value {
-            OQueueAttachError::Unsupported { .. } => {
-                Self::with_message(Errno::ECONNREFUSED, "OQueue attachment unsupported")
-            }
-            OQueueAttachError::AllocationFailed { .. } => {
-                Self::with_message(Errno::ECONNREFUSED, "OQueue attachment allocation failed")
-            }
-        }
-    }
-}
-
-#[cfg(not(baseline_asterinas))]
 impl From<OQueueError> for Error {
     #[track_caller]
     fn from(value: OQueueError) -> Self {
@@ -674,24 +659,9 @@ pub(crate) use return_errno_with_message;
 
 #[cfg(ktest)]
 mod test {
-    use alloc::borrow::ToOwned;
-
     use ostd::{orpc::errors::ServerMissingSnafu, prelude::ktest};
 
     use super::*;
-
-    #[cfg(not(baseline_asterinas))]
-    #[ktest]
-    fn convert_errors_oqueue_attach() {
-        fn oqueue_attach() -> Result<(), Error> {
-            Err(OQueueAttachError::Unsupported {
-                table_type: "test".to_owned(),
-            })?;
-            Ok(())
-        }
-
-        assert!(oqueue_attach().is_err());
-    }
 
     #[ktest]
     fn convert_errors_orpc() {

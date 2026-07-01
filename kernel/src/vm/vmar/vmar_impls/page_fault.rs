@@ -19,8 +19,10 @@ impl Vmar {
             let res = vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
+                use ostd::orpc::oqueue::OQueue as _;
+
                 self.page_fault_oqueue_producer
-                    .produce(oqueues::ObservableEvent::new(PageFaultOQueueMessage {
+                    .produce_ref(&oqueues::ObservableEvent::new(PageFaultOQueueMessage {
                         vm_space_id: self.vm_space.id(),
                         fault_info: *page_fault_info,
                     }))?;

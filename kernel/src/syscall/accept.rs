@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueue;
+use ostd::orpc::oqueue::OQueue;
 
 use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]
@@ -81,14 +81,14 @@ fn do_accept(
     };
 
     #[cfg(not(baseline_asterinas))]
-    super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+    super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
         fd,
         is_close: 0,
         timestamp: MonotonicRawClock::get().read_time(),
     })?;
 
     #[cfg(not(baseline_asterinas))]
-    super::oqueue::get_socket_oqueue().produce(super::oqueue::SocketOQueueMessage {
+    super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
         fd,
         is_close: 0,
         timestamp: MonotonicRawClock::get().read_time(),
