@@ -24,6 +24,32 @@ pub(crate) struct TestMessage {
     pub(crate) x: usize,
 }
 
+pub(crate) fn test_produce_direct(queue: ConsumableOQueueRef<TestMessage>) {
+    let consumer = queue.attach_consumer().unwrap();
+    let test_message = TestMessage { x: 42 };
+
+    queue.produce(test_message);
+    assert!(queue.try_produce(test_message).is_err());
+
+    assert_eq!(consumer.consume(), test_message);
+
+    assert!(queue.try_produce(test_message).is_ok());
+}
+
+pub(crate) fn test_produce_ref_direct(queue: OQueueRef<TestMessage>) {
+    let observer = queue
+        .attach_strong_observer(ObservationQuery::identity())
+        .unwrap();
+    let test_message = TestMessage { x: 42 };
+
+    queue.produce_ref(&test_message);
+    assert!(!queue.try_produce_ref(&test_message).unwrap());
+
+    assert_eq!(observer.strong_observe().unwrap(), test_message);
+
+    assert!(queue.try_produce_ref(&test_message).is_ok());
+}
+
 pub(crate) fn test_produce_consume(queue: ConsumableOQueueRef<TestMessage>) {
     let producer = queue.attach_value_producer().unwrap();
     let consumer = queue.attach_consumer().unwrap();
