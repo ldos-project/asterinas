@@ -314,20 +314,22 @@ kernel: initramfs $(CARGO_OSDK)
 run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
+# TODO(arthurp, https://github.com/ldos-project/asterinas/issues/237): Using `^` to anchor to the
+# beginning of the line is probably better. But the dataloss bug makes that spuriously fail.
 ifeq ($(AUTO_TEST), conformance)
-	@tail --lines 100 qemu.log | grep -q "^All conformance tests passed." \
+	@tail --lines 100 qemu.log | grep -q "All conformance tests passed." \
 		|| (echo "Conformance test failed" && exit 1)
 else ifeq ($(AUTO_TEST), regression)
-	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
+	@tail --lines 100 qemu.log | grep -q "All regression tests passed." \
 		|| (echo "Regression test failed" && exit 1)
 else ifeq ($(AUTO_TEST), boot)
-	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
+	@tail --lines 100 qemu.log | grep -q "Successfully booted." \
 		|| (echo "Boot test failed" && exit 1)
 else ifeq ($(AUTO_TEST), raid)
-	@tail --lines 100 qemu.log | grep -q "^All raid1 test passed" \
+	@tail --lines 100 qemu.log | grep -q "All raid1 test passed" \
 		|| (echo "RAID test failed" && exit 1)
 else ifeq ($(AUTO_TEST), vsock)
-	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
+	@tail --lines 100 qemu.log | grep -q "Vsock test passed." \
 		|| (echo "Vsock test failed" && exit 1)
 endif
 
