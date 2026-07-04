@@ -10,9 +10,13 @@ use crate::{
 
 mod block;
 pub(super) mod char;
+mod raid;
 
 pub(super) fn init_in_first_kthread() {
     block::init_in_first_kthread();
+    // By this time, all the block devices are registeded and spawned, 
+    // including the RAID member devices. So we can spawn the RAID thread now.
+    raid::init_in_first_kthread();
 }
 
 pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {

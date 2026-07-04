@@ -87,7 +87,11 @@ impl Raid1Device {
     ///
     /// Panics if fewer than two members are provided.
     #[cfg(baseline_asterinas)]
-    pub fn init(name: &str, members: Vec<Arc<dyn BlockDevice>>) -> Result<(), Raid1DeviceError> {
+    pub fn init(
+        name: &str,
+        id: DeviceId,
+        members: Vec<Arc<dyn BlockDevice>>,
+    ) -> Result<(), Raid1DeviceError> {
         if members.len() < 2 {
             return Err(Raid1DeviceError::NotEnoughMembers);
         }
@@ -104,7 +108,7 @@ impl Raid1Device {
             metadata,
             read_cursor: AtomicUsize::new(0),
             name: name.to_owned(),
-            id: DeviceId::null(),
+            id,
         });
 
         aster_block::register(device.clone())?;
@@ -120,6 +124,7 @@ impl Raid1Device {
     #[cfg(not(baseline_asterinas))]
     pub fn init(
         name: &str,
+        id: DeviceId,
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<(), Raid1DeviceError> {
@@ -140,7 +145,7 @@ impl Raid1Device {
             metadata,
             selection_policy,
             name: name.to_owned(),
-            id: DeviceId::null(),
+            id,
         });
 
         aster_block::register(device.clone())?;
