@@ -20,8 +20,14 @@ int main()
 	int fd;
 	ssize_t n;
 	unsigned char *pattern, *read_back;
-	posix_memalign((void **)&pattern, 4096, RAID1_TEST_BLOCK_SIZE);
-	posix_memalign((void **)&read_back, 4096, RAID1_TEST_BLOCK_SIZE);
+	if (posix_memalign((void **)&pattern, 4096, RAID1_TEST_BLOCK_SIZE) !=
+		    0 ||
+	    posix_memalign((void **)&read_back, 4096, RAID1_TEST_BLOCK_SIZE) !=
+		    0) {
+		fprintf(stderr, "[raid-test] posix_memalign failed: %s\n",
+			strerror(errno));
+		return -1;
+	}
 	int i, ret = 0;
 
 	// Fill pattern buffer with known values

@@ -22,6 +22,7 @@ SUBDIRS := \
 	process \
 	scripts \
 	security \
+	raid1 \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)
 SUBDIRS += intel_tdx
