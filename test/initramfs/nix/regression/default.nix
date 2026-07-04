@@ -9,8 +9,17 @@ let
   commonArgs = { inherit testPlatform; };
   commonBuild = dir: callPackage ./common.nix (commonArgs // { inherit dir; });
 
-  subDirs =
-    [ "device" "fs" "hello_world" "io" "ipc" "memory" "process" "security" "raid1"];
+  subDirs = [
+    "device"
+    "fs"
+    "hello_world"
+    "io"
+    "ipc"
+    "memory"
+    "process"
+    "security"
+    "raid1"
+  ];
 
   tdxAttest = callPackage ./tdx-attest.nix { };
 
