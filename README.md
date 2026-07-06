@@ -189,6 +189,13 @@ Kernel code that needs to be different in the baseline and the Mariposa kernels 
 is used the baseline variant should be named `{original}_baseline` (e.g., the `orpc` module stubs
 for the baseline are in `orpc_baseline.rs`).
 
+## Shared Configurations
+
+Some project-related configurations have a template being maintained in this repo, named with a `.template` suffix. For example, currently the two being maintained are:
+- `.vscode/settings.template.json`
+- `.devcontainer/devcontainer.template.json`
+Please remove the `.template` to use it as the regular configuration file. The version without the suffix is set to be untracked, so feel free to modify it as your local configuration. 
+
 ## The Book
 
 See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.
