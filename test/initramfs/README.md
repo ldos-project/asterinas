@@ -103,6 +103,17 @@ Configuration files required by benchmarks or regression tests should be placed 
 
 If additional configuration files or directories are needed, ensure they are appropriately packaged by updating the `initramfs.nix` file.
 
+## SSH Server
+
+The `make run_kernel` guest environment contains an SSH server. To start it, run `start_dropbear.sh`
+in the guest. The server will then be available at port 22 in the host (and container) and
+accessible with `ssh localhost`. The server is configured with the user SSH keys of the container
+user and with passwords disabled. So you must create an SSH key in the container before calling
+`make run_kernel`. The guest SSH host keys are regenerated on each boot, so you will need to
+configure your SSH client appropriately.
+
+(As of writing, the `make run_nixos` guest environment does *not* have an SSH.)
+
 ## Notes for Developers
 
 - **Nix Usage**: Use `Nix` whenever possible to manage dependencies and builds for ease of maintenance and consistency.
