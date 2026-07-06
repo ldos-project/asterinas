@@ -190,6 +190,7 @@ is used the baseline variant should be named `{original}_baseline` (e.g., the `o
 for the baseline are in `orpc_baseline.rs`).
 
 ## Shared Configurations
+
 Some project-related configurations have a template being maintained in this repo, named with a `.template` suffix. For example, currently the two being maintained are:
 - `.vscode/settings.template.json`
 - `.devcontainer/devcontainer.template.json`
