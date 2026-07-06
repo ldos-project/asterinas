@@ -2,19 +2,14 @@
 let
   start_dropbear_sh = builtins.toFile "start_dropbear.sh" ''
 # Launcher script for dropbear
-#
-# It generates keys and caches them in /ext2. This means they will often be retained over reboots.
 
-mkdir -p /ext2/etc/dropbear
-# Generate keys if they don't already exist.
-test /ext2/etc/dropbear/dropbear_rsa_host_key || dropbearkey -t rsa -f /ext2/etc/dropbear/dropbear_rsa_host_key
-test /ext2/etc/dropbear/dropbear_ecdsa_host_key || dropbearkey -t ecdsa -f /ext2/etc/dropbear/dropbear_ecdsa_host_key
-test /ext2/etc/dropbear/dropbear_ed25519_host_key || dropbearkey -t ed25519 -f /ext2/etc/dropbear/dropbear_ed25519_host_key
-
-# Copy keys into the actual /etc
+# Generate host keys
 mkdir -p /etc/dropbear
-cp /ext2/etc/dropbear/* /etc/dropbear/
+dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
+dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key
 
+# Start server with passwork logins disabled
 dropbear -s -p 10.0.2.15:22
 '';
   authorized_keys_file = builtins.toFile "authorized_keys" authorized_keys;

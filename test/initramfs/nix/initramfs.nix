@@ -7,6 +7,7 @@ let
     root = ./../etc;
     fileset = ./../etc;
   };
+  # The openssh dependency is only for the sftp-server binary. The actual ssh server is still provided by dropbear.
   openssh = pkgs.openssh;
   dropbear = pkgs.dropbear.override { enableSCP = true; sftpPath = "/bin/sftp-server"; };
   dropbear_conf = pkgs.callPackage ./dropbear-conf.nix { authorized_keys = authorized_keys; };

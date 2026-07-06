@@ -160,6 +160,7 @@ initramfs_pkgs:
 		-A initramfs-image
 
 $(AUTHORIZED_KEYS_FILE):
+	@mkdir -p $(BUILD_DIR)
 	cat ${HOME}/.ssh/*.pub > $@
 
 $(EXT2_IMAGE):
