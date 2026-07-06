@@ -29,6 +29,9 @@ virtio-net.pcap
 # benchmark results
 /result_*.json
 
+# howdone run results
+/run-*
+
 # profile results
 aster-nix-profile-*.json
 aster-nix-profile-*.folded

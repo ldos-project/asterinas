@@ -251,3 +251,17 @@ runtime_config:              # Runtime configuration
 ```
 
 By adhering to this format, we ensure clarity and consistency in benchmarking workflows and reporting systems.
+
+## Capturing Provenance
+
+When we run a benchmark, we want to keep information about how and where it was run to provide
+reproducibility and reduce mistakes. This should be achieved using the `howdone` tool in `tools/`.
+Using it is as simple as prefixing your command with `./tools/howdone/howdone`, for example:
+
+```shell
+./tools/howdone/howdone make run_kernel
+```
+
+This will create a directory `run-<date and time>` which contains all the output of the command and
+other useful information as specified in `.howdone.yaml`. This will include the hardware and
+software in use, log files with resolved stack traces, and other information. 
