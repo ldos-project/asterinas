@@ -62,6 +62,7 @@ use core::{
     ops::{Add, Sub},
 };
 
+pub mod export;
 mod implementation;
 pub mod query;
 pub mod registry;
@@ -69,6 +70,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
+pub use export::{CborObserver, OQueueExport};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -357,7 +359,7 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
             Some(path.clone()),
         ));
         let ret = Self { inner };
-        registry::register(&path, ret.as_any_oqueue());
+        registry::register_no_export(&path, &ret.as_any_oqueue());
         ret
     }
 
@@ -393,7 +395,7 @@ impl<T: ?Sized + Send + 'static> OQueueRef<T> {
                 Some(path.clone()),
             )),
         };
-        registry::register(&path, ret.as_any_oqueue());
+        registry::register_no_export(&path, &ret.as_any_oqueue());
         ret
     }
 

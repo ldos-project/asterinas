@@ -192,6 +192,8 @@ osdk-heap-allocator = { path = "osdk/deps/heap-allocator" }
 # External dependencies only for unsafe crates (i.e., crates under ostd directory)
 bit_field = "0.10.1"
 gimli = { version = "0.28", default-features = false, features = ["read-core"] }
+minicbor = { version = "2.2", default-features = false, features = ["derive", "alloc"] }
+minicbor-serde = { version = "0.6", default-features = false }
 minicov = "0.3"
 num-traits = { version = "0.2", default-features = false }
 serde = { version = "1.0.192", default-features = false, features = ["alloc", "derive"] }

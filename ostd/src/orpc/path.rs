@@ -18,7 +18,7 @@ use core::{
 
 /// A reference to `PathComponent` which ignores whether the name is owned. This is used for pattern
 /// matching on [`PathComponent`].
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PathComponentRef<'a> {
     /// A name path element
     Name(&'a str),
@@ -70,6 +70,20 @@ impl Hash for PathComponent {
     }
 }
 
+// `Ord` is defined via `borrow` so that `Name` and `OwnedName` for the same string order
+// identically, consistent with `PartialEq`. This lets `Path` be used as a `BTreeMap` key.
+impl PartialOrd for PathComponent {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PathComponent {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.borrow().cmp(&other.borrow())
+    }
+}
+
 impl PathComponent {
     /// Returns a ref (-like) value which provides uniform access to names as a `&str`.
     pub fn borrow(&self) -> PathComponentRef<'_> {
@@ -114,6 +128,20 @@ impl Eq for Path {}
 impl Hash for Path {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.components().hash(state);
+    }
+}
+
+// `Ord` is defined via `components` so that `Path` orders lexicographically, consistent with
+// `PartialEq`. This lets `Path` be used as a `BTreeMap` key.
+impl PartialOrd for Path {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Path {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.components().cmp(other.components())
     }
 }
 
@@ -638,6 +666,33 @@ mod test {
 
         let different_index = PathComponent::Index(43);
         assert_ne!(index1, different_index);
+    }
+
+    #[ktest]
+    fn path_ordering() {
+        use core::cmp::Ordering;
+
+        // `Name` and `OwnedName` for the same string must order as equal, matching `PartialEq`.
+        assert_eq!(
+            PathComponent::Name("a").cmp(&PathComponent::OwnedName("a".to_string())),
+            Ordering::Equal,
+        );
+        assert_eq!(
+            PathComponent::Name("a").cmp(&PathComponent::Name("b")),
+            Ordering::Less,
+        );
+
+        // `Path` ordering is lexicographic over components, and agnostic to name ownership, so it
+        // can act as a stable `BTreeMap` key.
+        let mut paths = alloc::vec![path!(a.c[1]), path!(a.b[2]), path!(a.b[1]),];
+        paths.sort();
+        assert_eq!(
+            paths,
+            alloc::vec![path!(a.b[1]), path!(a.b[2]), path!(a.c[1])]
+        );
+
+        assert_eq!(path!(a.b), path!(a.b));
+        assert!(path!(a.b) < path!(a.b.c));
     }
 
     #[ktest]
