@@ -161,7 +161,13 @@ initramfs_pkgs:
 
 $(AUTHORIZED_KEYS_FILE):
 	@mkdir -p $(BUILD_DIR)
-	cat ${HOME}/.ssh/*.pub > $@
+	@# If public SSH keys exist, put them in the authorized_keys file
+	@if ls ${HOME}/.ssh/*.pub > /dev/null 2> /dev/null; then \
+		cat ${HOME}/.ssh/*.pub > $@; \
+	else \
+		echo > $@; \
+		echo "Warning: No SSH key found. Logging in via Dropbear will be impossible."; \
+	fi
 
 $(EXT2_IMAGE):
 	@mkdir -p $(BUILD_DIR)
