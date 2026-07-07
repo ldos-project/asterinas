@@ -32,6 +32,7 @@ EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 CAPTURE_IMAGE := $(BUILD_DIR)/capture.img
 CAPTURE_LEGACY_IMAGE := $(BUILD_DIR)/capture_legacy.img
 CAPTURE_IMAGE_SIZE := 4G
+AUTHORIZED_KEYS_FILE := $(BUILD_DIR)/authorized_keys
 
 # Include benchmark, if BENCHMARK is set.
 ifeq ($(BENCHMARK), none)
@@ -71,11 +72,12 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--argstr dnsServer ${DNS_SERVER} \
 		--arg initramfsCompressed $(INITRAMFS_COMPRESSED) \
 		--arg smp $(SMP) \
+		--arg-from-file authorized_keys $(AUTHORIZED_KEYS_FILE) \
 		--out-link $@ \
 		nix -A initramfs-image
 
 .PHONY: $(INITRAMFS)
-$(INITRAMFS):
+$(INITRAMFS): $(AUTHORIZED_KEYS_FILE)
 	@nix-build \
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
 		--argstr target $(OSDK_TARGET_ARCH) \
@@ -87,6 +89,7 @@ $(INITRAMFS):
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
 		--arg smp $(SMP) \
+		--arg-from-file authorized_keys $(AUTHORIZED_KEYS_FILE) \
 		--out-link $@ \
 		nix -A initramfs
 
@@ -155,6 +158,16 @@ initramfs_pkgs:
 		--arg enableBenchmarkTest true \
 		--out-link /nix/var/nix/gcroots/auto/x86_64-initramfs-with-benchmark \
 		-A initramfs-image
+
+$(AUTHORIZED_KEYS_FILE):
+	@mkdir -p $(BUILD_DIR)
+	@# If public SSH keys exist, put them in the authorized_keys file
+	@if ls ${HOME}/.ssh/*.pub > /dev/null 2> /dev/null; then \
+		cat ${HOME}/.ssh/*.pub > $@; \
+	else \
+		echo > $@; \
+		echo "Warning: No SSH key found. Logging in via Dropbear will be impossible."; \
+	fi
 
 $(EXT2_IMAGE):
 	@mkdir -p $(BUILD_DIR)

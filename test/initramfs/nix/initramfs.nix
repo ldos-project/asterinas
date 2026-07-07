@@ -1,5 +1,5 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, benchmark, conformance, regression, dnsServer, }:
+, benchmark, conformance, regression, dnsServer, authorized_keys }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -7,6 +7,14 @@ let
     root = ./../etc;
     fileset = ./../etc;
   };
+  # The openssh dependency is only for the sftp-server binary. The actual ssh server is still provided by dropbear.
+  openssh = pkgs.openssh;
+  dropbear = pkgs.dropbear.override {
+    enableSCP = true;
+    sftpPath = "/bin/sftp-server";
+  };
+  dropbear_conf =
+    pkgs.callPackage ./dropbear-conf.nix { authorized_keys = authorized_keys; };
   gvisor_libs = if conformance != null && conformance.testSuite == "gvisor" then
     builtins.path {
       name = "gvisor-libs";
@@ -17,7 +25,7 @@ let
   resolv_conf = pkgs.callPackage ./resolv_conf.nix { dnsServer = dnsServer; };
   # Whether the initramfs should include evtest, a common tool to debug input devices (`/dev/input/eventX`)
   is_evtest_included = false;
-  all_pkgs = [ busybox etc resolv_conf ]
+  all_pkgs = [ busybox dropbear openssh etc resolv_conf ]
     ++ lib.optionals (benchmark != null) [ benchmark.package ]
     ++ lib.optionals (conformance != null) [ conformance.package ]
     ++ lib.optionals (regression != null) [ regression.package ]
@@ -33,6 +41,8 @@ in stdenvNoCC.mkDerivation {
     ln -sfn usr/lib $out/lib
     ln -sfn usr/lib64 $out/lib64
     cp -r ${busybox}/bin/* $out/bin/
+    cp -r ${dropbear}/bin/* $out/bin/
+    cp -r ${openssh}/libexec/sftp-server $out/bin/
     ${lib.optionalString is_evtest_included ''
       cp -r ${pkgs.evtest}/bin/* $out/bin/
     ''}
@@ -43,6 +53,8 @@ in stdenvNoCC.mkDerivation {
     cp -r ${etc}/* $out/etc/
 
     cp ${resolv_conf}/resolv.conf $out/etc/
+    cp -r ${dropbear_conf}/.ssh $out/
+    cp -r ${dropbear_conf}/bin/* $out/bin/
 
     ${lib.optionalString (regression != null) ''
       cp -r ${regression.package}/* $out/test/
