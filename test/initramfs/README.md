@@ -114,6 +114,26 @@ configure your SSH client appropriately.
 
 (As of writing, the `make run_nixos` guest environment does *not* have an SSH.)
 
+## Python
+
+The `make run_kernel` guest environment can be configured with Python. It is not included by
+default. To enable Python, set `ENABLE_PYTHON=1` when you invoke `make`.
+
+```shell
+make run_kernel ENABLE_PYTHON=1
+```
+
+Python is not included by default because it increases the size of the initramfs by more than a 3
+times. This increases the initramfs load time very significantly.
+
+When enabled, the `python` binary is available and a small selection of packages (see
+`test/initramfs/nix/initramfs.nix`). The generated launchers for Python scripts do not work on
+busybox, but in many cases you can run the same tool using `python -m <package>`. (Notably, the
+CBOR2 tool is `python -m cbor2.tool`.) 
+
+`pip` is installed, but most normal operations depend on network access which require separate
+configuration. You should use a virtual environment (`python -m venv`) if you wish to use `pip`.
+
 ## Notes for Developers
 
 - **Nix Usage**: Use `Nix` whenever possible to manage dependencies and builds for ease of maintenance and consistency.
