@@ -17,15 +17,11 @@ use hashbrown::HashMap;
 use lru::LruCache;
 pub(super) use ostd::mm::VmIo;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::orpc_impl;
-use ostd::{
-    mm::Segment,
-    new_server,
-    orpc::{
-        oqueue::{OQueue as _, OQueueRef},
-        orpc_server,
-    },
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
 };
+use ostd::{mm::Segment, new_server, orpc::orpc_server};
 
 use super::{
     bitmap::ExfatBitmap,

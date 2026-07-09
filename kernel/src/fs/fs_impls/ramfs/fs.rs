@@ -13,11 +13,14 @@ use aster_util::slot_vec::SlotVec;
 use device_id::DeviceId;
 use hashbrown::HashMap;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
+};
 use ostd::{
     mm::{HasSize, io::util::HasVmReaderWriter},
     new_server,
-    orpc::{oqueue::OQueue as _, orpc_server},
+    orpc::orpc_server,
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 

@@ -15,11 +15,14 @@ use aster_block::{
     id::{Bid, BlockId},
 };
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
+};
 use ostd::{
     mm::{Segment, VmIo, io::util::HasVmReaderWriter},
     new_server,
-    orpc::{oqueue::OQueue as _, orpc_server},
+    orpc::orpc_server,
 };
 
 use super::{
