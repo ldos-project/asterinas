@@ -17,12 +17,10 @@ stop_guest() {
 # Trap EXIT signal to ensure guest VM is stopped on script exit
 trap stop_guest EXIT
 
-# TODO - export some variables like MVN_PATH/YCSB_DIR from prepare_host.sh
-export PATH=$PATH:$(realpath .cache/apache-maven-3.9.12/bin/)
+export PATH=$PATH:$MVN_DIR/bin
 
 # Run YCSB + redis bench
 echo "Running YCSB bench connected to $GUEST_SERVER_IP_ADDRESS"
-export JAVA_HOME=$(realpath ".cache/jdk-25.0.2")
 
 cd $YCSB_PATH/
 

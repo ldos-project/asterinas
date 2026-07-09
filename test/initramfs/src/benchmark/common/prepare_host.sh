@@ -55,7 +55,7 @@ resolve_jdk_path() {
   if [ -z "$jdk_latest" ]; then
     return 1
   fi
-
+  
   realpath "$jdk_latest"
 }
 
@@ -65,33 +65,32 @@ export JAVA_HOME=$JDK_PATH
 
 prepare_ycsb() {
   mkdir -p .cache
-  (
-    cd .cache
-    if [ ! -d "$JDK_PATH" ]; then
-      wget "$JDK_URL" -O jdk.tar.gz
-      tar -xvf ./jdk.tar.gz
-      export JDK_PATH=$(resolve_jdk_path)
-      export JAVA_HOME=$JDK_PATH
-    fi
+  pushd .cache
+  if [ ! -d "$JDK_PATH" ]; then
+    wget "$JDK_URL" -O jdk.tar.gz
+    tar -xvf ./jdk.tar.gz
+    export JDK_PATH=$(resolve_jdk_path)
+    export JAVA_HOME=$JDK_PATH
+  fi
 
-    if [ ! -d "$MVN_DIR" ]; then
-      wget $MVN_URL
-      tar -xvf ./apache-maven-3.9.12-bin.tar.gz
-    fi
+  if [ ! -d "$MVN_DIR" ]; then
+    wget $MVN_URL
+    tar -xvf ./apache-maven-3.9.12-bin.tar.gz
+  fi
+  popd
 
-    if [ ! -d "$YCSB_PATH" ]; then
-      # Use custom fork of YCSB with delete support
-      git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
+  if [ ! -d "$YCSB_PATH" ]; then
+    # Use custom fork of YCSB with delete support
+    git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
 
-      # Build
-      if [ ! -x "$JAVA_HOME/bin/java" ]; then
-        echo "Invalid JAVA_HOME: $JAVA_HOME" >&2
-        exit 1
-      fi
-      pushd $YCSB_PATH
-      $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
-      $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
-      popd
+    # Build
+    if [ ! -x "$JAVA_HOME/bin/java" ]; then
+      echo "Invalid JAVA_HOME: $JAVA_HOME" >&2
+      exit 1
     fi
-  )
+    pushd $YCSB_PATH
+    $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
+    $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
+    popd
+  fi
 }
