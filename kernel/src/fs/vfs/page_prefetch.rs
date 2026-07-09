@@ -135,6 +135,7 @@ impl ReadaheadPrefetcher {
                         .outstanding_count_observer
                         .weak_observe_recent(1)?
                         .last()
+                        .expect("observation size is 1")
                     {
                         let is_sequential = if let [Some(a), Some(b)] =
                             self.read_weak_observer.weak_observe_recent(2)?.as_slice()
