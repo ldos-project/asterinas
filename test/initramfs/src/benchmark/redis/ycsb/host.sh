@@ -28,7 +28,7 @@ FIELDLENGTH=4096
 
 
 
-./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
+python3 ./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
   -p recordcount=4096 \
   -p fieldcount=1 \
   -p fieldlength=$FIELDLENGTH \
@@ -38,7 +38,7 @@ FIELDLENGTH=4096
 
 # Run many times to stress memory allocation
 for _ in $(seq 1 4096); do
-  ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
+  python3 ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
     -p operationcount=4096 \
     -p recordcount=4096 \
     -p workload=site.ycsb.workloads.CoreWorkload \
