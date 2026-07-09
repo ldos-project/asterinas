@@ -51,11 +51,8 @@ export CACHE_DIR=$(realpath -m ".cache")
 export MVN_DIR=$(realpath -m "${CACHE_DIR}/apache-maven-3.9.12")
 export YCSB_PATH=$(realpath -m "${CACHE_DIR}/ycsb")
 resolve_jdk_path() {
-  shopt -s nullglob
-  local jdk_latest=$(ls -1 ${CACHE_DIR}/jdk-* |sort -V |tail -n 1)
-  shopt -u nullglob
-
-  if [ $jdk_latest -eq 0 ]; then
+  local jdk_latest=$(ls -1d ${CACHE_DIR}/jdk-* 2>/dev/null | sort -V | tail -n 1)
+  if [ -z "$jdk_latest" ]; then
     return 1
   fi
 
