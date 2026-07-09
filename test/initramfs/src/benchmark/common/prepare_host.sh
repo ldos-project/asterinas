@@ -82,14 +82,13 @@ prepare_ycsb() {
   popd
 
   if [ ! -d "$YCSB_PATH" ]; then
-    # Use custom fork of YCSB with delete support
-    git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
-
-    # Build
+    # Build requires a valid JDK
     if [ ! -x "$JAVA_HOME/bin/java" ]; then
       echo "Invalid JAVA_HOME: $JAVA_HOME" >&2
       exit 1
     fi
+    # Use custom fork of YCSB with delete support
+    git clone https://github.com/tewaro/YCSB.git -b tewaro/quickfix-coreworkload-deletes-master --depth=1 $YCSB_PATH
     pushd $YCSB_PATH
     $MVN_DIR/bin/mvn -pl site.ycsb:redis-binding -am clean package
     $MVN_DIR/bin/mvn -pl site.ycsb:memcached-binding -am clean package
