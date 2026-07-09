@@ -37,11 +37,14 @@ update_dep_version() {
 update_image_versions() {
     echo "Updating file $1"
     # Update the version of the Asterinas development container
-    sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
+    sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
     # Update the version of ldosproject/osdk container
-    sed -i "s/ldosproject\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/osdk:${new_version}/g" $1
+    sed -i "s/ldosproject\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/osdk:${new_version}/g" $1
     # Update the version of ldosproject/kata container
-    sed -i "s/ldosproject\/kata:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/ldosproject\/kata:${new_version}/g" $1
+    sed -i "s/ldosproject\/kata:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/kata:${new_version}/g" $1
+    #do we also need to update nix container?
+    # Update the version of ldosproject/nix container
+    sed -i "s/ldosproject\/nix:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/nix:${new_version}/g" $1
 }
 
 # Print the help message
@@ -98,10 +101,10 @@ update_docker_image_version() {
                 semantic_version_parts[2]=$(add_one "${semantic_version_parts[2]}")
             fi
             docker_version_parts[0]="${semantic_version_parts[*]}"
-            docker_version_parts[1]=$(date +%Y%m%d)
+            docker_version_parts[2]=$(date +%Y%m%d)
             ;;
         "date")
-            docker_version_parts[1]=$(date +%Y%m%d)
+            docker_version_parts[2]=$(date +%Y%m%d)
             ;;
         *)
             echo "Error: Invalid version part. Allowed values are: major, minor, patch, or date."
@@ -111,7 +114,7 @@ update_docker_image_version() {
     esac
 
     local IFS="+"
-    new_docker_version="${docker_version_parts[0]}-${docker_version_parts[1]}"
+    new_docker_version="${docker_version_parts[0]}-${docker_version_parts[1]}-${docker_version_parts[2]}"
     echo -n "${new_docker_version}" > ${DOCKER_IMAGE_VERSION_PATH}
     echo "Bumped Docker image version to $new_docker_version"
 }
@@ -121,7 +124,8 @@ update_all_docker_version_refs() {
     new_version=$(cat ${DOCKER_IMAGE_VERSION_PATH})
 
     # Update Docker image versions in devcontainer.json, README files, and AGENTS.md
-    update_image_versions ${ASTER_SRC_DIR}/.devcontainer/devcontainer.json
+    # why does devcontainer.json not exist
+    #update_image_versions ${ASTER_SRC_DIR}/.devcontainer/devcontainer.json
     update_image_versions ${ASTER_SRC_DIR}/README.md
     update_image_versions ${ASTER_SRC_DIR}/AGENTS.md
     update_image_versions ${SCRIPT_DIR}/docker/README.md
