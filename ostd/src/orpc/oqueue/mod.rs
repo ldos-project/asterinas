@@ -107,6 +107,29 @@ pub enum OQueueError {
     Unsupported,
 }
 
+/// An error returned during non-blocking value produce. It is needed to return the owned value to
+/// the caller when produce fails.
+#[derive(Debug, Snafu)]
+pub enum TryProduceError<T> {
+    /// There is no space available to produce. This returns the value that would have been produced
+    /// to the caller.
+    #[snafu(display("No space in OQueue"))]
+    NoSpace {
+        /// The value which would have been produced into the OQueue.
+        v: T,
+    },
+    /// There was an error during production. This returns the value that would have been produced
+    /// to the caller.
+    #[snafu(display("OQueue error occurred"))]
+    #[snafu(context(name(TryProduceSnafu)))]
+    Error {
+        /// The OQueue error which occurred.
+        source: OQueueError,
+        /// The value which would have been produced into the OQueue.
+        v: T,
+    },
+}
+
 /// The interface provided by all OQueues.
 pub trait OQueueBase<T: ?Sized> {
     /// Attach a strong observer which will observe values of type `U` which are extracted from
@@ -160,6 +183,13 @@ where
     /// Attach a consumer to the queue which will receive ownership of each message that is
     /// produced.
     fn attach_consumer(&self) -> Result<Consumer<T>, OQueueError>;
+
+    /// Produce a value, giving up ownership. This is used to pass an object to the consumer.
+    fn produce(&self, v: T) -> Result<(), OQueueError>;
+
+    /// Try to produce a value without blocking. Returns `Err(NoSpace(v))` if the operation would
+    /// block or `Err(Error(e, v))` if there was an error.
+    fn try_produce(&self, v: T) -> Result<(), TryProduceError<T>>;
 }
 
 /// An OQueue for observation which support producing by reference and does not allow consumers.
@@ -167,6 +197,15 @@ pub trait OQueue<T: ?Sized>: OQueueBase<T> {
     /// Attach a producer to the queue which will be used to observe state, instead of communicate.
     /// OQueues used this way cannot have consumers.
     fn attach_ref_producer(&self) -> Result<RefProducer<T>, OQueueError>;
+
+    /// Produce a value for observation. The value can be taken by reference, since only observers
+    /// are allowed, meaning that only values extracted from the the value need to be stored.
+    fn produce_ref(&self, v: &T) -> Result<(), OQueueError>;
+
+    /// Try to produce a value for observation without blocking. Returns `Ok(false)` if the
+    /// operation would block and was not produced, `Ok(true)` if the value was successfully
+    /// produced.
+    fn try_produce_ref(&self, v: &T) -> Result<bool, OQueueError>;
 }
 
 /// Generate an impl which forwards the OQueueBase trait to a member.
@@ -224,6 +263,16 @@ macro_rules! impl_consumable_oqueue_forward {
             fn attach_consumer(&self) -> Result<Consumer<T>, OQueueError> {
                 self.$member.attach_consumer()
             }
+
+            fn produce(&self, v: T) -> Result<(), OQueueError> {
+                Ok(self.$member.produce(v))
+            }
+
+            fn try_produce(&self, v: T) -> Result<(), TryProduceError<T>> {
+                self.$member
+                    .try_produce(v)
+                    .map_err(|v| NoSpaceSnafu { v }.build())
+            }
         }
     };
 }
@@ -236,6 +285,14 @@ macro_rules! impl_oqueue_forward {
                 &self,
             ) -> Result<RefProducer<T>, OQueueError> {
                 self.$member.attach_ref_producer()
+            }
+
+            fn produce_ref(&self, v: &T) -> Result<(), OQueueError> {
+                Ok(self.$member.produce_ref(v))
+            }
+
+            fn try_produce_ref(&self, v: &T) -> Result<bool, OQueueError> {
+                Ok(self.$member.try_produce_ref(v))
             }
         }
     };
@@ -1131,6 +1188,22 @@ mod test {
     #[ktest]
     fn generic_produce_consume() {
         generic_test::test_produce_consume(ConsumableOQueueRef::<generic_test::TestMessage>::new(
+            2,
+            Path::test(),
+        ));
+    }
+
+    #[ktest]
+    fn generic_produce_direct() {
+        generic_test::test_produce_direct(ConsumableOQueueRef::<generic_test::TestMessage>::new(
+            2,
+            Path::test(),
+        ));
+    }
+
+    #[ktest]
+    fn generic_produce_ref_direct() {
+        generic_test::test_produce_ref_direct(OQueueRef::<generic_test::TestMessage>::new(
             2,
             Path::test(),
         ));
