@@ -66,6 +66,7 @@ export JAVA_HOME=$JDK_PATH
 prepare_ycsb() {
   mkdir -p .cache
   pushd .cache
+  trap 'popd' ERR
   if [ ! -d "$JDK_PATH" ]; then
     wget "$JDK_URL" -O jdk.tar.gz
     tar -xvf ./jdk.tar.gz
@@ -77,6 +78,7 @@ prepare_ycsb() {
     wget $MVN_URL
     tar -xvf ./apache-maven-3.9.12-bin.tar.gz
   fi
+  trap - ERR
   popd
 
   if [ ! -d "$YCSB_PATH" ]; then
