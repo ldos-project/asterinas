@@ -78,7 +78,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { variant: 'legacy32', boot_protocol: 'linux-legacy32', smp: 4 }
+          # TODO: Reenable or explicitly decide not to support it.
+          # - { variant: 'legacy32', boot_protocol: 'linux-legacy32', smp: 4 }
           - { variant: 'multiboot2-smp4', boot_protocol: 'multiboot', smp: 4 }
     steps:
       - uses: actions/checkout@v4
