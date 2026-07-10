@@ -282,7 +282,7 @@ $(CARGO_OSDK): $(OSDK_SRC_FILES)
 
 .PHONY: check_osdk
 check_osdk:
-	@./tools/clippy_check.sh osdk $(CLIPPY_COMMON_ARGS)
+	@./tools/clippy_check.sh osdk -- $(CLIPPY_COMMON_ARGS)
 
 .PHONY: test_osdk
 test_osdk:
@@ -493,7 +493,7 @@ check: $(CARGO_OSDK)
 	done
 	@
 	@# Check compilation of the Rust code
-	@OSDK_TARGET_ARCH="$(OSDK_TARGET_ARCH)" ./tools/clippy_check.sh workspace $(CLIPPY_COMMON_ARGS)
+	@OSDK_TARGET_ARCH="$(OSDK_TARGET_ARCH)" ./tools/clippy_check.sh workspace -- $(CLIPPY_COMMON_ARGS)
 	@
 	@# Check formatting issues of the C code and Nix files (regression tests)
 	@$(MAKE) --no-print-directory -C test/initramfs check
