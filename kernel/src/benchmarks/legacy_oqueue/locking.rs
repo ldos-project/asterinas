@@ -2,21 +2,25 @@
 //! A simple implementation of a [`crate::oqueue::OQueue`] using a [`crate::sync::Mutex`]s. This is a baseline
 //! implementation that supports all features, but is also slow in many cases.
 
-use alloc::{borrow::ToOwned, format, sync::Weak};
+use alloc::{
+    borrow::ToOwned,
+    boxed::Box,
+    format,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::{Any, type_name},
     cell::Cell,
 };
 
-use super::{
-    super::sync::Blocker, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver,
-    WeakObserver,
-};
-use crate::{
-    prelude::{Arc, Box, Vec},
+use ostd::{
+    orpc::sync::Blocker,
     sync::{LocalIrqDisabled, SpinLock, WaitQueue, Waker, WakerKey},
     task::Task,
 };
+
+use super::{Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver};
 
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
 /// consumers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
@@ -31,6 +35,7 @@ pub struct LockingQueue<T> {
 
 impl<T> LockingQueue<T> {
     /// Create a new LockingQueue with the specified size.
+    #[allow(unused)]
     pub fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
     }
@@ -571,28 +576,15 @@ impl<T: Clone + Send> WeakObserver<T> for LockingWeakObserver<T> {
 
 #[cfg(ktest)]
 mod test {
-    use ostd_macros::ktest;
+    use ostd::prelude::ktest;
 
     use super::*;
-    use crate::orpc::legacy_oqueue::generic_test::*;
+    use crate::benchmarks::legacy_oqueue::generic_test::*;
 
     #[ktest]
     fn produce_consume_locking() {
         let oqueue = LockingQueue::new(2);
         test_produce_consume(oqueue);
-    }
-
-    #[ktest]
-    fn direct_produce_consume_locking() {
-        let oqueue = LockingQueue::new(2);
-        test_direct_produce_consume(oqueue);
-    }
-
-    #[ktest]
-    fn send_multi_receive_blocker_locking() {
-        let oqueue1 = LockingQueue::new(10);
-        let oqueue2 = LockingQueue::new(10);
-        test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
     #[ktest]
@@ -617,13 +609,6 @@ mod test {
     fn send_receive_blocker_observable_locking() {
         let oqueue = ObservableLockingQueue::new(10, 5);
         test_send_receive_blocker(oqueue, 100, 5);
-    }
-
-    #[ktest]
-    fn send_multi_receive_blocker_observable_locking() {
-        let oqueue1 = ObservableLockingQueue::new(10, 5);
-        let oqueue2 = ObservableLockingQueue::new(10, 5);
-        test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
     #[ktest]

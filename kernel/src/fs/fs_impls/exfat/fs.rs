@@ -17,7 +17,10 @@ use hashbrown::HashMap;
 use lru::LruCache;
 pub(super) use ostd::mm::VmIo;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
+};
 use ostd::{mm::Segment, new_server, orpc::orpc_server};
 
 use super::{
@@ -410,15 +413,15 @@ impl PageStore for ExfatFs {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_producer()?;
+        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
+        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
 
         self.block_device.read_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
             bio_segment,
             move |b| {
                 // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce(req.handle.idx);
+                reply_producer.produce_ref(&req.handle.idx);
                 req.reply_handle.produce(req.handle);
             },
         )?;
@@ -436,8 +439,8 @@ impl PageStore for ExfatFs {
         );
 
         // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_producer()?;
+        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
+        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
 
         self.block_device.write_blocks_async_with_closure(
             BlockId::new(req.handle.idx as u64),
@@ -445,7 +448,7 @@ impl PageStore for ExfatFs {
             move |b| {
                 if let Some(reply_handle) = req.reply_handle {
                     // TODO(arthurp, #120): This can crash if produce blocks.
-                    reply_producer.produce(req.handle.idx);
+                    reply_producer.produce_ref(&req.handle.idx);
                     reply_handle.produce(req.handle);
                 }
             },

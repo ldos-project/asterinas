@@ -113,7 +113,6 @@ if [ "$1" = "riscv" ]; then
         -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
         -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
         -drive if=none,format=raw,id=d0,file=./test/initramfs/build/capture.img \
-        -drive if=none,format=raw,id=d1,file=./test/initramfs/build/capture_legacy.img \
         -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
         -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
         -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
@@ -171,7 +170,6 @@ COMMON_QEMU_ARGS="\
     -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
     -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
     -drive if=none,format=raw,id=d0,file=./test/initramfs/build/capture.img \
-    -drive if=none,format=raw,id=d1,file=./test/initramfs/build/capture_legacy.img \
     -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
     -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
     -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
@@ -201,7 +199,6 @@ if [ "$1" = "microvm" ]; then
         -device virtio-blk-device,drive=r0,serial=raid0 \
         -device virtio-blk-device,drive=r1,serial=raid1 \
         -device virtio-blk-device,drive=d0,serial=capture \
-        -device virtio-blk-device,drive=d1,serial=capture_legacy \
         -device virtio-keyboard-device \
         -device virtio-net-device,netdev=net01 \
         -device virtio-serial-device \
@@ -217,7 +214,6 @@ else
         -device virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        -device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=d1,serial=capture_legacy,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -object rng-random,id=rng0,filename=/dev/urandom \
         -device virtio-rng-pci,bus=pcie.0,addr=0xd,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \

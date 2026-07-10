@@ -8,7 +8,7 @@
 // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/118): Replace these policies with
 // real heuristics.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 use core::ops::Range;
 
 use ostd::orpc::{
@@ -17,10 +17,13 @@ use ostd::orpc::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    legacy_oqueue::{StrongObserver, WeakObserver},
+    oqueue::{
+        ConsumableOQueue as _, OQueueBase as _, StrongObserver, WeakObserver,
+        query::ObservationQuery,
+    },
     orpc_impl, orpc_server,
     statistics::{Outstanding, OutstandingCounter},
-    sync::select_legacy,
+    sync::select,
 };
 
 use crate::fs::vfs::server_traits::{PageCache, PageIOObservable};
@@ -64,23 +67,27 @@ impl ReadaheadPrefetcher {
         )?;
 
         spawn_thread(server.clone(), {
-            let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
-            let read_weak_observer = cache.page_reads_oqueue().attach_weak_observer()?;
+            let read_observer = cache
+                .page_reads_oqueue()
+                .attach_strong_observer(ObservationQuery::identity())?;
+            let read_weak_observer = cache
+                .page_reads_oqueue()
+                .attach_weak_observer(2, ObservationQuery::identity())?;
             let outstanding_count_observer = outstanding_counter
                 .outstanding_oqueue()
-                .attach_weak_observer()?;
+                .attach_weak_observer(1, ObservationQuery::identity())?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
-                .attach_strong_observer()?;
+                .attach_strong_observer(ObservationQuery::identity())?;
             let cache: Arc<dyn PageCache> = cache.clone();
             let server = server.clone();
 
             struct PrefetcherState {
-                read_observer: Box<dyn StrongObserver<usize>>,
-                read_weak_observer: Box<dyn WeakObserver<usize>>,
-                outstanding_count_observer: Box<dyn WeakObserver<isize>>,
-                shutdown_observer: Box<dyn StrongObserver<()>>,
+                read_observer: StrongObserver<usize>,
+                read_weak_observer: WeakObserver<usize>,
+                outstanding_count_observer: WeakObserver<isize>,
+                shutdown_observer: StrongObserver<()>,
                 cache: Arc<dyn PageCache>,
                 server: Arc<ReadaheadPrefetcher>,
                 window: Option<Range<usize>>,
@@ -104,7 +111,7 @@ impl ReadaheadPrefetcher {
                 fn run(&mut self) -> Result<(), crate::error::Error> {
                     loop {
                         self.server.shutdown_state.check()?;
-                        select_legacy! {
+                        select! {
                             if let idx = self.read_observer.try_strong_observe() {
                                 self.maybe_prefetch(idx)?;
                             },
@@ -126,11 +133,12 @@ impl ReadaheadPrefetcher {
                 fn maybe_prefetch(&mut self, idx: usize) -> Result<(), crate::error::Error> {
                     if let Some(outstanding) = self
                         .outstanding_count_observer
-                        .weak_observe_recent(1)
+                        .weak_observe_recent(1)?
                         .last()
+                        .expect("observation size is 1")
                     {
-                        let is_sequential = if let Some([a, b]) =
-                            self.read_weak_observer.weak_observe_recent(2).last_chunk()
+                        let is_sequential = if let [Some(a), Some(b)] =
+                            self.read_weak_observer.weak_observe_recent(2)?.as_slice()
                         {
                             a + 1 == *b
                         } else {
@@ -194,24 +202,27 @@ impl StridedPrefetcher {
         });
 
         spawn_thread(server.clone(), {
-            let read_observer = cache.page_reads_oqueue().attach_strong_observer()?;
-            let read_weak_observer = cache.page_reads_oqueue().attach_weak_observer()?;
+            let read_observer = cache
+                .page_reads_oqueue()
+                .attach_strong_observer(ObservationQuery::identity())?;
+            let read_weak_observer = cache
+                .page_reads_oqueue()
+                .attach_weak_observer(2, ObservationQuery::identity())?;
             let shutdown_observer = server
                 .shutdown_state
                 .shutdown_oqueue
-                .attach_strong_observer()?;
+                .attach_strong_observer(ObservationQuery::identity())?;
             let cache: Arc<dyn PageCache> = cache.clone();
             let server = server.clone();
 
             move || {
                 loop {
                     server.shutdown_state.check()?;
-                    select_legacy!(
+                    select!(
                         if let idx = read_observer.try_strong_observe() {
-                            let recent = read_weak_observer.recent_cursor();
-                            let history = read_weak_observer.weak_observe_range(recent - 1, recent);
-                            if history.len() >= 2 {
-                                let stride = history[1] - history[0];
+                            let history = read_weak_observer.weak_observe_recent(2)?;
+                            if let [Some(a), Some(b)] = *history.as_slice() {
+                                let stride = b - a;
                                 cache
                                     .prefetch_oqueue()
                                     .produce(idx + stride * n_steps_ahead)?;

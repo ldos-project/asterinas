@@ -8,6 +8,8 @@ use super::{time, *};
 use crate::{kcmdline::KCmdlineArg, time::Clock as _};
 
 mod fn_call;
+#[cfg(not(baseline_asterinas))]
+mod legacy_oqueue;
 mod oqueue;
 
 pub trait Benchmark {

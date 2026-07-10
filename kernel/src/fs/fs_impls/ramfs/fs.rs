@@ -13,7 +13,10 @@ use aster_util::slot_vec::SlotVec;
 use device_id::DeviceId;
 use hashbrown::HashMap;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{legacy_oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueue as _, OQueueRef},
+    orpc_impl,
+};
 use ostd::{
     mm::{HasSize, io::util::HasVmReaderWriter},
     new_server,
@@ -625,7 +628,7 @@ impl PageIOObservable for RamInode {
 #[orpc_impl]
 impl PageStore for RamInode {
     fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        self.page_reads_oqueue().produce(req.handle.idx)?;
+        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
         // Initially, any block/page in a RamFs inode contains all zeros
         req.handle
             .frame
@@ -633,15 +636,17 @@ impl PageStore for RamInode {
             .to_fallible()
             .fill_zeros(req.handle.frame.size())
             .unwrap();
-        self.page_reads_reply_oqueue().produce(req.handle.idx)?;
+        self.page_reads_reply_oqueue()
+            .produce_ref(&req.handle.idx)?;
         req.reply_handle.produce(req.handle);
         Ok(())
     }
 
     fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()> {
         // TODO:OPTIMIZATION: Avoid the clone.
-        self.page_writes_oqueue().produce(req.handle.idx)?;
-        self.page_writes_reply_oqueue().produce(req.handle.idx)?;
+        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
+        self.page_writes_reply_oqueue()
+            .produce_ref(&req.handle.idx)?;
         if let Some(reply_handle) = req.reply_handle {
             reply_handle.produce(req.handle);
         }

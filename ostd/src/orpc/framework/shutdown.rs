@@ -10,7 +10,7 @@ use orpc_macros::orpc_trait;
 use crate::orpc::{
     errors::{RPCError, ServerMissingSnafu},
     framework::CurrentServer,
-    legacy_oqueue::{OQueueRef, locking::ObservableLockingQueue},
+    oqueue::{ConsumableOQueue, ConsumableOQueueRef},
 };
 
 /// Trait that allows a server to be shut down gracefully.
@@ -55,14 +55,14 @@ pub struct ShutdownState {
     is_shutdown: AtomicBool,
     /// An OQueue which produces a value when server shutdown is requested. This is used to wake up
     /// the server so it can shutdown.
-    pub shutdown_oqueue: OQueueRef<()>,
+    pub shutdown_oqueue: ConsumableOQueueRef<()>,
 }
 
 impl Default for ShutdownState {
     fn default() -> Self {
         Self {
             is_shutdown: Default::default(),
-            shutdown_oqueue: ObservableLockingQueue::new(2, 4),
+            shutdown_oqueue: ConsumableOQueueRef::new_anonymous(2),
         }
     }
 }

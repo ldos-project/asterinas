@@ -12,7 +12,7 @@ mod test {
         time::Duration,
     };
 
-    use orpc_macros::{orpc_impl, orpc_server, orpc_trait, select_legacy};
+    use orpc_macros::{orpc_impl, orpc_server, orpc_trait, select};
     use ostd_macros::ktest;
     use snafu::{ResultExt as _, Whatever};
 
@@ -25,12 +25,12 @@ mod test {
                 shutdown::{Shutdown, ShutdownState},
                 spawn_thread,
             },
-            legacy_oqueue::{
-                Consumer, OQueueRef, generic_test,
-                locking::{LockingQueue, ObservableLockingQueue},
+            oqueue::{
+                ConsumableOQueue, ConsumableOQueueRef, Consumer, OQueueBase, generic_test,
+                query::ObservationQuery,
             },
         },
-        prelude::{Arc, Box},
+        prelude::Arc,
     };
 
     struct AdditionalAmount {
@@ -41,8 +41,8 @@ mod test {
     #[orpc_trait]
     trait Counter {
         fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError>;
-        fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount> {
-            LockingQueue::new(8)
+        fn incr_oqueue(&self) -> ConsumableOQueueRef<AdditionalAmount> {
+            ConsumableOQueueRef::new_anonymous(8)
         }
     }
 
@@ -64,13 +64,13 @@ mod test {
             Ok(v + addend)
         }
 
-        fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount>;
+        fn incr_oqueue(&self) -> ConsumableOQueueRef<AdditionalAmount>;
     }
 
     impl ServerAState {
         fn main_thread(
             &self,
-            incr_oqueue_consumer: Box<dyn Consumer<AdditionalAmount>>,
+            incr_oqueue_consumer: Consumer<AdditionalAmount>,
         ) -> Result<(), Whatever> {
             let mut _count = 0;
             loop {
@@ -165,7 +165,7 @@ mod test {
 
         server_ref
             .incr_oqueue()
-            .attach_producer()
+            .attach_value_producer()
             .unwrap()
             .produce(AdditionalAmount {
                 n: 1,
@@ -176,7 +176,7 @@ mod test {
 
         server_ref
             .incr_oqueue()
-            .attach_producer()
+            .attach_value_producer()
             .unwrap()
             .produce(AdditionalAmount {
                 n: 1,
@@ -185,7 +185,7 @@ mod test {
 
         server_ref
             .incr_oqueue()
-            .attach_producer()
+            .attach_value_producer()
             .unwrap()
             .produce(AdditionalAmount {
                 n: 1,
@@ -403,7 +403,7 @@ mod test {
         }
 
         impl MessageCounterServer {
-            fn spawn_with_queue(queue: OQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
+            fn spawn_with_queue(queue: ConsumableOQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
                 let server = Self::new_with(|orpc_internal, _| Self {
                     processed_count: AtomicUsize::new(0),
                     shutdown_state: ShutdownState::default(),
@@ -423,7 +423,7 @@ mod test {
                     move || {
                         loop {
                             server.shutdown_state.check()?;
-                            select_legacy!(
+                            select!(
                                 if let _ = consumer.try_consume() {
                                     server.processed_count.fetch_add(1, Ordering::Relaxed);
                                 },
@@ -446,7 +446,7 @@ mod test {
 
         SERVER_DROPS.store(0, Ordering::SeqCst);
 
-        let queue: OQueueRef<usize> = LockingQueue::new(8);
+        let queue = ConsumableOQueueRef::new_anonymous(8);
         let server1 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
 
         queue.produce(42).unwrap();
@@ -502,7 +502,7 @@ mod test {
         }
 
         impl MessageCounterServer {
-            fn spawn_with_queue(queue: OQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
+            fn spawn_with_queue(queue: ConsumableOQueueRef<usize>) -> Result<Arc<Self>, Whatever> {
                 let server = Self::new_with(|orpc_internal, _| Self {
                     processed_count: AtomicUsize::new(0),
                     shutdown_state: ShutdownState::default(),
@@ -512,7 +512,7 @@ mod test {
                 spawn_thread(server.clone(), {
                     let server = server.clone();
                     let observer = queue
-                        .attach_strong_observer()
+                        .attach_strong_observer(ObservationQuery::identity())
                         .whatever_context("attach strong observer")?;
                     let shutdown_consumer = server
                         .shutdown_state
@@ -522,7 +522,7 @@ mod test {
                     move || {
                         loop {
                             server.shutdown_state.check()?;
-                            select_legacy!(
+                            select!(
                                 if let _ = observer.try_strong_observe() {
                                     server.processed_count.fetch_add(1, Ordering::SeqCst);
                                 },
@@ -544,7 +544,7 @@ mod test {
 
         SERVER_DROPS.store(0, Ordering::SeqCst);
 
-        let queue: OQueueRef<usize> = ObservableLockingQueue::new(8, 1);
+        let queue = ConsumableOQueueRef::new_anonymous(8);
         let server1 = MessageCounterServer::spawn_with_queue(queue.clone()).unwrap();
 
         queue.produce(42).unwrap();

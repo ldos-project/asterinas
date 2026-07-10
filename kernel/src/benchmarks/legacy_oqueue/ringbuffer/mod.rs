@@ -4,7 +4,7 @@ use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 pub mod mpmc;
 
-pub use mpmc::{MPMCConsumer, MPMCOQueue, MPMCProducer, MPMCStrongObserver, MPMCWeakObserver};
+pub use mpmc::MPMCOQueue;
 
 /// A single element (slot for storing a value) in a ring buffer.
 #[derive(Debug)]

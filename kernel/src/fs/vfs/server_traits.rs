@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#[cfg(not(baseline_asterinas))]
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::{OQueue as _, OQueueRef, Producer, reply::ReplyQueue};
+use ostd::orpc::oqueue::{ConsumableOQueueRef, OQueueRef, ValueProducer, reply::ReplyQueue};
 use ostd::orpc::orpc_trait;
 use serde::Serialize;
 
@@ -27,14 +25,14 @@ pub struct PageHandle {
 pub struct AsyncReadRequest {
     pub handle: PageHandle,
     /// A producer handle into an OQueue to send the reply to.
-    pub reply_handle: Box<dyn Producer<PageHandle>>,
+    pub reply_handle: ValueProducer<PageHandle>,
 }
 
 #[cfg(not(baseline_asterinas))]
 pub struct AsyncWriteRequest {
     pub handle: PageHandle,
     /// A producer handle into an OQueue to send the reply to. If this is [`None`] no reply is sent.
-    pub reply_handle: Option<Box<dyn Producer<PageHandle>>>,
+    pub reply_handle: Option<ValueProducer<PageHandle>>,
 }
 
 #[cfg(not(baseline_asterinas))]
@@ -48,13 +46,13 @@ impl From<PageHandle> for AsyncWriteRequest {
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue<T: Copy + Send + 'static>() -> OQueueRef<T> {
-    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(8, 8)
+fn new_oqueue<T: Send + 'static>() -> OQueueRef<T> {
+    OQueueRef::new_anonymous(8)
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue_with_len<T: Copy + Send + 'static>(len: usize) -> OQueueRef<T> {
-    ostd::orpc::legacy_oqueue::locking::ObservableLockingQueue::new(len, 8)
+fn new_oqueue_with_len<T: Send + 'static>(len: usize) -> OQueueRef<T> {
+    OQueueRef::new_anonymous(len)
 }
 
 #[orpc_trait]
@@ -114,11 +112,10 @@ pub trait PageStore: PageIOObservable {
     /// Reads a page synchronously.
     #[cfg(not(baseline_asterinas))]
     fn read_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2, 0);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_handle, consumer) = ReplyQueue::new_pair()?;
         self.read_page_async(AsyncReadRequest {
             handle,
-            reply_handle: reply_oqueue.attach_producer()?,
+            reply_handle,
         })?;
         consumer.consume();
         Ok(())
@@ -127,11 +124,10 @@ pub trait PageStore: PageIOObservable {
     /// Writes a page synchronously.
     #[cfg(not(baseline_asterinas))]
     fn write_page(&self, handle: PageHandle) -> Result<()> {
-        let reply_oqueue = ReplyQueue::new(2, 0);
-        let consumer = reply_oqueue.attach_consumer()?;
+        let (reply_handle, consumer) = ReplyQueue::new_pair()?;
         self.write_page_async(AsyncWriteRequest {
             handle,
-            reply_handle: Some(reply_oqueue.attach_producer()?),
+            reply_handle: Some(reply_handle),
         })?;
         consumer.consume();
         Ok(())
@@ -195,8 +191,8 @@ impl PageCacheReadInfo {
 #[orpc_trait]
 pub trait PageCache {
     #[cfg(not(baseline_asterinas))]
-    fn prefetch_oqueue(&self) -> OQueueRef<usize> {
-        new_oqueue()
+    fn prefetch_oqueue(&self) -> ConsumableOQueueRef<usize> {
+        ConsumableOQueueRef::new_anonymous(8)
     }
 
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;

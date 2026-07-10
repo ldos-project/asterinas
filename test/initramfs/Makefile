@@ -32,7 +32,6 @@ endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 CAPTURE_IMAGE := $(BUILD_DIR)/capture.img
-CAPTURE_LEGACY_IMAGE := $(BUILD_DIR)/capture_legacy.img
 CAPTURE_IMAGE_SIZE := 4G
 AUTHORIZED_KEYS_FILE := $(BUILD_DIR)/authorized_keys
 
@@ -59,11 +58,11 @@ all: build
 
 .PHONY: build
 ifeq ($(OSDK_TARGET_ARCH), loongarch64)
-build: $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE) $(CAPTURE_LEGACY_IMAGE)
+build: $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE)
 	@echo "For loongarch, we generate a fake initramfs to successfully test or build."
 	@touch $(INITRAMFS_IMAGE)
 else
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE) $(CAPTURE_LEGACY_IMAGE)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE)
 endif
 
 .PHONY: $(INITRAMFS_IMAGE)
@@ -193,9 +192,6 @@ $(EXFAT_IMAGE):
 # We use truncate for capture files because sparse allocation will save disk-space in the host, the
 # writes will mostly be cached in RAM, and realistic access times are not needed.
 $(CAPTURE_IMAGE):
-	truncate -s $(CAPTURE_IMAGE_SIZE) $@
-
-$(CAPTURE_LEGACY_IMAGE):
 	truncate -s $(CAPTURE_IMAGE_SIZE) $@
 
 .PHONY: format

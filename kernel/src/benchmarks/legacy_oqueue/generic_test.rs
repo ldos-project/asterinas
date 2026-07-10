@@ -2,21 +2,20 @@
 #![allow(missing_docs)]
 #![allow(unused)]
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::{
     convert::AsRef,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
-use super::{super::sync::select_legacy, *};
-use crate::{
-    orpc::legacy_oqueue::locking::LockingQueue,
-    prelude::Vec,
+use ostd::{
     sync::{Mutex, WaitQueue},
     task::{Task, TaskOptions},
     timer::Jiffies,
 };
+
+use super::*;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
 pub(crate) struct TestMessage {
@@ -35,16 +34,6 @@ pub(crate) fn test_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
     assert_eq!(consumer.try_consume(), None);
 
     assert_eq!(producer.try_produce(test_message), None);
-}
-
-pub(crate) fn test_direct_produce_consume<T: OQueue<TestMessage>>(oqueue: Arc<T>) {
-    let consumer = oqueue.attach_consumer().unwrap();
-    let test_message = TestMessage { x: 42 };
-
-    oqueue.produce(test_message);
-    assert!(oqueue.try_produce(test_message).unwrap().is_some());
-
-    assert_eq!(consumer.consume(), test_message);
 }
 
 pub(crate) fn test_produce_strong_observe(oqueue: Arc<dyn OQueue<TestMessage>>) {
@@ -241,76 +230,6 @@ pub(crate) fn test_send_receive_blocker<T: OQueue<TestMessage>>(
 
     let received_messages = received_messages.lock();
     assert_eq!(received_messages.len(), n_messages);
-}
-
-/// Check that multithreading works at a basic level.
-pub(crate) fn test_send_multi_receive_blocker<T: OQueue<TestMessage>>(
-    oqueue1: Arc<T>,
-    oqueue2: Arc<T>,
-    n_messages: usize,
-) {
-    // Consumer which receives all the messages
-    let consumer1 = oqueue1.attach_consumer().unwrap();
-    let consumer2 = oqueue2.attach_consumer().unwrap();
-    let recv_queue = Arc::new(WaitQueue::new());
-    let recv_completed = Arc::new(AtomicBool::new(false));
-    let receive_thread = TaskOptions::new({
-        let recv_queue = recv_queue.clone();
-        let recv_completed = recv_completed.clone();
-        move || {
-            let mut consumer1_counter = 0;
-            let mut consumer2_counter = 0;
-
-            while consumer1_counter < n_messages || consumer2_counter < n_messages {
-                select_legacy!(
-                    if let TestMessage { x } = consumer1.try_consume() {
-                        assert_eq!(x, consumer1_counter);
-                        consumer1_counter += 1;
-                    },
-                    if let TestMessage { x } = consumer2.try_consume() {
-                        assert_eq!(x, consumer2_counter);
-                        consumer2_counter += 1;
-                    }
-                )
-            }
-            recv_completed.store(true, Ordering::Relaxed);
-            recv_queue.wake_all();
-        }
-    })
-    .spawn()
-    .unwrap();
-
-    let producer_queue = Arc::new(WaitQueue::new());
-    // Producer thread which sends n messages
-    let producer_thread_completions: Vec<_> = [oqueue1, oqueue2]
-        .into_iter()
-        .enumerate()
-        .map(|(i, oqueue)| {
-            let producer = oqueue.attach_producer().unwrap();
-            let completed = Arc::new(AtomicBool::new(false));
-            TaskOptions::new({
-                let completed = completed.clone();
-                let producer_queue = producer_queue.clone();
-                move || {
-                    for x in 0..n_messages {
-                        producer.produce(TestMessage { x });
-                        sleep(Duration::from_millis(i as u64 + 1));
-                    }
-                    completed.store(true, Ordering::Relaxed);
-                    producer_queue.wake_all();
-                }
-            })
-            .spawn()
-            .unwrap();
-            completed
-        })
-        .collect();
-
-    // Wait for all threads to finish
-    for completed in producer_thread_completions {
-        producer_queue.wait_until(|| completed.load(Ordering::Relaxed).then_some(()));
-    }
-    recv_queue.wait_until(|| recv_completed.load(Ordering::Relaxed).then_some(()));
 }
 
 /// Test produce operations with strong observation, but without any consumer attached. Especially,

@@ -417,10 +417,9 @@ macro_rules! log_syscall_entry {
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueue {
-    use alloc::sync::Arc;
     use core::time::Duration;
 
-    use ostd::orpc::legacy_oqueue::ringbuffer::MPMCOQueue;
+    use ostd::{orpc::oqueue::OQueueRef, path};
     use serde::Serialize;
     use spin::Once;
 
@@ -433,13 +432,13 @@ pub mod oqueue {
         pub timestamp: Duration,
     }
 
-    static SOCKET_OQUEUE: Once<Arc<MPMCOQueue<SocketOQueueMessage>>> = Once::new();
+    static SOCKET_OQUEUE: Once<OQueueRef<SocketOQueueMessage>> = Once::new();
 
     pub fn init_in_first_kthread() {
-        SOCKET_OQUEUE.call_once(|| MPMCOQueue::new(1024, 2));
+        SOCKET_OQUEUE.call_once(|| OQueueRef::new(1024, path!(syscall.socket_oqueue)));
     }
 
-    pub fn get_socket_oqueue() -> Arc<MPMCOQueue<SocketOQueueMessage>> {
+    pub fn get_socket_oqueue() -> OQueueRef<SocketOQueueMessage> {
         SOCKET_OQUEUE.wait().clone()
     }
 }

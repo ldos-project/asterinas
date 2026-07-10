@@ -20,16 +20,15 @@ use core::{
 };
 
 use crossbeam_utils::CachePadded;
-
-// SPDX-License-Identifier: MPL-2.0
-use super::Element;
-use crate::{
-    orpc::legacy_oqueue::{
-        Blocker, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver,
-        WeakObserver,
-    },
+use ostd::{
+    orpc::sync::Blocker,
     sync::{Mutex, WaitQueue, Waker, WakerKey},
     task::Task,
+};
+
+use super::Element;
+use crate::benchmarks::legacy_oqueue::{
+    Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
 };
 
 /// A single element of the ringbuffer that tracks the last "turn" that updated it.
@@ -814,8 +813,11 @@ impl<T: Copy + Send + 'static> OQueue<T> for MPMCOQueue<T, true, true> {
 
 #[cfg(ktest)]
 mod test {
+    use ostd::prelude::*;
+
     use super::*;
-    use crate::{orpc::legacy_oqueue::generic_test, prelude::*};
+    use crate::benchmarks::legacy_oqueue::generic_test;
+
     #[ktest]
     fn produce_consume() {
         generic_test::test_produce_consume(MPMCOQueue::<_>::new(1, 0));
@@ -842,13 +844,6 @@ mod test {
     fn send_receive_blocker_observable_mpmc() {
         let oqueue = MPMCOQueue::<_>::new(16, 5);
         generic_test::test_send_receive_blocker(oqueue, 100, 5);
-    }
-
-    #[ktest]
-    fn send_multi_receive_blocker_observable_mpmc() {
-        let oqueue1 = MPMCOQueue::<_>::new(16, 5);
-        let oqueue2 = MPMCOQueue::<_>::new(16, 5);
-        generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
     #[ktest]

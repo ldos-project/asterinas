@@ -12,7 +12,7 @@ use ostd::{
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },
-        legacy_oqueue::OQueueRef,
+        oqueue::{OQueue, OQueueRef},
         orpc_impl, orpc_server,
     },
     sync::WaitQueue,
@@ -30,7 +30,7 @@ pub struct TimerServer {
 #[orpc_impl]
 impl Notifier for TimerServer {
     fn notify(&self) -> Result<(), RPCError> {
-        if self.notification_oqueue().produce(()).is_err() {
+        if self.notification_oqueue().produce_ref(&()).is_err() {
             panic!("Could not produce into notification_oqueue")
         } else {
             Ok(())

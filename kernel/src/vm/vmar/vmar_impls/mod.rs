@@ -19,7 +19,7 @@ use align_ext::AlignExt;
 use aster_util::per_cpu_counter::PerCpuCounter;
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::legacy_oqueue::OQueueRef;
+use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::VmSpace,
@@ -161,7 +161,7 @@ impl<'a> RssDelta<'a> {
     pub(super) fn add(&mut self, rss_type: RssType, increment: isize) {
         #[cfg(not(baseline_asterinas))]
         if rss_type == RssType::Anon {
-            use ostd::orpc::legacy_oqueue::OQueue as _;
+            use ostd::orpc::oqueue::OQueue as _;
 
             if increment > 0 {
                 oqueues::GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed);
@@ -170,7 +170,7 @@ impl<'a> RssDelta<'a> {
             }
             let _ = oqueues::RSS_DELTA_OQUEUE
                 .wait()
-                .produce(oqueues::ObservableEvent::new(increment));
+                .produce_ref(&oqueues::ObservableEvent::new(increment));
         }
 
         self.delta[rss_type as usize] += increment;
