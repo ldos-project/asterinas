@@ -17,5 +17,5 @@ chart:
 result_extraction:
   result_index: 3
   # Must match the loop count in host.sh (for _ in $(seq 1 <nth_occurrence>))
-  nth_occurrence: 4096
+  nth_occurrence: 1
   search_pattern: '\[OVERALL\], Throughput\(ops'
