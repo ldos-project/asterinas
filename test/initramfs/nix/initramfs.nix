@@ -1,5 +1,6 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, benchmark, conformance, regression, dnsServer, authorized_keys }:
+, benchmark, conformance, regression, dnsServer, authorized_keys, enablePython
+}:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -7,6 +8,8 @@ let
     root = ./../etc;
     fileset = ./../etc;
   };
+  python3 =
+    pkgs.python312.withPackages (python-pkgs: with python-pkgs; [ pip cbor2 ]);
   # The openssh dependency is only for the sftp-server binary. The actual ssh server is still provided by dropbear.
   openssh = pkgs.openssh;
   dropbear = pkgs.dropbear.override {
@@ -26,6 +29,7 @@ let
   # Whether the initramfs should include evtest, a common tool to debug input devices (`/dev/input/eventX`)
   is_evtest_included = false;
   all_pkgs = [ busybox dropbear openssh etc resolv_conf ]
+    ++ lib.optionals enablePython [ python3 ]
     ++ lib.optionals (benchmark != null) [ benchmark.package ]
     ++ lib.optionals (conformance != null) [ conformance.package ]
     ++ lib.optionals (regression != null) [ regression.package ]
@@ -79,11 +83,19 @@ in stdenvNoCC.mkDerivation {
       cp -L ${gvisor_libs}/libm.so.6 $out/lib/x86_64-linux-gnu/libm.so.6
     ''}
 
+    mkdir -p $out/nix/store
+
+    ${
+      lib.optionalString enablePython ''
+        cp -r ${python3} $out/nix/store/
+        cp ${python3}/bin/* $out/bin/
+      ''
+    }    
+
     # Use `writeClosure` to retrieve all dependencies of the specified packages.
     # This will generate a text file containing the complete closure of the packages,
     # including the packages themselves.
     # The output of `writeClosure` is equivalent to `nix-store -q --requisites`.
-    mkdir -p $out/nix/store
     pkg_path=${lib.strings.concatStringsSep ":" all_pkgs}
     while IFS= read -r dep_path; do
       if [[ "$pkg_path" == *"$dep_path"* ]]; then

@@ -7,6 +7,8 @@ ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
 CONFORMANCE_TEST_WORKDIR ?= /tmp
 ENABLE_REGRESSION_TEST ?= false
+ENABLE_PYTHON ?= false
+
 # Specify platform macros when building regression tests (supported: asterinas, linux).
 # - asterinas: Define both `__asterinas__` and `__linux__`. Tests may fail in Linux.
 # - linux: Define only `__linux__`. Tests may fail in Asterinas.
@@ -41,6 +43,12 @@ else
 ENABLE_BENCHMARK_TEST = true
 endif
 
+ifneq ($(filter 1 true,$(ENABLE_PYTHON)),)
+ENABLE_NIX_PYTHON := true
+else
+ENABLE_NIX_PYTHON := false
+endif
+
 # Decreases the level of verbosity of diagnostic messages from Nix.
 ifeq ($(VERBOSE), 0)
 NIX_QUIET = --quiet -Q
@@ -66,6 +74,7 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg enablePython $(ENABLE_NIX_PYTHON) \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
@@ -84,6 +93,7 @@ $(INITRAMFS): $(AUTHORIZED_KEYS_FILE)
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg enablePython $(ENABLE_NIX_PYTHON) \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
@@ -102,6 +112,7 @@ x86_64_pkgs:
 		--argstr target x86_64 \
 		--arg enableBenchmarkTest true \
 		--arg enableConformanceTest true \
+		--arg enablePython true
 		--out-link /nix/var/nix/gcroots/auto/x86_64-pkgs \
 		-A busybox \
 		-A benchmark.fio \
