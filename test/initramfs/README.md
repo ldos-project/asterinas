@@ -80,7 +80,7 @@ The following benchmarks are currently supported:
 - lmbench
 - memcached
 - nginx
-- redis
+- redis (redis-benchmark and YCSB)
 - schbench
 - sqlite
 - sysbench
@@ -90,6 +90,28 @@ The following benchmarks are currently supported:
 All benchmarks except `sysbench` support both `x86_64` and `riscv64` architectures.
 
 These benchmarks are precompiled and packaged into the Docker image for convenience. Refer to `tools/docker/nix/Dockerfile` for details.
+
+### Running a Benchmark
+
+To run a single benchmark against both Asterinas and Linux and compare results, use `bench_linux_and_aster.sh` with the benchmark's path under `src/benchmark/`:
+
+```bash
+test/initramfs/src/benchmark/bench_linux_and_aster.sh <benchmark>
+# Example:
+test/initramfs/src/benchmark/bench_linux_and_aster.sh redis/ycsb
+```
+
+The script writes a `result_<suite>-<name>.json` file in the current directory containing a JSON array with one entry for Linux and one for Asterinas. For multi-result benchmarks it writes one file per metric: `result_<suite>-<name>-bench_results-<metric>.json`. The `name`, `unit`, and extraction pattern for `value` are configured per-benchmark in `bench_result.yaml` under the `chart` and `result_extraction` keys.
+
+To run a benchmark on Asterinas only (e.g. for a quick smoke test), pass the `BENCHMARK` argument to `run_kernel`:
+
+```bash
+make run_kernel BENCHMARK=<benchmark>
+# Example:
+make run_kernel BENCHMARK=redis/ycsb
+```
+
+To run multiple benchmarks locally, loop over them manually. In CI, all benchmarks run in parallel via a matrix in `.github/workflows/benchmark_x86.yml`.
 
 ## Adding New Benchmarks
 

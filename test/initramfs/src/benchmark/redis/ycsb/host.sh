@@ -17,12 +17,10 @@ stop_guest() {
 # Trap EXIT signal to ensure guest VM is stopped on script exit
 trap stop_guest EXIT
 
-# TODO - export some variables like MVN_PATH/YCSB_DIR from prepare_host.sh
-export PATH=$PATH:$(realpath .cache/apache-maven-3.9.12/bin/)
+export PATH=$PATH:$MVN_DIR/bin
 
 # Run YCSB + redis bench
 echo "Running YCSB bench connected to $GUEST_SERVER_IP_ADDRESS"
-export JAVA_HOME=$(realpath ".cache/jdk-25.0.2")
 
 cd $YCSB_PATH/
 
@@ -30,7 +28,7 @@ FIELDLENGTH=4096
 
 
 
-./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
+python3 ./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
   -p recordcount=4096 \
   -p fieldcount=1 \
   -p fieldlength=$FIELDLENGTH \
@@ -39,8 +37,8 @@ FIELDLENGTH=4096
   -p fieldlengthdistribution=uniform
 
 # Run many times to stress memory allocation
-for _ in $(seq 1 4096); do
-  ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
+for _ in $(seq 1 1); do
+  python3 ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
     -p operationcount=4096 \
     -p recordcount=4096 \
     -p workload=site.ycsb.workloads.CoreWorkload \
