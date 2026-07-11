@@ -1,34 +1,52 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The OQueue filesystem (`/oqueue`).
+//! The OQueue filesystem (`/oqueues`).
 //!
 //! This pseudo-filesystem exposes OQueues that have been exported to userspace (see
 //! [`ostd::orpc::oqueue::registry`]) as a procfs-like tree, so a userspace program can read the
 //! in-kernel statistics flowing through them.
 //!
-//! This module currently provides the mountable skeleton with an empty root directory. The live
-//! directory tree (mirroring the export registry) and the per-queue observation files are added in
-//! later phases.
+//! # Layout
+//!
+//! The directory tree mirrors the OQueue export registry and is recomputed live on every
+//! `lookup`/`readdir`, since queues register and unregister at runtime. An OQueue whose path is
+//! `a.b[3].c` appears as the directory `/oqueues/a/b/3/c` (names become directory components,
+//! indices become numeric components). Each such leaf directory contains:
+//!
+//! - `strong_observe` — a consuming, per-open stream of every value produced after `open`, as a
+//!   CBOR byte stream (see [`strong`]).
+//! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]).
+//!
+//! # Modules
+//!
+//! - [`dir`]: the volatile directory tree.
+//! - [`strong`]: the `strong_observe` stream file.
+//! - [`metadata`]: the `metadata.yaml` file.
 
-use core::time::Duration;
-
-use inherit_methods_macro::inherit_methods;
+use core::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use crate::{
     fs::{
-        file::{InodeMode, InodeType, StatusFlags, mkmod},
+        file::{InodeMode, InodeType, mkmod},
         pseudofs::AnonDeviceId,
-        utils::{DirentVisitor, NAME_MAX},
+        utils::NAME_MAX,
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
-            inode::{Extension, Inode, InodeIo, Metadata, MknodType},
-            path::{FsPath, PathResolver, PerMountFlags, is_dot, is_dotdot},
+            inode::{Extension, Inode, Metadata},
+            path::{FsPath, PathResolver, PerMountFlags},
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
     prelude::*,
     process::{Gid, Uid},
 };
+
+mod dir;
+mod metadata;
+mod strong;
 
 /// Magic number for the OQueue filesystem (`"oque"`).
 const OQUEUE_MAGIC: u64 = 0x6f71_7565;
@@ -42,19 +60,20 @@ pub(super) fn init() {
     crate::fs::vfs::registry::register(&OQueueFsType).unwrap();
 }
 
-/// Mounts an OQueue filesystem at `/oqueue`, creating the mount point if needed.
+/// Mounts an OQueue filesystem at `/oqueues`, creating the mount point if needed.
 ///
 /// Called during first-process initialization when the `oqfs` feature is enabled.
 pub(in crate::fs) fn mount_root(path_resolver: &PathResolver, ctx: &Context) -> Result<()> {
     let root_path = path_resolver.lookup(&FsPath::try_from("/")?)?;
-    let mount_point = root_path.new_fs_child("oqueue", InodeType::Dir, mkmod!(a+rx))?;
+    let mount_point = root_path.new_fs_child("oqueues", InodeType::Dir, mkmod!(a+rx))?;
     mount_point.mount(
         OQueueFs::new(),
         PerMountFlags::default(),
-        Some("oqueue".to_string()),
+        Some("oqueues".to_string()),
         ctx,
     )?;
-    ostd::debug!("Mounted oqueuefs at \"/oqueue\"");
+    ostd::debug!("Mounted oqueuefs at \"/oqueues\"");
+
     Ok(())
 }
 
@@ -62,6 +81,8 @@ struct OQueueFs {
     _anon_device_id: AnonDeviceId,
     sb: SuperBlock,
     root: Arc<dyn Inode>,
+    /// Allocates inode IDs for the inodes created on demand during path walks.
+    inode_allocator: AtomicU64,
     fs_event_subscriber_stats: FsEventSubscriberStats,
 }
 
@@ -73,9 +94,15 @@ impl OQueueFs {
         Arc::new_cyclic(|weak_fs| Self {
             _anon_device_id: anon_device_id,
             sb: sb.clone(),
-            root: RootDir::new_inode(weak_fs.clone(), &sb),
+            root: dir::DirInode::new_root(weak_fs.clone(), &sb),
+            inode_allocator: AtomicU64::new(OQUEUE_ROOT_INO + 1),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
         })
+    }
+
+    /// Allocates a fresh inode ID.
+    fn alloc_id(&self) -> u64 {
+        self.inode_allocator.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -122,6 +149,9 @@ impl FsType for OQueueFsType {
 }
 
 /// Holds the metadata shared by every OQueue filesystem inode.
+///
+/// Concrete inodes embed a `Common` and forward the boilerplate `Inode` accessors to it via
+/// `#[inherit_methods(from = "self.common")]`.
 struct Common {
     metadata: RwLock<Metadata>,
     extension: Extension,
@@ -209,137 +239,109 @@ impl Common {
     }
 }
 
-/// The inode at `/oqueue`.
-///
-/// The tree below it is empty for now; later phases populate it live from the export registry.
-struct RootDir {
-    this: Weak<RootDir>,
-    common: Common,
-}
+#[cfg(ktest)]
+mod tests {
+    use ostd::{
+        orpc::{
+            oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _, registry},
+            path::{Path, PathComponent},
+        },
+        prelude::*,
+    };
 
-impl RootDir {
-    fn new_inode(fs: Weak<OQueueFs>, sb: &SuperBlock) -> Arc<dyn Inode> {
-        let fs: Weak<dyn FileSystem> = fs;
-        let metadata = Metadata::new_dir(
-            OQUEUE_ROOT_INO,
-            mkmod!(a+rx),
-            BLOCK_SIZE,
-            sb.container_dev_id,
-        );
-        Arc::new_cyclic(|weak_self| RootDir {
-            this: weak_self.clone(),
-            common: Common::new(metadata, fs),
-        })
+    use super::*;
+    use crate::fs::file::{AccessMode, StatusFlags};
+
+    #[derive(serde::Deserialize)]
+    struct DecodedRecord {
+        seq: u64,
+        value: u64,
     }
 
-    fn this(&self) -> Arc<dyn Inode> {
-        self.this.upgrade().unwrap()
-    }
-}
-
-impl InodeIo for RootDir {
-    fn read_at(
-        &self,
-        _offset: usize,
-        _writer: &mut VmWriter,
-        _status_flags: StatusFlags,
-    ) -> Result<usize> {
-        Err(Error::new(Errno::EISDIR))
-    }
-
-    fn write_at(
-        &self,
-        _offset: usize,
-        _reader: &mut VmReader,
-        _status_flags: StatusFlags,
-    ) -> Result<usize> {
-        Err(Error::new(Errno::EISDIR))
-    }
-}
-
-#[inherit_methods(from = "self.common")]
-impl Inode for RootDir {
-    fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
-    fn extension(&self) -> &Extension;
-    fn ino(&self) -> u64;
-    fn mode(&self) -> Result<InodeMode>;
-    fn set_mode(&self, mode: InodeMode) -> Result<()>;
-    fn owner(&self) -> Result<Uid>;
-    fn set_owner(&self, uid: Uid) -> Result<()>;
-    fn group(&self) -> Result<Gid>;
-    fn set_group(&self, gid: Gid) -> Result<()>;
-    fn atime(&self) -> Duration;
-    fn set_atime(&self, time: Duration);
-    fn mtime(&self) -> Duration;
-    fn set_mtime(&self, time: Duration);
-    fn ctime(&self) -> Duration;
-    fn set_ctime(&self, time: Duration);
-    fn fs(&self) -> Arc<dyn FileSystem>;
-
-    fn resize(&self, _new_size: usize) -> Result<()> {
-        Err(Error::new(Errno::EISDIR))
-    }
-
-    fn type_(&self) -> InodeType {
-        InodeType::Dir
-    }
-
-    fn create(&self, _name: &str, _type_: InodeType, _mode: InodeMode) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn mknod(&self, _name: &str, _mode: InodeMode, _type_: MknodType) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
-        let this = self.this();
-
-        // The root is its own parent, so `.` and `..` resolve to the same inode. There are no
-        // other entries yet.
-        let try_readdir = |cursor: &mut usize, visitor: &mut dyn DirentVisitor| -> Result<()> {
-            for (name, next_offset) in [(".", 1usize), ("..", 2usize)] {
-                if next_offset <= *cursor {
-                    continue;
-                }
-                visitor.visit(name, this.ino(), InodeType::Dir, next_offset)?;
-                *cursor = next_offset;
+    /// Reads all currently-available bytes from a nonblocking stream handle.
+    fn read_all(stream: &dyn crate::fs::file::FileIo) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut buf = [0u8; 512];
+            let mut writer = VmWriter::from(&mut buf[..]).to_fallible();
+            match stream.read_at(0, &mut writer, StatusFlags::O_NONBLOCK) {
+                Ok(0) => break,
+                Ok(len) => out.extend_from_slice(&buf[..len]),
+                Err(_) => break, // `EAGAIN`: no more data is currently available.
             }
-            Ok(())
+        }
+        out
+    }
+
+    #[ktest]
+    fn tree_and_observation_files() {
+        // Inode metadata reads the real-time clock, which the ktest kernel does not boot.
+        crate::time::clocks::init_for_ktest();
+
+        // Export an OQueue at `oqfstest.queue[0]`.
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("queue"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
+        registry::register(&path, &queue.as_any_oqueue());
+
+        let fs = OQueueFs::new();
+        let root = fs.root_inode();
+
+        // The namespace tree mirrors the path components down to the OQueue leaf directory.
+        let namespace = root.lookup("oqfstest").unwrap();
+        let queue_dir = namespace.lookup("queue").unwrap();
+        let leaf = queue_dir.lookup("0").unwrap();
+        assert!(root.lookup("nonexistent").is_err());
+
+        // The leaf directory lists exactly the two observation files.
+        let mut names = Vec::<String>::new();
+        leaf.readdir_at(0, &mut names).unwrap();
+        assert!(names.iter().any(|name| name == strong::FILE_NAME));
+        assert!(names.iter().any(|name| name == metadata::FILE_NAME));
+
+        // `strong_observe` streams the values produced after it is opened.
+        let stream = match leaf
+            .lookup(strong::FILE_NAME)
+            .unwrap()
+            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
+        {
+            Some(Ok(stream)) => stream,
+            _ => panic!("opening strong_observe should mint a stream handle"),
         };
-
-        let mut cursor = offset;
-        match try_readdir(&mut cursor, visitor) {
-            Err(e) if cursor == offset => Err(e),
-            _ => Ok(cursor - offset),
+        let producer = queue.attach_value_producer().unwrap();
+        for value in [10usize, 20, 30] {
+            producer.produce(value);
         }
-    }
 
-    fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn unlink(&self, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn rmdir(&self, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
-        if is_dot(name) || is_dotdot(name) {
-            return Ok(self.this());
+        // The stream is records only (no header; that metadata lives in `metadata.yaml`).
+        let bytes = read_all(stream.as_ref());
+        let mut de = minicbor_serde::Deserializer::new(&bytes);
+        let mut records = Vec::new();
+        while de.decoder().position() < bytes.len() {
+            let record: DecodedRecord = serde::Deserialize::deserialize(&mut de).unwrap();
+            records.push(record);
         }
-        return_errno_with_message!(Errno::ENOENT, "the file does not exist");
-    }
+        assert_eq!(
+            records.iter().map(|r| (r.seq, r.value)).collect::<Vec<_>>(),
+            [(0, 10), (1, 20), (2, 30)]
+        );
 
-    fn rename(&self, _old_name: &str, _target: &Arc<dyn Inode>, _new_name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
+        // `metadata.yaml` reports the queue's path and message type.
+        let meta = leaf.lookup(metadata::FILE_NAME).unwrap();
+        let mut buf = [0u8; 256];
+        let mut writer = VmWriter::from(&mut buf[..]).to_fallible();
+        let len = meta.read_at(0, &mut writer, StatusFlags::empty()).unwrap();
+        let text = core::str::from_utf8(&buf[..len]).unwrap();
+        assert!(text.contains("oqfstest.queue[0]"));
+        assert!(text.contains(core::any::type_name::<usize>()));
 
-    fn seek_end(&self) -> Option<usize> {
-        Some(0)
+        // Once the queue is gone, the leaf disappears from the tree.
+        drop(stream);
+        drop(producer);
+        drop(queue);
+        assert!(root.lookup("oqfstest").is_err());
     }
 }
