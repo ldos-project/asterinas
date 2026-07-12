@@ -225,7 +225,8 @@ impl Path {
         Self::Static(StaticPath::new(components))
     }
 
-    fn components(&self) -> &[PathComponent] {
+    /// Returns the components of this path in order.
+    pub fn components(&self) -> &[PathComponent] {
         match self {
             Self::Static(path) => path.components(),
             Self::Owned(path) => path.components(),

@@ -44,11 +44,17 @@ pub trait OQueueExport: Send + Sync {
 
 /// A per-reader observer that yields CBOR-encoded records, with the message type erased.
 pub trait CborObserver: Send {
-    /// Drains the next observed value and appends its CBOR record to `out`.
+    /// Drains the next observed value without blocking and appends its CBOR record to `out`.
     ///
     /// Returns `Ok(true)` if a record was written, `Ok(false)` if nothing is currently available,
     /// and `Err` (typically [`OQueueError::Detached`]) once the OQueue is gone.
     fn try_next(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
+
+    /// Blocks until the next observed value is available, then appends its CBOR record to `out`.
+    ///
+    /// Returns `Err` (typically [`OQueueError::Detached`]) once the OQueue is gone, which a reader
+    /// treats as end-of-stream.
+    fn next_blocking(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 
 /// A CBOR record, as described in the OQueue FS record format.
@@ -101,12 +107,9 @@ struct StrongCborObserver<U> {
     seq: Cell<u64>,
 }
 
-impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U> {
-    fn try_next(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
-        let Some(value) = self.observer.try_strong_observe()? else {
-            return Ok(false);
-        };
-
+impl<U: Copy + Send + Serialize + 'static> StrongCborObserver<U> {
+    /// Appends the CBOR record `{seq, value}` for `value` to `out`, bumping the sequence number.
+    fn encode(&self, value: U, out: &mut Vec<u8>) {
         let seq = self.seq.get();
         self.seq.set(seq.wrapping_add(1));
 
@@ -114,8 +117,22 @@ impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U
         Record { seq, value }
             .serialize(&mut Serializer::new(&mut *out))
             .expect("CBOR encoding of an OQueue record into a Vec cannot fail");
+    }
+}
 
+impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U> {
+    fn try_next(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
+        let Some(value) = self.observer.try_strong_observe()? else {
+            return Ok(false);
+        };
+        self.encode(value, out);
         Ok(true)
+    }
+
+    fn next_blocking(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
+        let value = self.observer.strong_observe()?;
+        self.encode(value, out);
+        Ok(())
     }
 }
 
@@ -128,7 +145,8 @@ where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
 {
-    let observer = oqueue.attach_strong_observer(query)?;
+    // Revocable: a stalled userspace reader must never block the producing kernel component.
+    let observer = oqueue.attach_revocable_strong_observer(query)?;
     Ok(Box::new(StrongCborObserver {
         observer,
         seq: Cell::new(0),

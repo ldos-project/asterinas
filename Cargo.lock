@@ -215,6 +215,7 @@ dependencies = [
  "loongArch64",
  "lru",
  "mariposa_data_capture",
+ "minicbor-serde",
  "no_std_io2",
  "osdk-frame-allocator",
  "osdk-heap-allocator",

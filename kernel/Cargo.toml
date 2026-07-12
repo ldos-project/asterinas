@@ -49,6 +49,7 @@ libflate.workspace = true
 logo-ascii-art.workspace = true
 lru.workspace = true
 mariposa_data_capture.workspace = true
+minicbor-serde = { workspace = true, optional = true }
 no_std_io2.workspace = true
 osdk-frame-allocator.workspace = true
 osdk-heap-allocator.workspace = true
@@ -81,11 +82,14 @@ riscv = { version = "0.15.0", features = ["s-mode"] }
 loongArch64 = "0.2.5"
 
 [features]
-default = ["cvm_guest"]
+default = ["cvm_guest", "oqfs"]
 coverage = ["ostd/coverage"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
-# Expose exported OQueues to userspace via the `/oqueue` filesystem.
-oqfs = []
+# Expose exported OQueues to userspace via the `/oqueues` filesystem. This is the single switch
+# for the feature and is enabled by default. It also turns on `ostd/capture_scheduling` so the
+# scheduler's `scheduler.events` OQueue exists to be exported (this instruments every context
+# switch, which noticeably slows boot under TCG emulation without KVM).
+oqfs = ["dep:minicbor-serde", "ostd/capture_scheduling"]
 # By default we use the Sv48 address translation mode.
 riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
 
