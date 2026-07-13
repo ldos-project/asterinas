@@ -11,8 +11,7 @@
 use aster_raid::selection_policies::RoundRobinPolicy;
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
-use device_id::{DeviceId, MinorId};
-use spin::Once;
+use device_id::DeviceId;
 
 use crate::{
     kcmdline,
@@ -31,9 +30,6 @@ const RAID_DEVICE_NAME: &str = "raid";
 /// logical index (see [`tagged_member_index`]).
 const RAID_MODULE_NAME: &str = "raid";
 const RAID_MEMBERS_ARG: &str = "members";
-
-/// Owns the dynamically allocated major ID of the RAID-1 device.
-static RAID_MAJOR: Once<aster_block::MajorIdOwner> = Once::new();  // FIXME: Yingqi
 
 /// A magic tag identifying `device_index` values that belong to a RAID-1
 /// member, encoded in the high 32 bits (the low 32 bits hold the member's
@@ -68,21 +64,20 @@ pub(super) fn init_in_first_kthread() {
 /// prior to the big merge. 
 fn setup_raid1_device() -> Result<()> {
     let members = collect_members()?;  // Collect member devices
-    let raid_id = allocate_raid_device_id()?;
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {
         let selection_policy = RoundRobinPolicy::new(members.clone())?;
-        Raid1Device::init(RAID_DEVICE_NAME, raid_id, members, selection_policy)
+        Raid1Device::init(RAID_DEVICE_NAME, members, selection_policy)
     };
     #[cfg(baseline_asterinas)]
-    let init_result = Raid1Device::init(RAID_DEVICE_NAME, raid_id, members);
+    let init_result = Raid1Device::init(RAID_DEVICE_NAME, members);
 
     // `Raid1DeviceError` is a foreign (component-crate) error, and the kernel's
     // `Error` is not being extended to carry it as a source, so bridge it here
     // by picking the errno the caller should see. The descriptive text stays in
     // sync with the variant's `Display`.
-    init_result.map_err(|err| match err {
+    let raid_id = init_result.map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
@@ -141,18 +136,6 @@ fn collect_members() -> Result<Vec<Arc<dyn aster_block::BlockDevice>>> {
     }
 
     Ok(members)
-}
-
-fn allocate_raid_device_id() -> Result<DeviceId> {
-    let major = aster_block::allocate_major()
-        .map_err(|_| Error::with_message(Errno::EBUSY, "no major ID is available for RAID-1"))?;
-    let id = DeviceId::new(major.get(), MinorId::new(0));
-
-    // The devtmpfs node resolves back to the device via this ID, so the
-    // major ID must stay allocated for the lifetime of the kernel.
-    RAID_MAJOR.call_once(|| major);
-
-    Ok(id)
 }
 
 fn spawn_worker_thread(raid_id: DeviceId) {

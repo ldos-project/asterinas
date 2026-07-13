@@ -304,9 +304,11 @@ dependencies = [
  "aster-block",
  "aster-time",
  "aster-virtio",
+ "device-id",
  "log",
  "ostd",
  "snafu",
+ "spin",
 ]
 
 [[package]]

@@ -29,19 +29,25 @@ pub mod server_traits;
 
 use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
 #[cfg(baseline_asterinas)]
-use core::sync::atomic::{AtomicUsize, Ordering};
-use core::{cmp, ops::Range};
+use core::sync::atomic::AtomicUsize;
+use core::{
+    cmp,
+    ops::Range,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use aster_block::{
-    BlockDevice, BlockDeviceMeta, DeviceId,
+    BlockDevice, BlockDeviceMeta, DeviceId, MajorIdOwner,
     bio::{
         Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, ParentGuard, SubmittedBio,
     },
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
+use device_id::MinorId;
 use ostd::orpc::orpc_server;
 use snafu::{ResultExt as _, Snafu, ensure};
+use spin::Once;
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
@@ -77,6 +83,26 @@ pub enum Raid1DeviceError {
     Block { source: aster_block::Error },
 }
 
+/// The major ID of the RAID device class.
+static RAID_MAJOR_ID: Once<MajorIdOwner> = Once::new();
+
+/// A counter that hands out a unique minor ID to each instantiated RAID device.
+static NR_RAID_DEVICE: AtomicU32 = AtomicU32::new(0);
+
+/// Allocates a device ID for a new RAID device.
+/// The RAID class major ID is allocated lazily on first use; 
+/// the minor ID is a simple counter.
+fn allocate_device_id() -> Result<DeviceId, Raid1DeviceError> {
+    if RAID_MAJOR_ID.get().is_none() {
+        let major = aster_block::allocate_major().context(BlockSnafu)?;
+        RAID_MAJOR_ID.call_once(|| major);
+    }
+    let major = RAID_MAJOR_ID.get().unwrap().get();
+
+    let minor = NR_RAID_DEVICE.fetch_add(1, Ordering::Relaxed);
+    Ok(DeviceId::new(major, MinorId::new(minor)))
+}
+
 impl Raid1Device {
     /// Creates a new RAID-1 device backed by `members`.
     ///
@@ -86,10 +112,11 @@ impl Raid1Device {
     #[cfg(baseline_asterinas)]
     pub fn init(
         name: &str,
-        id: DeviceId,
         members: Vec<Arc<dyn BlockDevice>>,
-    ) -> Result<(), Raid1DeviceError> {
+    ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
+
+        let id = allocate_device_id()?;
 
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
@@ -108,7 +135,7 @@ impl Raid1Device {
 
         aster_block::register(device.clone()).context(BlockSnafu)?;
 
-        Ok(())
+        Ok(id)
     }
 
     /// Creates a new RAID-1 device backed by `members`.
@@ -119,11 +146,12 @@ impl Raid1Device {
     #[cfg(not(baseline_asterinas))]
     pub fn init(
         name: &str,
-        id: DeviceId,
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
-    ) -> Result<(), Raid1DeviceError> {
+    ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
+
+        let id = allocate_device_id()?;
 
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
@@ -143,7 +171,7 @@ impl Raid1Device {
 
         aster_block::register(device.clone()).context(BlockSnafu)?;
 
-        Ok(())
+        Ok(id)
     }
 
     /// Dequeues and processes the next request from the staging queue.
