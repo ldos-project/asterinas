@@ -306,6 +306,7 @@ dependencies = [
  "aster-virtio",
  "log",
  "ostd",
+ "snafu",
 ]
 
 [[package]]

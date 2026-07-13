@@ -41,6 +41,7 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use ostd::orpc::orpc_server;
+use snafu::{ResultExt as _, Snafu, ensure};
 
 #[cfg(not(baseline_asterinas))]
 use crate::server_traits::SelectionPolicy;
@@ -68,16 +69,12 @@ pub struct Raid1Device {
     id: DeviceId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum Raid1DeviceError {
+    #[snafu(display("RAID-1 device requires at least two members"))]
     NotEnoughMembers,
-    BlockError(aster_block::Error),
-}
-
-impl From<aster_block::Error> for Raid1DeviceError {
-    fn from(v: aster_block::Error) -> Self {
-        Self::BlockError(v)
-    }
+    #[snafu(display("failed to register the RAID-1 device"))]
+    Block { source: aster_block::Error },
 }
 
 impl Raid1Device {
@@ -92,9 +89,7 @@ impl Raid1Device {
         id: DeviceId,
         members: Vec<Arc<dyn BlockDevice>>,
     ) -> Result<(), Raid1DeviceError> {
-        if members.len() < 2 {
-            return Err(Raid1DeviceError::NotEnoughMembers);
-        }
+        ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
@@ -111,7 +106,7 @@ impl Raid1Device {
             id,
         });
 
-        aster_block::register(device.clone())?;
+        aster_block::register(device.clone()).context(BlockSnafu)?;
 
         Ok(())
     }
@@ -128,9 +123,7 @@ impl Raid1Device {
         members: Vec<Arc<dyn BlockDevice>>,
         selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<(), Raid1DeviceError> {
-        if members.len() < 2 {
-            return Err(Raid1DeviceError::NotEnoughMembers);
-        }
+        ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
         // Compute the minimal metadata across all members.
         let metadata = Self::min_metadata(&members);
@@ -148,7 +141,7 @@ impl Raid1Device {
             id,
         });
 
-        aster_block::register(device.clone())?;
+        aster_block::register(device.clone()).context(BlockSnafu)?;
 
         Ok(())
     }

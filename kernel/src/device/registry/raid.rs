@@ -78,11 +78,15 @@ fn setup_raid1_device() -> Result<()> {
     #[cfg(baseline_asterinas)]
     let init_result = Raid1Device::init(RAID_DEVICE_NAME, raid_id, members);
 
+    // `Raid1DeviceError` is a foreign (component-crate) error, and the kernel's
+    // `Error` is not being extended to carry it as a source, so bridge it here
+    // by picking the errno the caller should see. The descriptive text stays in
+    // sync with the variant's `Display`.
     init_result.map_err(|err| match err {
         Raid1DeviceError::NotEnoughMembers => {
             Error::with_message(Errno::EINVAL, "RAID-1 device requires at least two members")
         }
-        Raid1DeviceError::BlockError(_) => {
+        Raid1DeviceError::Block { .. } => {
             Error::with_message(Errno::EEXIST, "failed to register the RAID-1 device")
         }
     })?;
