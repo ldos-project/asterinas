@@ -1,5 +1,5 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, benchmark, conformance, regression, dnsServer, authorized_keys, enablePython
+oqueueReader, benchmark, conformance, regression, dnsServer, authorized_keys, enablePython
 }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
@@ -53,6 +53,9 @@ in stdenvNoCC.mkDerivation {
 
     cp ${boot_hello} $out/test/boot_hello.sh
     cp ${init} $out/init
+
+    # The OQueue filesystem CBOR reader, always available in-guest.
+    cp ${oqueueReader}/bin/read_oqueues $out/usr/bin/read_oqueues
 
     cp -r ${etc}/* $out/etc/
 

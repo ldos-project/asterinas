@@ -33,9 +33,11 @@ in rec {
   };
   regression =
     pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
+  # The OQueue filesystem CBOR reader, always included so `/oqueues` can be inspected in-guest.
+  oqueueReader = pkgs.callPackage ./oqueue-reader.nix { };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
-    inherit busybox;
+    inherit busybox oqueueReader;
     benchmark = if enableBenchmarkTest then benchmark else null;
     conformance = if enableConformanceTest then conformance else null;
     regression = if enableRegressionTest then regression else null;
