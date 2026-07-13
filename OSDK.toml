@@ -22,6 +22,7 @@ kcmd_args = [
     "init=/init",
     "data_capture.device=vdf",
     "data_capture.legacy_device=vdg",
+    "raid.members=vdc,vdd,vde",
 ]
 init_args = ["sh", "-l"]
 initramfs = "test/initramfs/build/initramfs.cpio.gz"

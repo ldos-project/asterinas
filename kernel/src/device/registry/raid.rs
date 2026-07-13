@@ -15,6 +15,7 @@ use device_id::{DeviceId, MinorId};
 use spin::Once;
 
 use crate::{
+    kcmdline,
     prelude::*,
     sched::{RealTimePolicy, SchedPolicy},
     thread::kernel_thread::ThreadOptions,
@@ -22,12 +23,14 @@ use crate::{
 
 const RAID_DEVICE_NAME: &str = "raid";
 
-/// The names of the RAID-1 member disks.
+/// The kernel command-line module and argument naming the RAID-1 member disks.
 ///
-/// Virtio block devices are named `vda`, `vdb`, ... in probe order. With the
-/// disk order configured in `tools/qemu_args.sh` (ext2, exfat, then the three
-/// RAID drives), the RAID members are `vdc`, `vdd`, and `vde`.
-const RAID_MEMBER_NAMES: &[&str] = &["vdc", "vdd", "vde"];
+/// The member disks are configured via `raid.members=<name>,<name>,...`, a
+/// comma-separated list of block device names (e.g. `raid.members=vdc,vdd,vde`).
+/// The list is ordered: the position of each name is used as the member's
+/// logical index (see [`tagged_member_index`]).
+const RAID_MODULE_NAME: &str = "raid";
+const RAID_MEMBERS_ARG: &str = "members";
 
 /// Owns the dynamically allocated major ID of the RAID-1 device.
 static RAID_MAJOR: Once<aster_block::MajorIdOwner> = Once::new();  // FIXME: Yingqi
@@ -93,22 +96,34 @@ fn setup_raid1_device() -> Result<()> {
     Ok(())
 }
 
-/// Warning: the new way of identifying the block devices is more fragile. 
-/// Old: members looked up by logical name "raid0", "raid1", "raid2", 
-/// matching the qemu serial=raid0 tags, via aster_block::get_device(name).
-/// 
-/// New: aster_block::get_device no longer exists in the refactored registry 
-/// — devices are keyed by DeviceId, and virtio disks are auto-named vda, vdb, ... by probe order, 
-/// with serial= now cosmetic. So collect_members() has to guess members by positional name (vdc/vdd/vde), 
-/// inferred from qemu arg ordering rather than an explicit tag. This is strictly more fragile than the old 
-/// scheme: if anyone reorders the -device virtio-blk-pci lines in tools/qemu_args.sh, the RAID assembly 
-/// silently binds to the wrong disks instead of failing loudly (it'll still find three vd* names, just 
-/// possibly the wrong three).
+/// Collects the RAID-1 member devices named on the kernel command line.
+///
+/// The member disk names are read from the `raid.members` argument (see
+/// [`RAID_MEMBERS_ARG`]) rather than hardcoded, so the disk layout can be
+/// reconfigured from `OSDK.toml` / `tools/qemu_args.sh` without touching the
+/// kernel. Devices are looked up by name via [`aster_block::collect_all`]
+/// (the refactored registry keys devices by `DeviceId`, and virtio disks are
+/// auto-named `vda`, `vdb`, ... in probe order).
 fn collect_members() -> Result<Vec<Arc<dyn aster_block::BlockDevice>>> {
+    let Some(members_arg) = kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name::<String>(RAID_MODULE_NAME, RAID_MEMBERS_ARG))
+    else {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "the RAID-1 member disks are not configured (set 'raid.members=<name>,...')"
+        );
+    };
+
+    let member_names: Vec<&str> = members_arg
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+
     let all_devices = aster_block::collect_all();
 
-    let mut members = Vec::with_capacity(RAID_MEMBER_NAMES.len());
-    for (index, name) in RAID_MEMBER_NAMES.iter().enumerate() {
+    let mut members = Vec::with_capacity(member_names.len());
+    for (index, name) in member_names.iter().enumerate() {
         let Some(device) = all_devices.iter().find(|device| device.name() == *name) else {
             return_errno_with_message!(Errno::ENOENT, "a RAID-1 member disk is missing");
         };
