@@ -16,4 +16,4 @@ commands:
   env.txt: env
   qemu.log: cat qemu.log
   qemu-enhanced.log: cargo osdk enhance-log -b target/osdk/aster-kernel/aster-kernel-osdk-bin qemu.log
-  results: cp -a results_*.json $OUTPUT_DIR; echo Results are in; ls -lh $OUTPUT_DIR/results_*.json
+  results: cp -a results_*.json $OUTPUT_DIR || true; echo Results are in; ls -lh $OUTPUT_DIR/results_*.json

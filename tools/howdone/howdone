@@ -7,10 +7,10 @@
 # ///
  
 import argparse
+import fcntl
 import os
 import pty
 import select
-import signal
 import subprocess
 import sys
 import termios
@@ -126,13 +126,21 @@ def run_noninteractive(command: str | list, output_file: Path, environ: dict, cw
     try:
         with open(output_file, "w") as f:
             f.write(f"{format_command_line(command)}\n\n")
-            for line in process.stdout:
-                f.write(line)
-                f.flush()
+            while True:
+                try:
+                    for line in process.stdout:
+                        f.write(line)
+                        f.flush()
+                    break
+                except KeyboardInterrupt:
+                    # The child will have received the SIGINT already, so we just drain it's output.
+                    pass
     except (IOError, OSError) as e:
         log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
-        
-    code = process.wait()
+    finally:
+        process.wait()
+
+    code = process.returncode
     if code != 0:
         with open(output_file, "a") as f:
             f.write(f"\nCommand failed with code {code}\n")
@@ -145,17 +153,25 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
 
     if sys.stdin.isatty():
         # The input is a TTY, handle TTY communication using a pty
-        parent_fd, child_fd = pty.openpty()
+        master_fd, slave_fd = pty.openpty()
+
+        def make_controlling_tty():
+            # Create a process group and set the line discipline for the input to make ctrl-C
+            # properly terminate this process and it's descendants.
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
         process = subprocess.Popen(
             **popen_args(command),
-            stdin=child_fd,
-            stdout=child_fd,
-            stderr=child_fd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
             close_fds=True,
+            preexec_fn=make_controlling_tty,
             env=environ,
             cwd=cwd,
         )
-        os.close(child_fd)
+        os.close(slave_fd)
 
         stdin_fd = sys.stdin.fileno()
         stdout_fd = sys.stdout.fileno()
@@ -166,10 +182,10 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
                 with open(output_file, "wb") as f:
                     f.write(header.encode())
                     while True:
-                        readable, _, _ = select.select([parent_fd, stdin_fd], [], [])
-                        if parent_fd in readable:
+                        readable, _, _ = select.select([master_fd, stdin_fd], [], [])
+                        if master_fd in readable:
                             try:
-                                data = os.read(parent_fd, 4096)
+                                data = os.read(master_fd, 4096)
                             except OSError:
                                 break
                             if not data:
@@ -183,13 +199,13 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
                             except OSError:
                                 break
                             if data:
-                                os.write(parent_fd, data)
+                                os.write(master_fd, data)
             finally:
                 termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, saved_attrs)
-                os.close(parent_fd)
+                os.close(master_fd)
+                process.wait()
         except (IOError, OSError) as e:
             log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
-            raise
     else:
         # The input is not a TTY, so just do normal file I/O
         process = subprocess.Popen(
@@ -204,18 +220,22 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
         try:
             with open(output_file, "w") as f:
                 f.write(header)
-                try:
-                    for line in process.stdout:
+                while True:
+                    try:
+                        for line in process.stdout:
                             print(line, end="", flush=False)
                             f.write(line)
                             f.flush()
-                except KeyboardInterrupt:
-                    # Pass SIGINT on to the child.
-                    process.send_signal(signal.SIGINT)
+                        break
+                    except KeyboardInterrupt:
+                        # The child will have received the SIGINT already, so we just drain it's output.
+                        pass
         except (IOError, OSError) as e:
             log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+        finally:
+            process.wait()
 
-    code = process.wait()
+    code = process.returncode
     if code != 0:
         with open(output_file, "ab") as f:
             f.write(f"\nCommand failed with code {code}\n".encode())
@@ -377,6 +397,9 @@ The generated directory contains the files specified in the configuration and a 
 {_YK}full_command{_YR}: {_YV}<full command line of the howdone invocation>{_YR}
 {_YK}meta_config{_YR}:
     {_YV}<the configuration used by howdone>{_YR}
+
+NOTE: Killing howdone directly with signals (even SIGINT) will leave the commands it is running as
+"zombies" (defunct processes).
 """,
     )
     parser.add_argument(
