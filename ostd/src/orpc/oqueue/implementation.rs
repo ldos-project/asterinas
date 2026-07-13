@@ -125,12 +125,14 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         query: ObservationQuery<T, U>,
         len: usize,
         is_strong: bool,
+        revocable: bool,
     ) -> Result<ObserverKey, super::OQueueError>
     where
         U: Copy + Send + 'static,
     {
         let mut ring_buffer = ObservationRingBuffer::new::<U>(query, len)
             .map_err(|_| super::ResourceUnavailableSnafu.build())?;
+        ring_buffer.revocable = revocable;
 
         if is_strong {
             let id = ring_buffer.ring_buffer.new_strong_reader();
@@ -151,7 +153,30 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     where
         U: Copy + Send + 'static,
     {
-        let observer_key = self.new_observation_ring_buffer(query, self.len, true)?;
+        self.attach_strong_observer_inner(query, false)
+    }
+
+    /// Attach a revocable strong observer that is dropped, rather than blocking producers, when it
+    /// falls too far behind.
+    pub(super) fn attach_revocable_strong_observer<U>(
+        self: &Arc<Self>,
+        query: super::ObservationQuery<T, U>,
+    ) -> Result<super::StrongObserver<U>, super::OQueueError>
+    where
+        U: Copy + Send + 'static,
+    {
+        self.attach_strong_observer_inner(query, true)
+    }
+
+    fn attach_strong_observer_inner<U>(
+        self: &Arc<Self>,
+        query: super::ObservationQuery<T, U>,
+        revocable: bool,
+    ) -> Result<super::StrongObserver<U>, super::OQueueError>
+    where
+        U: Copy + Send + 'static,
+    {
+        let observer_key = self.new_observation_ring_buffer(query, self.len, true, revocable)?;
         let oqueue: Arc<dyn UntypedOQueueImplementation> = self.clone();
         Ok(super::StrongObserver {
             oqueue,
@@ -235,7 +260,9 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     where
         U: Copy + Send + 'static,
     {
-        let observer_key = self.new_observation_ring_buffer(query, history_len, false)?;
+        // weak observer doesn't have the "blocking producer" issue so the discussion of
+        // whether it's buffer is revokable is not applicable. Always set to false. 
+        let observer_key = self.new_observation_ring_buffer(query, history_len, false, false)?; 
         Ok(super::WeakObserver {
             oqueue: self.clone(),
             observer_id: observer_key,
@@ -275,12 +302,19 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     pub(super) fn try_produce_ref(&self, v: &T) -> bool {
         let mut inner = self.inner.lock();
         assert!(inner.consumer_ring_buffer.is_none());
+        // A slow observer must never block a producer, so drop any whose ring is full. As this is
+        // an observation OQueue (no consumers), this also means production always succeeds.
+        inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query, ring_buffer, ..
+                query, ring_buffer, 
+                revoked,
+                ..
             } in inner.observer_ring_buffers.values_mut()
             {
-                query.call_into(v, ring_buffer);
+                if !*revoked {
+                    query.call_into(v, ring_buffer);
+                }
             }
             for f in inner.inline_strong_observers.values() {
                 f(v)
@@ -328,12 +362,18 @@ impl<T: Send + 'static> OQueueImplementation<T> {
     /// have been produced.
     pub(super) fn try_produce(&self, v: T) -> Result<(), T> {
         let mut inner = self.inner.lock();
+        // A slow observer must never block a producer, so drop any whose ring is full.
+        inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query, ring_buffer, ..
+                query, ring_buffer,
+                revoked,
+                ..
             } in inner.observer_ring_buffers.values_mut()
             {
-                query.call_into(&v, ring_buffer);
+                if !*revoked {
+                    query.call_into(&v, ring_buffer);
+                }
             }
             for f in inner.inline_strong_observers.values() {
                 f(&v)
@@ -458,11 +498,22 @@ struct OQueueInner<T: ?Sized> {
 
 impl<T: ?Sized> OQueueInner<T> {
     /// True if all ring buffers can produce.
+    ///
+    /// Revoked observers are ignored, cus they won't get produced to at all. 
     fn can_produce(&self) -> bool {
         self.observer_ring_buffers
             .values()
-            .all(|r| r.ring_buffer.can_produce())
+            .all(|r| r.revoked || r.ring_buffer.can_produce())
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
+    }
+
+    /// Revoke every *revocable* strong observer whose ring buffer is full (a.k.a !can_produce()).
+    fn revoke_full_observers(&mut self) {
+        for observer in self.observer_ring_buffers.values_mut() {
+            if observer.revocable && !observer.revoked && !observer.ring_buffer.can_produce() {
+                observer.revoked = true;
+            }
+        }
     }
 }
 
@@ -513,6 +564,14 @@ struct ObservationRingBuffer<T: ?Sized> {
     weak_observe_into: unsafe fn(ring_buffer: &mut RingBuffer, Cursor, dest: *mut ()) -> bool,
     /// The actual ring buffer storing the data.
     ring_buffer: RingBuffer,
+    /// Whether this observer may be revoked (dropped) when its ring fills, instead of applying
+    /// backpressure to producers. Set for userspace-facing observers where kernel liveness must
+    /// not depend on the reader keeping up.
+    revocable: bool,
+    /// Set when a revocable strong observer has been revoked because its ring filled up while a
+    /// producer was publishing. A revoked observer no longer gates production and its next observe
+    /// returns [`OQueueError::Detached`](super::OQueueError::Detached).
+    revoked: bool,
 }
 
 impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
@@ -564,6 +623,8 @@ impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
             try_strong_observe_into: try_strong_observe_into::<U>,
             weak_observe_into: weak_observe_into::<U>,
             ring_buffer,
+            revocable: false,
+            revoked: false,
         })
     }
 }
@@ -679,14 +740,21 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         dest: *mut (),
     ) -> Result<bool, OQueueError> {
         let mut inner = self.inner.lock();
+        let observer = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
+            .expect("should only be called with an id returned from new_observation_ring_buffer");
+
+        // The observer was dropped because it fell behind; report the stream as detached.
+        if observer.revoked {
+            return super::DetachedSnafu.fail();
+        }
+
         let ObservationRingBuffer {
             try_strong_observe_into,
             ring_buffer,
             ..
-        } = inner
-            .observer_ring_buffers
-            .get_mut(observer_id)
-            .expect("should only be called with an id returned from new_observation_ring_buffer");
+        } = observer;
 
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };

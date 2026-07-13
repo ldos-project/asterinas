@@ -143,6 +143,19 @@ pub trait OQueueBase<T: ?Sized> {
     where
         U: Copy + Send + 'static;
 
+    /// Attach a *revocable* strong observer which extracts values of type `U` using the query.
+    ///
+    /// Unlike [`Self::attach_strong_observer`], which applies backpressure to producers when its
+    /// ring fills, a revocable observer is silently dropped in that situation: the producer keeps
+    /// running and the observer sees [`OQueueError::Detached`] on its next observe. Use this for
+    /// untrusted or userspace-facing observers that must never be able to stall kernel execution.
+    fn attach_revocable_strong_observer<U>(
+        &self,
+        query: ObservationQuery<T, U>,
+    ) -> Result<StrongObserver<U>, OQueueError>
+    where
+        U: Copy + Send + 'static;
+
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
     /// value. This function does not run in the context of any server. If the function should, it
     /// should use [`crate::orpc::framework::ServerBase::call_in_context`].
@@ -222,6 +235,16 @@ macro_rules! impl_oqueue_base_forward {
                 U: Copy + Send + 'static,
             {
                 self.$member.attach_strong_observer(query)
+            }
+
+            fn attach_revocable_strong_observer<U>(
+                &self,
+                query: ObservationQuery<T, U>,
+            ) -> Result<StrongObserver<U>, OQueueError>
+            where
+                U: Copy + Send + 'static,
+            {
+                self.$member.attach_revocable_strong_observer(query)
             }
 
             fn attach_weak_observer<U>(
@@ -798,6 +821,29 @@ mod test {
         let consumed = consumer.consume();
 
         assert_eq!(consumed, new_message(7, "hello"));
+    }
+
+    #[ktest]
+    fn slow_strong_observer_is_revoked_not_blocking() {
+        // A tiny observation queue with a strong observer that never observes.
+        let queue = OQueueRef::<u32>::new_anonymous(4);
+        let producer = queue.attach_ref_producer().unwrap();
+        let observer = queue
+            .attach_revocable_strong_observer(ObservationQuery::<u32, u32>::identity())
+            .unwrap();
+
+        // Publish far more than the ring can hold. If a full strong observer blocked the producer,
+        // `produce_ref` would hang here and this test would time out. Kernel liveness comes first,
+        // so instead the slow observer is revoked and production keeps going.
+        for value in 0..100u32 {
+            producer.produce_ref(&value);
+        }
+
+        // The revoked observer now reports the stream as detached.
+        assert!(matches!(
+            observer.try_strong_observe(),
+            Err(OQueueError::Detached { .. })
+        ));
     }
 
     #[ktest]
