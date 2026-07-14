@@ -1,0 +1,17 @@
+prefix: run
+output_file: output.txt
+output_dir:
+  variable: OUTPUT_DIR
+commands:
+  hostname: hostname
+  dirty.diff: git diff --stat HEAD
+  git_status.txt: git status
+  ps-ax.txt: 
+    command: ps ax
+    when: before
+  df.txt: df
+  mount.txt: mount
+  uname-all.txt: uname --all
+  lscpu.txt: lscpu
+  # Move a log file from the run into the output directory
+  run.log: cat run.log && rm run.log

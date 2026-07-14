@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+
+# /// script
+# dependencies = [
+#   "PyYAML==6.0.3",
+# ]
+# ///
+ 
+import argparse
+import fcntl
+import os
+import pty
+import select
+import subprocess
+import sys
+import termios
+import tty
+from datetime import datetime
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    print(f"""\
+ERROR: PyYAML is not installed.
+You can either install it (e.g. apt install python3-yaml), or launch this script with uv: 
+          
+uv run {sys.argv[0]}
+""", file=sys.stderr)
+    raise
+
+
+# The default configuration which is overridden by the actual config file.
+DEFAULT_CONFIG = {
+    "prefix": "run",
+    "output_file": "output.txt",
+    "output_dir": {"variable": "OUTPUT_DIR"},
+    "commands": {},
+}
+
+
+def find_config_file(start_path: Path) -> Path | None:
+    """Search up directory tree for .howdone.yaml file. Stop at the home directory or root."""
+    current_path = start_path.resolve()
+    while current_path != current_path.parent and current_path != Path.home().parent:
+        config_candidate = current_path / ".howdone.yaml"
+        if config_candidate.exists():
+            return config_candidate
+        current_path = current_path.parent
+    return None
+
+
+def load_config(config_file: Path) -> dict:
+    """Load configuration from YAML file"""
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f)
+
+
+def validate_output_dir_config(config: dict) -> None:
+    od = config.get("output_dir", {})
+    if not isinstance(od, dict):
+        print("Error: 'output_dir' must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    if "argument" in od:
+        argument = od["argument"]
+        if isinstance(argument, str):
+            args_list = [argument]
+        elif isinstance(argument, list):
+            args_list = argument
+        else:
+            raise ValueError("output_dir.argument must be a string or list")
+        if not any("{OUTPUT_DIR}" in item for item in args_list):
+            raise ValueError("output_dir.argument must contain {OUTPUT_DIR} in at least one item")
+
+
+def substitute_output_dir(s: str, output_dir: Path) -> str:
+    return s.replace("{OUTPUT_DIR}", str(output_dir))
+
+
+def append_output_dir_arg(command: list | str, raw_arg: list | str, output_dir: Path):
+    if isinstance(command, str) and isinstance(raw_arg, str):
+        return command + " " + substitute_output_dir(raw_arg, output_dir)
+    elif isinstance(command, str) and isinstance(raw_arg, list):
+        joined = " ".join(substitute_output_dir(a, output_dir) for a in raw_arg)
+        return command + " " + joined
+    elif isinstance(command, list) and isinstance(raw_arg, str):
+        extra = [substitute_output_dir(x, output_dir) for x in raw_arg.split()]
+        return command + extra
+    elif isinstance(command, list) and isinstance(raw_arg, list):
+        return command + [substitute_output_dir(a, output_dir) for a in raw_arg]
+    else:
+        raise ValueError("command and raw_arg must be list or str")
+
+
+def format_command_line(command):
+    """Format a command for display. This flattens commands which are already separated into arguments."""
+    if isinstance(command, str):
+        return command
+    else:
+        return " ".join(command)
+
+
+def log_message(msg, *args, **kwargs):
+    print("[howdone] " + msg, *args, **kwargs)
+
+
+def popen_args(command: str | list) -> dict:
+    if isinstance(command, str):
+        return dict(args=command, shell=True)
+    else:
+        return dict(args=command, shell=False)
+
+
+def run_noninteractive(command: str | list, output_file: Path, environ: dict, cwd: str | None) -> int:
+    """Run a command, capturing stdout+stderr to output_file. Returns exit code."""
+    process = subprocess.Popen(
+        **popen_args(command),
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=environ,
+        cwd=cwd,
+    )
+
+    try:
+        with open(output_file, "w") as f:
+            f.write(f"{format_command_line(command)}\n\n")
+            while True:
+                try:
+                    for line in process.stdout:
+                        f.write(line)
+                        f.flush()
+                    break
+                except KeyboardInterrupt:
+                    # The child will have received the SIGINT already, so we just drain it's output.
+                    pass
+    except (IOError, OSError) as e:
+        log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+    finally:
+        process.wait()
+
+    code = process.returncode
+    if code != 0:
+        with open(output_file, "a") as f:
+            f.write(f"\nCommand failed with code {code}\n")
+    return code
+
+
+def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: str | None) -> int:
+    """Run a command interactively via a PTY, teeing output to output_file. Returns exit code."""
+    header = f"{format_command_line(command)}\n\n"
+
+    if sys.stdin.isatty():
+        # The input is a TTY, handle TTY communication using a pty
+        master_fd, slave_fd = pty.openpty()
+
+        def make_controlling_tty():
+            # Create a process group and set the line discipline for the input to make ctrl-C
+            # properly terminate this process and it's descendants.
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+        process = subprocess.Popen(
+            **popen_args(command),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+            preexec_fn=make_controlling_tty,
+            env=environ,
+            cwd=cwd,
+        )
+        os.close(slave_fd)
+
+        stdin_fd = sys.stdin.fileno()
+        stdout_fd = sys.stdout.fileno()
+        saved_attrs = termios.tcgetattr(stdin_fd)
+        try:
+            try:
+                tty.setraw(stdin_fd)
+                with open(output_file, "wb") as f:
+                    f.write(header.encode())
+                    while True:
+                        readable, _, _ = select.select([master_fd, stdin_fd], [], [])
+                        if master_fd in readable:
+                            try:
+                                data = os.read(master_fd, 4096)
+                            except OSError:
+                                break
+                            if not data:
+                                break
+                            os.write(stdout_fd, data)
+                            f.write(data)
+                            f.flush()
+                        if stdin_fd in readable:
+                            try:
+                                data = os.read(stdin_fd, 4096)
+                            except OSError:
+                                break
+                            if data:
+                                os.write(master_fd, data)
+            finally:
+                termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, saved_attrs)
+                os.close(master_fd)
+                process.wait()
+        except (IOError, OSError) as e:
+            log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+    else:
+        # The input is not a TTY, so just do normal file I/O
+        process = subprocess.Popen(
+            **popen_args(command),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=environ,
+            cwd=cwd,
+        )
+
+        try:
+            with open(output_file, "w") as f:
+                f.write(header)
+                while True:
+                    try:
+                        for line in process.stdout:
+                            print(line, end="", flush=False)
+                            f.write(line)
+                            f.flush()
+                        break
+                    except KeyboardInterrupt:
+                        # The child will have received the SIGINT already, so we just drain it's output.
+                        pass
+        except (IOError, OSError) as e:
+            log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+        finally:
+            process.wait()
+
+    code = process.returncode
+    if code != 0:
+        with open(output_file, "ab") as f:
+            f.write(f"\nCommand failed with code {code}\n".encode())
+    return code
+
+
+_YR = "\033[0m"     # reset
+_YK = "\033[36m"    # key   - cyan
+_YV = "\033[33m"    # value - yellow
+_YC = "\033[2;32m"  # comment - dim green
+
+def run(args):
+    # Find config file if not provided
+    config_filename: Path | None = args.config
+    if config_filename is None:
+        config_filename = find_config_file(Path.cwd())
+    if config_filename is None:
+        print(
+            "Error: Could not find .howdone.yaml configuration file",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Load configuration
+    config = {**DEFAULT_CONFIG, **load_config(config_filename)}
+    try:
+        validate_output_dir_config(config)
+    except ValueError as e:
+        print(f"Error: Invalid configuration: {e}", file=sys.stderr)
+        return 1
+    output_dir_config = config["output_dir"]
+
+    output_dir: Path
+    # Determine output directory
+    if args.dir:
+        output_dir = args.dir
+    else:
+        prefix = args.prefix or config["prefix"]
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_dir = Path.cwd() / (f"{prefix}-{timestamp}")
+
+    if output_dir.exists():
+        print(
+            f"Error: Refusing to overwrite existing directory: {output_dir}",
+            file=sys.stderr,
+        )
+        return 2
+    output_dir.mkdir(parents=True, exist_ok=False)
+    print(f"Output directory: {output_dir}")
+
+    meta_data = {
+        "run_name": args.name,
+        "current_directory": str(Path.cwd().resolve()),
+        "date": datetime.now().isoformat(),
+        "full_command": " ".join(sys.argv),
+        "meta_config": config,
+    }
+
+    # Save metadata
+    meta_file = output_dir / "meta.yaml"
+    with open(meta_file, "w") as f:
+        yaml.dump(meta_data, f)
+
+    environ = dict(os.environ)
+    if "variable" in output_dir_config:
+        environ[output_dir_config["variable"]] = str(output_dir)
+
+    cwd = str(output_dir) if output_dir_config.get("change_directory") else None
+
+    before_commands = []
+    after_commands = []
+
+    for name, cmd in config["commands"].items():
+        # Check if cmd is a dict (with command and optional when fields) or a string
+        if isinstance(cmd, dict):
+            when_str = cmd.get("when", "after")
+            if when_str.lower() == "after":
+                run_before = False
+            elif when_str.lower() == "before":
+                run_before = True
+            else:
+                print(f"Error: Invalid 'when' for command. Found '{when_str}' in {cmd!r}", file=sys.stderr)
+                return 1
+            actual_cmd = cmd["command"]
+        else:
+            run_before = False
+            actual_cmd = cmd
+        if run_before:
+            before_commands.append((name, actual_cmd))
+        else:
+            after_commands.append((name, actual_cmd))
+
+    for name, cmd in before_commands:
+        log_message(f"Running (output to {name}): {format_command_line(cmd)}")
+        code = run_noninteractive(cmd, output_dir / name, environ, cwd)
+        if code != 0:
+            log_message(f"Command failed with code {code} (command was {format_command_line(cmd)})")
+
+    main_command = args.cmd
+    # if the main command is a single element then unwrap it, so that it is run in a full shell.
+    if len(main_command) == 1:
+        main_command = main_command[0]
+    if "argument" in output_dir_config:
+        main_command = append_output_dir_arg(main_command, output_dir_config["argument"], output_dir)
+
+    output_file = output_dir / config["output_file"]
+    log_message(f"Running (output to {config['output_file']}): {format_command_line(main_command)}")
+    code = run_interactive(main_command, output_file, environ, cwd)
+    if code != 0:
+        log_message(f"Command failed with code {code} (command was {format_command_line(main_command)})")
+
+    for name, cmd in after_commands:
+        log_message(f"Running (output to {name}): {format_command_line(cmd)}")
+        code = run_noninteractive(cmd, output_dir / name, environ, cwd)
+        if code != 0:
+            log_message(f"Command failed with code {code} (command was {format_command_line(cmd)})")
+
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=f"""
+Run a command and capture its output, along with provenance information, to a directory.
+
+The provenance information is based on a configuration file that specifies a set of commands to run. The output of each
+command is captured and stored in the output directory. All the commands are run with stdout and stderr combined to keep
+them aligned. Each output file begins with the command that generated it. By default, commands are run after the main
+command from the command line (so they can access the output). However, by providing {_YK}when{_YR} for the command, it
+can run before the main command (see below for an example).
+
+The configuration file format is as follows:
+
+{_YC}# A prefix applied to the autogenerated name of output directories{_YR}
+{_YK}prefix{_YR}: {_YV}run{_YR}
+{_YC}# The file for the output of the main command{_YR}
+{_YK}output_file{_YR}: {_YV}output.txt{_YR}
+{_YC}# How the output directory is communicated to commands. Any or all sub-options may be set:{_YR}
+{_YC}#   variable: set the named environment variable for all commands{_YR}
+{_YC}#   argument: append argument(s) with `{{OUTPUT_DIR}}` substituted to the main command only (string or list){_YR}
+{_YC}#   change_directory: run all commands with cwd set to the output directory{_YR}
+{_YK}output_dir{_YR}:
+  {_YK}variable{_YR}: {_YV}OUTPUT_DIR{_YR}
+{_YC}# A map of filenames to the commands which will be executed to fill them.{_YR}
+{_YK}commands{_YR}:
+  {_YK}dirty.diff{_YR}: {_YV}git diff --stat HEAD{_YR}
+  {_YK}git-status.txt{_YR}: {_YV}git status{_YR}
+  {_YK}uname-all.txt{_YR}: {_YV}uname --all{_YR}
+  {_YK}start_date.txt{_YR}:
+    {_YK}command{_YR}: {_YV}date{_YR}
+    {_YK}when{_YR}: {_YV}before{_YR}
+
+The generated directory contains the files specified in the configuration and a file `meta.yaml` containing:
+
+{_YK}run_name{_YR}: {_YV}<run name, if any, from command line>{_YR}
+{_YK}current_directory{_YR}: {_YV}<absolute path of the current directory when running all the commands>{_YR}
+{_YK}date{_YR}: {_YV}<date and time in ISO format, e.g. 2026-06-05T20:50:12>{_YR}
+{_YK}full_command{_YR}: {_YV}<full command line of the howdone invocation>{_YR}
+{_YK}meta_config{_YR}:
+    {_YV}<the configuration used by howdone>{_YR}
+
+NOTE: Killing howdone directly with signals (even SIGINT) will leave the commands it is running as
+"zombies" (defunct processes).
+""",
+    )
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=Path,
+        help="""
+        Provide a configuration file. If not provided, this will search upward from the current directory for a file
+        named `.howdone.yaml`. The search will stop at the users home directory. Only the first file found will be used.
+        """,
+    )
+    parser.add_argument("-n", "--name", type=str, help="Provide a name for the run. This is simply placed in the meta.yaml file.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-d", "--dir", type=Path, help="Output to the given directory")
+    group.add_argument(
+        "-p",
+        "--prefix",
+        type=str,
+        help="Prefix for the output directory name. This overrides the prefix in the config file.",
+    )
+
+    parser.add_argument(
+        "cmd",
+        nargs="+",
+        help="""
+        The command to run. If this is a single argument it is passed to a shell as a command (as if it were passed to
+        sh -c 'cmd'), otherwise the arguments passed through to the subprocess directly, bypassing the shell.
+        """,
+    )
+    args = parser.parse_args()
+
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
