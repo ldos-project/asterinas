@@ -98,8 +98,8 @@ fn allocate_device_id() -> Result<DeviceId, Raid1DeviceError> {
         RAID_MAJOR_ID.call_once(|| major);
     }
     let major = RAID_MAJOR_ID.get().unwrap().get();
-
     let minor = NR_RAID_DEVICE.fetch_add(1, Ordering::Relaxed);
+    log::info!("[raid] allocating device ID for RAID-1 device: major={}, minor={}", major.get(), minor);
     Ok(DeviceId::new(major, MinorId::new(minor)))
 }
 
