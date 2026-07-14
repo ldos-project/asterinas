@@ -109,44 +109,10 @@ impl Raid1Device {
     /// # Panics
     ///
     /// Panics if fewer than two members are provided.
-    #[cfg(baseline_asterinas)]
     pub fn init(
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
-    ) -> Result<DeviceId, Raid1DeviceError> {
-        ensure!(members.len() >= 2, NotEnoughMembersSnafu);
-
-        let id = allocate_device_id()?;
-
-        // Compute the minimal metadata across all members.
-        let metadata = Self::min_metadata(&members);
-        // Initialize the admission queue using the strictest segment limit.
-        let queue =
-            BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
-
-        let device = Arc::new(Raid1Device {
-            members,
-            queue,
-            metadata,
-            read_cursor: AtomicUsize::new(0),
-            name: name.to_owned(),
-            id,
-        });
-
-        aster_block::register(device.clone()).context(BlockSnafu)?;
-
-        Ok(id)
-    }
-
-    /// Creates a new RAID-1 device backed by `members`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if fewer than two members are provided.
-    #[cfg(not(baseline_asterinas))]
-    pub fn init(
-        name: &str,
-        members: Vec<Arc<dyn BlockDevice>>,
+        #[cfg(not(baseline_asterinas))]
         selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
@@ -164,6 +130,9 @@ impl Raid1Device {
             members,
             queue,
             metadata,
+            #[cfg(baseline_asterinas)]
+            read_cursor: AtomicUsize::new(0),
+            #[cfg(not(baseline_asterinas))]
             selection_policy,
             name: name.to_owned(),
             id,
