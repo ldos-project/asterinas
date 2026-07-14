@@ -14,7 +14,7 @@ mod raid;
 
 pub(super) fn init_in_first_kthread() {
     block::init_in_first_kthread();
-    // By this time, all the block devices are registeded and spawned, 
+    // By this time, all the block devices are registeded and spawned,
     // including the RAID member devices. So we can spawn the RAID thread now.
     raid::init_in_first_kthread();
 }

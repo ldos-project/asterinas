@@ -34,7 +34,7 @@ const RAID_MEMBERS_PARAM: &str = "raid.members";
 ///
 /// This must run after the member disks' worker threads have been spawned
 /// (see `block::init_in_first_kthread`), and before `init_in_first_process`
-/// creates the devtmpfs nodes. This is called in `kernel/src/device/registry/mod.rs` 
+/// creates the devtmpfs nodes. This is called in `kernel/src/device/registry/mod.rs`
 /// after the block devices have been registered and spawned.
 pub(super) fn init_in_first_kthread() {
     if let Err(err) = setup_raid1_device() {
@@ -42,10 +42,10 @@ pub(super) fn init_in_first_kthread() {
     }
 }
 
-/// This is the setup_raid1_device() function migrated from the initialization 
-/// prior to the big merge. 
+/// This is the setup_raid1_device() function migrated from the initialization
+/// prior to the big merge.
 fn setup_raid1_device() -> Result<()> {
-    let members = collect_members()?;  // Collect member devices
+    let members = collect_members()?; // Collect member devices
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {

@@ -90,7 +90,7 @@ static RAID_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 static NR_RAID_DEVICE: AtomicU32 = AtomicU32::new(0);
 
 /// Allocates a device ID for a new RAID device.
-/// The RAID class major ID is allocated lazily on first use; 
+/// The RAID class major ID is allocated lazily on first use;
 /// the minor ID is a simple counter.
 fn allocate_device_id() -> Result<DeviceId, Raid1DeviceError> {
     if RAID_MAJOR_ID.get().is_none() {
@@ -99,7 +99,11 @@ fn allocate_device_id() -> Result<DeviceId, Raid1DeviceError> {
     }
     let major = RAID_MAJOR_ID.get().unwrap().get();
     let minor = NR_RAID_DEVICE.fetch_add(1, Ordering::Relaxed);
-    log::info!("[raid] allocating device ID for RAID-1 device: major={}, minor={}", major.get(), minor);
+    log::info!(
+        "[raid] allocating device ID for RAID-1 device: major={}, minor={}",
+        major.get(),
+        minor
+    );
     Ok(DeviceId::new(major, MinorId::new(minor)))
 }
 
@@ -112,8 +116,7 @@ impl Raid1Device {
     pub fn init(
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
-        #[cfg(not(baseline_asterinas))]
-        selection_policy: Arc<dyn SelectionPolicy>,
+        #[cfg(not(baseline_asterinas))] selection_policy: Arc<dyn SelectionPolicy>,
     ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
