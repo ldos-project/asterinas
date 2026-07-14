@@ -54,3 +54,7 @@ __pycache__
 aster-kernel-profile-*.json
 aster-kernel-profile-*.folded
 aster-kernel-profile-*.svg
+
+# Local configuration files
+.claude/settings.local.json
+CLAUDE.local.md
