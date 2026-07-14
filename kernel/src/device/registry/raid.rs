@@ -10,11 +10,10 @@
 #[cfg(not(baseline_asterinas))]
 use aster_raid::selection_policies::RoundRobinPolicy;
 use aster_raid::{Raid1Device, Raid1DeviceError};
-use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
+use spin::Once;
 
 use crate::{
-    kcmdline,
     prelude::*,
     sched::{RealTimePolicy, SchedPolicy},
     thread::kernel_thread::ThreadOptions,
@@ -22,31 +21,14 @@ use crate::{
 
 const RAID_DEVICE_NAME: &str = "raid";
 
-/// The kernel command-line module and argument naming the RAID-1 member disks.
+/// The kernel command-line parameter naming the RAID-1 member disks.
 ///
 /// The member disks are configured via `raid.members=<name>,<name>,...`, a
 /// comma-separated list of block device names (e.g. `raid.members=vdc,vdd,vde`).
 /// The list is ordered: the position of each name is used as the member's
-/// logical index (see [`tagged_member_index`]).
-const RAID_MODULE_NAME: &str = "raid";
-const RAID_MEMBERS_ARG: &str = "members";
-
-/// A magic tag identifying `device_index` values that belong to a RAID-1
-/// member, encoded in the high 32 bits (the low 32 bits hold the member's
-/// position). `device_index` is a bare `u64` with no other field to say
-/// which device family it came from, and it flows into the system-wide
-/// `io.block.completion` capture stream (see `init.rs`) alongside every
-/// other block device's stats. Without a tag, a RAID member's index would
-/// be indistinguishable from any other device in the captured data. 
-/// With this magic prefix, RAID member device id will look like 
-/// `0x5241_4431_xxxx_xxxx`plus the member index. The magic tag decodes 
-/// back to ASCII "RAD1".
-const RAID1_MEMBER_INDEX_TAG: u64 = (u32::from_be_bytes(*b"RAD1") as u64) << 32;
-
-/// Tags a RAID-1 member's position with [`RAID1_MEMBER_INDEX_TAG`].
-fn tagged_member_index(position: u32) -> u64 {
-    RAID1_MEMBER_INDEX_TAG | position as u64
-}
+/// logical index. The value is collected during early boot into [`RAID_MEMBERS`]
+/// by the [`aster_cmdline`] registration below.
+const RAID_MEMBERS_PARAM: &str = "raid.members";
 
 /// Assembles and registers the RAID-1 device.
 ///
@@ -97,16 +79,14 @@ fn setup_raid1_device() -> Result<()> {
 
 /// Collects the RAID-1 member devices named on the kernel command line.
 ///
-/// The member disk names are read from the `raid.members` argument (see
-/// [`RAID_MEMBERS_ARG`]) rather than hardcoded, so the disk layout can be
+/// The member disk names are read from the `raid.members` parameter (see
+/// [`RAID_MEMBERS_PARAM`]) rather than hardcoded, so the disk layout can be
 /// reconfigured from `OSDK.toml` / `tools/qemu_args.sh` without touching the
 /// kernel. Devices are looked up by name via [`aster_block::collect_all`]
 /// (the refactored registry keys devices by `DeviceId`, and virtio disks are
 /// auto-named `vda`, `vdb`, ... in probe order).
 fn collect_members() -> Result<Vec<Arc<dyn aster_block::BlockDevice>>> {
-    let Some(members_arg) = kcmdline::get_kernel_cmd_line()
-        .and_then(|cl| cl.get_module_arg_by_name::<String>(RAID_MODULE_NAME, RAID_MEMBERS_ARG))
-    else {
+    let Some(members_arg) = RAID_MEMBERS.get() else {
         return_errno_with_message!(
             Errno::EINVAL,
             "the RAID-1 member disks are not configured (set 'raid.members=<name>,...')"
@@ -122,16 +102,10 @@ fn collect_members() -> Result<Vec<Arc<dyn aster_block::BlockDevice>>> {
     let all_devices = aster_block::collect_all();
 
     let mut members = Vec::with_capacity(member_names.len());
-    for (index, name) in member_names.iter().enumerate() {
+    for name in &member_names {
         let Some(device) = all_devices.iter().find(|device| device.name() == *name) else {
             return_errno_with_message!(Errno::ENOENT, "a RAID-1 member disk is missing");
         };
-
-        // Tag the member with its logical index, which is used to attribute
-        // I/O completion stats to the right member.
-        if let Some(virtio_device) = device.downcast_ref::<VirtIoBlockDevice>() {
-            virtio_device.set_device_index(tagged_member_index(index as u32));
-        }
         members.push(device.clone());
     }
 
@@ -159,3 +133,9 @@ fn spawn_worker_thread(raid_id: DeviceId) {
         })
         .spawn();
 }
+
+/// The comma-separated RAID-1 member disk names, populated during early boot
+/// from the `raid.members` kernel command-line argument (see
+/// [`RAID_MEMBERS_PARAM`]).
+static RAID_MEMBERS: Once<String> = Once::new();
+aster_cmdline::define_kv_param!(RAID_MEMBERS_PARAM, RAID_MEMBERS);
