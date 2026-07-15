@@ -158,9 +158,9 @@ impl Bio {
             reply_handle: None,
             submission_time: None,
             #[cfg(not(baseline_asterinas))]
-            bio_request_single_queue: None,
-            #[cfg(not(baseline_asterinas))]
             device_index: None,
+            #[cfg(not(baseline_asterinas))]
+            num_pages: None,
         }) {
             // Fail to submit, revert the status.
             let result = self.0.status.compare_exchange(
@@ -340,13 +340,14 @@ pub struct SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
+    #[cfg(not(baseline_asterinas))]
     submission_time: Option<Duration>,
 
     #[cfg(not(baseline_asterinas))]
-    bio_request_single_queue: Option<Weak<BioRequestSingleQueue>>,
+    device_index: Option<u64>,
 
     #[cfg(not(baseline_asterinas))]
-    device_index: Option<u64>,
+    num_pages: Option<u64>,
 }
 
 impl core::fmt::Debug for SubmittedBio {
@@ -386,6 +387,12 @@ impl SubmittedBio {
         self.bio_inner.sid_offset.store(offset, Ordering::Relaxed);
     }
 
+    /// Returns the number of 4KB pages covered by this bio's sector range.
+    pub fn num_pages(&self) -> u64 {
+        let sectors = self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
+        (sectors + 7) / 8
+    }
+
     /// Returns the slice to the memory segments.
     pub fn segments(&self) -> &[BioSegment] {
         self.bio_inner.segments()
@@ -422,14 +429,6 @@ impl SubmittedBio {
     }
 
     #[cfg(not(baseline_asterinas))]
-    pub fn num_outstanding_requests(&self) -> Option<usize> {
-        self.bio_request_single_queue
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|q| q.num_requests())
-    }
-
-    #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
@@ -439,11 +438,12 @@ impl SubmittedBio {
         self.reply_handle = Some(reply_handle);
         self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time = Some(read_monotonic_time());
-        self.device_index = device_index;
+        self.device_index = Some(device_index);
+        self.num_pages = Some(self.num_pages());
     }
 
     #[cfg(not(baseline_asterinas))]
-    pub fn report_statistics(&self) {
+    pub fn report_statistics(&self, outstanding_pages: u64) {
         self.reply_handle
             .as_ref()
             .unwrap()
