@@ -20,9 +20,9 @@ kcmd_args = [
     "USER=root",
     "PATH=/bin:/benchmark",
     "init=/init",
-    "data_capture.device=vdf",
-    "data_capture.legacy_device=vdg",
     "raid.members=vdc,vdd,vde",
+    "data_capture.device=vdf",
+    "data_capture.legacy_device=vdg"
 ]
 init_args = ["sh", "-l"]
 initramfs = "test/initramfs/build/initramfs.cpio.gz"

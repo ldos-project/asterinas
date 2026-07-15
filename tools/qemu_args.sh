@@ -18,12 +18,16 @@
 #  - VNC_PORT: VNC port, default is "42";
 #  - RAID_DEVICES: comma-separated list of three block devices for RAID, e.g.
 #    "/dev/sda,/dev/sdb,/dev/sdc"; if unset or invalid, image files are used.
+#    IMPORTANT: This script specifies the actual physical devices to be used. 
+#    To use them as the raid members, kernel parameters specified in OSDK.toml
+#    must be set to the same devices as well.   
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
 CONSOLE=${CONSOLE:-"hvc0"}
+
 # Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
 # exactly three existing block devices (e.g.
 # RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
