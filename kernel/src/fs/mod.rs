@@ -12,6 +12,13 @@ pub use fs_impls::{
     cgroupfs, configfs, devpts, exfat, ext2, procfs, pseudofs, ramfs, sysfs, tmpfs,
 };
 
+use aster_block::BlockDevice;
+#[cfg(not(baseline_asterinas))]
+#[expect(unused_imports)]
+use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
+use aster_raid::{Raid1Device, Raid1DeviceError};
+use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
+
 use crate::{
     fs::{
         file::{AccessMode, OpenArgs, file_table::FdFlags, mkmod},

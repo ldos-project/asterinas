@@ -5,12 +5,11 @@
 Load trained PyTorch Heimdall models and generate the Rust weights file
 using the Jinja2 template.
 
-The HeimdallNet architecture has three linear layers (one model per device):
-    Linear(input_dim, 128) -> ReLU -> Linear(128, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
+The HeimdallNet architecture has two linear layers (one model per device):
+    Linear(input_dim, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
 
 PyTorch state dict keys:
-    fc1.weight [128, input_dim]   fc1.bias [128]
-    fc2.weight [16, 128]          fc2.bias [16]
+    fc1.weight [16, input_dim]    fc1.bias [16]
     fc3.weight [1, 16]            fc3.bias [1]
 
 Usage:
@@ -82,17 +81,15 @@ def main():
     print()
 
     # Extract dimensions from the first model
-    # fc1: Linear(input_dim, hidden1_size)
-    # fc2: Linear(hidden1_size, hidden2_size)
-    # fc3: Linear(hidden2_size, 1)
+    # fc1: Linear(input_dim, hidden_size)
+    # fc3: Linear(hidden_size, 1)
     input_dim = models[0]["fc1.weight"].shape[1]
-    hidden1_size = models[0]["fc1.weight"].shape[0]
-    hidden2_size = models[0]["fc2.weight"].shape[0]
+    hidden_size = models[0]["fc1.weight"].shape[0]
     output_size = models[0]["fc3.weight"].shape[0]
 
     assert output_size == 1, f"Expected output size 1 (sigmoid), got {output_size}"
 
-    print(f"Network: {input_dim} -> {hidden1_size} (ReLU) -> {hidden2_size} (ReLU) -> {output_size} (Sigmoid)")
+    print(f"Network: {input_dim} -> {hidden_size} (ReLU) -> {output_size} (Sigmoid)")
     print()
 
     # Extract weights and biases for each device
@@ -100,23 +97,16 @@ def main():
     # In Rust we index as weights[input][output], so we transpose.
     fc1_weights = []
     fc1_biases = []
-    fc2_weights = []
-    fc2_biases = []
     fc3_weights = []
     fc3_biases = []
 
     for i, state in enumerate(models):
-        # fc1: [hidden1_size, input_dim] -> [input_dim, hidden1_size]
+        # fc1: [hidden_size, input_dim] -> [input_dim, hidden_size]
         w1 = state["fc1.weight"].T
         fc1_weights.append(tensor_to_list(w1))
         fc1_biases.append(tensor_to_list(state["fc1.bias"]))
 
-        # fc2: [hidden2_size, hidden1_size] -> [hidden1_size, hidden2_size]
-        w2 = state["fc2.weight"].T
-        fc2_weights.append(tensor_to_list(w2))
-        fc2_biases.append(tensor_to_list(state["fc2.bias"]))
-
-        # fc3: [1, hidden2_size] -> [hidden2_size] (squeeze since output is scalar)
+        # fc3: [1, hidden_size] -> [hidden_size] (squeeze since output is scalar)
         w3 = state["fc3.weight"].squeeze(0)
         fc3_weights.append(tensor_to_list(w3))
         fc3_biases.append(state["fc3.bias"].item())
@@ -132,12 +122,9 @@ def main():
     rendered = template.render(
         num_devices=num_devices,
         input_dim=input_dim,
-        hidden1_size=hidden1_size,
-        hidden2_size=hidden2_size,
+        hidden_size=hidden_size,
         fc1_weights=fc1_weights,
         fc1_biases=fc1_biases,
-        fc2_weights=fc2_weights,
-        fc2_biases=fc2_biases,
         fc3_weights=fc3_weights,
         fc3_biases=fc3_biases,
     )
