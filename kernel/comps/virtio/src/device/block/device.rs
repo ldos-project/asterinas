@@ -205,7 +205,7 @@ impl BlockDevice {
     }
 
     /// Sets the logical index for this device, used to tag I/O completion stats.
-    pub fn set_device_index(&self, index: u64) {
+    pub fn set_device_index(&self, index: u32) {
         self.device.device_index.store(index, Ordering::Relaxed);
     }
 }
@@ -294,6 +294,10 @@ impl aster_block::BlockDevice for BlockDevice {
             .collect();
         Some(devices)
     }
+
+    fn num_outstanding_requests(&self) -> u32 {
+        self.device.num_outstanding_requests.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug)]
@@ -306,8 +310,9 @@ struct DeviceInner {
     block_responses: Arc<DmaStream>,
     id_allocator: SyncIdAlloc,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
-    device_index: AtomicU64,
-    num_outstanding_pages: AtomicU64
+    device_index: AtomicU32,
+    num_outstanding_pages: AtomicU32,
+    num_outstanding_requests: AtomicU32,
 }
 
 impl DeviceInner {
@@ -356,8 +361,9 @@ impl DeviceInner {
             block_responses,
             id_allocator: SyncIdAlloc::with_capacity(Self::QUEUE_SIZE as usize),
             submitted_requests: SpinLock::new(BTreeMap::new()),
-            device_index: AtomicU64::new(u64::MAX),
-            num_outstanding_pages: AtomicU64::new(0)
+            num_outstanding_pages: AtomicU32::new(0),
+            num_outstanding_requests: AtomicU32::new(0),
+            device_index: AtomicU32::new(u32::MAX-1),
         });
 
         let cloned_device = device.clone();
@@ -439,6 +445,7 @@ impl DeviceInner {
                 {
                     let pages = bio.get_num_pages();
                     let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed);
+                    self.num_outstanding_requests.fetch_sub(1, Ordering::Relaxed);
                     // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
                     bio.report_statistics();
                 }
@@ -640,8 +647,12 @@ impl DeviceInner {
         }
     }
 
-    fn inc_page_counter(&self, n_pages: u64) {
+    fn inc_page_counter(&self, n_pages: u32) {
         self.num_outstanding_pages.fetch_add(n_pages, Ordering::Relaxed);
+    }
+
+    fn inc_request_counter(&self) {
+        self.num_outstanding_requests.fetch_add(1, Ordering::Relaxed);
     }
 }
 

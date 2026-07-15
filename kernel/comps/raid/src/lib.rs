@@ -27,6 +27,10 @@ pub mod linnos_plus_weights;
 #[cfg(not(baseline_asterinas))]
 pub mod decision_tree_predictions;
 #[cfg(not(baseline_asterinas))]
+pub mod heimdall;
+#[cfg(not(baseline_asterinas))]
+pub mod heimdall_weights;
+#[cfg(not(baseline_asterinas))]
 pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
 pub mod server_traits;
