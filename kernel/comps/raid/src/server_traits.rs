@@ -26,5 +26,5 @@ pub trait SelectionPolicy: Debug {
     /// Get the block device to read from. The policy cannot decide, for whatever reason, this should
     /// return an error. The caller will use some fallback. If the returned block device does not
     /// exist, then the caller will also fallback.
-    fn select_block_device(&self, submitted: &SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error>;
+    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error>;
 }

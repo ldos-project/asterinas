@@ -437,10 +437,10 @@ impl DeviceInner {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
                 {
-                    let pages = bio.num_pages();
-                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed) - pages;
+                    let pages = bio.get_num_pages();
+                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed);
                     // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
-                    bio.report_statistics(outstanding);
+                    bio.report_statistics();
                 }
             });
         }
