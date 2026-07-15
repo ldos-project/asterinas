@@ -2,6 +2,7 @@
 
 use ostd::{
     cpu::CpuSet,
+    ignore_err,
     task::{Task, TaskOptions},
 };
 
@@ -54,7 +55,7 @@ impl ThreadOptions {
     pub fn build(mut self) -> Arc<Task> {
         let task_fn = self.func.take().unwrap();
         let thread_fn = move || {
-            let _ = oops::catch_panics_as_oops(task_fn);
+            ignore_err!(oops::catch_panics_as_oops(task_fn));
             // Ensure that the thread exits.
             current_thread!().exit();
         };

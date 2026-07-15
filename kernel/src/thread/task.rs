@@ -122,7 +122,9 @@ pub fn create_new_user_task(
     TaskOptions::new(move || {
         // TODO: If a kernel "oops" is caught, we should kill the entire
         // process rather than just ending the thread.
-        let _ = oops::catch_panics_as_oops(user_task_func);
+        if let Err(e) = oops::catch_panics_as_oops(user_task_func) {
+            error!("Panic while executing user thread: {}\n(FIXME: The process was not killed, so other parts of the system may hang.)", e);
+        }
     })
     .data(thread_ref)
     .local_data(thread_local)
