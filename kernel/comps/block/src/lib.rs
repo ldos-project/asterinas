@@ -131,6 +131,14 @@ pub enum Error {
     IdExhausted,
 }
 
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl core::error::Error for Error {}
+
 /// Registers a new block device.
 pub fn register(device: Arc<dyn BlockDevice>) -> Result<(), Error> {
     let mut registry = DEVICE_REGISTRY.lock();

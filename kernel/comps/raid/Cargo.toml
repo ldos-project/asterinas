@@ -6,11 +6,14 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ostd = { path = "../../../ostd" }
-aster-block = { path = "../block" }
-aster-virtio = { path = "../virtio" }
-aster-time = { path = "../time" }
-log = "0.4"
+ostd = { workspace = true }
+aster-block = { workspace = true }
+aster-virtio = { workspace = true }
+aster-time = { workspace = true }
+device-id = { workspace = true }
+log = { workspace = true }
+snafu = { workspace = true }
+spin = { workspace = true }
 
 [lints]
 workspace = true
