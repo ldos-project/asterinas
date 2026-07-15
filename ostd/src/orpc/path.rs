@@ -8,7 +8,10 @@
 //! enforced in the syntax.
 
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
-use core::{fmt::Display, hash::Hash};
+use core::{
+    fmt::Display,
+    hash::{Hash, Hasher},
+};
 
 // TODO(arthurp): PERFORMANCE: Paths are constructed inefficiently with a lot of potential
 // allocations.
@@ -79,9 +82,39 @@ impl PathComponent {
 }
 
 /// A path consisting of multiple components. For example, "a.b" or "x[2].y".
-#[derive(Debug, PartialEq, Eq, Clone, Default, Hash)]
-pub struct Path {
+#[derive(Debug, Clone)]
+#[expect(private_interfaces)]
+pub enum Path {
+    /// Path components stored in static memory.
+    Static(StaticPath),
+    /// Path components stored in owned heap memory.
+    Owned(OwnedPath),
+}
+
+/// A path whose components are stored in static memory.
+#[derive(Debug, Clone)]
+pub struct StaticPath {
+    components: &'static [PathComponent],
+}
+
+/// A path whose components are stored in owned heap memory.
+#[derive(Debug, Clone)]
+struct OwnedPath {
     components: Vec<PathComponent>,
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.components() == other.components()
+    }
+}
+
+impl Eq for Path {}
+
+impl Hash for Path {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.components().hash(state);
+    }
 }
 
 impl From<&Path> for Path {
@@ -90,10 +123,22 @@ impl From<&Path> for Path {
     }
 }
 
+impl From<StaticPath> for Path {
+    fn from(value: StaticPath) -> Self {
+        Self::Static(value)
+    }
+}
+
+impl From<OwnedPath> for Path {
+    fn from(value: OwnedPath) -> Self {
+        Self::Owned(value)
+    }
+}
+
 impl Display for Path {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut first = true;
-        for c in self.components.iter() {
+        for c in self.components().iter() {
             if !first && matches!(c.borrow(), PathComponentRef::Name(_)) {
                 f.write_str(".")?;
             }
@@ -104,7 +149,27 @@ impl Display for Path {
     }
 }
 
-impl Path {
+impl Default for Path {
+    fn default() -> Self {
+        static EMPTY: [PathComponent; 0] = [];
+        Self::from_static(&EMPTY)
+    }
+}
+
+impl StaticPath {
+    /// Create a new path from static components.
+    ///
+    /// For internal use only.
+    pub const fn new(components: &'static [PathComponent]) -> Self {
+        Self { components }
+    }
+
+    fn components(&self) -> &[PathComponent] {
+        self.components
+    }
+}
+
+impl OwnedPath {
     /// Create a new path with the given components.
     ///
     /// For internal use only.
@@ -112,12 +177,39 @@ impl Path {
         Self { components }
     }
 
+    fn components(&self) -> &[PathComponent] {
+        &self.components
+    }
+}
+
+impl Path {
+    /// Create a new path with the given components.
+    ///
+    /// For internal use only.
+    pub fn new(components: Vec<PathComponent>) -> Self {
+        OwnedPath::new(components).into()
+    }
+
+    /// Create a new path from static components.
+    ///
+    /// For internal use only.
+    pub const fn from_static(components: &'static [PathComponent]) -> Self {
+        Self::Static(StaticPath::new(components))
+    }
+
+    fn components(&self) -> &[PathComponent] {
+        match self {
+            Self::Static(path) => path.components(),
+            Self::Owned(path) => path.components(),
+        }
+    }
+
     /// Concatenate `self` and `other` into one longer path.
     pub fn append(&self, other: &Path) -> Path {
         Path::new(
-            self.components
+            self.components()
                 .iter()
-                .chain(other.components.iter())
+                .chain(other.components().iter())
                 .cloned()
                 .collect(),
         )
@@ -127,6 +219,11 @@ impl Path {
     /// Create an arbitrary path to use for testing.
     pub fn test() -> Path {
         Path::new(alloc::vec![PathComponent::Name("TESTING_OQUEUE")])
+    }
+
+    #[cfg(ktest)]
+    fn is_static(&self) -> bool {
+        matches!(self, Self::Static(_))
     }
 }
 
@@ -203,13 +300,13 @@ impl PathPattern {
 
     /// Checks if `path` matches `self`.
     pub fn matches(&self, path: &Path) -> bool {
-        if self.components.len() != path.components.len() {
+        if self.components.len() != path.components().len() {
             return false;
         }
 
         self.components
             .iter()
-            .zip(&path.components)
+            .zip(path.components())
             .all(|(pat, comp)| pat.matches(comp))
     }
 
@@ -218,14 +315,12 @@ impl PathPattern {
         let matched_len = self
             .components
             .iter()
-            .zip(&path.components)
+            .zip(path.components())
             .take_while(|(pat, comp)| pat.matches(comp))
             .count();
 
         if matched_len == self.components.len() {
-            Some(Path {
-                components: path.components[matched_len..].to_vec(),
-            })
+            Some(Path::new(path.components()[matched_len..].to_vec()))
         } else {
             None
         }
@@ -237,14 +332,14 @@ impl PathPattern {
             .components
             .iter()
             .rev()
-            .zip(path.components.iter().rev())
+            .zip(path.components().iter().rev())
             .take_while(|(pat, comp)| pat.matches(comp))
             .count();
 
         if matched_len == self.components.len() {
-            Some(Path {
-                components: path.components[..path.components.len() - matched_len].to_vec(),
-            })
+            Some(Path::new(
+                path.components()[..path.components().len() - matched_len].to_vec(),
+            ))
         } else {
             None
         }
@@ -280,6 +375,52 @@ macro_rules! path {
         let components = $crate::__path_parse!([] @ {$($part)*});
         Path::new(components)
     }};
+}
+
+/// Similar to path! Creates a new [`Path`] from `.` delimited literal using static storage.
+/// Does not allow unique or other dynamic generators. Does not allow interpolation.
+#[macro_export]
+macro_rules! static_path {
+    ($($part:tt)*) => {{
+        #[allow(clippy::allow_attributes, unused)]
+        use $crate::orpc::path::{Path, PathComponent};
+
+        static COMPONENTS: &[PathComponent] = &$crate::__static_path_parse!([] @ {$($part)*});
+        Path::from_static(COMPONENTS)
+    }};
+}
+
+/// Internal macro for parsing static path components.
+///
+/// This only accepts path segments that can be represented in static storage. Dynamic names,
+/// dynamic indexes, and `unique` are intentionally rejected.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __static_path_parse {
+    // Empty
+    ([$($ret:tt)*]
+        @ {}) => {
+        [$($ret)*]
+    };
+
+    // Process the first segment of the path.
+    ([$($ret:tt)*]
+        @ { $name:ident [$index:literal] $(. $($rest:tt)*)? }) => {
+        $crate::__static_path_parse!([
+                $($ret)*
+                PathComponent::Name(stringify!($name)),
+                PathComponent::Index($index),
+            ]
+            @ { $($($rest)*)? })
+    };
+    ([$($ret:tt)*]
+        @ { $name:ident                 $(. $($rest:tt)*)? }) => {
+        $crate::__static_path_parse!([
+                $($ret)*
+                PathComponent::Name(stringify!($name)),
+            ]
+            @ { $($($rest)*)? })
+    };
 }
 
 /// Internal macro for parsing path components.
@@ -434,6 +575,28 @@ mod test {
     }
 
     #[ktest]
+    fn static_path_display() {
+        let path = static_path!(a.b[3].j);
+        assert_eq!(path.to_string(), "a.b[3].j");
+    }
+
+    #[ktest]
+    fn static_path_equality() {
+        assert_eq!(static_path!(a.b[3]), path!(a.b[3]));
+    }
+
+    #[ktest]
+    fn static_empty_path() {
+        assert_eq!(static_path!(), path!());
+    }
+
+    #[ktest]
+    fn static_path_uses_static_components() {
+        assert!(static_path!(a.b[3]).is_static());
+        assert!(!path!(a.b[3]).is_static());
+    }
+
+    #[ktest]
     fn path_pattern_display() {
         let pattern = path_pattern!(*[*].d[*].f);
         assert_eq!(pattern.to_string(), "*[*].d[*].f");
@@ -507,9 +670,31 @@ mod test {
     }
 
     #[ktest]
+    fn static_path_pattern_matching() {
+        let pattern = path_pattern!(a.b[*].d);
+
+        assert!(pattern.matches(&static_path!(a.b[3].d)));
+        assert!(!pattern.matches(&static_path!(a.c[3].d)));
+        let pattern = path_pattern!(a.*[3].d);
+        assert!(pattern.matches(&static_path!(a.b[3].d)));
+        assert!(pattern.matches(&static_path!(a.c[3].d)));
+        assert!(!pattern.matches(&static_path!(a.b[2].d)));
+        assert!(!pattern.matches(&static_path!(a.b[3].e)));
+    }
+
+    #[ktest]
     fn path_pattern_prefix_matching() {
         let pattern = path_pattern!(a.*[3]);
         let path = path!(a.b[3].d[2]);
+        let suffix = pattern.matches_prefix(&path);
+        assert!(suffix.is_some());
+        assert_eq!(suffix.unwrap(), path!(d[2]));
+    }
+
+    #[ktest]
+    fn static_path_pattern_prefix_matching() {
+        let pattern = path_pattern!(a.*[3]);
+        let path = static_path!(a.b[3].d[2]);
         let suffix = pattern.matches_prefix(&path);
         assert!(suffix.is_some());
         assert_eq!(suffix.unwrap(), path!(d[2]));
@@ -525,6 +710,15 @@ mod test {
     }
 
     #[ktest]
+    fn static_path_pattern_suffix_matching() {
+        let pattern = path_pattern!(b[*].d);
+        let path = static_path!(a.x[1].b[3].d);
+        let prefix = pattern.matches_suffix(&path);
+        assert!(prefix.is_some());
+        assert_eq!(prefix.unwrap(), static_path!(a.x[1]));
+    }
+
+    #[ktest]
     fn path_concat() {
         let path1 = path!(a.b[1]);
         let path2 = path!(c.d[2]);
@@ -536,6 +730,21 @@ mod test {
         assert_eq!(path1.append(&empty), path!(a.b[1]));
         assert_eq!(empty.append(&path2), path!(c.d[2]));
         assert_eq!(empty.append(&empty), path!());
+    }
+
+    #[ktest]
+    fn static_path_concat() {
+        // We intentionally want to see if we can concatenate paths into a static path
+        let path1 = path!(a.b[1]);
+        let path2 = path!(c.d[2]);
+        let concatenated = path1.append(&path2);
+        assert_eq!(concatenated, static_path!(a.b[1].c.d[2]));
+
+        // Test with empty paths
+        let empty = static_path!();
+        assert_eq!(path1.append(&empty), static_path!(a.b[1]));
+        assert_eq!(empty.append(&path2), static_path!(c.d[2]));
+        assert_eq!(empty.append(&empty), static_path!());
     }
 
     #[ktest]
