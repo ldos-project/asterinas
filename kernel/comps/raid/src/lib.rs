@@ -128,15 +128,22 @@ impl Raid1Device {
         let queue =
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
+        #[cfg(not(baseline_asterinas))]
         let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
             orpc_internal,
             members,
             queue,
             metadata,
-            #[cfg(baseline_asterinas)]
-            read_cursor: AtomicUsize::new(0),
-            #[cfg(not(baseline_asterinas))]
             selection_policy,
+            name: name.to_owned(),
+            id,
+        });
+        #[cfg(baseline_asterinas)]
+        let device = Arc::new_cyclic(|_weak_self| Raid1Device {
+            members,
+            queue,
+            metadata,
+            read_cursor: AtomicUsize::new(0),
             name: name.to_owned(),
             id,
         });
