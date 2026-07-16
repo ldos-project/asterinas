@@ -58,7 +58,7 @@ use snafu::{ResultExt as _, Snafu, ensure};
 use spin::Once;
 
 #[cfg(not(baseline_asterinas))]
-use crate::server_traits::SelectionPolicy;
+use crate::server_traits::{BioCandidates, SelectionPolicy};
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
@@ -78,6 +78,18 @@ pub struct Raid1Device {
     /// The policy to select the read member.
     #[cfg(not(baseline_asterinas))]
     selection_policy: Arc<dyn SelectionPolicy>,
+
+    /// The optional admission policy that pre-filters which members a read may
+    /// target. When present, only the admitted members are offered to the
+    /// selection policy.
+    #[cfg(not(baseline_asterinas))]
+    admission: Option<Arc<crate::heimdall::Heimdall>>,
+
+    /// Cached list of all member indices (`0..members.len()`), used as the
+    /// candidate set when no admission policy is active. Avoids a per-read
+    /// allocation on the common path.
+    #[cfg(not(baseline_asterinas))]
+    all_indices: Vec<usize>,
 
     name: String,
     id: DeviceId,
@@ -125,6 +137,7 @@ impl Raid1Device {
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
         #[cfg(not(baseline_asterinas))] selection_policy: Arc<dyn SelectionPolicy>,
+        #[cfg(not(baseline_asterinas))] admission: Option<Arc<crate::heimdall::Heimdall>>,
     ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
@@ -137,12 +150,17 @@ impl Raid1Device {
             BioRequestSingleQueue::with_max_nr_segments_per_bio(metadata.max_nr_segments_per_bio);
 
         #[cfg(not(baseline_asterinas))]
+        let all_indices = (0..members.len()).collect();
+
+        #[cfg(not(baseline_asterinas))]
         let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
             orpc_internal,
             members,
             queue,
             metadata,
             selection_policy,
+            admission,
+            all_indices,
             name: name.to_owned(),
             id,
         });
@@ -216,6 +234,42 @@ impl Raid1Device {
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member (round-robin) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.
+    /// Chooses the member device to serve a read.
+    ///
+    /// The admission policy (if any) first pre-filters the members down to those
+    /// it admits; the selection policy then chooses among the admitted members.
+    /// If the admission policy rejects every member, all members are offered so
+    /// that I/O is never stalled.
+    #[cfg(not(baseline_asterinas))]
+    fn select_member(&self, bio: &mut SubmittedBio) -> Arc<dyn BlockDevice> {
+        // Fast path: no admission policy — offer every member without allocating.
+        let Some(heimdall) = &self.admission else {
+            let selection = BioCandidates {
+                bio,
+                candidates: &self.all_indices,
+            };
+            return self.selection_policy.select_block_device(selection).unwrap();
+        };
+
+        // Admission active: offer only the members Heimdall currently admits,
+        // falling back to all members if it admits none (so I/O is never stalled).
+        let admitted: Vec<usize> = self
+            .all_indices
+            .iter()
+            .copied()
+            .filter(|&index| heimdall.is_device_fast(index))
+            .collect();
+        let candidates: &[usize] = if admitted.is_empty() {
+            &self.all_indices
+        } else {
+            &admitted
+        };
+        let selection = BioCandidates { bio, candidates };
+        self.selection_policy
+            .select_block_device(selection)
+            .unwrap()
+    }
+
     #[expect(dead_code)]
     #[cfg(not(baseline_asterinas))]
     fn process_read(&self, request: BioRequest) {
@@ -223,7 +277,7 @@ impl Raid1Device {
         let mut pending: alloc::vec::Vec<(SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
 
         for mut parent in request.into_bios() {
-            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
+            let member = self.select_member(&mut parent);
             let child = Bio::new(
                 // Child BIO mirrors the parent’s type, range, and buffers.
                 BioType::Read,
@@ -257,7 +311,7 @@ impl Raid1Device {
     fn process_read_async(&self, request: BioRequest) {
         for mut parent in request.into_bios() {
             #[cfg(not(baseline_asterinas))]
-            let member = self.selection_policy.select_block_device(&mut parent).unwrap();
+            let member = self.select_member(&mut parent);
 
             #[cfg(baseline_asterinas)]
             let member = self.members[0].clone();

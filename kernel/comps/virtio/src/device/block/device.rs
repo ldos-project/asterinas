@@ -217,15 +217,17 @@ impl aster_block::BlockDevice for BlockDevice {
 
         let mut bio = bio;
         let device_index = self.device.device_index.load(Ordering::Relaxed);
-        bio.prepare_enqueue(
-            reply_handle,
-            self.queue.clone(),
-            if device_index == u64::MAX {
-                None
-            } else {
-                Some(device_index)
-            },
-        );
+        // Atomically bump the counters, capturing the pre-increment values so the
+        // outstanding counts recorded for this bio are consistent with the bump.
+        let outstanding_pages = self
+            .device
+            .num_outstanding_pages
+            .fetch_add(bio.num_pages(), Ordering::Relaxed);
+        let outstanding_requests = self
+            .device
+            .num_outstanding_requests
+            .fetch_add(1, Ordering::Relaxed);
+        bio.prepare_enqueue(reply_handle, device_index, outstanding_pages, outstanding_requests);
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())
@@ -293,6 +295,10 @@ impl aster_block::BlockDevice for BlockDevice {
             .map(|p| p.clone() as Arc<dyn aster_block::BlockDevice>)
             .collect();
         Some(devices)
+    }
+
+    fn num_outstanding_pages(&self) -> u32 {
+        self.device.num_outstanding_pages.load(Ordering::Relaxed)
     }
 
     fn num_outstanding_requests(&self) -> u32 {
@@ -645,14 +651,6 @@ impl DeviceInner {
                 .insert(token, submitted_request);
             return;
         }
-    }
-
-    fn inc_page_counter(&self, n_pages: u32) {
-        self.num_outstanding_pages.fetch_add(n_pages, Ordering::Relaxed);
-    }
-
-    fn inc_request_counter(&self) {
-        self.num_outstanding_requests.fetch_add(1, Ordering::Relaxed);
     }
 }
 

@@ -138,7 +138,7 @@ impl Heimdall {
 
         let num_devices = self.members.len();
         // TIMER_FREQ is 1000 Hz, so 1 jiffy = 1 ms. 5 ms = 5 jiffies.
-        let timeout_jiffies = INFERENCE_TIMEOUT_MS * ostd::arch::timer::TIMER_FREQ / 1000;
+        let timeout_jiffies = INFERENCE_TIMEOUT_MS * ostd::timer::TIMER_FREQ / 1000;
 
         // Per-device batch buffers for accumulating stats between inferences.
         let mut batch_buffers: Vec<Vec<BlockDeviceCompletionStats>> = (0..num_devices)
@@ -263,9 +263,9 @@ impl Heimdall {
             if idx < n {
                 let rec = &batch[idx];
                 input[2 + hist] = rec.queue_len as f32;
-                input[5 + hist] = rec.latency_us as f32;
-                input[8 + hist] = if rec.latency_us > 0 {
-                    rec.request_size_pages as f32 / rec.latency_us as f32
+                input[5 + hist] = rec.latency as f32;
+                input[8 + hist] = if rec.latency > 0 {
+                    rec.request_size_pages as f32 / rec.latency as f32
                 } else {
                     0.0
                 };

@@ -8,8 +8,10 @@
 //! filesystem on it (e.g., `mount -t ext2 /dev/raid /raid1`).
 
 #[cfg(not(baseline_asterinas))]
-use aster_raid::selection_policies::RoundRobinPolicy;
+use aster_raid::selection_policies;
 use aster_raid::{Raid1Device, Raid1DeviceError};
+#[cfg(not(baseline_asterinas))]
+use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 use spin::Once;
 
@@ -49,8 +51,60 @@ fn setup_raid1_device() -> Result<()> {
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {
-        let selection_policy = RoundRobinPolicy::new(members.clone())?;
-        Raid1Device::init(RAID_DEVICE_NAME, members, selection_policy)
+        // Tag each member with its logical index so I/O completion stats are
+        // labeled by the member's position in the array.
+        for (index, member) in members.iter().enumerate() {
+            if let Some(virtio) = member.downcast_ref::<VirtIoBlockDevice>() {
+                virtio.set_device_index(index as u32);
+            }
+        }
+
+        // Observer-based submission policies need one weak observer per member.
+        #[cfg(any(
+            raid_selection = "linnos",
+            raid_selection = "linnos_plus",
+            raid_selection = "decision_tree"
+        ))]
+        let observers = {
+            use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+            use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+            members
+                .iter()
+                .map(|member| {
+                    let virtio = member
+                        .downcast_ref::<VirtIoBlockDevice>()
+                        .expect("RAID member must be a VirtIoBlockDevice");
+                    ostd::sync::Mutex::new(
+                        virtio
+                            .bio_completion_oqueue()
+                            .attach_weak_observer(4, ObservationQuery::identity())
+                            .expect("Failed to attach weak observer to bio_completion_oqueue"),
+                    )
+                })
+                .collect()
+        };
+
+        // Select the submission (read-selection) policy chosen at build time via
+        // the `raid_selection` cfg; round-robin is the default.
+        #[cfg(raid_selection = "linnos")]
+        let selection_policy = selection_policies::LinnOSPolicy::new(members.clone(), observers)?;
+        #[cfg(raid_selection = "linnos_plus")]
+        let selection_policy =
+            selection_policies::LinnOSPlusPolicy::new(members.clone(), observers)?;
+        #[cfg(raid_selection = "decision_tree")]
+        let selection_policy =
+            selection_policies::DecisionTreePolicy::new(members.clone(), observers)?;
+        #[cfg(not(any(
+            raid_selection = "linnos",
+            raid_selection = "linnos_plus",
+            raid_selection = "decision_tree"
+        )))]
+        let selection_policy = selection_policies::RoundRobinPolicy::new(members.clone())?;
+
+        // Build the optional Heimdall admission layer (raid_admission cfg).
+        let admission = build_admission(&members);
+
+        Raid1Device::init(RAID_DEVICE_NAME, members, selection_policy, admission)
     };
     #[cfg(baseline_asterinas)]
     let init_result = Raid1Device::init(RAID_DEVICE_NAME, members);
@@ -75,6 +129,67 @@ fn setup_raid1_device() -> Result<()> {
         RAID_DEVICE_NAME
     );
     Ok(())
+}
+
+/// Builds the optional Heimdall admission layer selected at build time via the
+/// `raid_admission` cfg. Returns `None` unless `raid_admission="heimdall"`, in
+/// which case the Heimdall monitor thread is also spawned.
+#[cfg(not(baseline_asterinas))]
+fn build_admission(
+    members: &[Arc<dyn aster_block::BlockDevice>],
+) -> Option<Arc<aster_raid::heimdall::Heimdall>> {
+    #[cfg(raid_admission = "heimdall")]
+    {
+        Some(setup_heimdall(members))
+    }
+    #[cfg(not(raid_admission = "heimdall"))]
+    {
+        let _ = members;
+        None
+    }
+}
+
+/// Creates the Heimdall performance monitor over `members` and spawns its
+/// background inference thread. The returned handle is shared with the RAID
+/// device so the admission decisions stay in sync with the monitor.
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+fn setup_heimdall(
+    members: &[Arc<dyn aster_block::BlockDevice>],
+) -> Arc<aster_raid::heimdall::Heimdall> {
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+
+    let observers = members
+        .iter()
+        .map(|member| {
+            let virtio = member
+                .downcast_ref::<VirtIoBlockDevice>()
+                .expect("RAID member must be a VirtIoBlockDevice");
+            virtio
+                .bio_completion_oqueue()
+                .attach_strong_observer(ObservationQuery::identity())
+                .expect("Failed to attach strong observer for Heimdall")
+        })
+        .collect();
+
+    let heimdall = aster_raid::heimdall::Heimdall::new(members.to_vec(), observers)
+        .expect("Failed to create Heimdall monitor");
+
+    let monitor = heimdall.clone();
+    ThreadOptions::new(move || {
+        info!("[heimdall] Heimdall monitor thread started");
+        monitor.run();
+    })
+    .sched_policy(SchedPolicy::RealTime {
+        rt_prio: 50.try_into().unwrap(),
+        rt_policy: RealTimePolicy::RoundRobin {
+            base_slice_factor: None,
+        },
+    })
+    .spawn();
+
+    info!("[heimdall] Heimdall monitor initialized and thread spawned");
+    heimdall
 }
 
 /// Collects the RAID-1 member devices named on the kernel command line.

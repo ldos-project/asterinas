@@ -21,10 +21,19 @@ pub trait ObservableBlockDevice: BlockDevice + BlockIOObservable + Debug {}
 #[cfg(not(baseline_asterinas))]
 impl<T: BlockDevice + BlockIOObservable + Debug> ObservableBlockDevice for T {}
 
+pub struct BioCandidates<'a> {
+    /// The request being routed.
+    pub bio: &'a mut SubmittedBio,
+    /// The admitted member indices to choose from (never empty).
+    pub candidates: &'a [usize],
+}
+
 #[orpc_trait]
 pub trait SelectionPolicy: Debug {
-    /// Get the block device to read from. The policy cannot decide, for whatever reason, this should
-    /// return an error. The caller will use some fallback. If the returned block device does not
-    /// exist, then the caller will also fallback.
-    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error>;
+    /// Chooses the member device to read from among the admitted `candidates`.
+    ///
+    /// The policy must return one of the devices whose index appears in
+    /// `selection.candidates`. If the policy cannot decide, for whatever reason,
+    /// this should return an error; the caller will use some fallback.
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error>;
 }

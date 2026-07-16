@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::boxed::Box;
-#[cfg(not(baseline_asterinas))]
-use alloc::sync::Weak;
 use core::{fmt::Display, sync::atomic::AtomicU64, time::Duration};
 
 use align_ext::AlignExt;
@@ -26,8 +24,6 @@ use serde::Serialize;
 use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
-#[cfg(not(baseline_asterinas))]
-use crate::request_queue::BioRequestSingleQueue;
 use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
 
 /// Trace data for block device I/O completion.
@@ -372,7 +368,6 @@ impl core::fmt::Debug for SubmittedBio {
         #[cfg(not(baseline_asterinas))]
         let d = d
             .field("submission_time", &self.submission_time)
-            .field("bio_request_single_queue", &self.bio_request_single_queue)
             .field(
                 "reply_handle",
                 &self.reply_handle.as_ref().map(|_| "<Producer>"),
@@ -464,7 +459,6 @@ impl SubmittedBio {
         outstanding_requests: u32,
     ) {
         self.reply_handle = Some(reply_handle);
-        self.bio_request_single_queue = Some(Arc::downgrade(&bio_request_single_queue));
         self.submission_time = Some(read_monotonic_time());
         self.device_index = Some(device_index);
         self.num_pages();  // set the num_pages field
@@ -479,7 +473,7 @@ impl SubmittedBio {
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
                 latency: read_monotonic_time().as_micros() as u64
-                    - self.submission_time_us.unwrap(),
+                    - self.submission_time.unwrap().as_micros() as u64,
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
                 queue_len: self.outstanding_requests.unwrap_or(u32::MAX),    
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),

@@ -5,10 +5,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use aster_block::{
-    BlockDevice,
-    bio::{BlockDeviceCompletionStats, SubmittedBio},
-};
+use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
     orpc::orpc_server,
@@ -16,7 +13,7 @@ use ostd::{
 };
 
 use crate::heimdall::Heimdall;
-use crate::server_traits::SelectionPolicy;
+use crate::server_traits::{BioCandidates, SelectionPolicy};
 
 #[derive(Debug)]
 #[orpc_server]
@@ -35,11 +32,8 @@ impl Dummy0Policy {
 }
 
 impl SelectionPolicy for Dummy0Policy {
-    fn select_block_device(
-        &self,
-        _submitted: &mut SubmittedBio,
-    ) -> Result<Arc<dyn BlockDevice>, Error> {
-        Ok(self.members[0].clone())
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        Ok(self.members[selection.candidates[0]].clone())
     }
 }
 
@@ -62,12 +56,10 @@ impl RoundRobinPolicy {
 }
 
 impl SelectionPolicy for RoundRobinPolicy {
-    fn select_block_device(
-        &self,
-        _submitted: &mut SubmittedBio,
-    ) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        let candidates = selection.candidates;
         let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-        Ok(self.members[idx % self.members.len()].clone())
+        Ok(self.members[candidates[idx % candidates.len()]].clone())
     }
 }
 
@@ -142,14 +134,15 @@ impl LinnOSPolicy {
 }
 
 impl SelectionPolicy for LinnOSPolicy {
-    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
-        let num_devices = self.members.len();
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        let candidates = selection.candidates;
+        let num_candidates = candidates.len();
         let mut fail_cnt = 0;
-        let num_pages = submitted.num_pages();
+        let num_pages = selection.bio.num_pages();
 
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-            let device_idx = idx % num_devices;
+            let device_idx = candidates[idx % num_candidates];
             let observer = self.observers[device_idx].lock();
             let completion_trace = observer
                 .weak_observe_recent(4)
@@ -176,7 +169,7 @@ impl SelectionPolicy for LinnOSPolicy {
                     continue;
                 };
                 let outstanding = trace_entry.outstanding_pages as usize;
-                let latency_us = Duration.as_micros(trace_entry.latency_us) as usize;
+                let latency_us = trace_entry.latency as usize;
                 let base = 3 + i * 7;
 
                 observed[i] = (outstanding, latency_us);
@@ -230,9 +223,10 @@ impl SelectionPolicy for LinnOSPolicy {
             }
 
             fail_cnt += 1;
-            // All devices predicted slow -- fall back to round-robin
-            if fail_cnt >= num_devices {
-                let fallback_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_devices;
+            // All candidates predicted slow -- fall back to round-robin among them
+            if fail_cnt >= num_candidates {
+                let fallback_idx =
+                    candidates[self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_candidates];
                 // log::info!("Submitting to device {} as all devices are busy. output=[{:.4},{:.4}]", fallback_idx, output[0], output[1]);
                 return Ok(self.members[fallback_idx].clone());
             }
@@ -285,16 +279,17 @@ impl DecisionTreePolicy {
 }
 
 impl SelectionPolicy for DecisionTreePolicy {
-    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
         use crate::decision_tree_predictions::{predict_device0, predict_device1, predict_device2};
 
-        let num_devices = self.members.len();
+        let candidates = selection.candidates;
+        let num_candidates = candidates.len();
         let mut fail_cnt = 0;
-        let num_pages = submitted.num_pages();
+        let num_pages = selection.bio.num_pages();
 
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-            let device_idx = idx % num_devices;
+            let device_idx = candidates[idx % num_candidates];
             let observer = self.observers[device_idx].lock();
             let completion_trace = observer
                 .weak_observe_recent(4)
@@ -314,7 +309,7 @@ impl SelectionPolicy for DecisionTreePolicy {
                     continue;
                 };
                 let outstanding = trace_entry.outstanding_pages as usize;
-                let latency_us = trace_entry.latency_us as usize;
+                let latency_us = trace_entry.latency as usize;
                 let base = 3 + i * 7;
 
                 input[base]     = ((outstanding / 100) % 10) as u8;
@@ -339,8 +334,9 @@ impl SelectionPolicy for DecisionTreePolicy {
             }
 
             fail_cnt += 1;
-            if fail_cnt >= num_devices {
-                let fallback_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_devices;
+            if fail_cnt >= num_candidates {
+                let fallback_idx =
+                    candidates[self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_candidates];
                 return Ok(self.members[fallback_idx].clone());
             }
         }
@@ -377,23 +373,21 @@ impl HeimdallRoundRobinPolicy {
 }
 
 impl SelectionPolicy for HeimdallRoundRobinPolicy {
-    fn select_block_device(
-        &self,
-        _submitted: &mut SubmittedBio,
-    ) -> Result<Arc<dyn BlockDevice>, Error> {
-        let num_devices = self.members.len();
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        let candidates = selection.candidates;
+        let n = candidates.len();
         let start_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
 
-        // Try each device once, starting from the round-robin cursor.
-        for offset in 0..num_devices {
-            let device_idx = (start_idx + offset) % num_devices;
+        // Try each candidate once, starting from the round-robin cursor.
+        for offset in 0..n {
+            let device_idx = candidates[(start_idx + offset) % n];
             if self.heimdall.is_device_fast(device_idx) {
                 return Ok(self.members[device_idx].clone());
             }
         }
 
-        // All devices are slow — fall back to round-robin.
-        let fallback_idx = start_idx % num_devices;
+        // All candidates are slow — fall back to round-robin among them.
+        let fallback_idx = candidates[start_idx % n];
         Ok(self.members[fallback_idx].clone())
     }
 }
@@ -474,14 +468,15 @@ impl LinnOSPlusPolicy {
 }
 
 impl SelectionPolicy for LinnOSPlusPolicy {
-    fn select_block_device(&self, submitted: &mut SubmittedBio) -> Result<Arc<dyn BlockDevice>, Error> {
-        let num_devices = self.members.len();
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        let candidates = selection.candidates;
+        let num_candidates = candidates.len();
         let mut fail_cnt = 0;
-        let num_pages = submitted.num_pages();
+        let num_pages = selection.bio.num_pages();
 
         loop {
             let idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-            let device_idx = idx % num_devices;
+            let device_idx = candidates[idx % num_candidates];
             let observer = self.observers[device_idx].lock();
             let completion_trace = observer
                 .weak_observe_recent(4)
@@ -500,7 +495,7 @@ impl SelectionPolicy for LinnOSPlusPolicy {
                     continue;
                 };
                 let outstanding = trace_entry.outstanding_pages as usize;
-                let latency_us = trace_entry.latency_us as usize;
+                let latency_us = trace_entry.latency as usize;
                 let base = 3 + i * 7;
 
                 input[base] = ((outstanding / 100) % 10) as f32;
@@ -554,8 +549,9 @@ impl SelectionPolicy for LinnOSPlusPolicy {
             }
 
             fail_cnt += 1;
-            if fail_cnt >= num_devices {
-                let fallback_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_devices;
+            if fail_cnt >= num_candidates {
+                let fallback_idx =
+                    candidates[self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_candidates];
                 // log::info!("LinnOSPlus: device {} fallback (all busy). output=[{:.4},{:.4}]", fallback_idx, output[0], output[1]);
                 return Ok(self.members[fallback_idx].clone());
             }
