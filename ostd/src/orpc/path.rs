@@ -92,7 +92,7 @@ pub enum Path {
 }
 
 /// A path whose components are stored in static memory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct StaticPath {
     components: &'static [PathComponent],
 }
@@ -383,10 +383,10 @@ macro_rules! path {
 macro_rules! static_path {
     ($($part:tt)*) => {{
         #[allow(clippy::allow_attributes, unused)]
-        use $crate::orpc::path::{Path, PathComponent};
+        use $crate::orpc::path::{StaticPath, PathComponent};
 
         static COMPONENTS: &[PathComponent] = &$crate::__static_path_parse!([] @ {$($part)*});
-        Path::from_static(COMPONENTS)
+        StaticPath::new(COMPONENTS)
     }};
 }
 
@@ -576,23 +576,23 @@ mod test {
 
     #[ktest]
     fn static_path_display() {
-        let path = static_path!(a.b[3].j);
+        let path: Path = Path::from(static_path!(a.b[3].j));
         assert_eq!(path.to_string(), "a.b[3].j");
     }
 
     #[ktest]
     fn static_path_equality() {
-        assert_eq!(static_path!(a.b[3]), path!(a.b[3]));
+        assert_eq!(Path::from(static_path!(a.b[3])), path!(a.b[3]));
     }
 
     #[ktest]
     fn static_empty_path() {
-        assert_eq!(static_path!(), path!());
+        assert_eq!(Path::from(static_path!()), path!());
     }
 
     #[ktest]
     fn static_path_uses_static_components() {
-        assert!(static_path!(a.b[3]).is_static());
+        assert!(Path::from(static_path!(a.b[3])).is_static());
         assert!(!path!(a.b[3]).is_static());
     }
 
@@ -673,13 +673,13 @@ mod test {
     fn static_path_pattern_matching() {
         let pattern = path_pattern!(a.b[*].d);
 
-        assert!(pattern.matches(&static_path!(a.b[3].d)));
-        assert!(!pattern.matches(&static_path!(a.c[3].d)));
+        assert!(pattern.matches(&Path::from(static_path!(a.b[3].d))));
+        assert!(!pattern.matches(&Path::from(static_path!(a.c[3].d))));
         let pattern = path_pattern!(a.*[3].d);
-        assert!(pattern.matches(&static_path!(a.b[3].d)));
-        assert!(pattern.matches(&static_path!(a.c[3].d)));
-        assert!(!pattern.matches(&static_path!(a.b[2].d)));
-        assert!(!pattern.matches(&static_path!(a.b[3].e)));
+        assert!(pattern.matches(&Path::from(static_path!(a.b[3].d))));
+        assert!(pattern.matches(&Path::from(static_path!(a.c[3].d))));
+        assert!(!pattern.matches(&Path::from(static_path!(a.b[2].d))));
+        assert!(!pattern.matches(&Path::from(static_path!(a.b[3].e))));
     }
 
     #[ktest]
@@ -694,7 +694,7 @@ mod test {
     #[ktest]
     fn static_path_pattern_prefix_matching() {
         let pattern = path_pattern!(a.*[3]);
-        let path = static_path!(a.b[3].d[2]);
+        let path = Path::from(static_path!(a.b[3].d[2]));
         let suffix = pattern.matches_prefix(&path);
         assert!(suffix.is_some());
         assert_eq!(suffix.unwrap(), path!(d[2]));
@@ -712,10 +712,10 @@ mod test {
     #[ktest]
     fn static_path_pattern_suffix_matching() {
         let pattern = path_pattern!(b[*].d);
-        let path = static_path!(a.x[1].b[3].d);
+        let path = Path::from(static_path!(a.x[1].b[3].d));
         let prefix = pattern.matches_suffix(&path);
         assert!(prefix.is_some());
-        assert_eq!(prefix.unwrap(), static_path!(a.x[1]));
+        assert_eq!(prefix.unwrap(), Path::from(static_path!(a.x[1])));
     }
 
     #[ktest]
@@ -738,13 +738,13 @@ mod test {
         let path1 = path!(a.b[1]);
         let path2 = path!(c.d[2]);
         let concatenated = path1.append(&path2);
-        assert_eq!(concatenated, static_path!(a.b[1].c.d[2]));
+        assert_eq!(concatenated, Path::from(static_path!(a.b[1].c.d[2])));
 
         // Test with empty paths
-        let empty = static_path!();
-        assert_eq!(path1.append(&empty), static_path!(a.b[1]));
-        assert_eq!(empty.append(&path2), static_path!(c.d[2]));
-        assert_eq!(empty.append(&empty), static_path!());
+        let empty = Path::from(static_path!());
+        assert_eq!(path1.append(&empty), Path::from(static_path!(a.b[1])));
+        assert_eq!(empty.append(&path2), Path::from(static_path!(c.d[2])));
+        assert_eq!(empty.append(&empty), Path::from(static_path!()));
     }
 
     #[ktest]
@@ -787,5 +787,11 @@ mod test {
             path_pattern!({name_a}[1].{name_b}[2]),
             path_pattern!(a[1].b[2])
         );
+    }
+
+    #[ktest]
+    fn static_path_into_path() {
+        let static_path: StaticPath = static_path!(hello);
+        let _path: Path = static_path.into();
     }
 }
