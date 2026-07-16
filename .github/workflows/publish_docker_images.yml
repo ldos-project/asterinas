@@ -2,12 +2,11 @@ name: Publish Docker images
 
 on:
   workflow_dispatch:
-  # TODO(arthurp): Once we have this setup
-  # push:
-  #   paths:
-  #     - DOCKER_IMAGE_VERSION
-  #   branches:
-  #     - main
+  push:
+    paths:
+      - DOCKER_IMAGE_VERSION
+    branches:
+      - main
 
 permissions:
   contents: read
