@@ -12,7 +12,6 @@ use ostd::{
     sync::Mutex,
 };
 
-use crate::heimdall::Heimdall;
 use crate::server_traits::{BioCandidates, SelectionPolicy};
 
 #[derive(Debug)]
@@ -186,13 +185,6 @@ impl SelectionPolicy for LinnOSPolicy {
                 input[base + 6] = (latency_us % 10) as f32;
             }
 
-            // log::info!(
-            //     "LinnOS dev={} cur_outstanding={} outstanding=[{},{},{},{}] latency_us=[{},{},{},{}]",
-            //     device_idx, current_outstanding,
-            //     observed[0].0, observed[1].0, observed[2].0, observed[3].0,
-            //     observed[0].1, observed[1].1, observed[2].1, observed[3].1,
-            // );
-
             // Hidden layer: input (31) x hidden_weights (31x256) + bias (256) -> hidden_out (256)
             let hidden_weights = &self.hidden_layers[device_idx];
             let hidden_bias = &self.hidden_biases[device_idx];
@@ -309,7 +301,7 @@ impl SelectionPolicy for DecisionTreePolicy {
                     continue;
                 };
                 let outstanding = trace_entry.outstanding_pages as usize;
-                let latency_us = trace_entry.latency as usize;
+                let latency_us = trace_entry.latency.as_micros() as usize;
                 let base = 3 + i * 7;
 
                 input[base]     = ((outstanding / 100) % 10) as u8;
@@ -340,55 +332,6 @@ impl SelectionPolicy for DecisionTreePolicy {
                 return Ok(self.members[fallback_idx].clone());
             }
         }
-    }
-}
-
-/// Heimdall-guided round-robin selection policy.
-///
-/// Uses the Heimdall asynchronous monitor to skip devices predicted slow.
-/// If all devices are slow, falls back to plain round-robin so IO is never
-/// stalled.  The Heimdall monitor must be spawned on a separate thread via
-/// `Heimdall::run()` before any IO arrives.
-#[derive(Debug)]
-#[orpc_server]
-pub struct HeimdallRoundRobinPolicy {
-    read_cursor: AtomicUsize,
-    members: Vec<Arc<dyn BlockDevice>>,
-    heimdall: Arc<Heimdall>,
-}
-
-impl HeimdallRoundRobinPolicy {
-    pub fn new(
-        members: Vec<Arc<dyn BlockDevice>>,
-        heimdall: Arc<Heimdall>,
-    ) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
-            read_cursor: AtomicUsize::new(0),
-            members,
-            heimdall,
-        });
-        Ok(server)
-    }
-}
-
-impl SelectionPolicy for HeimdallRoundRobinPolicy {
-    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
-        let candidates = selection.candidates;
-        let n = candidates.len();
-        let start_idx = self.read_cursor.fetch_add(1, Ordering::Relaxed);
-
-        // Try each candidate once, starting from the round-robin cursor.
-        for offset in 0..n {
-            let device_idx = candidates[(start_idx + offset) % n];
-            if self.heimdall.is_device_fast(device_idx) {
-                return Ok(self.members[device_idx].clone());
-            }
-        }
-
-        // All candidates are slow — fall back to round-robin among them.
-        let fallback_idx = candidates[start_idx % n];
-        Ok(self.members[fallback_idx].clone())
     }
 }
 
@@ -552,7 +495,6 @@ impl SelectionPolicy for LinnOSPlusPolicy {
             if fail_cnt >= num_candidates {
                 let fallback_idx =
                     candidates[self.read_cursor.fetch_add(1, Ordering::Relaxed) % num_candidates];
-                // log::info!("LinnOSPlus: device {} fallback (all busy). output=[{:.4},{:.4}]", fallback_idx, output[0], output[1]);
                 return Ok(self.members[fallback_idx].clone());
             }
         }

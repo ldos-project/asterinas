@@ -20,8 +20,10 @@ use ostd::{
 ///
 /// Heimdall maintains one ML model and one strong observer per member device.
 /// A dedicated background thread continuously drains completion stats from each
-/// device's OQueue.  Every `BATCH_SIZE` (16) completions, it runs an ML inference
-/// to update that device's fast/slow indicator.
+/// device's OQueue.  Every `BATCH_SIZE` completions, it runs an ML inference
+/// to update that device's fast/slow indicator. Or the inference is triggered if 
+/// `INFERENCE_TIMEOUT_MS` elapses since the last inference for that device. Whichever 
+/// condition is met first. 
 ///
 /// Model architecture (per device):
 ///   Linear(INPUT_DIM, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
@@ -61,9 +63,7 @@ use crate::heimdall_weights::{HIDDEN_SIZE, INPUT_DIM};
 /// Number of completion records to drain before running an inference.
 const BATCH_SIZE: usize = 6;
 
-/// Inference timeout in milliseconds. If this duration elapses since the last
-/// inference for a device, inference is triggered even if fewer than `BATCH_SIZE`
-/// records have been observed.
+/// Inference timeout in milliseconds. 
 const INFERENCE_TIMEOUT_MS: u64 = 28;
 
 impl Heimdall {
@@ -258,9 +258,10 @@ impl Heimdall {
             if idx < n {
                 let rec = &batch[idx];
                 input[2 + hist] = rec.queue_len as f32;
-                input[5 + hist] = rec.latency as f32;
-                input[8 + hist] = if rec.latency > 0 {
-                    rec.request_size_pages as f32 / rec.latency as f32
+                let latency_us = rec.latency.as_micros() as u64;
+                input[5 + hist] = latency_us as f32;
+                input[8 + hist] = if latency_us > 0 {
+                    rec.request_size_pages as f32 / latency_us as f32
                 } else {
                     0.0
                 };

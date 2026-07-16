@@ -13,9 +13,6 @@ pub use fs_impls::{
 };
 
 use aster_block::BlockDevice;
-#[cfg(not(baseline_asterinas))]
-#[expect(unused_imports)]
-use aster_raid::selection_policies::{DecisionTreePolicy, Dummy0Policy, HeimdallRoundRobinPolicy, LinnOSPolicy, LinnOSPlusPolicy, RoundRobinPolicy};
 use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 

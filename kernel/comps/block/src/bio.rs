@@ -31,8 +31,8 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
 /// This struct captures performance metrics when a block I/O request completes.
 #[derive(Clone, Copy, Default, Serialize)]
 pub struct BlockDeviceCompletionStats {
-    /// The latency of the I/O request in microseconds.
-    pub latency: u64,
+    /// The latency of the I/O request.
+    pub latency: Duration,
     /// The number of outstanding 4KB pages at completion time.
     pub outstanding_pages: u32,
     /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device. 
@@ -472,8 +472,8 @@ impl SubmittedBio {
             .as_ref()
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
-                latency: read_monotonic_time().as_micros() as u64
-                    - self.submission_time.unwrap().as_micros() as u64,
+                latency: read_monotonic_time()
+                    .saturating_sub(self.submission_time.unwrap()),
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
                 queue_len: self.outstanding_requests.unwrap_or(u32::MAX),    
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),

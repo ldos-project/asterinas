@@ -228,12 +228,6 @@ impl Raid1Device {
         }
     }
 
-    /// Processes read requests synchronously.
-    /// ORPC Version, i.e., do actual device selection
-    ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
-    /// member (round-robin) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.
     /// Chooses the member device to serve a read.
     ///
     /// The admission policy (if any) first pre-filters the members down to those
