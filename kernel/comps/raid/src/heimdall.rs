@@ -13,6 +13,7 @@ use ostd::{
     Error,
     orpc::oqueue::{OQueueError, StrongObserver},
     sync::Mutex,
+    task::disable_preempt,
 };
 
 /// Heimdall: an asynchronous device performance monitor for RAID-1 arrays.
@@ -221,12 +222,6 @@ impl Heimdall {
         // Model output: 1 → slow (reject IO), 0 → fast (accept IO).
         let is_slow = self.infer_device_speed(device_idx, batch);
         self.fast_indicators[device_idx].store(!is_slow, Ordering::Relaxed);
-        // log::info!(
-        //     "Heimdall: labeling device {} to {} (by {} records)",
-        //     device_idx,
-        //     if is_slow { "slow" } else { "fast" },
-        //     batch.len()
-        // );
         batch.clear();
     }
 
@@ -287,6 +282,7 @@ impl Heimdall {
         device_idx: usize,
         batch: &[BlockDeviceCompletionStats],
     ) -> bool {
+        let _guard = disable_preempt();
         let input = self.build_features(batch);
 
         // fc1: input (INPUT_DIM) x fc1_weights (INPUT_DIM x HIDDEN_SIZE) + bias -> ReLU

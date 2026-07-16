@@ -248,6 +248,7 @@ impl Raid1Device {
                 bio,
                 candidates: &self.all_indices,
             };
+            let _guard = ostd::task::disable_preempt();
             return self.selection_policy.select_block_device(selection).unwrap();
         };
 
@@ -265,6 +266,7 @@ impl Raid1Device {
             &admitted
         };
         let selection = BioCandidates { bio, candidates };
+        let _guard = ostd::task::disable_preempt();
         self.selection_policy
             .select_block_device(selection)
             .unwrap()
