@@ -9,7 +9,6 @@ pub mod configfs;
 pub mod devpts;
 pub mod exfat;
 pub mod ext2;
-#[cfg(feature = "oqfs")]
 pub mod oqfs;
 pub mod overlayfs;
 pub mod procfs;
@@ -27,7 +26,6 @@ pub(super) fn init() {
     tmpfs::init();
     devpts::init();
     pseudofs::init();
-    #[cfg(feature = "oqfs")]
     oqfs::init();
 
     ext2::init();

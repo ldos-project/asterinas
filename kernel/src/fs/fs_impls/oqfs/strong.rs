@@ -83,7 +83,7 @@ impl StrongObserveInode {
         }
         let export =
             registry::lookup_export(&self.path).ok_or_else(|| Error::new(Errno::ENOENT))?;
-        let observer = export.attach_strong().map_err(|_| {
+        let observer = export.attach_strong_observer().map_err(|_| {
             Error::with_message(Errno::ENODEV, "failed to attach an OQueue observer")
         })?;
         Ok(Box::new(StrongObserveFile::new(observer)))
@@ -97,7 +97,7 @@ impl InodeIo for StrongObserveInode {
         _writer: &mut VmWriter,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        // Reads go through the per-open handle returned by `open`, never the inode directly.
+        // This inode does not support `read_at`; the per-open handle minted by `open` does.
         Err(Error::new(Errno::EIO))
     }
 
@@ -274,10 +274,13 @@ impl InodeIo for StrongObserveFile {
     /// So the read_at here is effectively offset free. 
     fn read_at(
         &self,
-        _offset: usize,
+        offset: usize,
         writer: &mut VmWriter,
         status_flags: StatusFlags,
     ) -> Result<usize> {
+        // `is_offset_aware` is `false`, so the VFS always reads at offset 0 (see the doc comment
+        // above); the stream itself has no notion of a position.
+        assert_eq!(offset, 0, "the OQueue stream is offset-free");
         if !writer.has_avail() {
             return Ok(0);
         }

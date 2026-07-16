@@ -348,7 +348,7 @@ mod test {
         assert_eq!(handle.type_name(), core::any::type_name::<usize>());
 
         // A strong observer sees every value produced after it attaches.
-        let observer = handle.attach_strong().unwrap();
+        let observer = handle.attach_strong_observer().unwrap();
         let producer = queue.attach_value_producer().unwrap();
         for value in [10usize, 20, 30] {
             producer.produce(value);
@@ -379,8 +379,8 @@ mod test {
         let handle = lookup_export(&path).unwrap();
 
         // Two independent observers each receive the full stream.
-        let observer_a = handle.attach_strong().unwrap();
-        let observer_b = handle.attach_strong().unwrap();
+        let observer_a = handle.attach_strong_observer().unwrap();
+        let observer_b = handle.attach_strong_observer().unwrap();
         let producer = queue.attach_value_producer().unwrap();
         for value in [1usize, 2, 3, 4] {
             producer.produce(value);
@@ -466,7 +466,7 @@ mod test {
         register_with(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
 
         let handle = lookup_export(&path).unwrap();
-        let observer = handle.attach_strong().unwrap();
+        let observer = handle.attach_strong_observer().unwrap();
         let producer = queue.attach_value_producer().unwrap();
         for value in [100u64, 200, 300] {
             producer.produce(Sample(value));

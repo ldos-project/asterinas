@@ -5,13 +5,12 @@
 //! via OQFS, and they are referred as "exports" in this file. 
 //!
 //! A single [`DirInode`] type serves every directory in the tree. Its identity is a `prefix`: the
-//! sequence of filesystem path components from the OQFS oot down to it (the root's prefix is empty).
-//! The tree is not stored anywhere; each `lookup`/`readdir` recomputes children from the live
+//! sequence of filesystem path components from the OQFS root down to it (the root's prefix is empty).
+//! The tree is not cached, because OQueues might get registered or unregistered at runtime.
+//! Each `lookup`/`readdir` recomputes children from the live
 //! OQueue export registry ([`registry::list_export_paths`]), so queues that register or unregister
 //! at runtime appear and disappear immediately. And this will be fast, since registry used to hold
-//! the OQueues exposed to the userspace is implemented with BTree. And this is robust, because OQFS
-//! differs from /proc in that entries (OQueues) can appear or disappear in /oqueues  in the run time
-//! (created or destroyed in the kernel). 
+//! the OQueues exposed to the userspace is implemented with BTree. 
 //!
 //! A directory plays one of two roles:
 //!
@@ -48,7 +47,9 @@ use crate::{
 /// Returns the paths of the OQueues that are currently exported *and* still alive. 
 /// This is all the keys in OQUEUES in ostd/src/orpc/oqueue/registry.rs that corresponding 
 /// to a living OQueue. Since we have no `unregister` funciton when an OQueue dies, we 
-/// need to check the each of them is alive when this function is called. 
+/// need to check the each of them is alive when this function is called.
+/// TODO(Yingqi): Or we should actually add a `unregister` function to remove it from the 
+/// registry when killing an OQueue? 
 fn live_export_paths() -> Vec<Path> {
     registry::list_export_paths()
         .into_iter()
@@ -118,7 +119,6 @@ impl DirInode {
         self.this.upgrade().unwrap()
     }
 
-    /// Returns the exported OQueue path this directory represents, if its prefix matches one.
     /// If the path corresponds to an OQueue, it return the path, if it's not, it return None. 
     fn as_oqueue(&self) -> Option<Path> {
         live_export_paths()

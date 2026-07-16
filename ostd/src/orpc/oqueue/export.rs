@@ -39,7 +39,7 @@ pub trait OQueueExport: Send + Sync {
     fn is_alive(&self) -> bool;
 
     /// Attaches a fresh observer and returns it as a CBOR record source.
-    fn attach_strong(&self) -> Result<Box<dyn CborObserver>, OQueueError>;
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborObserver>, OQueueError>;
 }
 
 /// A per-reader observer that yields CBOR-encoded records, with the message type erased.
@@ -94,7 +94,7 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         self.weak.upgrade().is_some()
     }
 
-    fn attach_strong(&self) -> Result<Box<dyn CborObserver>, OQueueError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborObserver>, OQueueError> {
         let oqueue = self.weak.upgrade().ok_or_else(|| DetachedSnafu.build())?;
         (self.attach)(&oqueue)
     }

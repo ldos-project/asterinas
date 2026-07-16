@@ -3,8 +3,7 @@
 //! The `metadata.yaml` file: a human-readable description of an OQueue.
 //!
 //! It is a regular file whose contents are regenerated on each read from the live export registry,
-//! reporting the queue's path (`name`/`oqueues`) and message `type_name`. If the queue has since
-//! been unregistered, the type is reported as `<unregistered>`.
+//! reporting the queue's path (`name`/`oqueues`) and message `type_name`. 
 
 use core::time::Duration;
 

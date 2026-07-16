@@ -9,153 +9,104 @@
 // falling too far behind. Descriptive information about the queue is in the sibling
 // `metadata.yaml`, not in this stream.
 //
-// This tool is intentionally written against the C standard library only (no C++ stdlib), so it
-// links statically into the initramfs like the other in-guest tools. It supports exactly the CBOR
-// subset the kernel emits: definite-length unsigned/negative integers, byte/text strings, arrays,
-// maps, and the `null`/`true`/`false` simple values.
+// Decoding is delegated to libcbor. The kernel emits only definite-length unsigned/negative
+// integers, byte/text strings, arrays, maps, and the `null`/`true`/`false` simple values; each
+// record is printed in a JSON-like form.
+//
+// This tool is written against the C standard library and libcbor only (no C++ stdlib), so it
+// links statically into the initramfs like the other in-guest tools.
 //
 // Usage:
-//   read_oqueues [PATH]      PATH defaults to /oqueues/scheduler/events/strong_observe
+//   read_oqueues PATH      e.g. /oqueues/scheduler/events/strong_observe
 
-#include <cstdint>
-#include <cstdio>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <cbor.h>
+
 namespace {
 
-// A buffered reader over a file descriptor. It blocks for more data on a live file and reports EOF
-// once the underlying `read` returns 0.
-struct Reader {
-    int fd;
-    unsigned char buf[4096];
-    size_t len;
-    size_t pos;
-    bool eof;
-};
-
-// Reads the next raw byte, returning false at end of stream.
-bool read_byte(Reader& r, uint8_t& out) {
-    if (r.pos >= r.len) {
-        if (r.eof) {
-            return false;
-        }
-        ssize_t n = read(r.fd, r.buf, sizeof(r.buf));
-        if (n <= 0) {
-            r.eof = true;
-            return false;
-        }
-        r.len = static_cast<size_t>(n);
-        r.pos = 0;
-    }
-    out = r.buf[r.pos++];
-    return true;
-}
-
-// Reads the CBOR argument encoded by an item's `info` (low 5 bits of the initial byte).
-bool read_arg(Reader& r, uint8_t info, uint64_t& out) {
-    if (info < 24) {
-        out = info;
-        return true;
-    }
-    int nbytes;
-    switch (info) {
-        case 24: nbytes = 1; break;
-        case 25: nbytes = 2; break;
-        case 26: nbytes = 4; break;
-        case 27: nbytes = 8; break;
-        default: return false;  // indefinite lengths / reserved are not emitted by the kernel
-    }
-    uint64_t value = 0;
-    for (int i = 0; i < nbytes; i++) {
-        uint8_t b;
-        if (!read_byte(r, b)) {
-            return false;
-        }
-        value = (value << 8) | b;
-    }
-    out = value;
-    return true;
-}
-
-// Reads one CBOR item and prints it in a JSON-like form. Returns false at end of stream.
-bool print_value(Reader& r) {
-    uint8_t initial;
-    if (!read_byte(r, initial)) {
-        return false;
-    }
-    uint8_t major = initial >> 5;
-    uint8_t info = initial & 0x1f;
-    uint64_t arg;
-
-    switch (major) {
-        case 0:  // unsigned integer
-            if (!read_arg(r, info, arg)) return false;
-            printf("%llu", static_cast<unsigned long long>(arg));
-            return true;
-        case 1:  // negative integer
-            if (!read_arg(r, info, arg)) return false;
-            printf("-%llu", static_cast<unsigned long long>(arg) + 1);
-            return true;
-        case 2:    // byte string (printed as hex)
-        case 3: {  // text string (printed as-is)
-            if (!read_arg(r, info, arg)) return false;
-            if (major == 3) putchar('"');
-            for (uint64_t i = 0; i < arg; i++) {
-                uint8_t b;
-                if (!read_byte(r, b)) return false;
-                if (major == 3) {
-                    putchar(static_cast<int>(b));
-                } else {
-                    printf("%02x", b);
-                }
+// Prints one decoded CBOR item in a JSON-like form. Children are borrowed from `item`, so only the
+// top-level item the caller loaded needs to be freed.
+void print_item(cbor_item_t* item) {
+    switch (cbor_typeof(item)) {
+        case CBOR_TYPE_UINT:
+            printf("%llu", static_cast<unsigned long long>(cbor_get_int(item)));
+            break;
+        case CBOR_TYPE_NEGINT:
+            // CBOR encodes a negative integer as the unsigned value `-1 - n`.
+            printf("-%llu", static_cast<unsigned long long>(cbor_get_int(item)) + 1);
+            break;
+        case CBOR_TYPE_BYTESTRING: {  // printed as hex
+            unsigned char* data = cbor_bytestring_handle(item);
+            size_t len = cbor_bytestring_length(item);
+            for (size_t i = 0; i < len; i++) {
+                printf("%02x", data[i]);
             }
-            if (major == 3) putchar('"');
-            return true;
+            break;
         }
-        case 4: {  // array
-            if (!read_arg(r, info, arg)) return false;
+        case CBOR_TYPE_STRING: {  // printed as-is
+            unsigned char* data = cbor_string_handle(item);
+            size_t len = cbor_string_length(item);
+            putchar('"');
+            for (size_t i = 0; i < len; i++) {
+                putchar(static_cast<int>(data[i]));
+            }
+            putchar('"');
+            break;
+        }
+        case CBOR_TYPE_ARRAY: {
+            size_t size = cbor_array_size(item);
+            cbor_item_t** elems = cbor_array_handle(item);
             putchar('[');
-            for (uint64_t i = 0; i < arg; i++) {
+            for (size_t i = 0; i < size; i++) {
                 if (i != 0) printf(", ");
-                if (!print_value(r)) return false;
+                print_item(elems[i]);
             }
             putchar(']');
-            return true;
+            break;
         }
-        case 5: {  // map
-            if (!read_arg(r, info, arg)) return false;
+        case CBOR_TYPE_MAP: {
+            size_t size = cbor_map_size(item);
+            struct cbor_pair* pairs = cbor_map_handle(item);
             putchar('{');
-            for (uint64_t i = 0; i < arg; i++) {
+            for (size_t i = 0; i < size; i++) {
                 if (i != 0) printf(", ");
-                if (!print_value(r)) return false;  // key
+                print_item(pairs[i].key);
                 printf(": ");
-                if (!print_value(r)) return false;  // value
+                print_item(pairs[i].value);
             }
             putchar('}');
-            return true;
+            break;
         }
-        case 7:  // simple values (the kernel only emits null/true/false)
-            switch (info) {
-                case 20: printf("false"); return true;
-                case 21: printf("true"); return true;
-                case 22: printf("null"); return true;
-                default:
-                    if (!read_arg(r, info, arg)) return false;
-                    printf("<simple>");
-                    return true;
+        case CBOR_TYPE_FLOAT_CTRL:  // the kernel only emits null/true/false here
+            if (cbor_is_null(item)) {
+                printf("null");
+            } else if (cbor_is_bool(item)) {
+                printf(cbor_get_bool(item) ? "true" : "false");
+            } else {
+                printf("<simple>");
             }
-        default:
-            return false;
+            break;
+        default:  // tags are not emitted by the kernel
+            printf("<unsupported>");
+            break;
     }
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const char* path =
-        (argc > 1) ? argv[1] : "/oqueues/scheduler/events/strong_observe";
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s PATH\n", argv[0]);
+        return 1;
+    }
+    const char* path = argv[1];
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -163,14 +114,64 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    Reader r{fd, {}, 0, 0, false};
+    size_t cap = 4096;
+    unsigned char* buf = static_cast<unsigned char*>(malloc(cap));
+    if (buf == nullptr) {
+        fprintf(stderr, "error: out of memory\n");
+        close(fd);
+        return 1;
+    }
+    size_t len = 0;  // Bytes buffered in `buf`.
+    size_t pos = 0;  // Decode cursor into `buf`.
 
-    // Each item is one `{seq, value}` record; print one per line as it arrives.
-    while (print_value(r)) {
-        putchar('\n');
-        fflush(stdout);
+    for (;;) {
+        // Try to decode one complete record from the bytes already buffered.
+        struct cbor_load_result result;
+        cbor_item_t* item = cbor_load(buf + pos, len - pos, &result);
+
+        if (result.error.code == CBOR_ERR_NONE) {
+            print_item(item);
+            putchar('\n');
+            fflush(stdout);
+            cbor_decref(&item);
+            pos += result.read;
+            continue;
+        }
+
+        if (item != nullptr) {
+            cbor_decref(&item);
+        }
+        // A truncated record just means more bytes are on the way; anything else is fatal.
+        if (result.error.code != CBOR_ERR_NOTENOUGHDATA &&
+            result.error.code != CBOR_ERR_NODATA) {
+            fprintf(stderr, "error: malformed CBOR at offset %zu\n",
+                    pos + result.error.position);
+            break;
+        }
+
+        // Compact the consumed prefix, grow if a single record fills the buffer, then read more.
+        if (pos > 0) {
+            memmove(buf, buf + pos, len - pos);
+            len -= pos;
+            pos = 0;
+        }
+        if (len == cap) {
+            cap *= 2;
+            unsigned char* grown = static_cast<unsigned char*>(realloc(buf, cap));
+            if (grown == nullptr) {
+                fprintf(stderr, "error: out of memory\n");
+                break;
+            }
+            buf = grown;
+        }
+        ssize_t n = read(fd, buf + len, cap - len);
+        if (n <= 0) {
+            break;  // End of stream.
+        }
+        len += static_cast<size_t>(n);
     }
 
+    free(buf);
     close(fd);
     return 0;
 }

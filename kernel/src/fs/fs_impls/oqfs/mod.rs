@@ -14,7 +14,7 @@
 //! indices become numeric components). Each such leaf directory contains:
 //!
 //! - `strong_observe` — a consuming, per-open stream of every value produced after `open`, as a
-//!   CBOR byte stream (see [`strong`]).
+//!   CBOR byte stream (see [`strong`]). Behaves like a char device. 
 //! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]).
 //!
 //! # Modules
@@ -62,7 +62,7 @@ pub(super) fn init() {
 
 /// Mounts an OQueue filesystem at `/oqueues`, creating the mount point if needed.
 ///
-/// Called during first-process initialization when the `oqfs` feature is enabled.
+/// Called during first-process initialization.
 pub(in crate::fs) fn mount_root(path_resolver: &PathResolver, ctx: &Context) -> Result<()> {
     let root_path = path_resolver.lookup(&FsPath::try_from("/")?)?;
     let mount_point = root_path.new_fs_child("oqueues", InodeType::Dir, mkmod!(a+rx))?;
