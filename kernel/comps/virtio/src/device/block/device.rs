@@ -227,7 +227,12 @@ impl aster_block::BlockDevice for BlockDevice {
             .device
             .num_outstanding_requests
             .fetch_add(1, Ordering::Relaxed);
-        bio.prepare_enqueue(reply_handle, device_index, outstanding_pages, outstanding_requests);
+        bio.prepare_enqueue(
+            reply_handle,
+            device_index,
+            outstanding_pages,
+            outstanding_requests,
+        );
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())
@@ -369,7 +374,7 @@ impl DeviceInner {
             submitted_requests: SpinLock::new(BTreeMap::new()),
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
-            device_index: AtomicU32::new(u32::MAX-1),
+            device_index: AtomicU32::new(u32::MAX - 1),
         });
 
         let cloned_device = device.clone();
@@ -450,8 +455,11 @@ impl DeviceInner {
                 #[cfg(not(baseline_asterinas))]
                 {
                     let pages = bio.get_num_pages();
-                    let outstanding = self.num_outstanding_pages.fetch_sub(pages, Ordering::Relaxed);
-                    self.num_outstanding_requests.fetch_sub(1, Ordering::Relaxed);
+                    let outstanding = self
+                        .num_outstanding_pages
+                        .fetch_sub(pages, Ordering::Relaxed);
+                    self.num_outstanding_requests
+                        .fetch_sub(1, Ordering::Relaxed);
                     // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
                     bio.report_statistics();
                 }

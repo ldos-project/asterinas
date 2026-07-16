@@ -21,15 +21,15 @@
 extern crate alloc;
 
 #[cfg(not(baseline_asterinas))]
-pub mod linnos_weights;
-#[cfg(not(baseline_asterinas))]
-pub mod linnos_plus_weights;
-#[cfg(not(baseline_asterinas))]
 pub mod decision_tree_predictions;
 #[cfg(not(baseline_asterinas))]
 pub mod heimdall;
 #[cfg(not(baseline_asterinas))]
 pub mod heimdall_weights;
+#[cfg(not(baseline_asterinas))]
+pub mod linnos_plus_weights;
+#[cfg(not(baseline_asterinas))]
+pub mod linnos_weights;
 #[cfg(not(baseline_asterinas))]
 pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
@@ -243,7 +243,10 @@ impl Raid1Device {
                 candidates: &self.all_indices,
             };
             let _guard = ostd::task::disable_preempt();
-            return self.selection_policy.select_block_device(selection).unwrap();
+            return self
+                .selection_policy
+                .select_block_device(selection)
+                .unwrap();
         };
 
         // Admission active: offer only the members Heimdall currently admits,
@@ -355,6 +358,7 @@ impl Raid1Device {
     /// `IoError`; all members must succeed for `Complete` to be reported.
     fn process_write_async(&self, request: BioRequest) {
         use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
         use ostd::sync::{LocalIrqDisabled, SpinLock};
 
         for parent in request.into_bios() {
@@ -365,7 +369,9 @@ impl Raid1Device {
             // Extract before moving parent into the guard.
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
-            let guard = Arc::new(SpinLock::<_, LocalIrqDisabled>::new(Some(ParentGuard::new(parent))));
+            let guard = Arc::new(SpinLock::<_, LocalIrqDisabled>::new(Some(
+                ParentGuard::new(parent),
+            )));
 
             for member in &self.members {
                 let remaining_cb = remaining.clone();

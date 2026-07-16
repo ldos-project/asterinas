@@ -35,8 +35,8 @@ pub struct BlockDeviceCompletionStats {
     pub latency: Duration,
     /// The number of outstanding 4KB pages at completion time.
     pub outstanding_pages: u32,
-    /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device. 
-    pub queue_len: u32, 
+    /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device.
+    pub queue_len: u32,
     /// Size of the IO request, which is num_pages of a bio request.
     pub request_size_pages: u32,
     /// The index of the device that produced this stat.
@@ -152,7 +152,7 @@ impl Bio {
 
         // enqueue to the block device
         // A SubmittedBio is created here from a Bio, and then pass down to the lower layers.
-        // Those empty fields will be set just before in the block_device.enqueue function in the prepare_enqueue function. 
+        // Those empty fields will be set just before in the block_device.enqueue function in the prepare_enqueue function.
         if let Err(e) = block_device.enqueue(SubmittedBio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
@@ -397,18 +397,19 @@ impl SubmittedBio {
     pub fn set_sid_offset(&self, offset: u64) {
         self.bio_inner.sid_offset.store(offset, Ordering::Relaxed);
     }
-    
+
     /// an immutable version of the num_pages function. Panic if the num_pages field is not set yet.
     pub fn get_num_pages(&self) -> u32 {
         self.num_pages.expect("num_pages is not set yet")
     }
 
     /// Returns the number of 4KB pages covered by this bio's sector range.
-    /// Note the field num_pages is only available when calling this function, but accessing it directly is not available. 
+    /// Note the field num_pages is only available when calling this function, but accessing it directly is not available.
     pub fn num_pages(&mut self) -> u32 {
         *self.num_pages.get_or_insert_with(|| {
-            let sectors = self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
-            ((sectors + 7) / 8) as u32  // each page has 8 sectors
+            let sectors =
+                self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
+            ((sectors + 7) / 8) as u32 // each page has 8 sectors
         })
     }
 
@@ -449,7 +450,7 @@ impl SubmittedBio {
 
     /// Argument:
     /// - `num_pages`: The number of pages covered by this bio's sector range. This is used to update the outstanding page counter in the block device, and also used for performance statistics reporting.
-    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueing this bio request. 
+    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueing this bio request.
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
@@ -461,8 +462,8 @@ impl SubmittedBio {
         self.reply_handle = Some(reply_handle);
         self.submission_time = Some(read_monotonic_time());
         self.device_index = Some(device_index);
-        self.num_pages();  // set the num_pages field
-        self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap());  // accumulate the number of outstanding pages
+        self.num_pages(); // set the num_pages field
+        self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap()); // accumulate the number of outstanding pages
         self.outstanding_requests = Some(outstanding_requests);
     }
 
@@ -472,10 +473,9 @@ impl SubmittedBio {
             .as_ref()
             .unwrap()
             .try_produce_ref(&BlockDeviceCompletionStats {
-                latency: read_monotonic_time()
-                    .saturating_sub(self.submission_time.unwrap()),
+                latency: read_monotonic_time().saturating_sub(self.submission_time.unwrap()),
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
-                queue_len: self.outstanding_requests.unwrap_or(u32::MAX),    
+                queue_len: self.outstanding_requests.unwrap_or(u32::MAX),
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),
                 device_index: self.device_index.unwrap_or(u32::MAX),
             });

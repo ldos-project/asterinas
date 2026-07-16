@@ -6,11 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
-use ostd::{
-    Error,
-    orpc::orpc_server,
-    sync::Mutex,
-};
+use ostd::{Error, orpc::orpc_server, sync::Mutex};
 
 use crate::server_traits::{BioCandidates, SelectionPolicy};
 
@@ -110,12 +106,10 @@ impl LinnOSPolicy {
         // Copy hardcoded weights into Vecs, one entry per device
         let hidden_layers: Vec<[[f32; 256]; 31]> =
             (0..num_devices).map(|i| *HIDDEN_WEIGHTS[i]).collect();
-        let hidden_biases: Vec<[f32; 256]> =
-            (0..num_devices).map(|i| *HIDDEN_BIASES[i]).collect();
+        let hidden_biases: Vec<[f32; 256]> = (0..num_devices).map(|i| *HIDDEN_BIASES[i]).collect();
         let output_layers: Vec<[[f32; 2]; 256]> =
             (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
-        let output_biases: Vec<[f32; 2]> =
-            (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
+        let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
         let server = Self::new_with(|orpc_internal, _| Self {
             orpc_internal,
@@ -155,7 +149,8 @@ impl SelectionPolicy for LinnOSPolicy {
             let mut input = [0.0f32; 31];
 
             // Current outstanding pages: use most recent trace entry, decompose into 3 digits
-            let current_outstanding = num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
+            let current_outstanding =
+                num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
             input[0] = ((current_outstanding / 100) % 10) as f32;
             input[1] = ((current_outstanding / 10) % 10) as f32;
             input[2] = (current_outstanding % 10) as f32;
@@ -290,8 +285,8 @@ impl SelectionPolicy for DecisionTreePolicy {
             // Build the 31-element input feature vector as u8 digits (0–9)
             let mut input = [0u8; 31];
 
-            let current_outstanding = num_pages as usize
-                + self.members[device_idx].num_outstanding_pages() as usize;
+            let current_outstanding =
+                num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
             input[0] = ((current_outstanding / 100) % 10) as u8;
             input[1] = ((current_outstanding / 10) % 10) as u8;
             input[2] = (current_outstanding % 10) as u8;
@@ -304,7 +299,7 @@ impl SelectionPolicy for DecisionTreePolicy {
                 let latency_us = trace_entry.latency.as_micros() as usize;
                 let base = 3 + i * 7;
 
-                input[base]     = ((outstanding / 100) % 10) as u8;
+                input[base] = ((outstanding / 100) % 10) as u8;
                 input[base + 1] = ((outstanding / 10) % 10) as u8;
                 input[base + 2] = (outstanding % 10) as u8;
 
@@ -382,16 +377,13 @@ impl LinnOSPlusPolicy {
 
         let hidden1_weights: Vec<[[f32; 8]; 31]> =
             (0..num_devices).map(|i| *HIDDEN1_WEIGHTS[i]).collect();
-        let hidden1_biases: Vec<[f32; 8]> =
-            (0..num_devices).map(|i| *HIDDEN1_BIASES[i]).collect();
+        let hidden1_biases: Vec<[f32; 8]> = (0..num_devices).map(|i| *HIDDEN1_BIASES[i]).collect();
         let hidden2_weights: Vec<[[f32; 8]; 8]> =
             (0..num_devices).map(|i| *HIDDEN2_WEIGHTS[i]).collect();
-        let hidden2_biases: Vec<[f32; 8]> =
-            (0..num_devices).map(|i| *HIDDEN2_BIASES[i]).collect();
+        let hidden2_biases: Vec<[f32; 8]> = (0..num_devices).map(|i| *HIDDEN2_BIASES[i]).collect();
         let output_weights: Vec<[[f32; 2]; 8]> =
             (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
-        let output_biases: Vec<[f32; 2]> =
-            (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
+        let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
         let server = Self::new_with(|orpc_internal, _| Self {
             orpc_internal,
@@ -428,7 +420,8 @@ impl SelectionPolicy for LinnOSPlusPolicy {
             // Build the 31-element input feature vector (same as LinnOS)
             let mut input = [0.0f32; 31];
 
-            let current_outstanding = num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
+            let current_outstanding =
+                num_pages as usize + self.members[device_idx].num_outstanding_pages() as usize;
             input[0] = ((current_outstanding / 100) % 10) as f32;
             input[1] = ((current_outstanding / 10) % 10) as f32;
             input[2] = (current_outstanding % 10) as f32;
