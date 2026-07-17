@@ -68,7 +68,6 @@ pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
         BLOCK_SIZE,
         oqueue_fs.sb().container_dev_id,
     );
-    // let fs: Weak<dyn FileSystem> = fs;
     Arc::new(StrongObserveInode {
         path,
         common: Common::new(metadata, fs),
