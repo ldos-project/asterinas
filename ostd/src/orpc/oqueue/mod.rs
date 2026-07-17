@@ -70,7 +70,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
-pub use export::{CborObserver, OQueueExport};
+pub use export::{CborStrongObserve, OQueueExport};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -91,11 +91,11 @@ pub(crate) mod generic_test;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum OQueueError {
-    /// The handle has been detached. Once this is returned, all future operations will return
+    /// The handle has been revoked. Once this is returned, all future operations will return
     /// it. This can happen because access has been revoked (for instance, due to the observer
     /// being too slow), or the OQueue has been deleted.
-    #[snafu(display("Handle detached ({context})"))]
-    Detached,
+    #[snafu(display("Handle revoked ({context})"))]
+    Revoked,
     /// The operation is supported by this OQueue but the required resources are missing (e.g.,
     /// observer slots or memory).
     #[snafu(display("Resource unavailable ({context})"))]
@@ -147,7 +147,7 @@ pub trait OQueueBase<T: ?Sized> {
     ///
     /// Unlike [`Self::attach_strong_observer`], which applies backpressure to producers when its
     /// ring fills, a revocable observer is silently dropped in that situation: the producer keeps
-    /// running and the observer sees [`OQueueError::Detached`] on its next observe. Use this for
+    /// running and the observer sees [`OQueueError::Revoked`] on its next observe. Use this for
     /// untrusted or userspace-facing observers that must never be able to stall kernel execution.
     fn attach_revocable_strong_observer<U>(
         &self,
@@ -839,10 +839,10 @@ mod test {
             producer.produce_ref(&value);
         }
 
-        // The revoked observer now reports the stream as detached.
+        // The revoked observer now reports the stream as revoked.
         assert!(matches!(
             observer.try_strong_observe(),
-            Err(OQueueError::Detached { .. })
+            Err(OQueueError::Revoked { .. })
         ));
     }
 

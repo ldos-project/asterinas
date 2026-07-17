@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The volatile directory tree of the OQueue filesystem. All the OQueues will appear in REGISTRY 
-//! in the OQueue Registry, and only those registered to the OQUEUES are exported to the userspace 
-//! via OQFS, and they are referred as "exports" in this file. 
+//! The volatile directory tree of the OQueue filesystem. Every OQueue appears in the type-keyed
+//! OQueue registry, but only those additionally exported to userspace appear in OQFS; they are
+//! referred to as "exports" in this file.
 //!
 //! A single [`DirInode`] type serves every directory in the tree. Its identity is a `prefix`: the
 //! sequence of filesystem path components from the OQFS root down to it (the root's prefix is empty).
@@ -14,12 +14,13 @@
 //!
 //! A directory plays one of two roles:
 //!
-//! - **OQueue leaf** — It lists the fixed files [`strong::FILE_NAME`] and [`metadata::FILE_NAME`].
+//! - **OQueue leaf** — It lists the fixed files [`strong_observe::FILE_NAME`] and [`metadata::FILE_NAME`].
 //! - **non-leaf** (including the root) — It lists the distinct next components of every exported
 //!   path that it is a prefix of.
 //!
-//! A path that is simultaneously an exported queue and a prefix of a longer exported path is
-//! treated as a leaf. 
+//! A path that is simultaneously an exported queue and a prefix of a longer exported path is a
+//! namespace collision: it is served as a leaf, the deeper queues are hidden, and the collision is
+//! logged (rather than being silently ignored).
 
 use core::time::Duration;
 
@@ -29,7 +30,7 @@ use ostd::orpc::{
     path::{Path, PathComponentRef},
 };
 
-use super::{BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, strong};
+use super::{BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, strong_observe};
 use crate::{
     fs::{
         file::{InodeMode, InodeType, StatusFlags, mkmod},
@@ -44,17 +45,12 @@ use crate::{
     process::{Gid, Uid},
 };
 
-/// Returns the paths of the OQueues that are currently exported *and* still alive. 
-/// This is all the keys in OQUEUES in ostd/src/orpc/oqueue/registry.rs that corresponding 
-/// to a living OQueue. Since we have no `unregister` funciton when an OQueue dies, we 
-/// need to check the each of them is alive when this function is called.
-/// TODO(Yingqi): Or we should actually add a `unregister` function to remove it from the 
-/// registry when killing an OQueue? 
-fn live_export_paths() -> Vec<Path> {
-    registry::list_export_paths()
-        .into_iter()
-        .filter(|path| registry::lookup_export(path).is_some_and(|export| export.is_alive()))
-        .collect()
+/// Returns the paths of the OQueues that are currently exported and still alive.
+///
+/// Dead exports (whose OQueue has been dropped) are evicted before the registry content is returned. 
+fn live_export_paths() -> impl Iterator<Item = Path> {
+    registry::clean_exports();
+    registry::list_export_paths().into_iter()
 }
 
 /// convert an OQueue [`Path`] to filesystem path components: names stay as-is, indices become their
@@ -74,7 +70,6 @@ pub(super) struct DirInode {
     /// The filesystem path components from the root to this directory (empty for the root).
     prefix: Vec<String>,
     this: Weak<DirInode>,  // for .
-    parent: Option<Weak<dyn Inode>>,  // for ..
     fs: Weak<OQueueFs>,
     common: Common,
 }
@@ -82,25 +77,20 @@ pub(super) struct DirInode {
 impl DirInode {
     /// Creates the root directory inode.
     pub(super) fn new_root(fs: Weak<OQueueFs>, sb: &SuperBlock) -> Arc<dyn Inode> {
-        Self::new_inode(fs, Vec::new(), None, OQUEUE_ROOT_INO, sb.container_dev_id)
+        Self::new_inode(fs, Vec::new(), OQUEUE_ROOT_INO, sb.container_dev_id)
     }
 
-    /// Creates a non-root directory inode with the given `prefix` under `parent`.
-    fn new_child(
-        fs: Weak<OQueueFs>,
-        prefix: Vec<String>,
-        parent: Weak<dyn Inode>,
-    ) -> Arc<dyn Inode> {
+    /// Creates a non-root directory inode for the given filesystem `prefix`.
+    fn new_dir(fs: Weak<OQueueFs>, prefix: Vec<String>) -> Arc<dyn Inode> {
         let strong_fs = fs.upgrade().unwrap();
         let ino = strong_fs.alloc_id();
         let container_dev_id = strong_fs.sb().container_dev_id;
-        Self::new_inode(fs, prefix, Some(parent), ino, container_dev_id)
+        Self::new_inode(fs, prefix, ino, container_dev_id)
     }
 
     fn new_inode(
         fs: Weak<OQueueFs>,
         prefix: Vec<String>,
-        parent: Option<Weak<dyn Inode>>,
         ino: u64,
         container_dev_id: device_id::DeviceId,
     ) -> Arc<dyn Inode> {
@@ -109,7 +99,6 @@ impl DirInode {
         Arc::new_cyclic(|weak_self| DirInode {
             prefix,
             this: weak_self.clone(),
-            parent,
             fs,
             common: Common::new(metadata, fs_weak),
         })
@@ -119,19 +108,43 @@ impl DirInode {
         self.this.upgrade().unwrap()
     }
 
-    /// If the path corresponds to an OQueue, it return the path, if it's not, it return None. 
-    fn as_oqueue(&self) -> Option<Path> {
-        live_export_paths()
-            .into_iter()
-            .find(|path| path_to_segments(path) == self.prefix)
+    /// Returns the parent directory inode.
+    fn parent_inode(&self) -> Arc<dyn Inode> {
+        match self.prefix.split_last() {
+            Some((_last, parent_prefix)) => {
+                DirInode::new_dir(self.fs.clone(), parent_prefix.to_vec())
+            }
+            None => self.this(),
+        }
     }
 
-    /// Returns the sorted, distinct next path components under the current dir. 
+    /// Returns the exported OQueue path if this directory is a leaf (its `prefix` matches an
+    /// exported queue exactly), or `None` otherwise.
+    fn as_oqueue(&self) -> Option<Path> {
+        live_export_paths().find(|path| path_to_segments(path) == self.prefix)
+    }
+
+    /// Logs the namespace collision where this leaf directory is *also* a prefix of deeper exported
+    /// paths, so those deeper queues are hidden behind the leaf's observation files.
+    fn warn_if_prefix_conflict(&self, oqueue: &Path) {
+        if !self.child_dir_names().is_empty() {
+            error!(
+                "OQueue export \"{}\" is also a prefix of deeper exports; serving it as a leaf \
+                 and hiding the deeper queues",
+                oqueue
+            );
+        }
+    }
+
+    /// Returns the sorted, distinct next path components under the current directory.
+    ///
+    /// Multiple exported paths can share the same next component under this prefix (e.g. both
+    /// `raid1.io[0]` and `raid1.io[1]` yield `io` under `raid1`), so the collected components are
+    /// deduplicated.
     fn child_dir_names(&self) -> Vec<String> {
         let mut names: Vec<String> = live_export_paths()
-            .iter()
             .filter_map(|path| {
-                let segments = path_to_segments(path);
+                let segments = path_to_segments(&path);
                 (segments.len() > self.prefix.len() && segments.starts_with(&self.prefix))
                     .then(|| segments[self.prefix.len()].clone())
             })
@@ -146,7 +159,7 @@ impl DirInode {
         if let Some(_oqueue) = self.as_oqueue() {
             // if the directory corresponds to an OQueue, then
             // it can only contains two files. 
-            name == strong::FILE_NAME || name == metadata::FILE_NAME
+            name == strong_observe::FILE_NAME || name == metadata::FILE_NAME
         } else {
             self.child_dir_names().iter().any(|child| child == name)
         }
@@ -216,17 +229,14 @@ impl Inode for DirInode {
             return Ok(self.this());
         }
         if is_dotdot(name) {
-            return Ok(self
-                .parent
-                .as_ref()
-                .and_then(Weak::upgrade)
-                .unwrap_or(self.this()));
+            return Ok(self.parent_inode());
         }
 
         if let Some(oqueue) = self.as_oqueue() {
-            // if this directory is an exported OQueue; its children are the observation files.
+            // This directory is an exported OQueue, so its children are the observation files.
+            self.warn_if_prefix_conflict(&oqueue);
             return match name {
-                strong::FILE_NAME => Ok(strong::new_inode(self.fs.clone(), oqueue)),
+                strong_observe::FILE_NAME => Ok(strong_observe::new_inode(self.fs.clone(), oqueue)),
                 metadata::FILE_NAME => Ok(metadata::new_inode(self.fs.clone(), oqueue)),
                 _ => Err(Error::new(Errno::ENOENT)),
             };
@@ -239,24 +249,17 @@ impl Inode for DirInode {
         }
         let mut child_prefix = self.prefix.clone();
         child_prefix.push(name.to_string());
-        Ok(DirInode::new_child(
-            self.fs.clone(),
-            child_prefix,
-            self.this.clone(),
-        ))
+        Ok(DirInode::new_dir(self.fs.clone(), child_prefix))
     }
 
     fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
         let this = self.this();
-        let parent = self
-            .parent
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .unwrap_or_else(|| this.clone());
+        let parent = self.parent_inode();
 
         // Entries beyond `.` and `..` (reserved offsets 1 and 2), as `(name, type)`.
-        let children: Vec<(String, InodeType)> = if self.as_oqueue().is_some() {
-            [strong::FILE_NAME, metadata::FILE_NAME]
+        let children: Vec<(String, InodeType)> = if let Some(oqueue) = self.as_oqueue() {
+            self.warn_if_prefix_conflict(&oqueue);
+            [strong_observe::FILE_NAME, metadata::FILE_NAME]
                 .into_iter()
                 .map(|name| (name.to_string(), InodeType::File))
                 .collect()

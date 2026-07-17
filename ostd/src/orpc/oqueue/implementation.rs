@@ -570,7 +570,7 @@ struct ObservationRingBuffer<T: ?Sized> {
     revocable: bool,
     /// Set when a revocable strong observer has been revoked because its ring filled up while a
     /// producer was publishing. A revoked observer no longer gates production and its next observe
-    /// returns [`OQueueError::Detached`](super::OQueueError::Detached).
+    /// returns [`OQueueError::Revoked`](super::OQueueError::Revoked).
     revoked: bool,
 }
 
@@ -745,9 +745,9 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
 
-        // The observer was dropped because it fell behind; report the stream as detached.
+        // The observer was dropped because it fell behind; report the stream as revoked.
         if observer.revoked {
-            return super::DetachedSnafu.fail();
+            return super::RevokedSnafu.fail();
         }
 
         let ObservationRingBuffer {

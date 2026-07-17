@@ -50,11 +50,11 @@ impl PathMap {
     }
 }
 
-static REGISTRY: Mutex<Option<RegistryMap>> = Mutex::new(None);
+static TYPED_OQUEUE_REGISTRY: Mutex<Option<RegistryMap>> = Mutex::new(None);
 
 /// Get a reference to the global registry object, initializing it if needed.
 fn registry() -> MutexGuard<'static, Option<RegistryMap>> {
-    let mut guard = REGISTRY.lock();
+    let mut guard = TYPED_OQUEUE_REGISTRY.lock();
     if guard.is_none() {
         guard.replace(HashMap::new());
     }
@@ -62,7 +62,8 @@ fn registry() -> MutexGuard<'static, Option<RegistryMap>> {
     guard
 }
 
-/// Register a OQueue with `path` in [`REGISTRY`] only, without exporting it to userspace via [`OQUEUES`].
+/// Registers an OQueue at `path` for lookup by type, without exporting it to userspace (so it does
+/// not appear in the OQueue filesystem).
 ///
 /// If an existing OQueue is registered with the same type and path, this will replace that OQueue
 /// and emit a warning.
@@ -77,7 +78,7 @@ pub fn register_no_export<T: ?Sized + 'static>(path: &Path, v: &AnyOQueueRef<T>)
     entry.insert(Box::<WeakAnyOQueueRef<T>>::new(v.downgrade()));
 }
 
-/// Ensure `path` is present in [`REGISTRY`], inserting it if absent.
+/// Ensure `path` is present in [`TYPED_OQUEUE_REGISTRY`], inserting it if absent.
 fn ensure_registered<T: ?Sized + 'static>(path: &Path, v: &AnyOQueueRef<T>) {
     let mut map = registry();
     let entry = get_entry::<T>(&mut map, path);
@@ -107,15 +108,15 @@ pub fn clean_registry() {
 
 /// A registry of OQueues that have been exported for OQueue FileSystem, keyed by `Path`.
 ///
-/// This is separate from [`REGISTRY`]: it is keyed by `Path` only (not by type) and holds
+/// This is separate from [`TYPED_OQUEUE_REGISTRY`]: it is keyed by `Path` only (not by type) and holds
 /// type-erased [`OQueueExport`] handles, so a generic consumer such as the OQueue filesystem can
 /// enumerate and read queues without naming the message type. A `BTreeMap` gives stable, sorted
 /// iteration for directory listings. At most one export is kept per path.
-static OQUEUES: Mutex<Option<BTreeMap<Path, Arc<dyn OQueueExport>>>> = Mutex::new(None);
+static OQFS_REGISTRY: Mutex<Option<BTreeMap<Path, Arc<dyn OQueueExport>>>> = Mutex::new(None);
 
 /// Get a reference to the global export registry, initializing it if needed.
 fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>>> {
-    let mut guard = OQUEUES.lock();
+    let mut guard = OQFS_REGISTRY.lock();
     if guard.is_none() {
         guard.replace(BTreeMap::new());
     }
@@ -123,8 +124,8 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
     guard
 }
 
-/// Register a OQueue at `path` in both [`REGISTRY`] and [`OQUEUES`], exporting it to userspace with
-/// the message type's derived `Serialize` implementation (the whole message is streamed).
+/// Registers an OQueue at `path` and exports it to userspace with the message type's derived
+/// `Serialize` implementation (the whole message is streamed).
 ///
 /// This is the common case for exportable queues: the message type just needs
 /// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use [`register_with`]
@@ -135,8 +136,8 @@ pub fn register<T: Copy + Send + Serialize + 'static>(path: &Path, oqueue: &AnyO
     insert_export(path, make_export(oqueue));
 }
 
-/// Register a OQueue at `path` in both [`REGISTRY`] and [`OQUEUES`], exporting it to userspace via a
-/// caller-supplied projection `project: Fn(&T) -> U`.
+/// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection
+/// `project: Fn(&T) -> U`.
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
@@ -151,7 +152,7 @@ where
     insert_export(path, make_export_with(oqueue, project));
 }
 
-/// Insert an export handle into [`OQUEUES`], enforcing one export per path.
+/// Insert an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
 ///
 /// A path identifies a single stream, so a second export at an already-occupied live path is a
 /// programming error: it is ignored with a warning. A stale entry (its OQueue already dropped) is
@@ -357,11 +358,11 @@ mod test {
         // Draining yields exactly three records, then reports nothing available.
         let mut buf = Vec::new();
         let mut count = 0;
-        while observer.try_next(&mut buf).unwrap() {
+        while observer.try_strong_observe_into(&mut buf).unwrap() {
             count += 1;
         }
         assert_eq!(count, 3);
-        assert!(!observer.try_next(&mut buf).unwrap());
+        assert!(!observer.try_strong_observe_into(&mut buf).unwrap());
 
         // The bytes decode as an ordered CBOR record stream with sequence numbers.
         let records = decode_records(&buf);
@@ -387,9 +388,9 @@ mod test {
         }
 
         let mut buf_a = Vec::new();
-        while observer_a.try_next(&mut buf_a).unwrap() {}
+        while observer_a.try_strong_observe_into(&mut buf_a).unwrap() {}
         let mut buf_b = Vec::new();
-        while observer_b.try_next(&mut buf_b).unwrap() {}
+        while observer_b.try_strong_observe_into(&mut buf_b).unwrap() {}
 
         let records_a = decode_records(&buf_a);
         let records_b = decode_records(&buf_b);
@@ -430,12 +431,12 @@ mod test {
     #[ktest]
     fn register_populates_both_maps() {
         let path = path!(observe.both[1]);
-        // The constructor registers to REGISTRY only; the queue is not exported yet.
+        // The constructor registers to TYPED_OQUEUE_REGISTRY only; the queue is not exported yet.
         let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
         assert!(lookup_by_path::<usize>(&path).is_some());
         assert!(lookup_export(&path).is_none());
 
-        // `register` adds it to OQUEUES while keeping the REGISTRY entry.
+        // `register` adds it to OQFS_REGISTRY while keeping the TYPED_OQUEUE_REGISTRY entry.
         register(&path, &queue.as_any_oqueue());
         assert!(lookup_by_path::<usize>(&path).is_some());
         assert!(lookup_export(&path).is_some());
@@ -448,7 +449,7 @@ mod test {
         let queue = ConsumableOQueueRef::<usize>::new_anonymous(4);
         assert!(lookup_by_path::<usize>(&path).is_none());
 
-        // `register` puts it in both maps: `ensure_registered` covers REGISTRY.
+        // `register` puts it in both maps: `ensure_registered` covers TYPED_OQUEUE_REGISTRY.
         register(&path, &queue.as_any_oqueue());
         assert!(lookup_by_path::<usize>(&path).is_some());
         assert!(lookup_export(&path).is_some());
@@ -473,7 +474,7 @@ mod test {
         }
 
         let mut buf = Vec::new();
-        while observer.try_next(&mut buf).unwrap() {}
+        while observer.try_strong_observe_into(&mut buf).unwrap() {}
 
         let records = decode_records(&buf);
         assert_eq!(

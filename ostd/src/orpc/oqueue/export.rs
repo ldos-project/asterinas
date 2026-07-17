@@ -22,7 +22,7 @@ use minicbor_serde::Serializer;
 use serde::Serialize;
 
 use super::{
-    AnyOQueueRef, DetachedSnafu, OQueueBase as _, OQueueError, ObservationQuery, StrongObserver,
+    AnyOQueueRef, RevokedSnafu, OQueueBase as _, OQueueError, ObservationQuery, StrongObserver,
     WeakAnyOQueueRef,
 };
 
@@ -30,7 +30,7 @@ use super::{
 ///
 /// Stored in the export registry so consumers can enumerate and read queues by
 /// [`Path`](crate::orpc::path::Path) without naming the message type. This is a factory: it mints
-/// a fresh [`CborObserver`] per reader, so multiple readers each receive the full stream.
+/// a fresh [`CborStrongObserve`] per reader, so multiple readers each receive the full stream.
 pub trait OQueueExport: Send + Sync {
     /// Returns the name of the message type, for use in file metadata.
     fn type_name(&self) -> &'static str;
@@ -39,22 +39,22 @@ pub trait OQueueExport: Send + Sync {
     fn is_alive(&self) -> bool;
 
     /// Attaches a fresh observer and returns it as a CBOR record source.
-    fn attach_strong_observer(&self) -> Result<Box<dyn CborObserver>, OQueueError>;
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError>;
 }
 
 /// A per-reader observer that yields CBOR-encoded records, with the message type erased.
-pub trait CborObserver: Send {
+pub trait CborStrongObserve: Send {
     /// Drains the next observed value without blocking and appends its CBOR record to `out`.
     ///
     /// Returns `Ok(true)` if a record was written, `Ok(false)` if nothing is currently available,
-    /// and `Err` (typically [`OQueueError::Detached`]) once the OQueue is gone.
-    fn try_next(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
+    /// and `Err` (typically [`OQueueError::Revoked`]) once the OQueue is gone.
+    fn try_strong_observe_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
 
     /// Blocks until the next observed value is available, then appends its CBOR record to `out`.
     ///
-    /// Returns `Err` (typically [`OQueueError::Detached`]) once the OQueue is gone, which a reader
+    /// Returns `Err` (typically [`OQueueError::Revoked`]) once the OQueue is gone, which a reader
     /// treats as end-of-stream.
-    fn next_blocking(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
+    fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 
 /// A CBOR record, as described in the OQueue FS record format.
@@ -64,25 +64,26 @@ struct Record<U> {
     value: U,
 }
 
-/// A closure that attaches a fresh observer to an OQueue and wraps it as a [`CborObserver`].
+/// A closure that attaches a fresh observer to an OQueue and wraps it as a [`CborStrongObserve`].
 ///
 /// The observed value type `U` is erased inside the closure, so a single [`OQueueExportHandle`]
 /// can serve both the identity case (whole message) and the projection case (a `Copy + Serialize`
 /// summary). The closure is built where the relevant bounds are known — in
 /// [`make_export`]/[`make_export_with`] — and captures whatever projection it needs.
 type AttachFn<T> =
-    Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborObserver>, OQueueError> + Send + Sync>;
+    Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborStrongObserve>, OQueueError> + Send + Sync>;
 
 /// The concrete [`OQueueExport`] for an OQueue with message type `T`.
 ///
 /// Both `register` (whole message via the identity projection) and `register_with` (a
-/// caller-supplied projection) produce this one handle; they differ only in the `attach` closure
+/// caller-supplied projection) produce this one handle; they differ only in the
+/// `attach_strong_observer_fn` closure
 /// baked in at construction, since the observed type `U` and its `Copy + Serialize` bound cannot
 /// survive to this erased handle.
 struct OQueueExportHandle<T: 'static> {
     weak: WeakAnyOQueueRef<T>,
     type_name: &'static str,
-    attach: AttachFn<T>,
+    attach_strong_observer_fn: AttachFn<T>,
 }
 
 impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
@@ -94,20 +95,20 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         self.weak.upgrade().is_some()
     }
 
-    fn attach_strong_observer(&self) -> Result<Box<dyn CborObserver>, OQueueError> {
-        let oqueue = self.weak.upgrade().ok_or_else(|| DetachedSnafu.build())?;
-        (self.attach)(&oqueue)
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError> {
+        let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
+        (self.attach_strong_observer_fn)(&oqueue)
     }
 }
 
-/// A [`CborObserver`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
+/// A [`CborStrongObserve`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
 /// [`Record`].
-struct StrongCborObserver<U> {
+struct CborStrongObserver<U> {
     observer: StrongObserver<U>,
     seq: Cell<u64>,
 }
 
-impl<U: Copy + Send + Serialize + 'static> StrongCborObserver<U> {
+impl<U: Copy + Send + Serialize + 'static> CborStrongObserver<U> {
     /// Appends the CBOR record `{seq, value}` for `value` to `out`, bumping the sequence number.
     fn encode(&self, value: U, out: &mut Vec<u8>) {
         let seq = self.seq.get();
@@ -120,8 +121,8 @@ impl<U: Copy + Send + Serialize + 'static> StrongCborObserver<U> {
     }
 }
 
-impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U> {
-    fn try_next(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
+impl<U: Copy + Send + Serialize + 'static> CborStrongObserve for CborStrongObserver<U> {
+    fn try_strong_observe_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
         let Some(value) = self.observer.try_strong_observe()? else {
             return Ok(false);
         };
@@ -129,7 +130,7 @@ impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U
         Ok(true)
     }
 
-    fn next_blocking(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
+    fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
         let value = self.observer.strong_observe()?;
         self.encode(value, out);
         Ok(())
@@ -140,14 +141,14 @@ impl<U: Copy + Send + Serialize + 'static> CborObserver for StrongCborObserver<U
 fn attach_cbor_observer<T, U>(
     oqueue: &AnyOQueueRef<T>,
     query: ObservationQuery<T, U>,
-) -> Result<Box<dyn CborObserver>, OQueueError>
+) -> Result<Box<dyn CborStrongObserve>, OQueueError>
 where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
 {
     // Revocable: a stalled userspace reader must never block the producing kernel component.
     let observer = oqueue.attach_revocable_strong_observer(query)?;
-    Ok(Box::new(StrongCborObserver {
+    Ok(Box::new(CborStrongObserver {
         observer,
         seq: Cell::new(0),
     }))
@@ -161,7 +162,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
     Arc::new(OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
-        attach: Box::new(|oqueue| {
+        attach_strong_observer_fn: Box::new(|oqueue| {
             attach_cbor_observer(oqueue, ObservationQuery::<T, T>::identity())
         }),
     })
@@ -183,7 +184,7 @@ where
     Arc::new(OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
-        attach: Box::new(move |oqueue| {
+        attach_strong_observer_fn: Box::new(move |oqueue| {
             let project = project.clone();
             attach_cbor_observer(
                 oqueue,

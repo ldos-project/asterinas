@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The `strong_observe` file: a consuming, per-open stream of an OQueue's values.
+//! The `strong_observe` file: a per-open stream of an OQueue's values.
 //!
 //! Opening this file attaches a fresh strong observer to the OQueue, so each reader receives its
 //! own complete copy of every value produced after `open`. The bytes are a self-delimiting CBOR
@@ -18,7 +18,7 @@ use core::time::Duration;
 use inherit_methods_macro::inherit_methods;
 use ostd::{
     orpc::{
-        oqueue::{CborObserver, registry},
+        oqueue::{CborStrongObserve, registry},
         path::Path,
     },
     sync::Mutex,
@@ -68,7 +68,7 @@ pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
         BLOCK_SIZE,
         oqueue_fs.sb().container_dev_id,
     );
-    let fs: Weak<dyn FileSystem> = fs;
+    // let fs: Weak<dyn FileSystem> = fs;
     Arc::new(StrongObserveInode {
         path,
         common: Common::new(metadata, fs),
@@ -151,9 +151,9 @@ impl Inode for StrongObserveInode {
 /// A per-open streaming handle over an OQueue's strong observer.
 struct StrongObserveFile {
     /// The type-erased observer draining the OQueue. Behind a mutex because it is not `Sync`; the
-    /// lock is a sleeping mutex, so blocking under it (in `next_blocking`) only serializes readers
+    /// lock is a sleeping mutex, so blocking under it (in `strong_observe_into`) only serializes readers
     /// of this same open handle.
-    observer: Mutex<Box<dyn CborObserver>>,
+    observer: Mutex<Box<dyn CborStrongObserve>>,
     /// Encoded record bytes staged for delivery.
     buffer: Mutex<BufferState>,
     pollee: Pollee,
@@ -168,7 +168,7 @@ struct BufferState {
 }
 
 impl StrongObserveFile {
-    fn new(observer: Box<dyn CborObserver>) -> Self {
+    fn new(observer: Box<dyn CborStrongObserve>) -> Self {
         Self {
             observer: Mutex::new(observer),
             buffer: Mutex::new(BufferState {
@@ -188,7 +188,7 @@ impl StrongObserveFile {
         let observer = self.observer.lock();
         let mut ended = false;
         loop {
-            match observer.try_next(out) {
+            match observer.try_strong_observe_into(out) {
                 Ok(true) if out.len() < MAX_BUFFER_BYTES => continue,
                 Ok(true) => break,
                 Ok(false) => break,
@@ -198,8 +198,20 @@ impl StrongObserveFile {
                 }
             }
         }
-        if out.is_empty() && !ended && blocking && observer.next_blocking(out).is_err() {
+        if out.is_empty() && !ended && blocking && observer.strong_observe_into(out).is_err() {
             ended = true;
+        }
+        ended
+    }
+
+    /// Drains available records from the observer and appends them to the buffer.
+    fn refill(&self, blocking: bool) -> bool {
+        let mut records = Vec::new();
+        let ended = self.drain(&mut records, blocking);
+        let mut buffer = self.buffer.lock();
+        buffer.bytes.extend_from_slice(&records);
+        if ended {
+            buffer.ended = true;
         }
         ended
     }
@@ -227,15 +239,10 @@ impl StrongObserveFile {
             }
 
             // The buffer is empty and the stream has not ended: refill from the observer.
-            let mut records = Vec::new();
-            let ended = self.drain(&mut records, blocking);
+            self.refill(blocking);
 
             let idle = {
-                let mut buffer = self.buffer.lock();
-                buffer.bytes.extend_from_slice(&records);
-                if ended {
-                    buffer.ended = true;
-                }
+                let buffer = self.buffer.lock();
                 buffer.pos >= buffer.bytes.len() && !buffer.ended
             };
 
@@ -250,13 +257,8 @@ impl StrongObserveFile {
     /// Reports readability for `poll`, filling the buffer without blocking so the result reflects
     /// the currently-available data.
     fn check_events(&self) -> IoEvents {
-        let mut records = Vec::new();
-        let ended = self.drain(&mut records, false);
-        let mut buffer = self.buffer.lock();
-        buffer.bytes.extend_from_slice(&records);
-        if ended {
-            buffer.ended = true;
-        }
+        self.refill(false);
+        let buffer = self.buffer.lock();
         if buffer.pos < buffer.bytes.len() || buffer.ended {
             IoEvents::IN
         } else {

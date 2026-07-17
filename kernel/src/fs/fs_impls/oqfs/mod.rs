@@ -13,14 +13,14 @@
 //! `a.b[3].c` appears as the directory `/oqueues/a/b/3/c` (names become directory components,
 //! indices become numeric components). Each such leaf directory contains:
 //!
-//! - `strong_observe` — a consuming, per-open stream of every value produced after `open`, as a
-//!   CBOR byte stream (see [`strong`]). Behaves like a char device. 
+//! - `strong_observe` — a per-open stream of every value produced after `open`, as a
+//!   CBOR byte stream (see [`strong_observe`]). Behaves like a char device.
 //! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]).
 //!
 //! # Modules
 //!
 //! - [`dir`]: the volatile directory tree.
-//! - [`strong`]: the `strong_observe` stream file.
+//! - [`strong_observe`]: the `strong_observe` stream file.
 //! - [`metadata`]: the `metadata.yaml` file.
 
 use core::{
@@ -46,10 +46,10 @@ use crate::{
 
 mod dir;
 mod metadata;
-mod strong;
+mod strong_observe;
 
-/// Magic number for the OQueue filesystem (`"oque"`).
-const OQUEUE_MAGIC: u64 = 0x6f71_7565;
+/// Magic number for the OQueue filesystem (`"oqfs"`).
+const OQUEUE_MAGIC: u64 = 0x6f71_6673;
 /// Root inode ID.
 const OQUEUE_ROOT_INO: u64 = 1;
 /// Block size.
@@ -299,12 +299,12 @@ mod tests {
         // The leaf directory lists exactly the two observation files.
         let mut names = Vec::<String>::new();
         leaf.readdir_at(0, &mut names).unwrap();
-        assert!(names.iter().any(|name| name == strong::FILE_NAME));
+        assert!(names.iter().any(|name| name == strong_observe::FILE_NAME));
         assert!(names.iter().any(|name| name == metadata::FILE_NAME));
 
         // `strong_observe` streams the values produced after it is opened.
         let stream = match leaf
-            .lookup(strong::FILE_NAME)
+            .lookup(strong_observe::FILE_NAME)
             .unwrap()
             .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
         {
