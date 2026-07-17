@@ -22,7 +22,7 @@ use minicbor_serde::Serializer;
 use serde::Serialize;
 
 use super::{
-    AnyOQueueRef, RevokedSnafu, OQueueBase as _, OQueueError, ObservationQuery, StrongObserver,
+    AnyOQueueRef, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu, StrongObserver,
     WeakAnyOQueueRef,
 };
 

@@ -10,7 +10,7 @@
 //! Each `lookup`/`readdir` recomputes children from the live
 //! OQueue export registry ([`registry::list_export_paths`]), so queues that register or unregister
 //! at runtime appear and disappear immediately. And this will be fast, since registry used to hold
-//! the OQueues exposed to the userspace is implemented with BTree. 
+//! the OQueues exposed to the userspace is implemented with BTree.
 //!
 //! A directory plays one of two roles:
 //!
@@ -47,7 +47,7 @@ use crate::{
 
 /// Returns the paths of the OQueues that are currently exported and still alive.
 ///
-/// Dead exports (whose OQueue has been dropped) are evicted before the registry content is returned. 
+/// Dead exports (whose OQueue has been dropped) are evicted before the registry content is returned.
 fn live_export_paths() -> impl Iterator<Item = Path> {
     registry::clean_exports();
     registry::list_export_paths().into_iter()
@@ -69,7 +69,7 @@ fn path_to_segments(path: &Path) -> Vec<String> {
 pub(super) struct DirInode {
     /// The filesystem path components from the root to this directory (empty for the root).
     prefix: Vec<String>,
-    this: Weak<DirInode>,  // for .
+    this: Weak<DirInode>, // for .
     fs: Weak<OQueueFs>,
     common: Common,
 }
@@ -158,7 +158,7 @@ impl DirInode {
     fn has_child(&self, name: &str) -> bool {
         if let Some(_oqueue) = self.as_oqueue() {
             // if the directory corresponds to an OQueue, then
-            // it can only contains two files. 
+            // it can only contains two files.
             name == strong_observe::FILE_NAME || name == metadata::FILE_NAME
         } else {
             self.child_dir_names().iter().any(|child| child == name)
@@ -176,8 +176,8 @@ impl InodeIo for DirInode {
     ) -> Result<usize> {
         Err(Error::new(Errno::EISDIR))
     }
-    
-    /// You can't write a dir. 
+
+    /// You can't write a dir.
     fn write_at(
         &self,
         _offset: usize,

@@ -7,8 +7,10 @@ let
   # archive. LTO is disabled so the archive carries a usable symbol index (its LTO objects are
   # otherwise invisible to a plain, non-LTO link).
   libcborStatic = libcbor.overrideAttrs (old: {
-    cmakeFlags = (old.cmakeFlags or [ ])
-      ++ [ "-DBUILD_SHARED_LIBS=OFF" "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF" ];
+    cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+      "-DBUILD_SHARED_LIBS=OFF"
+      "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF"
+    ];
   });
 in stdenv.mkDerivation {
   pname = "oqueue-reader";

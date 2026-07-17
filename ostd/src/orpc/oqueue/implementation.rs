@@ -261,8 +261,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         U: Copy + Send + 'static,
     {
         // weak observer doesn't have the "blocking producer" issue so the discussion of
-        // whether it's buffer is revokable is not applicable. Always set to false. 
-        let observer_key = self.new_observation_ring_buffer(query, history_len, false, false)?; 
+        // whether it's buffer is revokable is not applicable. Always set to false.
+        let observer_key = self.new_observation_ring_buffer(query, history_len, false, false)?;
         Ok(super::WeakObserver {
             oqueue: self.clone(),
             observer_id: observer_key,
@@ -307,7 +307,8 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query, ring_buffer, 
+                query,
+                ring_buffer,
                 revoked,
                 ..
             } in inner.observer_ring_buffers.values_mut()
@@ -366,7 +367,8 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query, ring_buffer,
+                query,
+                ring_buffer,
                 revoked,
                 ..
             } in inner.observer_ring_buffers.values_mut()
@@ -499,7 +501,7 @@ struct OQueueInner<T: ?Sized> {
 impl<T: ?Sized> OQueueInner<T> {
     /// True if all ring buffers can produce.
     ///
-    /// Revoked observers are ignored, cus they won't get produced to at all. 
+    /// Revoked observers are ignored, cus they won't get produced to at all.
     fn can_produce(&self) -> bool {
         self.observer_ring_buffers
             .values()
