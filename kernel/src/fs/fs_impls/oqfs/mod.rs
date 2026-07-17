@@ -30,13 +30,12 @@ use core::{
 
 use crate::{
     fs::{
-        file::{InodeMode, InodeType, mkmod},
+        file::InodeMode,
         pseudofs::AnonDeviceId,
         utils::NAME_MAX,
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::{Extension, Inode, Metadata},
-            path::{FsPath, PathResolver, PerMountFlags},
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -58,23 +57,6 @@ const BLOCK_SIZE: usize = 1024;
 /// Registers the OQueue filesystem type so it can be mounted.
 pub(super) fn init() {
     crate::fs::vfs::registry::register(&OQueueFsType).unwrap();
-}
-
-/// Mounts an OQueue filesystem at `/oqueues`, creating the mount point if needed.
-///
-/// Called during first-process initialization.
-pub(in crate::fs) fn mount_root(path_resolver: &PathResolver, ctx: &Context) -> Result<()> {
-    let root_path = path_resolver.lookup(&FsPath::try_from("/")?)?;
-    let mount_point = root_path.new_fs_child("oqueues", InodeType::Dir, mkmod!(a+rx))?;
-    mount_point.mount(
-        OQueueFs::new(),
-        PerMountFlags::default(),
-        Some("oqueues".to_string()),
-        ctx,
-    )?;
-    ostd::debug!("Mounted oqueuefs at \"/oqueues\"");
-
-    Ok(())
 }
 
 struct OQueueFs {

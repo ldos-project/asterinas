@@ -37,10 +37,6 @@ pub fn init_in_first_process(ctx: &Context) {
     let fs = ctx.thread_local.borrow_fs();
     let path_resolver = fs.resolver().read();
 
-    if let Err(err) = fs_impls::oqfs::mount_root(&path_resolver, ctx) {
-        warn!("failed to mount oqueuefs at \"/oqueue\": {:?}", err);
-    }
-
     // Initialize the file table for the first process.
     let tty_path = FsPath::try_from("/dev/console").unwrap();
     let stdin = {
