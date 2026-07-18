@@ -4,6 +4,7 @@
     link to the in-source rustdocs for details of the practical API, usage, and implement of
     OQueues.
 
+
 ## Queries and projections
 
 Queries allows selecting the information a user wants from the available OQueues. In it's full
@@ -19,3 +20,25 @@ the value in the OQueue and must return a value which is `Copy + Send` which is 
 Projections may also decide to discard some values, so they are not observed at all.
 
 **TODO(arthurp)**: Complete
+
+### Default projections
+
+```rust
+trait OQueueMessage {
+   type DefaultProjection: Copy + Sync;
+   fn default_project(&self) -> Self::DefaultProjection;
+}
+```
+
+The default projection of references to [ORPC Objects](./orpc.md) is their ID. This widens the set
+of objects with derivable default projections by projecting references as a value that can be used
+to corelate references to the same object.
+
+```rust
+impl<T: ORPCObject> OQueueMessage for Arc<T> {
+   type DefaultProjection = Id;
+   fn default_project(&self) -> Self::DefaultProjection {
+      self.id()
+   }
+}
+```
