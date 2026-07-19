@@ -4,8 +4,8 @@
 //!
 //! Opening this file attaches a fresh strong observer to the OQueue, so each reader receives its
 //! own complete copy of every value produced after `open`. The bytes are a self-delimiting CBOR
-//! stream of one `{seq, value}` record map per observed value. Descriptive information about the
-//! queue (name and message type) lives in the sibling `metadata.yaml`, not in this stream.
+//! stream of one record per observed value. Descriptive information about the queue (name and
+//! message type) lives in the sibling `metadata.yaml`, not in this stream.
 //!
 //! The file behaves like a pipe: reads are consuming and offset-free (`lseek` fails with
 //! `ESPIPE`), a blocking read waits for the next value, and `O_NONBLOCK` reads return `EAGAIN`

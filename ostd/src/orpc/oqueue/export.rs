@@ -16,7 +16,6 @@
 //! naming `T`.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::cell::Cell;
 
 use minicbor_serde::Serializer;
 use serde::Serialize;
@@ -57,13 +56,6 @@ pub trait CborStrongObserve: Send {
     fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 
-/// A CBOR record, as described in the OQueue FS record format.
-#[derive(Serialize)]
-struct Record<U> {
-    seq: u64,
-    value: U,
-}
-
 /// A closure that attaches a fresh observer to an OQueue and wraps it as a [`CborStrongObserve`].
 ///
 /// The observed value type `U` is erased inside the closure, so a single [`OQueueExportHandle`]
@@ -102,20 +94,16 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
 }
 
 /// A [`CborStrongObserve`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
-/// [`Record`].
+/// record.
 struct CborStrongObserver<U> {
     observer: StrongObserver<U>,
-    seq: Cell<u64>,
 }
 
 impl<U: Copy + Send + Serialize + 'static> CborStrongObserver<U> {
-    /// Appends the CBOR record `{seq, value}` for `value` to `out`, bumping the sequence number.
+    /// Appends the CBOR record for `value` to `out`.
     fn encode(&self, value: U, out: &mut Vec<u8>) {
-        let seq = self.seq.get();
-        self.seq.set(seq.wrapping_add(1));
-
         // Encoding into a `Vec` writer is infallible, so the record is always appended whole.
-        Record { seq, value }
+        value
             .serialize(&mut Serializer::new(&mut *out))
             .expect("CBOR encoding of an OQueue record into a Vec cannot fail");
     }
@@ -147,10 +135,7 @@ where
     U: Copy + Send + Serialize + 'static,
 {
     let observer = oqueue.attach_revocable_strong_observer(query)?;
-    Ok(Box::new(CborStrongObserver {
-        observer,
-        seq: Cell::new(0),
-    }))
+    Ok(Box::new(CborStrongObserver { observer }))
 }
 
 /// Builds a type-erased export handle for an OQueue whose whole message is streamed via the

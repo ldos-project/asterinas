@@ -234,12 +234,6 @@ mod tests {
     use super::*;
     use crate::fs::file::{AccessMode, StatusFlags};
 
-    #[derive(serde::Deserialize)]
-    struct DecodedRecord {
-        seq: u64,
-        value: u64,
-    }
-
     /// Reads all currently-available bytes from a nonblocking stream handle.
     fn read_all(stream: &dyn crate::fs::file::FileIo) -> Vec<u8> {
         let mut out = Vec::new();
@@ -303,13 +297,10 @@ mod tests {
         let mut de = minicbor_serde::Deserializer::new(&bytes);
         let mut records = Vec::new();
         while de.decoder().position() < bytes.len() {
-            let record: DecodedRecord = serde::Deserialize::deserialize(&mut de).unwrap();
-            records.push(record);
+            let value: u64 = serde::Deserialize::deserialize(&mut de).unwrap();
+            records.push(value);
         }
-        assert_eq!(
-            records.iter().map(|r| (r.seq, r.value)).collect::<Vec<_>>(),
-            [(0, 10), (1, 20), (2, 30)]
-        );
+        assert_eq!(records, [10, 20, 30]);
 
         // `metadata.yaml` reports the queue's path and message type.
         let meta = leaf.lookup(metadata::FILE_NAME).unwrap();

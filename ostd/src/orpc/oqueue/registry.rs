@@ -320,14 +320,8 @@ mod test {
         assert!(lookup_by_type::<usize>().is_empty());
     }
 
-    #[derive(serde::Deserialize)]
-    struct DecodedRecord {
-        seq: u64,
-        value: u64,
-    }
-
     /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
-    fn decode_records(buf: &[u8]) -> Vec<DecodedRecord> {
+    fn decode_records(buf: &[u8]) -> Vec<u64> {
         let mut de = minicbor_serde::Deserializer::new(buf);
         let mut records = Vec::new();
         while de.decoder().position() < buf.len() {
@@ -364,12 +358,9 @@ mod test {
         assert_eq!(count, 3);
         assert!(!observer.try_strong_observe_into(&mut buf).unwrap());
 
-        // The bytes decode as an ordered CBOR record stream with sequence numbers.
+        // The bytes decode as an ordered CBOR record stream.
         let records = decode_records(&buf);
-        assert_eq!(records.len(), 3);
-        assert_eq!((records[0].seq, records[0].value), (0, 10));
-        assert_eq!((records[1].seq, records[1].value), (1, 20));
-        assert_eq!((records[2].seq, records[2].value), (2, 30));
+        assert_eq!(records, [10, 20, 30]);
     }
 
     #[ktest]
@@ -394,16 +385,8 @@ mod test {
 
         let records_a = decode_records(&buf_a);
         let records_b = decode_records(&buf_b);
-        assert_eq!(records_a.len(), 4);
-        assert_eq!(records_b.len(), 4);
-        assert_eq!(
-            records_a.iter().map(|r| r.value).collect::<Vec<_>>(),
-            [1, 2, 3, 4]
-        );
-        assert_eq!(
-            records_b.iter().map(|r| r.value).collect::<Vec<_>>(),
-            [1, 2, 3, 4]
-        );
+        assert_eq!(records_a, [1, 2, 3, 4]);
+        assert_eq!(records_b, [1, 2, 3, 4]);
     }
 
     #[ktest]
@@ -477,10 +460,6 @@ mod test {
         while observer.try_strong_observe_into(&mut buf).unwrap() {}
 
         let records = decode_records(&buf);
-        assert_eq!(
-            records.iter().map(|r| r.value).collect::<Vec<_>>(),
-            [100, 200, 300]
-        );
-        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(records, [100, 200, 300]);
     }
 }
