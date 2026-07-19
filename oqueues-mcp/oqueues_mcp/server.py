@@ -8,6 +8,7 @@ dataframe construction happen here.
 import json
 import os
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from .config import Config
@@ -16,10 +17,26 @@ from .oqfs import Oqfs
 from .streams import StreamManager
 from .transport import Transport
 
-_cfg = Config.from_env()
-_transport = Transport(_cfg)
-_oqfs = Oqfs(_cfg, _transport)
-_streams = StreamManager(_transport, _oqfs)
+_cfg: Config
+_transport: Transport
+_oqfs: Oqfs
+_streams: StreamManager
+
+
+def _build() -> None:
+    """(Re)build the backend singletons from the current environment.
+
+    Called once at import; re-callable so tests can point the server at a fake
+    OQFS after setting env vars.
+    """
+    global _cfg, _transport, _oqfs, _streams
+    _cfg = Config.from_env()
+    _transport = Transport(_cfg)
+    _oqfs = Oqfs(_cfg, _transport)
+    _streams = StreamManager(_transport, _oqfs)
+
+
+_build()
 
 mcp = FastMCP(
     "oqueues",
@@ -28,35 +45,42 @@ mcp = FastMCP(
 )
 
 
+# All tools are async: FastMCP runs sync tool functions on the event loop, so
+# any blocking work (SSH subprocess, waiting on a drain) would freeze the whole
+# server. Each tool offloads its blocking part to a worker thread, keeping the
+# loop free to service concurrent streams and other calls.
+
+
 @mcp.tool()
-def list_tree() -> str:
+async def list_tree() -> str:
     """Recursively display the /oqueues hierarchy (human-readable `tree`)."""
-    return _oqfs.tree()
+    return await anyio.to_thread.run_sync(_oqfs.tree)
 
 
 @mcp.tool()
-def list_oqueues() -> str:
+async def list_oqueues() -> str:
     """Enumerate OQueues in a machine-readable form.
 
     Returns JSON: a list of {path, relpath, name} for every OQueue (leaf
     directory containing `strong_observe`). Prefer this over `list_tree` when
     programmatically selecting an OQueue.
     """
-    return json.dumps(_oqfs.list_oqueues(), indent=2)
+    queues = await anyio.to_thread.run_sync(_oqfs.list_oqueues)
+    return json.dumps(queues, indent=2)
 
 
 @mcp.tool()
-def read_metadata(oqueue_path: str) -> str:
+async def read_metadata(oqueue_path: str) -> str:
     """Read an OQueue's metadata.
 
     `oqueue_path` may be absolute (e.g. /oqueues/scheduler/events) or relative
     to the OQFS root (e.g. scheduler/events).
     """
-    return _oqfs.read_metadata(oqueue_path)
+    return await anyio.to_thread.run_sync(_oqfs.read_metadata, oqueue_path)
 
 
 @mcp.tool()
-def stream_collect(
+async def stream_collect(
     oqueue_path: str,
     max_records: int | None = None,
     timeout_s: float | None = None,
@@ -64,9 +88,13 @@ def stream_collect(
 ) -> str:
     """Drain an OQueue's `strong_observe` stream and return a dataframe.
 
-    Blocking, for bounded modes. Supply `max_records` (mode 1) and/or
-    `timeout_s` (mode 2); whichever bound is hit first stops the drain. At least
-    one bound is required — for an unbounded stream use `stream_start`.
+    For bounded modes. Supply `max_records` (mode 1) and/or `timeout_s` (mode 2);
+    whichever bound is hit first stops the drain. At least one bound is required
+    — for an unbounded stream use `stream_start`.
+
+    The drain runs on its own thread; this call awaits it without blocking the
+    server, so other tools (including reads of other streams) stay responsive.
+    If the call is cancelled, the underlying stream is stopped.
 
     Returns the decoded records as CSV (default) or JSON (`fmt="json"`).
     """
@@ -76,29 +104,40 @@ def stream_collect(
             "use stream_start for an infinite stream"
         )
     session = _streams.start(oqueue_path, max_records=max_records, timeout_s=timeout_s)
-    session.thread.join()
+    try:
+        while session.thread.is_alive():
+            await anyio.sleep(0.1)
+    finally:
+        # On cancellation (or any early exit) make sure the guest `cat` dies.
+        if session.snapshot()["status"] == "running":
+            await anyio.to_thread.run_sync(_streams.stop, session.stream_id)
     _, records = _streams.read(session.stream_id)
-    return serialize(records, fmt)
+    return await anyio.to_thread.run_sync(serialize, records, fmt)
 
 
 @mcp.tool()
-def stream_start(
+async def stream_start(
     oqueue_path: str,
     max_records: int | None = None,
     timeout_s: float | None = None,
 ) -> str:
     """Begin a streaming session and return its `stream_id` (JSON).
 
-    Mode is inferred: `max_records` -> mode 1, else `timeout_s` -> mode 2, else
-    infinite -> mode 3. Poll with `stream_read`; end an infinite stream with
-    `stream_stop`.
+    Returns immediately; the drain runs on its own background thread. Mode is
+    inferred: `max_records` -> mode 1, else `timeout_s` -> mode 2, else infinite
+    -> mode 3. Poll with `stream_read`; end an infinite stream with `stream_stop`.
+    Start as many sessions as you like — they drain concurrently.
     """
-    session = _streams.start(oqueue_path, max_records=max_records, timeout_s=timeout_s)
+    session = await anyio.to_thread.run_sync(
+        lambda: _streams.start(
+            oqueue_path, max_records=max_records, timeout_s=timeout_s
+        )
+    )
     return json.dumps(session.snapshot(), indent=2)
 
 
 @mcp.tool()
-def stream_read(stream_id: str, fmt: str = "csv") -> str:
+async def stream_read(stream_id: str, fmt: str = "csv") -> str:
     """Return records accumulated since the last read for a session (JSON envelope).
 
     The envelope carries `status`, `active`, `count`, and `data` (CSV or JSON
@@ -106,6 +145,7 @@ def stream_read(stream_id: str, fmt: str = "csv") -> str:
     """
     session, records = _streams.read(stream_id)
     snap = session.snapshot()
+    data = await anyio.to_thread.run_sync(serialize, records, fmt)
     return json.dumps(
         {
             "stream_id": stream_id,
@@ -115,24 +155,24 @@ def stream_read(stream_id: str, fmt: str = "csv") -> str:
             "records_total": snap["records_total"],
             "error": snap["error"],
             "format": fmt,
-            "data": serialize(records, fmt),
+            "data": data,
         },
         indent=2,
     )
 
 
 @mcp.tool()
-def stream_stop(stream_id: str) -> str:
+async def stream_stop(stream_id: str) -> str:
     """Send the kill signal to a streaming session (JSON status).
 
     Read any final records with `stream_read` afterward.
     """
-    session = _streams.stop(stream_id)
+    session = await anyio.to_thread.run_sync(_streams.stop, stream_id)
     return json.dumps(session.snapshot(), indent=2)
 
 
 @mcp.tool()
-def stream_list() -> str:
+async def stream_list() -> str:
     """List all streaming sessions and their status (JSON)."""
     return json.dumps(_streams.list(), indent=2)
 
