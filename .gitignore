@@ -33,9 +33,9 @@ virtio-net.pcap
 /run-*
 
 # profile results
-aster-nix-profile-*.json
-aster-nix-profile-*.folded
-aster-nix-profile-*.svg
+asterinas-profile-*.json
+asterinas-profile-*.folded
+asterinas-profile-*.svg
 
 # distro results
 distro/result
