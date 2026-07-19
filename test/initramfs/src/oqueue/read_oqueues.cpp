@@ -3,11 +3,11 @@
 // Decode and display an OQueue filesystem (`/oqueues`) CBOR stream.
 //
 // Each observation file (e.g. `.../strong_observe`) emits a self-delimiting CBOR byte stream of
-// one `{seq, value}` record map per observed value. Records are concatenated with no framing, so
-// they decode back-to-back regardless of read boundaries. Reading a live file blocks for new
-// records (like `tail -f`) and ends when the queue is unregistered or this reader is dropped for
-// falling too far behind. Descriptive information about the queue is in the sibling
-// `metadata.yaml`, not in this stream.
+// one record per observed value. Records are concatenated with no framing, so they decode
+// back-to-back regardless of read boundaries. Reading a live file blocks for new records (like
+// `tail -f`) and ends (a zero-length read) when this reader is dropped for falling too far behind
+// the queue. Descriptive information about the queue is in the sibling `metadata.yaml`, not in
+// this stream.
 //
 // Decoding is delegated to libcbor. The kernel emits only definite-length unsigned/negative
 // integers, byte/text strings, arrays, maps, and the `null`/`true`/`false` simple values; each

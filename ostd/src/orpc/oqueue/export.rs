@@ -46,13 +46,14 @@ pub trait CborStrongObserve: Send {
     /// Drains the next observed value without blocking and appends its CBOR record to `out`.
     ///
     /// Returns `Ok(true)` if a record was written, `Ok(false)` if nothing is currently available,
-    /// and `Err` (typically [`OQueueError::Revoked`]) once the OQueue is gone.
+    /// and `Err` (typically [`OQueueError::Revoked`]) once the observer has been revoked (for
+    /// example, because the reader fell too far behind).
     fn try_strong_observe_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
 
     /// Blocks until the next observed value is available, then appends its CBOR record to `out`.
     ///
-    /// Returns `Err` (typically [`OQueueError::Revoked`]) once the OQueue is gone, which a reader
-    /// treats as end-of-stream.
+    /// Returns `Err` (typically [`OQueueError::Revoked`]) once the observer has been revoked (for
+    /// example, because the reader fell too far behind), which a reader treats as end-of-stream.
     fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 

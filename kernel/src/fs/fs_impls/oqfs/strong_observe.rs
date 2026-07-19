@@ -166,7 +166,7 @@ struct BufferState {
     bytes: Vec<u8>,
     /// Read cursor into `bytes`.
     pos: usize,
-    /// Set once the OQueue is gone; subsequent reads report EOF.
+    /// Set once the stream terminates (the observer was revoked); subsequent reads report EOF.
     ended: bool,
 }
 
@@ -186,7 +186,7 @@ impl StrongObserveFile {
     /// Drains encoded records from the observer into `out`, up to [`MAX_BUFFER_BYTES`].
     ///
     /// If `blocking` and nothing is immediately available, blocks for one record. Returns whether
-    /// the stream has ended (the OQueue is gone or the observer was detached).
+    /// the stream has ended (the observer was revoked).
     fn drain(&self, out: &mut Vec<u8>, blocking: bool) -> bool {
         let observer = self.observer.lock();
         let mut ended = false;

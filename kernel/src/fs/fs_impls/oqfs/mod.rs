@@ -317,4 +317,51 @@ mod tests {
         drop(queue);
         assert!(root.lookup("oqfstest").is_err());
     }
+
+    #[ktest]
+    fn falling_behind_revokes_stream() {
+        // Inode metadata reads the real-time clock, which the ktest kernel does not boot.
+        crate::time::clocks::init_for_ktest();
+
+        // Export an OQueue with a small capacity so a paused reader falls behind quickly.
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("slow"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
+        registry::register(&path, &queue.as_any_oqueue());
+
+        let fs = OQueueFs::new();
+        let leaf = fs
+            .root_inode()
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("slow")
+            .unwrap()
+            .lookup("0")
+            .unwrap();
+
+        // Open the stream (which attaches the observer) but never read from it.
+        let stream = match leaf
+            .lookup(strong_observe::FILE_NAME)
+            .unwrap()
+            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
+        {
+            Some(Ok(stream)) => stream,
+            _ => panic!("opening strong_observe should mint a stream handle"),
+        };
+
+        // Produce well past the capacity while the reader is idle. Each `produce` first drops any
+        // observer whose ring is full, so the paused observer is revoked and its buffer is freed.
+        let producer = queue.attach_value_producer().unwrap();
+        for value in 0..100usize {
+            producer.produce(value);
+        }
+
+        // The revoked stream reports end-of-stream with none of the buffered values: a revoke frees
+        // the observer's ring buffer rather than delivering a truncated prefix.
+        let bytes = read_all(stream.as_ref());
+        assert!(bytes.is_empty(), "a revoked stream drops its buffered data");
+    }
 }
