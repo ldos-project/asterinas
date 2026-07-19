@@ -74,7 +74,7 @@ use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
@@ -88,7 +88,7 @@ use crate::{
 /// This should be called before the scheduler runs for the first time, but after the allocator is
 /// fully initialized.
 pub(crate) fn init() {
-    #[cfg(feature = "capture_scheduling")]
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
         use serde::Serialize;
 
@@ -129,12 +129,12 @@ pub(crate) fn init() {
     });
 }
 
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
 
 /// Get the producer handle for the scheduling event OQueue. This will panic if called before
 /// [`init()`].
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 fn get_scheduling_event_producer() -> &'static crate::orpc::oqueue::RefProducer<SchedulingEvent> {
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
@@ -680,7 +680,7 @@ where
 
     // This redefines `next_task` with the same value it started with, but moves the value out
     // temporarily. This avoids an atomic incr and decr.
-    #[cfg(feature = "capture_scheduling")]
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     let next_task = {
         let producer = get_scheduling_event_producer();
         // Publish scheduling events best-effort: never block the scheduler on an observer. A full

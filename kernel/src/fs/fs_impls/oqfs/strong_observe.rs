@@ -273,9 +273,9 @@ impl StrongObserveFile {
 
 impl InodeIo for StrongObserveFile {
     /// This is the offset-free read function. It appears as read_at because
-    /// the selection for calling the offseted and non-offseted read function
+    /// the selection for calling the offsetted and non-offsetted read function
     /// happens in kernel/src/fs/file/inode_handle.rs:261, specifically the
-    /// implementatino of read function in block "impl FileLike for InodeHandle"
+    /// implementation of read function in block "impl FileLike for InodeHandle"
     /// check the flag `is_offset_aware` and if not it just call the read_at(0,...).
     /// So the read_at here is effectively offset free.
     fn read_at(
