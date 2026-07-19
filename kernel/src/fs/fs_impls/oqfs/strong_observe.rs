@@ -9,8 +9,12 @@
 //!
 //! The file behaves like a pipe: reads are consuming and offset-free (`lseek` fails with
 //! `ESPIPE`), a blocking read waits for the next value, and `O_NONBLOCK` reads return `EAGAIN`
-//! when idle. When the OQueue is unregistered (or the observer is detached because the reader fell
-//! too far behind), the stream ends and reads return `0` (EOF); the reader must reopen to resume.
+//! when idle.
+
+// TODO: Distinguish the two stream-termination causes with distinct errnos instead of reporting
+// `0` (EOF) for both. Return `ESTALE` when the observer is revoked (the reader fell too far behind
+// but the OQueue still exists, so reopening resumes the stream), and `EIO` when the underlying
+// OQueue disappears (is unregistered). This lets a reader tell whether to reconnect or give up.
 
 use alloc::{boxed::Box, vec::Vec};
 use core::time::Duration;

@@ -687,17 +687,29 @@ where
         // ring drops the event (and revokes a revocable observer), keeping the reschedule path
         // fast and non-blocking.
         if let Some(t) = Task::current() {
-            let _ = producer.try_produce_ref(&SchedulingEvent {
-                task: t.cloned(),
-                kind: SchedulingEventKind::Deschedule,
-            });
+            crate::ignore_err!(
+                producer
+                    .try_produce_ref(&SchedulingEvent {
+                        task: t.cloned(),
+                        kind: SchedulingEventKind::Deschedule,
+                    })
+                    .then_some(())
+                    .ok_or("scheduling event dropped: observer ring full"),
+                crate::log::Level::Notice
+            );
         }
 
         let scheduling_event = SchedulingEvent {
             task: next_task,
             kind: SchedulingEventKind::Schedule,
         };
-        let _ = producer.try_produce_ref(&scheduling_event);
+        crate::ignore_err!(
+            producer
+                .try_produce_ref(&scheduling_event)
+                .then_some(())
+                .ok_or("scheduling event dropped: observer ring full"),
+            crate::log::Level::Notice
+        );
         scheduling_event.task
     };
 

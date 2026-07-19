@@ -146,7 +146,6 @@ where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
 {
-    // Revocable: a stalled userspace reader must never block the producing kernel component.
     let observer = oqueue.attach_revocable_strong_observer(query)?;
     Ok(Box::new(CborStrongObserver {
         observer,

@@ -135,7 +135,11 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         ring_buffer.revocable = revocable;
 
         if is_strong {
-            let id = ring_buffer.ring_buffer.new_strong_reader();
+            let id = ring_buffer
+                .ring_buffer
+                .as_mut()
+                .expect("newly created observation ring buffer is present")
+                .new_strong_reader();
             // We don't reuse ring buffers, so for now this is always 0.
             assert_eq!(id, 0);
         }
@@ -231,14 +235,14 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
             .downcast::<ObservationQuery<T, U>>()
             .expect("tried to attach inline strong observer with a different type from original attachment");
 
-        // Drain the ring buffer into the function.
+        // Drain the ring buffer into the function. A revoked observer has no buffer, so there is
+        // nothing to drain.
         // TODO: Use a real head_id when we share ring buffers.
-        let head_id = 0;
-        while let Some(v) = observation_ring_buffer
-            .ring_buffer
-            .try_strong_observe::<U>(head_id)
-        {
-            f(&v)
+        if let Some(ring_buffer) = &mut observation_ring_buffer.ring_buffer {
+            let head_id = 0;
+            while let Some(v) = ring_buffer.try_strong_observe::<U>(head_id) {
+                f(&v)
+            }
         }
 
         // Register the actual handler
@@ -307,13 +311,10 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
         inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query,
-                ring_buffer,
-                revoked,
-                ..
+                query, ring_buffer, ..
             } in inner.observer_ring_buffers.values_mut()
             {
-                if !*revoked {
+                if let Some(ring_buffer) = ring_buffer {
                     query.call_into(v, ring_buffer);
                 }
             }
@@ -367,13 +368,10 @@ impl<T: Send + 'static> OQueueImplementation<T> {
         inner.revoke_full_observers();
         if inner.can_produce() {
             for ObservationRingBuffer {
-                query,
-                ring_buffer,
-                revoked,
-                ..
+                query, ring_buffer, ..
             } in inner.observer_ring_buffers.values_mut()
             {
-                if !*revoked {
+                if let Some(ring_buffer) = ring_buffer {
                     query.call_into(&v, ring_buffer);
                 }
             }
@@ -505,15 +503,23 @@ impl<T: ?Sized> OQueueInner<T> {
     fn can_produce(&self) -> bool {
         self.observer_ring_buffers
             .values()
-            .all(|r| r.revoked || r.ring_buffer.can_produce())
+            .all(|r| r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
     }
 
     /// Revoke every *revocable* strong observer whose ring buffer is full (a.k.a !can_produce()).
+    ///
+    /// Revoking frees the ring buffer, so a repeatedly-revoked-and-reattached observer cannot grow
+    /// memory without bound.
     fn revoke_full_observers(&mut self) {
         for observer in self.observer_ring_buffers.values_mut() {
-            if observer.revocable && !observer.revoked && !observer.ring_buffer.can_produce() {
-                observer.revoked = true;
+            if observer.revocable
+                && observer
+                    .ring_buffer
+                    .as_ref()
+                    .is_some_and(|rb| !rb.can_produce())
+            {
+                observer.ring_buffer = None;
             }
         }
     }
@@ -564,16 +570,18 @@ struct ObservationRingBuffer<T: ?Sized> {
     /// `dest` must point to memory appropriate for the type `U` with which `ring_buffer` was
     /// constructed.
     weak_observe_into: unsafe fn(ring_buffer: &mut RingBuffer, Cursor, dest: *mut ()) -> bool,
-    /// The actual ring buffer storing the data.
-    ring_buffer: RingBuffer,
+    /// The actual ring buffer storing the data, or `None` once this observer has been revoked.
+    ///
+    /// A revoked observer no longer gates production and its next observe returns
+    /// [`OQueueError::Revoked`](super::OQueueError::Revoked). Revoking frees the (potentially large)
+    /// ring buffer so that an observer which is repeatedly revoked and reattached cannot grow memory
+    /// without bound. The lighter-weight `query` is retained so the slot can still report the
+    /// revoked state and be converted to an inline observer.
+    ring_buffer: Option<RingBuffer>,
     /// Whether this observer may be revoked (dropped) when its ring fills, instead of applying
     /// backpressure to producers. Set for userspace-facing observers where kernel liveness must
     /// not depend on the reader keeping up.
     revocable: bool,
-    /// Set when a revocable strong observer has been revoked because its ring filled up while a
-    /// producer was publishing. A revoked observer no longer gates production and its next observe
-    /// returns [`OQueueError::Revoked`](super::OQueueError::Revoked).
-    revoked: bool,
 }
 
 impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
@@ -624,9 +632,8 @@ impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
             query: Box::new(query),
             try_strong_observe_into: try_strong_observe_into::<U>,
             weak_observe_into: weak_observe_into::<U>,
-            ring_buffer,
+            ring_buffer: Some(ring_buffer),
             revocable: false,
-            revoked: false,
         })
     }
 }
@@ -742,21 +749,20 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
         dest: *mut (),
     ) -> Result<bool, OQueueError> {
         let mut inner = self.inner.lock();
-        let observer = inner
-            .observer_ring_buffers
-            .get_mut(observer_id)
-            .expect("should only be called with an id returned from new_observation_ring_buffer");
-
-        // The observer was dropped because it fell behind; report the stream as revoked.
-        if observer.revoked {
-            return super::RevokedSnafu.fail();
-        }
-
         let ObservationRingBuffer {
             try_strong_observe_into,
             ring_buffer,
             ..
-        } = observer;
+        } = inner
+            .observer_ring_buffers
+            .get_mut(observer_id)
+            .expect("should only be called with an id returned from new_observation_ring_buffer");
+
+        // The observer was dropped because it fell behind and its buffer was freed; report the
+        // stream as revoked.
+        let Some(ring_buffer) = ring_buffer else {
+            return super::RevokedSnafu.fail();
+        };
 
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };
@@ -797,6 +803,10 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .observer_ring_buffers
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
+        // Weak observers are never revocable, so their ring buffer is never freed.
+        let ring_buffer = ring_buffer
+            .as_mut()
+            .expect("weak observers are never revoked");
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         Ok(unsafe { weak_observe_into(ring_buffer, cursor, dest) })
     }
@@ -817,7 +827,11 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .observer_ring_buffers
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
-        ring_buffer.newest_cursor()
+        // Weak observers are never revocable, so their ring buffer is never freed.
+        ring_buffer
+            .as_ref()
+            .expect("weak observers are never revoked")
+            .newest_cursor()
     }
 
     fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor {
@@ -826,7 +840,11 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .observer_ring_buffers
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
-        ring_buffer.oldest_cursor()
+        // Weak observers are never revocable, so their ring buffer is never freed.
+        ring_buffer
+            .as_ref()
+            .expect("weak observers are never revoked")
+            .oldest_cursor()
     }
 
     fn can_strong_observe(&self, observer_id: ObserverKey) -> bool {
@@ -836,7 +854,11 @@ impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T
             .get_mut(observer_id)
             .expect("should only be called with an id returned from new_observation_ring_buffer");
         let head_id = 0;
-        ring_buffer.can_get_for_head(head_id)
+        // A revoked observer has no buffer; report it as ready so a blocked observer wakes and
+        // observes the revoked state (an `Err`) rather than blocking forever.
+        ring_buffer
+            .as_ref()
+            .is_none_or(|rb| rb.can_get_for_head(head_id))
     }
 
     fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {

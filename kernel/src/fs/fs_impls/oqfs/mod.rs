@@ -90,7 +90,7 @@ impl OQueueFs {
 
 impl FileSystem for OQueueFs {
     fn name(&self) -> &'static str {
-        "oqueue"
+        "oqfs"
     }
 
     fn sync(&self) -> Result<()> {
