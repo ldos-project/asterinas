@@ -5,7 +5,8 @@ use core::time::Duration;
 
 use ostd::orpc::{
     framework::{notifier::Notifier, spawn_thread},
-    oqueue::{OQueueBase as _, query::ObservationQuery},
+    new_server,
+    oqueue::{query::ObservationQuery, OQueueBase as _},
     orpc_server, orpc_trait,
     sync::select,
 };
@@ -32,7 +33,7 @@ impl HugepagedServer {
         hugepaged
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
+        let server = new_server!(|_| Self {});
         Ok(server)
     }
 
