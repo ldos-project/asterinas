@@ -62,6 +62,7 @@ use core::{
     ops::{Add, Sub},
 };
 
+pub mod export;
 mod implementation;
 pub mod query;
 pub mod registry;
@@ -69,6 +70,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
+pub use export::{CborStrongObserve, OQueueExport};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -89,11 +91,11 @@ pub(crate) mod generic_test;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum OQueueError {
-    /// The handle has been detached. Once this is returned, all future operations will return
+    /// The handle has been revoked. Once this is returned, all future operations will return
     /// it. This can happen because access has been revoked (for instance, due to the observer
     /// being too slow), or the OQueue has been deleted.
-    #[snafu(display("Handle detached ({context})"))]
-    Detached,
+    #[snafu(display("Handle revoked ({context})"))]
+    Revoked,
     /// The operation is supported by this OQueue but the required resources are missing (e.g.,
     /// observer slots or memory).
     #[snafu(display("Resource unavailable ({context})"))]
@@ -135,6 +137,19 @@ pub trait OQueueBase<T: ?Sized> {
     /// Attach a strong observer which will observe values of type `U` which are extracted from
     /// the messages using the query.
     fn attach_strong_observer<U>(
+        &self,
+        query: ObservationQuery<T, U>,
+    ) -> Result<StrongObserver<U>, OQueueError>
+    where
+        U: Copy + Send + 'static;
+
+    /// Attach a *revocable* strong observer which extracts values of type `U` using the query.
+    ///
+    /// Unlike [`Self::attach_strong_observer`], which applies backpressure to producers when its
+    /// ring fills, a revocable observer is silently dropped in that situation: the producer keeps
+    /// running and the observer sees [`OQueueError::Revoked`] on its next observe. Use this for
+    /// untrusted or userspace-facing observers that must never be able to stall kernel execution.
+    fn attach_revocable_strong_observer<U>(
         &self,
         query: ObservationQuery<T, U>,
     ) -> Result<StrongObserver<U>, OQueueError>
@@ -220,6 +235,16 @@ macro_rules! impl_oqueue_base_forward {
                 U: Copy + Send + 'static,
             {
                 self.$member.attach_strong_observer(query)
+            }
+
+            fn attach_revocable_strong_observer<U>(
+                &self,
+                query: ObservationQuery<T, U>,
+            ) -> Result<StrongObserver<U>, OQueueError>
+            where
+                U: Copy + Send + 'static,
+            {
+                self.$member.attach_revocable_strong_observer(query)
             }
 
             fn attach_weak_observer<U>(
@@ -357,7 +382,7 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
             Some(path.clone()),
         ));
         let ret = Self { inner };
-        registry::register(&path, ret.as_any_oqueue());
+        registry::register_no_export(&path, &ret.as_any_oqueue());
         ret
     }
 
@@ -393,7 +418,7 @@ impl<T: ?Sized + Send + 'static> OQueueRef<T> {
                 Some(path.clone()),
             )),
         };
-        registry::register(&path, ret.as_any_oqueue());
+        registry::register_no_export(&path, &ret.as_any_oqueue());
         ret
     }
 
@@ -796,6 +821,29 @@ mod test {
         let consumed = consumer.consume();
 
         assert_eq!(consumed, new_message(7, "hello"));
+    }
+
+    #[ktest]
+    fn slow_strong_observer_is_revoked_not_blocking() {
+        // A tiny observation queue with a strong observer that never observes.
+        let queue = OQueueRef::<u32>::new_anonymous(4);
+        let producer = queue.attach_ref_producer().unwrap();
+        let observer = queue
+            .attach_revocable_strong_observer(ObservationQuery::<u32, u32>::identity())
+            .unwrap();
+
+        // Publish far more than the ring can hold. If a full strong observer blocked the producer,
+        // `produce_ref` would hang here and this test would time out. Kernel liveness comes first,
+        // so instead the slow observer is revoked and production keeps going.
+        for value in 0..100u32 {
+            producer.produce_ref(&value);
+        }
+
+        // The revoked observer now reports the stream as revoked.
+        assert!(matches!(
+            observer.try_strong_observe(),
+            Err(OQueueError::Revoked { .. })
+        ));
     }
 
     #[ktest]

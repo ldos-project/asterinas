@@ -49,10 +49,11 @@ libflate.workspace = true
 logo-ascii-art.workspace = true
 lru.workspace = true
 mariposa_data_capture.workspace = true
+minicbor-serde.workspace = true
 no_std_io2.workspace = true
 osdk-frame-allocator.workspace = true
 osdk-heap-allocator.workspace = true
-ostd.workspace = true
+ostd = { workspace = true, features = ["capture_scheduling"] }
 ostd-pod.workspace = true
 paste.workspace = true
 rand = { workspace = true, features = [

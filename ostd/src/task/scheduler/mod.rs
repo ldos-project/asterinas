@@ -74,7 +74,7 @@ use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
@@ -88,26 +88,53 @@ use crate::{
 /// This should be called before the scheduler runs for the first time, but after the allocator is
 /// fully initialized.
 pub(crate) fn init() {
-    #[cfg(feature = "capture_scheduling")]
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
+        use serde::Serialize;
+
         use crate::{
-            orpc::oqueue::{OQueue, OQueueRef},
+            orpc::oqueue::{OQueue, OQueueBase, OQueueRef, registry},
             path,
         };
 
+        /// The serializable projection of a [`SchedulingEvent`] exported to userspace.
+        ///
+        /// A `SchedulingEvent` holds an `Arc<Task>`, which is neither `Copy` nor `Serialize`, so
+        /// the exported stream carries this small view instead: the task's identity (its kernel
+        /// address) and whether it was scheduled or descheduled.
+        #[derive(Clone, Copy, Serialize)]
+        struct SchedulingEventView {
+            /// The scheduled/descheduled task's identity (its kernel address).
+            task: u64,
+            /// Whether the task was scheduled or descheduled.
+            kind: SchedulingEventKind,
+        }
+
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
-        let oqueue = OQueueRef::new(1024, path!(scheduler.events));
+        let path = path!(scheduler.events);
+        let oqueue = OQueueRef::new(1024, path.clone());
+
+        // Export the queue so it appears under the OQueue filesystem (e.g. at
+        // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
+        // dropped rather than blocking the scheduler.
+        registry::register_with(&path, &oqueue.as_any_oqueue(), |event: &SchedulingEvent| {
+            SchedulingEventView {
+                task: Arc::as_ptr(&event.task) as *const () as usize as u64,
+                kind: event.kind,
+            }
+        });
+
         oqueue.attach_ref_producer().unwrap()
     });
 }
 
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
 
 /// Get the producer handle for the scheduling event OQueue. This will panic if called before
 /// [`init()`].
-#[cfg(feature = "capture_scheduling")]
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 fn get_scheduling_event_producer() -> &'static crate::orpc::oqueue::RefProducer<SchedulingEvent> {
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
@@ -653,21 +680,36 @@ where
 
     // This redefines `next_task` with the same value it started with, but moves the value out
     // temporarily. This avoids an atomic incr and decr.
-    #[cfg(feature = "capture_scheduling")]
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     let next_task = {
         let producer = get_scheduling_event_producer();
+        // Publish scheduling events best-effort: never block the scheduler on an observer. A full
+        // ring drops the event (and revokes a revocable observer), keeping the reschedule path
+        // fast and non-blocking.
         if let Some(t) = Task::current() {
-            producer.produce_ref(&SchedulingEvent {
-                task: t.cloned(),
-                kind: SchedulingEventKind::Deschedule,
-            });
+            crate::ignore_err!(
+                producer
+                    .try_produce_ref(&SchedulingEvent {
+                        task: t.cloned(),
+                        kind: SchedulingEventKind::Deschedule,
+                    })
+                    .then_some(())
+                    .ok_or("scheduling event dropped: observer ring full"),
+                crate::log::Level::Notice
+            );
         }
 
         let scheduling_event = SchedulingEvent {
             task: next_task,
             kind: SchedulingEventKind::Schedule,
         };
-        producer.produce_ref(&scheduling_event);
+        crate::ignore_err!(
+            producer
+                .try_produce_ref(&scheduling_event)
+                .then_some(())
+                .ok_or("scheduling event dropped: observer ring full"),
+            crate::log::Level::Notice
+        );
         scheduling_event.task
     };
 

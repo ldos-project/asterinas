@@ -384,7 +384,7 @@ impl From<OQueueError> for Error {
             OQueueError::ResourceUnavailable { .. } => {
                 Self::from_ostd_error(Errno::ECONNREFUSED, "OQueue resource not available", value)
             }
-            OQueueError::Detached { .. } => {
+            OQueueError::Revoked { .. } => {
                 Self::from_ostd_error(Errno::ECANCELED, "OQueue observer detached", value)
             }
             _ => UNREACHABLE_SNAFU.build(),

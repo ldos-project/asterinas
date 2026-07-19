@@ -1,6 +1,6 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, benchmark, conformance, regression, dnsServer, authorized_keys, enablePython
-}:
+, oqueue-reader, benchmark, conformance, regression, dnsServer, authorized_keys
+, enablePython }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -38,7 +38,7 @@ in stdenvNoCC.mkDerivation {
   name = "initramfs";
   buildCommand = ''
     mkdir -p $out/{dev,etc,root,usr,opt,tmp,var,proc,sys}
-    mkdir -p $out/{benchmark,test,ext2,exfat,raid1}
+    mkdir -p $out/{benchmark,test,ext2,exfat,oqueues,raid1}
     mkdir -p $out/usr/{bin,sbin,lib,lib64,local}
     ln -sfn usr/bin $out/bin
     ln -sfn usr/sbin $out/sbin
@@ -53,6 +53,9 @@ in stdenvNoCC.mkDerivation {
 
     cp ${boot_hello} $out/test/boot_hello.sh
     cp ${init} $out/init
+
+    # The OQueue filesystem CBOR reader, always available in-guest.
+    cp ${oqueue-reader}/bin/read_oqueues $out/usr/bin/read_oqueues
 
     cp -r ${etc}/* $out/etc/
 

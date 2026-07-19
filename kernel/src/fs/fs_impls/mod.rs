@@ -9,6 +9,8 @@ pub mod configfs;
 pub mod devpts;
 pub mod exfat;
 pub mod ext2;
+#[cfg(not(baseline_asterinas))]
+pub mod oqfs;
 pub mod overlayfs;
 pub mod procfs;
 pub mod pseudofs;
@@ -25,6 +27,8 @@ pub(super) fn init() {
     tmpfs::init();
     devpts::init();
     pseudofs::init();
+    #[cfg(not(baseline_asterinas))]
+    oqfs::init();
 
     ext2::init();
     exfat::init();
