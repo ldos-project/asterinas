@@ -2,10 +2,9 @@
 
 MCP server that exposes the Mariposa OQueue File System (`/oqueues`) to AI
 agents. It runs on the **host** (the agent's domain) and reaches the Mariposa
-guest over SSH; the guest stays passive and only runs stock tools (`tree`,
-`find`, `cat`). All CBOR decoding and dataframe construction happen host-side.
-
-Design: [../documents/oqueues-mcp-design.md](../documents/oqueues-mcp-design.md).
+guest over SSH; the guest stays passive and only runs basic tools (`tree`,
+`find`, `cat`). All CBOR decoding and dataframe construction happen host-side 
+to reduce the impact to the guest. 
 
 ## Tools
 
@@ -13,7 +12,7 @@ Design: [../documents/oqueues-mcp-design.md](../documents/oqueues-mcp-design.md)
 |------------------|-----------------------------------------------------------|
 | `list_tree`      | Human-readable `tree` of `/oqueues`.                      |
 | `list_oqueues`   | Machine-readable JSON list of OQueues.                    |
-| `read_metadata`  | An OQueue's `metadata.yaml`.                              |
+| `read_metadata`  | Read an OQueue's `metadata.yaml`.                              |
 | `stream_collect` | Bounded drain (max_records / timeout) → CSV/JSON.        |
 | `stream_start`   | Begin a session (bounded or infinite) → `stream_id`.     |
 | `stream_read`    | Records accumulated since the last read.                  |
@@ -39,7 +38,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e .          # provides the `oqueues-mcp` console script
 ```
 
-## Spin it up for an agent (Claude CLI)
+## Spin it up for Claude CLI
 
 The server speaks MCP over **stdio** by default, so you do **not** background it
 yourself — the Claude CLI launches it on demand and manages its lifecycle. Just
@@ -49,23 +48,11 @@ register the installed binary once:
 claude mcp add oqueues -s user \
   -e OQ_SSH_HOST=127.0.0.1 \
   -e OQ_SSH_PORT=61541 \
-  -- /var/local/ycao/asterinas.mcp/oqueues-mcp/.venv/bin/oqueues-mcp
+  -- $ASTERINAS_HOME/oqueues-mcp/.venv/bin/oqueues-mcp
 ```
 
 Boot the kernel (with `SSH_PORT` overridden), then any `claude` session gets the
 `oqueues` tools. Verify with `claude mcp list` or `/mcp` inside a session.
-
-### Alternative: long-running background server (HTTP)
-
-For a shared/always-on server — or later, when the agent runs in another VM or
-machine — run it over HTTP and register the URL instead:
-
-```bash
-OQ_MCP_TRANSPORT=streamable-http OQ_MCP_PORT=8765 \
-OQ_SSH_PORT=61541 oqueues-mcp &          # backgrounded, long-running
-
-claude mcp add oqueues -s user --transport http http://127.0.0.1:8765/mcp
-```
 
 ## Test
 
