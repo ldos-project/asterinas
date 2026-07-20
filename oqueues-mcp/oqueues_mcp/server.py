@@ -6,7 +6,6 @@ dataframe construction happen here.
 """
 
 import json
-import os
 
 import anyio
 from mcp.server.fastmcp import FastMCP
@@ -38,11 +37,7 @@ def _build() -> None:
 
 _build()
 
-mcp = FastMCP(
-    "oqueues",
-    host=os.environ.get("OQ_MCP_HOST", "127.0.0.1"),
-    port=int(os.environ.get("OQ_MCP_PORT", "8765")),
-)
+mcp = FastMCP("oqueues")
 
 
 # All tools are async: FastMCP runs sync tool functions on the event loop, so
@@ -178,10 +173,9 @@ async def stream_list() -> str:
 
 
 def main() -> None:
-    # OQ_MCP_TRANSPORT: "stdio" (default, spawned by the MCP client) or
-    # "streamable-http" (a long-running background server on OQ_MCP_HOST:PORT).
-    transport = os.environ.get("OQ_MCP_TRANSPORT", "stdio")
-    mcp.run(transport=transport)
+    # Speaks MCP over stdio; the MCP client (e.g. Claude CLI) spawns and manages
+    # this process.
+    mcp.run()
 
 
 if __name__ == "__main__":
