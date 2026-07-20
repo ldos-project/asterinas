@@ -32,7 +32,7 @@ Therefore, it is recommended to use a Docker image to deploy the environment.
 Run a TDX Docker container:
 
 ```bash
-docker run -it --privileged --network=host -v /dev:/dev ldosproject/osdk:0.17.2-20260518
+docker run -it --privileged --network=host -v /dev:/dev ldosproject/osdk:0.17.2-ldos-20260518
 ```
 
 ## Edit `OSDK.toml` for Intel TDX support

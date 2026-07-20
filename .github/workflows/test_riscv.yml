@@ -13,7 +13,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260518
+      image: ldosproject/asterinas:0.17.2-ldos-20260518
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -40,7 +40,7 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-20260518
+      image: ldosproject/asterinas:0.17.2-ldos-20260518
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that

@@ -21,7 +21,7 @@ jobs:
   check_api_docs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    container: ldosproject/asterinas:0.17.2-20260518
+    container: ldosproject/asterinas:0.17.2-ldos-20260518
 
     steps: 
       - uses: actions/checkout@v4

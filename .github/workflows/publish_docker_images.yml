@@ -2,12 +2,11 @@ name: Publish Docker images
 
 on:
   workflow_dispatch:
-  # TODO(arthurp): Once we have this setup
-  # push:
-  #   paths:
-  #     - DOCKER_IMAGE_VERSION
-  #   branches:
-  #     - main
+  push:
+    paths:
+      - DOCKER_IMAGE_VERSION
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -48,7 +47,9 @@ jobs:
     with:
       output: image
       push: true
-      platforms: linux/amd64,linux/arm64
+      # TODO: Get arm64 builds working
+      #platforms: linux/amd64,linux/arm64
+      platforms: linux/amd64
       context: .
       file: ./osdk/tools/docker/Dockerfile
       meta-images: ldosproject/osdk
@@ -73,7 +74,9 @@ jobs:
     with:
       output: image
       push: true
-      platforms: linux/amd64,linux/arm64
+      # TODO: Get arm64 builds working
+      #platforms: linux/amd64,linux/arm64
+      platforms: linux/amd64
       context: .
       file: ./tools/docker/nix/Dockerfile
       meta-images: ldosproject/nix
@@ -98,7 +101,9 @@ jobs:
     with:
       output: image
       push: true
-      platforms: linux/amd64,linux/arm64
+      # TODO: Get arm64 builds working
+      #platforms: linux/amd64,linux/arm64
+      platforms: linux/amd64 
       context: .
       file: ./tools/docker/Dockerfile
       meta-images: ldosproject/asterinas

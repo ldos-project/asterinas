@@ -29,10 +29,11 @@ as shown below.
 {{#include ../../../DOCKER_IMAGE_VERSION}}
 ```
 
-We use a custom format for Docker image versions: `MAJOR.MINOR.PATCH-DATE`.
+We use a custom format for Docker image versions: `MAJOR.MINOR.PATCH-ldos-DATE`.
 The `MAJOR.MINOR.PATCH` component aligns with the target version of published crates,
 while the `DATE` component allows us to introduce non-breaking updates to the Docker images
 without publishing a new crate version.
+The -ldos- tag differentiates the ldos team container versions from upstream asterinas versions.
 Normally,
 the version in `VERSION` and the version in `DOCKER_IMAGE_VERSION`
 (ignoring the `DATE` part) are identical,

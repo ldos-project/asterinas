@@ -96,7 +96,7 @@ to enter an environment with Kata and Asterinas preinstalled:
 docker run -it \
     "${KATA_DOCKER_ARGS[@]}" \
     -w /root/kata-containers \
-    ldosproject/kata:0.17.2-20260518
+    ldosproject/kata:0.17.2-ldos-20260518
 ```
 
 The Docker image includes Kata, the Asterinas guest kernel,
@@ -126,7 +126,7 @@ docker run -it \
     -v "${ASTERINAS_SRC}:/root/asterinas" \
     -v "${KATA_SRC}:/root/kata-containers" \
     -w /root/kata-containers \
-    ldosproject/asterinas:0.17.2-20260518
+    ldosproject/asterinas:0.17.2-ldos-20260518
 ```
 
 This setup lets you rebuild the kernel
