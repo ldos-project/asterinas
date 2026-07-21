@@ -1,14 +1,13 @@
 # Agents Guidelines for Asterinas and Mariposa
 
-Mariposa is a research platform for learned policies, based on the Asterinas kernel. Components
-expose events and state by creating OQueues (Observable Queues) and using ORPC (Observable Remote
-Procedure Call) which automatically creates OQueues. Components can use those OQueues to observe
-other components.
-
 Asterinas is a Linux-compatible, general-purpose OS kernel
 written in Rust using the framekernel architecture.
 `unsafe` Rust is confined to OSTD (`ostd/`);
 the kernel (`kernel/`) is entirely safe Rust.
+
+Mariposa is a research platform for learned policies, based on the Asterinas kernel. Components
+expose events and state by creating OQueues (Observable Queues, see `ostd/src/orpc/oqueue/mod.rs`).
+Components can use those OQueues to observe other components.
 
 ## Repository Layout
 
@@ -49,10 +48,11 @@ Set `OSDK_TARGET_ARCH` to `x86_64` (default), `riscv64`, or `loongarch64`.
 ## Baseline mode
 
 Mariposa has two modes:
-* **baseline_asterinas**: does not have ORPC or OQueues
+* **baseline_asterinas**: does not have OQueues (Observable Queues, see
+  `ostd/src/orpc/oqueue/mod.rs`)
   * Close to Asterinas, but with extensions required for basic policies
   * Provides benchmarking baseline for the overhead and advantages of Mariposa
-* **Mariposa (default)**: has ORPC and OQueues
+* **Mariposa (default)**: has OQueues
   * Full support for observability and policy selection
 
 Baseline mode is selected by adding `BASELINE_ASTERINAS=1` on the make command line. For example,
@@ -60,13 +60,13 @@ Baseline mode is selected by adding `BASELINE_ASTERINAS=1` on the make command l
 
 ### Mode specific code
 
-`#[cfg(not(baseline_asterinas))]` is used to gate Mariposa (ORPC based) code.
+`#[cfg(not(baseline_asterinas))]` is used to gate Mariposa code which uses OQueues.
 `#[cfg(baseline_asterinas)]` is used to gate baseline code. When possible share code by using
 neither gate. Keep the gated code as small as possible (for instance, by gating blocks within a
 larger function).
 
-Gate a use only if it references Mariposa-only items; leftover unused imports in baseline are
-allowed (clippy runs with -A unused-imports there),
+Gate a use only if it references Mariposa-only items. Leftover unused imports in baseline are
+allowed; when clippy is run form `cfg(baseline_asteras)` it is given `-A unused-imports`,
 
 ## Toolchain
 
