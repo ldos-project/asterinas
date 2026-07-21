@@ -27,6 +27,8 @@ pub mod notifier;
 pub mod shutdown;
 pub mod threads;
 mod tuple_serialize_test;
+pub mod object;
+pub mod projection;
 
 use alloc::{sync::Weak, vec::Vec};
 use core::{
