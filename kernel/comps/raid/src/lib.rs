@@ -242,7 +242,6 @@ impl Raid1Device {
                 bio,
                 candidates: &self.all_indices,
             };
-            let _guard = ostd::task::disable_preempt();
             return self
                 .selection_policy
                 .select_block_device(selection)
@@ -263,7 +262,6 @@ impl Raid1Device {
             &admitted
         };
         let selection = BioCandidates { bio, candidates };
-        let _guard = ostd::task::disable_preempt();
         self.selection_policy
             .select_block_device(selection)
             .unwrap()
@@ -374,39 +372,38 @@ impl Raid1Device {
             )));
 
             for member in &self.members {
-                let remaining_cb = remaining.clone();
-                let had_error_cb = had_error.clone();
-                let guard_cb = guard.clone();
-                let remaining_err = remaining.clone();
-                let had_error_err = had_error.clone();
-                let guard_err = guard.clone();
                 let member = member.clone();
 
-                let child = Bio::new_with_closure(
-                    BioType::Write,
-                    start_sid,
-                    segments.clone(),
+                let child = Bio::new_with_closure(BioType::Write, start_sid, segments.clone(), {
+                    let remaining = remaining.clone();
+                    let had_error = had_error.clone();
+                    let guard = guard.clone();
                     move |child_bio: &SubmittedBio| {
                         if child_bio.status() != BioStatus::Complete {
-                            had_error_cb.store(true, Ordering::Release);
+                            had_error.store(true, Ordering::Release);
                         }
-                        if remaining_cb.fetch_sub(1, Ordering::AcqRel) == 1 {
-                            let status = if had_error_cb.load(Ordering::Acquire) {
+                        // If that's the last device completing the Bio
+                        if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                            // If any device every set an error
+                            let status = if had_error.load(Ordering::Acquire) {
                                 BioStatus::IoError
                             } else {
                                 BioStatus::Complete
                             };
-                            if let Some(g) = guard_cb.lock().take() {
+                            if let Some(g) = guard.lock().take() {
                                 g.complete(status);
                             }
                         }
-                    },
-                );
+                    }
+                });
 
+                // On submission failure the callback never fires (see `Bio::submit`),
+                // so the dispatch thread accounts for this member here using the
+                // loop-level `remaining`/`had_error`/`guard`.
                 if member.submit(child).is_err() {
-                    had_error_err.store(true, Ordering::Release);
-                    if remaining_err.fetch_sub(1, Ordering::AcqRel) == 1 {
-                        if let Some(g) = guard_err.lock().take() {
+                    had_error.store(true, Ordering::Release);
+                    if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                        if let Some(g) = guard.lock().take() {
                             g.complete(BioStatus::IoError);
                         }
                     }

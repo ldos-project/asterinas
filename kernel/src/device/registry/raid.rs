@@ -12,6 +12,9 @@ use aster_raid::selection_policies;
 use aster_raid::{Raid1Device, Raid1DeviceError};
 #[cfg(not(baseline_asterinas))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use device_id::DeviceId;
 use spin::Once;
 
@@ -149,6 +152,18 @@ fn build_admission(
     }
 }
 
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+static HEIMDALL_BATCH_SIZE: AtomicU32 =
+    AtomicU32::new(aster_raid::heimdall::DEFAULT_BATCH_SIZE as u32);
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+aster_cmdline::define_kv_param!("heimdall.batch_size", HEIMDALL_BATCH_SIZE);
+
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+static HEIMDALL_INFERENCE_TIMEOUT_MS: AtomicU32 =
+    AtomicU32::new(aster_raid::heimdall::DEFAULT_INFERENCE_TIMEOUT_MS as u32);
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+aster_cmdline::define_kv_param!("heimdall.inference_timeout_ms", HEIMDALL_INFERENCE_TIMEOUT_MS);
+
 /// Creates the Heimdall performance monitor over `members` and spawns its
 /// background inference thread. The returned handle is shared with the RAID
 /// device so the admission decisions stay in sync with the monitor.
@@ -159,26 +174,36 @@ fn setup_heimdall(
     use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
-    let observers = members
+    let device_observers = members
         .iter()
         .map(|member| {
             let virtio = member
                 .downcast_ref::<VirtIoBlockDevice>()
                 .expect("RAID member must be a VirtIoBlockDevice");
-            virtio
+            let observer = virtio
                 .bio_completion_oqueue()
                 .attach_strong_observer(ObservationQuery::identity())
-                .expect("Failed to attach strong observer for Heimdall")
+                .expect("Failed to attach strong observer for Heimdall");
+            (member.clone(), observer)
         })
         .collect();
 
-    let heimdall = aster_raid::heimdall::Heimdall::new(members.to_vec(), observers)
-        .expect("Failed to create Heimdall monitor");
+    // Heimdall's inference cadence is configurable via the kernel command line
+    // (`heimdall.batch_size`, `heimdall.inference_timeout_ms`); when unset, the
+    // storage statics keep their default initializers (see below).
+    let batch_size = HEIMDALL_BATCH_SIZE.load(Ordering::Relaxed) as usize;
+    let inference_timeout_ms = HEIMDALL_INFERENCE_TIMEOUT_MS.load(Ordering::Relaxed) as u64;
+
+    // The observers are owned by the monitor thread (not the shared handle), so
+    // `new` hands them back for `run` to take ownership of.
+    let (heimdall, observers) =
+        aster_raid::heimdall::Heimdall::new(device_observers, batch_size, inference_timeout_ms)
+            .expect("Failed to create Heimdall monitor");
 
     let monitor = heimdall.clone();
     ThreadOptions::new(move || {
         info!("[heimdall] Heimdall monitor thread started");
-        monitor.run();
+        monitor.run(observers);
     })
     .sched_policy(SchedPolicy::RealTime {
         rt_prio: 50.try_into().unwrap(),

@@ -216,7 +216,12 @@ impl aster_block::BlockDevice for BlockDevice {
         let reply_handle = self.bio_completion_oqueue().attach_ref_producer()?;
 
         let mut bio = bio;
-        let device_index = self.device.device_index.load(Ordering::Relaxed);
+        // Convert the "unset" sentinel to `None` so the completion stat records a
+        // missing device index rather than a magic number.
+        let device_index = {
+            let raw = self.device.device_index.load(Ordering::Relaxed);
+            (raw != DeviceInner::UNSET_DEVICE_INDEX).then_some(raw)
+        };
         // Atomically bump the counters, capturing the pre-increment values so the
         // outstanding counts recorded for this bio are consistent with the bump.
         let outstanding_pages = self
@@ -321,6 +326,8 @@ struct DeviceInner {
     block_responses: Arc<DmaStream>,
     id_allocator: SyncIdAlloc,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
+    /// The device's logical index, or [`Self::UNSET_DEVICE_INDEX`] for a device
+    /// that is not a RAID member. Used to tag I/O completion stats.
     device_index: AtomicU32,
     num_outstanding_pages: AtomicU32,
     num_outstanding_requests: AtomicU32,
@@ -328,6 +335,12 @@ struct DeviceInner {
 
 impl DeviceInner {
     const QUEUE_SIZE: u16 = 64;
+
+    /// Sentinel stored in `device_index` before [`BlockDevice::set_device_index`]
+    /// assigns a real logical index. Converted to `None` when building completion
+    /// stats. `u32::MAX` is safe as a sentinel because a real array can never
+    /// have that many members.
+    const UNSET_DEVICE_INDEX: u32 = u32::MAX;
 
     /// Creates and inits the device.
     fn init(mut transport: Box<dyn VirtioTransport>) -> Result<Arc<Self>, VirtioDeviceError> {
@@ -374,7 +387,7 @@ impl DeviceInner {
             submitted_requests: SpinLock::new(BTreeMap::new()),
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
-            device_index: AtomicU32::new(u32::MAX - 1),
+            device_index: AtomicU32::new(Self::UNSET_DEVICE_INDEX),
         });
 
         let cloned_device = device.clone();
@@ -454,7 +467,9 @@ impl DeviceInner {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
                 {
-                    let pages = bio.get_num_pages();
+                    let pages = bio
+                        .get_num_pages()
+                        .expect("num_pages was not set during prepare_enqueue");
                     let outstanding = self
                         .num_outstanding_pages
                         .fetch_sub(pages, Ordering::Relaxed);

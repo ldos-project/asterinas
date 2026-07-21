@@ -9,27 +9,31 @@ use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
     orpc::oqueue::{OQueueError, StrongObserver},
-    sync::Mutex,
     task::disable_preempt,
 };
 
 /// Heimdall: an asynchronous device performance monitor for RAID-1 arrays.
 ///
-/// Heimdall maintains one ML model and one strong observer per member device.
-/// A dedicated background thread continuously drains completion stats from each
-/// device's OQueue.  Every `BATCH_SIZE` completions, it runs an ML inference
-/// to update that device's fast/slow indicator. Or the inference is triggered if
-/// `INFERENCE_TIMEOUT_MS` elapses since the last inference for that device. Whichever
-/// condition is met first.
+/// Heimdall maintains one ML model per member device. A dedicated background
+/// thread ([`Heimdall::run`]) owns the per-device strong observers and
+/// continuously drains completion stats from each device's OQueue. Every
+/// `batch_size` completions, it runs an ML inference to update that device's
+/// fast/slow indicator. Or the inference is triggered if `inference_timeout_ms`
+/// elapses since the last inference for that device. Whichever condition is met
+/// first.
 ///
 /// Model architecture (per device):
 ///   Linear(INPUT_DIM, 16) -> ReLU -> Linear(16, 1) -> Sigmoid
+///
+/// The observers are deliberately *not* stored in this shared handle: they are
+/// owned solely by the monitor thread, so this struct stays `Sync` and can be
+/// shared with the RAID device via `Arc` without wrapping the (`!Sync`)
+/// observers in a lock.
 ///
 /// Selection policies can query `is_device_fast(idx)` to incorporate Heimdall's
 /// classification into their scheduling decisions.
 pub struct Heimdall {
     members: Vec<Arc<dyn BlockDevice>>,
-    observers: Vec<Mutex<StrongObserver<BlockDeviceCompletionStats>>>,
     /// Per-device fast/slow indicator. `true` means the device is predicted fast.
     fast_indicators: Vec<AtomicBool>,
     /// Per-device fc1 weights: [INPUT_DIM][HIDDEN_SIZE]
@@ -40,16 +44,16 @@ pub struct Heimdall {
     fc3_weights: Vec<[f32; HIDDEN_SIZE]>,
     /// Per-device fc3 biases: scalar
     fc3_biases: Vec<f32>,
+    /// Number of completion records to drain before running an inference.
+    batch_size: usize,
+    /// Inference timeout in milliseconds.
+    inference_timeout_ms: u64,
 }
 
 impl core::fmt::Debug for Heimdall {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Heimdall")
             .field("members", &self.members)
-            .field(
-                "observers",
-                &format_args!("[{} observers]", self.observers.len()),
-            )
             .field("fast_indicators", &self.fast_indicators)
             .finish()
     }
@@ -57,31 +61,42 @@ impl core::fmt::Debug for Heimdall {
 
 use crate::heimdall_weights::{HIDDEN_SIZE, INPUT_DIM};
 
-/// Number of completion records to drain before running an inference.
-const BATCH_SIZE: usize = 6;
+/// Default number of completion records to drain before running an inference,
+/// used when the `heimdall.batch_size` kernel parameter is not set.
+pub const DEFAULT_BATCH_SIZE: usize = 6;
 
-/// Inference timeout in milliseconds.
-const INFERENCE_TIMEOUT_MS: u64 = 28;
+/// Default inference timeout in milliseconds, used when the
+/// `heimdall.inference_timeout_ms` kernel parameter is not set.
+pub const DEFAULT_INFERENCE_TIMEOUT_MS: u64 = 28;
 
 impl Heimdall {
     /// Creates a new Heimdall monitor.
     ///
-    /// `members` — the RAID-1 member devices to monitor.
-    /// `observers` — one strong observer per member, attached to its bio completion OQueue.
+    /// `device_observers` — one `(member device, strong observer)` pair per
+    /// RAID-1 member; the observer is attached to the member's bio completion
+    /// OQueue.
+    /// `batch_size` — completion records to drain before running an inference.
+    /// `inference_timeout_ms` — inference timeout in milliseconds.
+    ///
+    /// Returns the shared handle together with the per-member observers. The
+    /// caller must hand the observers to [`Self::run`] on the monitor thread. 
     pub fn new(
-        members: Vec<Arc<dyn BlockDevice>>,
-        observers: Vec<StrongObserver<BlockDeviceCompletionStats>>,
-    ) -> Result<Arc<Self>, Error> {
+        device_observers: Vec<(
+            Arc<dyn BlockDevice>,
+            StrongObserver<BlockDeviceCompletionStats>,
+        )>,
+        batch_size: usize,
+        inference_timeout_ms: u64,
+    ) -> Result<(Arc<Self>, Vec<StrongObserver<BlockDeviceCompletionStats>>), Error> {
         use crate::heimdall_weights::{FC1_BIASES, FC1_WEIGHTS, FC3_BIASES, FC3_WEIGHTS};
 
-        let num_devices = members.len();
+        let num_devices = device_observers.len();
+
+        let (members, observers): (Vec<_>, Vec<_>) = device_observers.into_iter().unzip();
 
         let fast_indicators: Vec<AtomicBool> = (0..num_devices)
             .map(|_| AtomicBool::new(true)) // optimistic: assume fast initially
             .collect();
-
-        let observers: Vec<Mutex<StrongObserver<BlockDeviceCompletionStats>>> =
-            observers.into_iter().map(Mutex::new).collect();
 
         let fc1_weights: Vec<_> = (0..num_devices).map(|i| *FC1_WEIGHTS[i]).collect();
         let fc1_biases: Vec<_> = (0..num_devices).map(|i| *FC1_BIASES[i]).collect();
@@ -90,15 +105,18 @@ impl Heimdall {
 
         log::info!("Heimdall created with {} devices", fast_indicators.len());
 
-        Ok(Arc::new(Self {
+        let heimdall = Arc::new(Self {
             members,
-            observers,
             fast_indicators,
             fc1_weights,
             fc1_biases,
             fc3_weights,
             fc3_biases,
-        }))
+            batch_size,
+            inference_timeout_ms,
+        });
+
+        Ok((heimdall, observers))
     }
 
     /// Returns whether device `idx` is currently classified as fast.
@@ -118,22 +136,23 @@ impl Heimdall {
         self.members.len()
     }
 
-    /// Main monitoring loop. This should be spawned on a dedicated thread.
+    /// Main monitoring loop. This should be spawned on a dedicated thread, which
+    /// takes ownership of `observers` (one per member, in member order).
     ///
     /// For each device, drains completion records from its strong observer.
     /// Inference is triggered for a device when either condition is met first:
-    ///   1. `BATCH_SIZE` (16) records have been drained, or
-    ///   2. `INFERENCE_TIMEOUT_MS` (5 ms) have elapsed since the last inference.
-    pub fn run(&self) {
+    ///   1. `batch_size` records have been drained, or
+    ///   2. `inference_timeout_ms` have elapsed since the last inference.
+    pub fn run(&self, observers: Vec<StrongObserver<BlockDeviceCompletionStats>>) {
         use ostd::timer::Jiffies;
 
         let num_devices = self.members.len();
-        // TIMER_FREQ is 1000 Hz, so 1 jiffy = 1 ms. 5 ms = 5 jiffies.
-        let timeout_jiffies = INFERENCE_TIMEOUT_MS * ostd::timer::TIMER_FREQ / 1000;
+        // TIMER_FREQ is in Hz, so this converts the millisecond timeout to jiffies.
+        let timeout_jiffies = self.inference_timeout_ms * ostd::timer::TIMER_FREQ / 1000;
 
         // Per-device batch buffers for accumulating stats between inferences.
         let mut batch_buffers: Vec<Vec<BlockDeviceCompletionStats>> = (0..num_devices)
-            .map(|_| Vec::with_capacity(BATCH_SIZE))
+            .map(|_| Vec::with_capacity(self.batch_size))
             .collect();
 
         // Per-device jiffies timestamp of the last inference (or loop start).
@@ -142,7 +161,7 @@ impl Heimdall {
 
         loop {
             for device_idx in 0..num_devices {
-                let observer = self.observers[device_idx].lock();
+                let observer = &observers[device_idx];
 
                 // Drain all available records (non-blocking).
                 loop {
@@ -152,12 +171,7 @@ impl Heimdall {
 
                             // Condition 1: batch is full.
                             // Do device inference, then break to give other devices a turn.
-                            if batch_buffers[device_idx].len() >= BATCH_SIZE {
-                                // log::info!(
-                                //     "Heimdall: triggered by batch for device {} ({} records)",
-                                //     device_idx,
-                                //     batch_buffers[device_idx].len()
-                                // );
+                            if batch_buffers[device_idx].len() >= self.batch_size {
                                 self.run_inference(device_idx, &mut batch_buffers[device_idx]);
                                 last_inference_jiffies[device_idx] = Jiffies::elapsed().as_u64();
                                 break;
@@ -175,8 +189,6 @@ impl Heimdall {
                     }
                 }
 
-                drop(observer);
-
                 // Condition 2: timeout elapsed and there is at least some data
                 // (or even no data — we still re-evaluate so the device can
                 // transition back to fast when IO pressure drops).
@@ -184,11 +196,6 @@ impl Heimdall {
                     .as_u64()
                     .wrapping_sub(last_inference_jiffies[device_idx]);
                 if elapsed >= timeout_jiffies && !batch_buffers[device_idx].is_empty() {
-                    // log::info!(
-                    //     "Heimdall: triggered by timeout for device {} ({} ms since last inference)",
-                    //     device_idx,
-                    //     elapsed * 1000 / ostd::arch::timer::TIMER_FREQ
-                    // );
                     self.run_inference(device_idx, &mut batch_buffers[device_idx]);
                     last_inference_jiffies[device_idx] = Jiffies::elapsed().as_u64();
                 }

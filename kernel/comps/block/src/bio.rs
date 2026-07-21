@@ -39,8 +39,9 @@ pub struct BlockDeviceCompletionStats {
     pub queue_len: u32,
     /// Size of the IO request, which is num_pages of a bio request.
     pub request_size_pages: u32,
-    /// The index of the device that produced this stat.
-    pub device_index: u32,
+    /// The index of the device that produced this stat, or `None` if the
+    /// producing device has no logical index assigned.
+    pub device_index: Option<u32>,
 }
 
 /// The unit for block I/O.
@@ -398,9 +399,13 @@ impl SubmittedBio {
         self.bio_inner.sid_offset.store(offset, Ordering::Relaxed);
     }
 
-    /// an immutable version of the num_pages function. Panic if the num_pages field is not set yet.
-    pub fn get_num_pages(&self) -> u32 {
-        self.num_pages.expect("num_pages is not set yet")
+    /// Returns the number of 4KB pages if it has already been computed.
+    ///
+    /// Unlike [`Self::num_pages`], this does not compute the value on demand and
+    /// takes `&self`; it returns `None` when `num_pages` has not been set yet.
+    /// The caller asserts availability where that is known.
+    pub fn get_num_pages(&self) -> Option<u32> {
+        self.num_pages
     }
 
     /// Returns the number of 4KB pages covered by this bio's sector range.
@@ -455,13 +460,13 @@ impl SubmittedBio {
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
-        device_index: u32,
+        device_index: Option<u32>,
         outstanding_pages: u32,
         outstanding_requests: u32,
     ) {
         self.reply_handle = Some(reply_handle);
         self.submission_time = Some(read_monotonic_time());
-        self.device_index = Some(device_index);
+        self.device_index = device_index;
         self.num_pages(); // set the num_pages field
         self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap()); // accumulate the number of outstanding pages
         self.outstanding_requests = Some(outstanding_requests);
@@ -477,7 +482,7 @@ impl SubmittedBio {
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
                 queue_len: self.outstanding_requests.unwrap_or(u32::MAX),
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),
-                device_index: self.device_index.unwrap_or(u32::MAX),
+                device_index: self.device_index,
             });
     }
 }
