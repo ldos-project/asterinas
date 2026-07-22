@@ -484,7 +484,9 @@ impl SubmittedBio {
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
                 queue_len: self.outstanding_requests.unwrap_or(u32::MAX),
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),
-                device_id: self.device_id.expect("device_id of this Bio request is not set."),
+                device_id: self
+                    .device_id
+                    .expect("device_id of this Bio request is not set."),
             });
     }
 }

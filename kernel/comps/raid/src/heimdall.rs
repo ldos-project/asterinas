@@ -77,7 +77,7 @@ pub const DEFAULT_INFERENCE_TIMEOUT_MS: u64 = 28;
 /// A [`Blocker`] that fires once an armed jiffies deadline elapses.
 struct TimeoutBlocker {
     deadline: AtomicU64,
-    // This is added so I can somehow implement the Blocker trait. 
+    // This is added so I can somehow implement the Blocker trait.
     wait_queue: WaitQueue,
 }
 
@@ -139,7 +139,7 @@ impl Heimdall {
     /// `inference_timeout_ms` — inference timeout in milliseconds.
     ///
     /// Returns the shared handle together with the per-member observers. The
-    /// caller must hand the observers to [`Self::run`] on the monitor thread. 
+    /// caller must hand the observers to [`Self::run`] on the monitor thread.
     pub fn new(
         device_observers: Vec<(
             Arc<dyn BlockDevice>,
@@ -261,8 +261,10 @@ impl Heimdall {
                 }
 
                 if !batch_buffers[device_idx].is_empty() {
-                    let deadline = last_inference_jiffies[device_idx].saturating_add(timeout_jiffies);
-                    earliest_deadline = Some(earliest_deadline.map_or(deadline, |d| d.min(deadline)));
+                    let deadline =
+                        last_inference_jiffies[device_idx].saturating_add(timeout_jiffies);
+                    earliest_deadline =
+                        Some(earliest_deadline.map_or(deadline, |d| d.min(deadline)));
                 }
             }
 

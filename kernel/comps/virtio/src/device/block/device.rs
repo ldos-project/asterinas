@@ -219,11 +219,7 @@ impl aster_block::BlockDevice for BlockDevice {
             .device
             .num_outstanding_requests
             .fetch_add(1, Ordering::Relaxed);
-        bio.prepare_enqueue(
-            reply_handle,
-            outstanding_pages,
-            outstanding_requests,
-        );
+        bio.prepare_enqueue(reply_handle, outstanding_pages, outstanding_requests);
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())

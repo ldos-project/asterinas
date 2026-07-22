@@ -7,6 +7,9 @@
 //! (`/dev/raid`) like any other block device, so user space can mount a
 //! filesystem on it (e.g., `mount -t ext2 /dev/raid /raid1`).
 
+#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+use core::sync::atomic::{AtomicU32, Ordering};
+
 #[cfg(not(baseline_asterinas))]
 use aster_raid::selection_policies;
 use aster_raid::{Raid1Device, Raid1DeviceError};
@@ -20,9 +23,6 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
     )
 ))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use device_id::DeviceId;
 use spin::Once;
 
@@ -162,7 +162,10 @@ aster_cmdline::define_kv_param!("heimdall.batch_size", HEIMDALL_BATCH_SIZE);
 static HEIMDALL_INFERENCE_TIMEOUT_MS: AtomicU32 =
     AtomicU32::new(aster_raid::heimdall::DEFAULT_INFERENCE_TIMEOUT_MS as u32);
 #[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
-aster_cmdline::define_kv_param!("heimdall.inference_timeout_ms", HEIMDALL_INFERENCE_TIMEOUT_MS);
+aster_cmdline::define_kv_param!(
+    "heimdall.inference_timeout_ms",
+    HEIMDALL_INFERENCE_TIMEOUT_MS
+);
 
 /// Creates the Heimdall performance monitor over `members` and spawns its
 /// background inference thread. The returned handle is shared with the RAID
