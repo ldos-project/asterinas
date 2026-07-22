@@ -417,7 +417,7 @@ impl SubmittedBio {
         *self.num_pages.get_or_insert_with(|| {
             let sectors =
                 self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
-            ((sectors + 7) / 8) as u32 // each page has 8 sectors
+            sectors.div_ceil(8) as u32 // each page has 8 sectors
         })
     }
 
@@ -459,7 +459,7 @@ impl SubmittedBio {
 
     /// Argument:
     /// - `num_pages`: The number of pages covered by this bio's sector range. This is used to update the outstanding page counter in the block device, and also used for performance statistics reporting.
-    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueing this bio request.
+    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueuing this bio request.
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,

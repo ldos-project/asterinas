@@ -306,7 +306,12 @@ impl Raid1Device {
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
     /// I/O. Completion of the parent is reported after the child finishes.    
     fn process_read_async(&self, request: BioRequest) {
-        for mut parent in request.into_bios() {
+        for parent in request.into_bios() {
+            // `select_member` needs `&mut parent` (to compute `num_pages`); the
+            // baseline path always uses device 0 and never mutates the parent.
+            #[cfg(not(baseline_asterinas))]
+            let mut parent = parent;
+
             #[cfg(not(baseline_asterinas))]
             let member = self.select_member(&mut parent);
 
@@ -402,10 +407,10 @@ impl Raid1Device {
                 // loop-level `remaining`/`had_error`/`guard`.
                 if member.submit(child).is_err() {
                     had_error.store(true, Ordering::Release);
-                    if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                        if let Some(g) = guard.lock().take() {
-                            g.complete(BioStatus::IoError);
-                        }
+                    if remaining.fetch_sub(1, Ordering::AcqRel) == 1
+                        && let Some(g) = guard.lock().take()
+                    {
+                        g.complete(BioStatus::IoError);
                     }
                 }
             }

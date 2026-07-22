@@ -8,9 +8,6 @@ pub mod thread_info;
 pub mod utils;
 pub mod vfs;
 
-use aster_block::BlockDevice;
-use aster_raid::{Raid1Device, Raid1DeviceError};
-use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 pub use fs_impls::{
     cgroupfs, configfs, devpts, exfat, ext2, procfs, pseudofs, ramfs, sysfs, tmpfs,
 };

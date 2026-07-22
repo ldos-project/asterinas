@@ -29,22 +29,22 @@
 pub fn predict_device0(x: &[u8; 31]) -> u8 {
     if x[30] <= 1 {
         // cur_out_2 <= 1.5000
-        if x[29] <= 0 {
+        if x[29] == 0 {
             // cur_out_1 <= 0.5000
             if x[27] <= 1 {
                 // prev1_out_2 <= 1.5000
-                if x[26] <= 0 {
+                if x[26] == 0 {
                     // prev1_out_1 <= 0.5000
                     if x[18] <= 5 {
                         // prev4_out_2 <= 5.5000
-                        if x[6] <= 0 {
+                        if x[6] == 0 {
                             // prev3_lat_2 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
                             1 // fast  (counts: [0, 0])
                         }
                     } else {
-                        if x[1] <= 0 {
+                        if x[1] == 0 {
                             // prev4_lat_1 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -61,7 +61,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                             1 // fast  (counts: [0, 0])
                         }
                     } else {
-                        if x[17] <= 0 {
+                        if x[17] == 0 {
                             // prev4_out_1 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -72,7 +72,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
             } else {
                 if x[0] <= 3 {
                     // prev4_lat_0 <= 3.5000
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
                         if x[13] <= 1 {
                             // prev1_lat_1 <= 1.5000
@@ -91,7 +91,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                 } else {
                     if x[8] <= 3 {
                         // prev2_lat_0 <= 3.5000
-                        if x[18] <= 0 {
+                        if x[18] == 0 {
                             // prev4_out_2 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -108,11 +108,11 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                 }
             }
         } else {
-            if x[8] <= 0 {
+            if x[8] == 0 {
                 // prev2_lat_0 <= 0.5000
                 if x[21] <= 1 {
                     // prev3_out_2 <= 1.5000
-                    if x[20] <= 0 {
+                    if x[20] == 0 {
                         // prev3_out_1 <= 0.5000
                         if x[5] <= 3 {
                             // prev3_lat_1 <= 3.5000
@@ -147,18 +147,18 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 1 {
                         // prev1_out_2 <= 1.5000
-                        if x[4] <= 0 {
+                        if x[4] == 0 {
                             // prev3_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[15] <= 0 {
+                        if x[15] == 0 {
                             // prev1_lat_3 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -190,7 +190,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
             // cur_out_2 <= 5.5000
             if x[30] <= 4 {
                 // cur_out_2 <= 4.5000
-                if x[29] <= 0 {
+                if x[29] == 0 {
                     // cur_out_1 <= 0.5000
                     if x[30] <= 3 {
                         // cur_out_2 <= 3.5000
@@ -201,7 +201,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -211,7 +211,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                 } else {
                     if x[24] <= 1 {
                         // prev2_out_2 <= 1.5000
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -229,7 +229,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
             } else {
                 if x[24] <= 1 {
                     // prev2_out_2 <= 1.5000
-                    if x[23] <= 0 {
+                    if x[23] == 0 {
                         // prev2_out_1 <= 0.5000
                         if x[8] <= 1 {
                             // prev2_lat_0 <= 1.5000
@@ -255,7 +255,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -265,11 +265,11 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                 }
             }
         } else {
-            if x[8] <= 0 {
+            if x[8] == 0 {
                 // prev2_lat_0 <= 0.5000
                 if x[21] <= 1 {
                     // prev3_out_2 <= 1.5000
-                    if x[20] <= 0 {
+                    if x[20] == 0 {
                         // prev3_out_1 <= 0.5000
                         if x[13] <= 2 {
                             // prev1_lat_1 <= 2.5000
@@ -304,7 +304,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 2 {
                         // prev1_out_2 <= 2.5000
@@ -325,7 +325,7 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
                 } else {
                     if x[30] <= 6 {
                         // cur_out_2 <= 6.5000
-                        if x[5] <= 0 {
+                        if x[5] == 0 {
                             // prev3_lat_1 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -354,15 +354,15 @@ pub fn predict_device0(x: &[u8; 31]) -> u8 {
 pub fn predict_device1(x: &[u8; 31]) -> u8 {
     if x[30] <= 1 {
         // cur_out_2 <= 1.5000
-        if x[29] <= 0 {
+        if x[29] == 0 {
             // cur_out_1 <= 0.5000
             if x[0] <= 2 {
                 // prev4_lat_0 <= 2.5000
                 if x[27] <= 1 {
                     // prev1_out_2 <= 1.5000
-                    if x[26] <= 0 {
+                    if x[26] == 0 {
                         // prev1_out_1 <= 0.5000
-                        if x[12] <= 0 {
+                        if x[12] == 0 {
                             // prev1_lat_0 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -377,7 +377,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
                         if x[9] <= 8 {
                             // prev2_lat_1 <= 8.5000
@@ -397,7 +397,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
             } else {
                 if x[8] <= 2 {
                     // prev2_lat_0 <= 2.5000
-                    if x[12] <= 0 {
+                    if x[12] == 0 {
                         // prev1_lat_0 <= 0.5000
                         if x[0] <= 4 {
                             // prev4_lat_0 <= 4.5000
@@ -406,7 +406,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                             1 // fast  (counts: [0, 1])
                         }
                     } else {
-                        if x[6] <= 0 {
+                        if x[6] == 0 {
                             // prev3_lat_2 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -428,13 +428,13 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                 }
             }
         } else {
-            if x[8] <= 0 {
+            if x[8] == 0 {
                 // prev2_lat_0 <= 0.5000
                 if x[24] <= 1 {
                     // prev2_out_2 <= 1.5000
                     if x[21] <= 2 {
                         // prev3_out_2 <= 2.5000
-                        if x[15] <= 0 {
+                        if x[15] == 0 {
                             // prev1_lat_3 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -451,7 +451,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                 } else {
                     if x[21] <= 1 {
                         // prev3_out_2 <= 1.5000
-                        if x[20] <= 0 {
+                        if x[20] == 0 {
                             // prev3_out_1 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -467,11 +467,11 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 5 {
                         // prev1_out_2 <= 5.5000
-                        if x[4] <= 0 {
+                        if x[4] == 0 {
                             // prev3_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -488,7 +488,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                 } else {
                     if x[11] <= 4 {
                         // prev2_lat_3 <= 4.5000
-                        if x[26] <= 0 {
+                        if x[26] == 0 {
                             // prev1_out_1 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -510,18 +510,18 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
             // cur_out_2 <= 5.5000
             if x[30] <= 4 {
                 // cur_out_2 <= 4.5000
-                if x[29] <= 0 {
+                if x[29] == 0 {
                     // cur_out_1 <= 0.5000
                     if x[30] <= 3 {
                         // cur_out_2 <= 3.5000
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -529,7 +529,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
                         if x[21] <= 1 {
                             // prev3_out_2 <= 1.5000
@@ -538,7 +538,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[12] <= 0 {
+                        if x[12] == 0 {
                             // prev1_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -547,7 +547,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[8] <= 0 {
+                if x[8] == 0 {
                     // prev2_lat_0 <= 0.5000
                     if x[21] <= 1 {
                         // prev3_out_2 <= 1.5000
@@ -566,7 +566,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[12] <= 0 {
+                    if x[12] == 0 {
                         // prev1_lat_0 <= 0.5000
                         if x[27] <= 2 {
                             // prev1_out_2 <= 2.5000
@@ -585,13 +585,13 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                 }
             }
         } else {
-            if x[8] <= 0 {
+            if x[8] == 0 {
                 // prev2_lat_0 <= 0.5000
                 if x[21] <= 1 {
                     // prev3_out_2 <= 1.5000
-                    if x[20] <= 0 {
+                    if x[20] == 0 {
                         // prev3_out_1 <= 0.5000
-                        if x[12] <= 0 {
+                        if x[12] == 0 {
                             // prev1_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -615,7 +615,7 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[0] <= 0 {
+                        if x[0] == 0 {
                             // prev4_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -624,11 +624,11 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 3 {
                         // prev1_out_2 <= 3.5000
-                        if x[4] <= 0 {
+                        if x[4] == 0 {
                             // prev3_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -674,15 +674,15 @@ pub fn predict_device1(x: &[u8; 31]) -> u8 {
 pub fn predict_device2(x: &[u8; 31]) -> u8 {
     if x[30] <= 1 {
         // cur_out_2 <= 1.5000
-        if x[29] <= 0 {
+        if x[29] == 0 {
             // cur_out_1 <= 0.5000
             if x[4] <= 2 {
                 // prev3_lat_0 <= 2.5000
                 if x[27] <= 1 {
                     // prev1_out_2 <= 1.5000
-                    if x[26] <= 0 {
+                    if x[26] == 0 {
                         // prev1_out_1 <= 0.5000
-                        if x[12] <= 0 {
+                        if x[12] == 0 {
                             // prev1_lat_0 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -697,9 +697,9 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
-                        if x[1] <= 0 {
+                        if x[1] == 0 {
                             // prev4_lat_1 <= 0.5000
                             1 // fast  (counts: [0, 0])
                         } else {
@@ -755,7 +755,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
         } else {
             if x[24] <= 1 {
                 // prev2_out_2 <= 1.5000
-                if x[23] <= 0 {
+                if x[23] == 0 {
                     // prev2_out_1 <= 0.5000
                     if x[9] <= 4 {
                         // prev2_lat_1 <= 4.5000
@@ -774,7 +774,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[12] <= 0 {
+                    if x[12] == 0 {
                         // prev1_lat_0 <= 0.5000
                         if x[2] <= 6 {
                             // prev4_lat_2 <= 6.5000
@@ -792,7 +792,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 1 {
                         // prev1_out_2 <= 1.5000
@@ -811,9 +811,9 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
-                        if x[4] <= 0 {
+                        if x[4] == 0 {
                             // prev3_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -835,7 +835,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
             // cur_out_2 <= 5.5000
             if x[30] <= 4 {
                 // cur_out_2 <= 4.5000
-                if x[29] <= 0 {
+                if x[29] == 0 {
                     // cur_out_1 <= 0.5000
                     if x[30] <= 3 {
                         // cur_out_2 <= 3.5000
@@ -846,7 +846,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[8] <= 0 {
+                        if x[8] == 0 {
                             // prev2_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -854,7 +854,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[8] <= 0 {
+                    if x[8] == 0 {
                         // prev2_lat_0 <= 0.5000
                         if x[21] <= 1 {
                             // prev3_out_2 <= 1.5000
@@ -863,7 +863,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[12] <= 0 {
+                        if x[12] == 0 {
                             // prev1_lat_0 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -872,11 +872,11 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[8] <= 0 {
+                if x[8] == 0 {
                     // prev2_lat_0 <= 0.5000
                     if x[21] <= 1 {
                         // prev3_out_2 <= 1.5000
-                        if x[20] <= 0 {
+                        if x[20] == 0 {
                             // prev3_out_1 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -891,7 +891,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                         }
                     }
                 } else {
-                    if x[12] <= 0 {
+                    if x[12] == 0 {
                         // prev1_lat_0 <= 0.5000
                         if x[27] <= 3 {
                             // prev1_out_2 <= 3.5000
@@ -900,7 +900,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                             0 // slow  (counts: [0, 0])
                         }
                     } else {
-                        if x[29] <= 0 {
+                        if x[29] == 0 {
                             // cur_out_1 <= 0.5000
                             0 // slow  (counts: [0, 0])
                         } else {
@@ -910,11 +910,11 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                 }
             }
         } else {
-            if x[8] <= 0 {
+            if x[8] == 0 {
                 // prev2_lat_0 <= 0.5000
                 if x[21] <= 1 {
                     // prev3_out_2 <= 1.5000
-                    if x[20] <= 0 {
+                    if x[20] == 0 {
                         // prev3_out_1 <= 0.5000
                         if x[30] <= 7 {
                             // cur_out_2 <= 7.5000
@@ -949,7 +949,7 @@ pub fn predict_device2(x: &[u8; 31]) -> u8 {
                     }
                 }
             } else {
-                if x[12] <= 0 {
+                if x[12] == 0 {
                     // prev1_lat_0 <= 0.5000
                     if x[27] <= 2 {
                         // prev1_out_2 <= 2.5000
