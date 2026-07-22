@@ -53,7 +53,7 @@ impl TimeoutBlocker {
 
         // Wake the registered waiters once the deadline elapses. The callback
         // holds only a `Weak` reference, so it becomes a no-op if the blocker is
-        // dropped. 
+        // dropped.
         let weak = Arc::downgrade(&this);
         timer::register_callback_on_cpu(move || {
             let Some(this) = weak.upgrade() else {
