@@ -3,13 +3,18 @@
 #![cfg(not(baseline_asterinas))]
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
-    orpc::oqueue::{OQueueError, StrongObserver},
+    orpc::{
+        oqueue::{OQueueError, StrongObserver},
+        sync::{BlockOnMany, Blocker},
+    },
+    sync::{WaitQueue, Waker, WakerKey},
     task::disable_preempt,
+    timer::Jiffies,
 };
 
 /// Heimdall: an asynchronous device performance monitor for RAID-1 arrays.
@@ -68,6 +73,61 @@ pub const DEFAULT_BATCH_SIZE: usize = 6;
 /// Default inference timeout in milliseconds, used when the
 /// `heimdall.inference_timeout_ms` kernel parameter is not set.
 pub const DEFAULT_INFERENCE_TIMEOUT_MS: u64 = 28;
+
+/// A [`Blocker`] that fires once an armed jiffies deadline elapses.
+struct TimeoutBlocker {
+    deadline: AtomicU64,
+    // This is added so I can somehow implement the Blocker trait. 
+    wait_queue: WaitQueue,
+}
+
+impl TimeoutBlocker {
+    fn new() -> Arc<Self> {
+        let this = Arc::new(Self {
+            deadline: AtomicU64::new(u64::MAX),
+            wait_queue: WaitQueue::new(),
+        });
+
+        // Wake the registered waiters once the deadline elapses.
+        let weak = Arc::downgrade(&this);
+        ostd::timer::register_callback_on_cpu(move || {
+            let Some(this) = weak.upgrade() else {
+                // if the TimeoutBlocker somehow disappears, do nothing
+                return;
+            };
+            if Jiffies::elapsed().as_u64() >= this.deadline.load(Ordering::Relaxed) {
+                this.wait_queue.wake_all();
+            }
+        });
+
+        this
+    }
+
+    /// Arms the timeout to fire at absolute jiffies `deadline`.
+    fn arm_at(&self, deadline: u64) {
+        self.deadline.store(deadline, Ordering::Release);
+    }
+
+    /// Disarms the timeout so it never fires.
+    fn disarm(&self) {
+        self.deadline.store(u64::MAX, Ordering::Release);
+    }
+}
+
+impl Blocker for TimeoutBlocker {
+    fn should_try(&self) -> bool {
+        // should try if deadline passed
+        Jiffies::elapsed().as_u64() >= self.deadline.load(Ordering::Acquire)
+    }
+
+    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
+        self.wait_queue.enqueue(waker.clone())
+    }
+
+    fn remove(&self, key: WakerKey) {
+        self.wait_queue.remove(key)
+    }
+}
 
 impl Heimdall {
     /// Creates a new Heimdall monitor.
@@ -144,8 +204,6 @@ impl Heimdall {
     ///   1. `batch_size` records have been drained, or
     ///   2. `inference_timeout_ms` have elapsed since the last inference.
     pub fn run(&self, observers: Vec<StrongObserver<BlockDeviceCompletionStats>>) {
-        use ostd::timer::Jiffies;
-
         let num_devices = self.members.len();
         // TIMER_FREQ is in Hz, so this converts the millisecond timeout to jiffies.
         let timeout_jiffies = self.inference_timeout_ms * ostd::timer::TIMER_FREQ / 1000;
@@ -159,7 +217,11 @@ impl Heimdall {
         let now = Jiffies::elapsed().as_u64();
         let mut last_inference_jiffies = alloc::vec![now; num_devices];
 
+        let timeout = TimeoutBlocker::new();
+        let mut block_on_many = BlockOnMany::new();
+
         loop {
+            let mut earliest_deadline: Option<u64> = None;
             for device_idx in 0..num_devices {
                 let observer = &observers[device_idx];
 
@@ -189,9 +251,7 @@ impl Heimdall {
                     }
                 }
 
-                // Condition 2: timeout elapsed and there is at least some data
-                // (or even no data — we still re-evaluate so the device can
-                // transition back to fast when IO pressure drops).
+                // Condition 2: timeout elapsed and there is at least some data.
                 let elapsed = Jiffies::elapsed()
                     .as_u64()
                     .wrapping_sub(last_inference_jiffies[device_idx]);
@@ -199,10 +259,24 @@ impl Heimdall {
                     self.run_inference(device_idx, &mut batch_buffers[device_idx]);
                     last_inference_jiffies[device_idx] = Jiffies::elapsed().as_u64();
                 }
+
+                if !batch_buffers[device_idx].is_empty() {
+                    let deadline = last_inference_jiffies[device_idx].saturating_add(timeout_jiffies);
+                    earliest_deadline = Some(earliest_deadline.map_or(deadline, |d| d.min(deadline)));
+                }
             }
 
-            // Yield to avoid busy-spinning when all queues are empty.
-            ostd::task::Task::yield_now();
+            // Arm the timeout only if at least one device has a pending partial batch;
+            match earliest_deadline {
+                Some(deadline) => timeout.arm_at(deadline),
+                None => timeout.disarm(),
+            }
+
+            let blockers = observers
+                .iter()
+                .map(|observer| observer as &dyn Blocker)
+                .chain(core::iter::once(&*timeout as &dyn Blocker));
+            block_on_many.block_on(blockers);
         }
     }
 
