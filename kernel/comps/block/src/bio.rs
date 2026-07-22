@@ -39,9 +39,9 @@ pub struct BlockDeviceCompletionStats {
     pub queue_len: u32,
     /// Size of the IO request, which is num_pages of a bio request.
     pub request_size_pages: u32,
-    /// The index of the device that produced this stat, or `None` if the
-    /// producing device has no logical index assigned.
-    pub device_index: Option<u32>,
+    /// The encoded ID (see `DeviceId::to_raw`) of the device that produced this
+    /// stat.
+    pub device_id: u32,
 }
 
 /// The unit for block I/O.
@@ -160,7 +160,7 @@ impl Bio {
             reply_handle: None,
             submission_time: None,
             #[cfg(not(baseline_asterinas))]
-            device_index: None,
+            device_id: Some(block_device.id().to_raw()),
             #[cfg(not(baseline_asterinas))]
             num_pages: None,
             #[cfg(not(baseline_asterinas))]
@@ -350,7 +350,7 @@ pub struct SubmittedBio {
     submission_time: Option<Duration>,
 
     #[cfg(not(baseline_asterinas))]
-    device_index: Option<u32>,
+    device_id: Option<u32>,
 
     #[cfg(not(baseline_asterinas))]
     num_pages: Option<u32>,
@@ -460,13 +460,11 @@ impl SubmittedBio {
     pub fn prepare_enqueue(
         &mut self,
         reply_handle: RefProducer<BlockDeviceCompletionStats>,
-        device_index: Option<u32>,
         outstanding_pages: u32,
         outstanding_requests: u32,
     ) {
         self.reply_handle = Some(reply_handle);
         self.submission_time = Some(read_monotonic_time());
-        self.device_index = device_index;
         self.num_pages(); // set the num_pages field
         self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap()); // accumulate the number of outstanding pages
         self.outstanding_requests = Some(outstanding_requests);
@@ -482,7 +480,7 @@ impl SubmittedBio {
                 outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
                 queue_len: self.outstanding_requests.unwrap_or(u32::MAX),
                 request_size_pages: self.num_pages.unwrap_or(u32::MAX),
-                device_index: self.device_index,
+                device_id: self.device_id.expect("device_id of this Bio request is not set."),
             });
     }
 }

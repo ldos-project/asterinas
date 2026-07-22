@@ -10,7 +10,7 @@ use alloc::{
 };
 use core::{
     fmt::Debug,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use aster_block::{
@@ -64,7 +64,6 @@ pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: BioRequestSingleQueue,
-    id: DeviceId,
     name: String,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -77,7 +76,6 @@ pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: Arc<BioRequestSingleQueue>,
-    id: DeviceId,
     name: String,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -115,14 +113,16 @@ impl BlockDevice {
 
     /// Creates a new VirtIO-Block driver and registers it.
     pub(crate) fn init(transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
-        let device = DeviceInner::init(transport)?;
-
         let index = NR_BLOCK_DEVICE.fetch_add(1, Ordering::Relaxed);
         let id = DeviceId::new(
             VIRTIO_BLOCK_MAJOR_ID.get().unwrap().get(),
             MinorId::new(index * VIRTIO_DEVICE_MINORS),
         );
         let name = Self::formatted_device_name(index);
+
+        // The inner device inherits this ID; it is the single source of truth
+        // and is used to tag I/O completion stats.
+        let device = DeviceInner::init(transport, id)?;
 
         // Each bio request includes an additional 1 request and 1 response descriptor,
         // therefore this upper bound is set to (QUEUE_SIZE - 2).
@@ -134,7 +134,6 @@ impl BlockDevice {
                 queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
                 ),
-                id,
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
@@ -152,7 +151,6 @@ impl BlockDevice {
                 queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
                 )),
-                id,
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
@@ -203,11 +201,6 @@ impl BlockDevice {
     pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
         bio.submit(self)
     }
-
-    /// Sets the logical index for this device, used to tag I/O completion stats.
-    pub fn set_device_index(&self, index: u32) {
-        self.device.device_index.store(index, Ordering::Relaxed);
-    }
 }
 
 impl aster_block::BlockDevice for BlockDevice {
@@ -216,12 +209,6 @@ impl aster_block::BlockDevice for BlockDevice {
         let reply_handle = self.bio_completion_oqueue().attach_ref_producer()?;
 
         let mut bio = bio;
-        // Convert the "unset" sentinel to `None` so the completion stat records a
-        // missing device index rather than a magic number.
-        let device_index = {
-            let raw = self.device.device_index.load(Ordering::Relaxed);
-            (raw != DeviceInner::UNSET_DEVICE_INDEX).then_some(raw)
-        };
         // Atomically bump the counters, capturing the pre-increment values so the
         // outstanding counts recorded for this bio are consistent with the bump.
         let outstanding_pages = self
@@ -234,7 +221,6 @@ impl aster_block::BlockDevice for BlockDevice {
             .fetch_add(1, Ordering::Relaxed);
         bio.prepare_enqueue(
             reply_handle,
-            device_index,
             outstanding_pages,
             outstanding_requests,
         );
@@ -260,7 +246,7 @@ impl aster_block::BlockDevice for BlockDevice {
     }
 
     fn id(&self) -> DeviceId {
-        self.id
+        self.device.device_id
     }
 
     fn set_partitions(&self, infos: Vec<Option<PartitionInfo>>) {
@@ -279,7 +265,10 @@ impl aster_block::BlockDevice for BlockDevice {
 
             let index = index as u32 + 1;
             let id = if index < VIRTIO_DEVICE_MINORS {
-                DeviceId::new(self.id.major(), MinorId::new(self.id.minor().get() + index))
+                DeviceId::new(
+                    self.device.device_id.major(),
+                    MinorId::new(self.device.device_id.minor().get() + index),
+                )
             } else {
                 EXTENDED_DEVICE_ID_ALLOCATOR.get().unwrap().allocate()
             };
@@ -326,9 +315,9 @@ struct DeviceInner {
     block_responses: Arc<DmaStream>,
     id_allocator: SyncIdAlloc,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
-    /// The device's logical index, or [`Self::UNSET_DEVICE_INDEX`] for a device
-    /// that is not a RAID member. Used to tag I/O completion stats.
-    device_index: AtomicU32,
+    /// The device's ID, inherited from the outer block device's standard
+    /// allocation. Used to tag I/O completion stats.
+    device_id: DeviceId,
     num_outstanding_pages: AtomicU32,
     num_outstanding_requests: AtomicU32,
 }
@@ -336,14 +325,12 @@ struct DeviceInner {
 impl DeviceInner {
     const QUEUE_SIZE: u16 = 64;
 
-    /// Sentinel stored in `device_index` before [`BlockDevice::set_device_index`]
-    /// assigns a real logical index. Converted to `None` when building completion
-    /// stats. `u32::MAX` is safe as a sentinel because a real array can never
-    /// have that many members.
-    const UNSET_DEVICE_INDEX: u32 = u32::MAX;
-
-    /// Creates and inits the device.
-    fn init(mut transport: Box<dyn VirtioTransport>) -> Result<Arc<Self>, VirtioDeviceError> {
+    /// Creates and inits the device with the given `id` (assigned by the outer
+    /// [`BlockDevice`] via standard device ID allocation).
+    fn init(
+        mut transport: Box<dyn VirtioTransport>,
+        id: DeviceId,
+    ) -> Result<Arc<Self>, VirtioDeviceError> {
         let config_manager = VirtioBlockConfig::new_manager(transport.as_ref());
 
         let config = config_manager.read_config();
@@ -387,7 +374,7 @@ impl DeviceInner {
             submitted_requests: SpinLock::new(BTreeMap::new()),
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
-            device_index: AtomicU32::new(Self::UNSET_DEVICE_INDEX),
+            device_id: id,
         });
 
         let cloned_device = device.clone();
@@ -470,12 +457,10 @@ impl DeviceInner {
                     let pages = bio
                         .get_num_pages()
                         .expect("num_pages was not set during prepare_enqueue");
-                    let outstanding = self
-                        .num_outstanding_pages
+                    self.num_outstanding_pages
                         .fetch_sub(pages, Ordering::Relaxed);
                     self.num_outstanding_requests
                         .fetch_sub(1, Ordering::Relaxed);
-                    // log::info!("\x1b[31mDecremented\x1b[0m Page Counter by {}, new value: {}, device_index: {}, type: {:?}", pages, outstanding, self.device_index.load(Ordering::Relaxed), req_type);
                     bio.report_statistics();
                 }
             });

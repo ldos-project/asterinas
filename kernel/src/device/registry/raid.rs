@@ -10,7 +10,15 @@
 #[cfg(not(baseline_asterinas))]
 use aster_raid::selection_policies;
 use aster_raid::{Raid1Device, Raid1DeviceError};
-#[cfg(not(baseline_asterinas))]
+#[cfg(all(
+    not(baseline_asterinas),
+    any(
+        raid_selection = "linnos",
+        raid_selection = "linnos_plus",
+        raid_selection = "decision_tree",
+        raid_admission = "heimdall"
+    )
+))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 #[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -54,14 +62,6 @@ fn setup_raid1_device() -> Result<()> {
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {
-        // Tag each member with its logical index so I/O completion stats are
-        // labeled by the member's position in the array.
-        for (index, member) in members.iter().enumerate() {
-            if let Some(virtio) = member.downcast_ref::<VirtIoBlockDevice>() {
-                virtio.set_device_index(index as u32);
-            }
-        }
-
         // Observer-based submission policies need one weak observer per member.
         #[cfg(any(
             raid_selection = "linnos",
