@@ -10,6 +10,7 @@ import json
 import anyio
 from mcp.server.fastmcp import FastMCP
 
+from .backend import build_backend
 from .config import Config
 from .frames import serialize
 from .oqfs import Oqfs
@@ -38,10 +39,11 @@ def _build() -> None:
     OQFS after setting env vars.
     """
     global _cfg, _transport, _oqfs, _streams
-    _cfg = Config.from_env()
-    _transport = Transport(_cfg)
-    _oqfs = Oqfs(_cfg, _transport)
-    _streams = StreamManager(_transport, _oqfs)
+    backend = build_backend()
+    _cfg = backend.cfg
+    _transport = backend.transport
+    _oqfs = backend.oqfs
+    _streams = backend.streams
 
 
 _build()

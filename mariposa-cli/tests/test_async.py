@@ -5,7 +5,7 @@ import time
 
 from conftest import fifo_queue
 
-from oqueues_mcp import server
+from mariposa_cli.oqueues import server
 
 
 def test_async_smoke(fake_oqfs):

@@ -157,6 +157,31 @@ class StreamManager:
             except Exception:
                 process.kill()
 
+    def collect(
+        self,
+        oqueue_path: str,
+        max_records: int | None = None,
+        timeout_s: float | None = None,
+    ) -> tuple[Session, list[Any]]:
+        """Start a bounded drain, block until it finishes, and return
+        ``(session, records)``.
+
+        A bound is required: without ``max_records`` or ``timeout_s`` the drain
+        would run forever and this call would never return — use ``start`` for
+        an unbounded session. This is the blocking counterpart the CLI uses; the
+        MCP server drives the same session non-blockingly so it can cancel.
+        """
+        if max_records is None and timeout_s is None:
+            raise ValueError(
+                "collect requires max_records or timeout_s; "
+                "use start for an unbounded stream"
+            )
+        session = self.start(
+            oqueue_path, max_records=max_records, timeout_s=timeout_s
+        )
+        session.thread.join()
+        return self.read(session.stream_id)
+
     def read(self, stream_id: str) -> tuple[Session, list[Any]]:
         session = self._get(stream_id)
         with session.lock:

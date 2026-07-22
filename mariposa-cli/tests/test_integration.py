@@ -4,10 +4,10 @@ import time
 
 from conftest import fifo_queue
 
-from oqueues_mcp.config import Config
-from oqueues_mcp.oqfs import Oqfs
-from oqueues_mcp.streams import StreamManager
-from oqueues_mcp.transport import Transport
+from mariposa_cli.oqueues.config import Config
+from mariposa_cli.oqueues.oqfs import Oqfs
+from mariposa_cli.oqueues.streams import StreamManager
+from mariposa_cli.oqueues.transport import Transport
 
 
 def _stack():

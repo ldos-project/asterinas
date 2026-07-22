@@ -12,19 +12,19 @@ from typing import Any
 import polars as pl
 
 
-def _jsonify(value: Any) -> Any:
+def jsonify(value: Any) -> Any:
     """Coerce CBOR-decoded values into JSON/Arrow-friendly Python types."""
     if isinstance(value, dict):
-        return {str(k): _jsonify(v) for k, v in value.items()}
+        return {str(k): jsonify(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_jsonify(v) for v in value]
+        return [jsonify(v) for v in value]
     if isinstance(value, (bytes, bytearray)):
         return value.hex()
     return value
 
 
 def to_frame(records: list[Any]) -> pl.DataFrame:
-    rows = [_jsonify(r) for r in records]
+    rows = [jsonify(r) for r in records]
     # Wrap non-map records so they still land in a column.
     rows = [r if isinstance(r, dict) else {"value": r} for r in rows]
     if not rows:
@@ -39,7 +39,7 @@ def to_frame(records: list[Any]) -> pl.DataFrame:
 def serialize(records: list[Any], fmt: str = "csv") -> str:
     """Serialize records to ``csv`` or ``json`` (list-of-records) text."""
     if fmt == "json":
-        return json.dumps([_jsonify(r) for r in records], default=str)
+        return json.dumps([jsonify(r) for r in records], default=str)
     df = to_frame(records)
     if df.is_empty():
         return ""

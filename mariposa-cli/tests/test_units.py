@@ -2,8 +2,8 @@ import io
 
 from conftest import cbor_blob
 
-from oqueues_mcp.cbor_stream import iter_records
-from oqueues_mcp.frames import serialize, to_frame
+from mariposa_cli.oqueues.cbor_stream import iter_records
+from mariposa_cli.oqueues.frames import serialize, to_frame
 
 
 def test_iter_records_decodes_concatenated_items():
