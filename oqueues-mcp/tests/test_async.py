@@ -1,36 +1,11 @@
 """Verify tools are async and non-blocking: concurrent streams, live progress."""
 
 import asyncio
-import os
-import threading
 import time
 
-import cbor2
+from conftest import fifo_queue
 
 from oqueues_mcp import server
-
-
-def _make_fifo_queue(root, name, records, hold_s):
-    """Create <root>/<name>/strong_observe as a fifo fed by a writer that holds
-    it open for hold_s seconds (so timeout/kill paths are exercised)."""
-    qdir = root / name
-    qdir.mkdir(parents=True)
-    so = qdir / "strong_observe"
-    os.mkfifo(so)
-    stop = threading.Event()
-
-    def writer():
-        with open(so, "wb") as f:
-            for r in records:
-                f.write(cbor2.dumps(r))
-            f.flush()
-            deadline = time.monotonic() + hold_s
-            while not stop.is_set() and time.monotonic() < deadline:
-                time.sleep(0.05)
-
-    t = threading.Thread(target=writer, daemon=True)
-    t.start()
-    return name, stop, t
 
 
 def test_async_smoke(fake_oqfs):
@@ -49,8 +24,8 @@ def test_concurrent_stream_collect(fake_oqfs):
     # Two independent fifo-backed queues, each drained for ~1s. Running them
     # concurrently must finish in ~1s, not ~2s — proof the loop isn't blocked.
     server._build()
-    a = _make_fifo_queue(fake_oqfs, "modA/q", [{"n": 1}, {"n": 2}], hold_s=2)
-    b = _make_fifo_queue(fake_oqfs, "modB/q", [{"n": 9}], hold_s=2)
+    a = fifo_queue(fake_oqfs, "modA/q", [{"n": 1}, {"n": 2}], hold_s=2)
+    b = fifo_queue(fake_oqfs, "modB/q", [{"n": 9}], hold_s=2)
 
     async def go():
         start = time.monotonic()
@@ -62,7 +37,7 @@ def test_concurrent_stream_collect(fake_oqfs):
         return ra, rb, elapsed
 
     ra, rb, elapsed = asyncio.run(go())
-    for _, stop, t in (a, b):
+    for stop, t in (a, b):
         stop.set()
         t.join(timeout=2)
 
@@ -74,7 +49,7 @@ def test_concurrent_stream_collect(fake_oqfs):
 def test_stream_collect_cancel_stops_stream(fake_oqfs):
     # A fifo that stays open: cancelling the collect must stop the drain.
     server._build()
-    name, stop, t = _make_fifo_queue(fake_oqfs, "modC/q", [{"n": 1}], hold_s=5)
+    stop, t = fifo_queue(fake_oqfs, "modC/q", [{"n": 1}], hold_s=5)
 
     async def go():
         task = asyncio.create_task(server.stream_collect("modC/q", timeout_s=30.0))

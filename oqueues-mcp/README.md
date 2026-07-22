@@ -16,7 +16,7 @@ to reduce the impact to the guest.
 | `stream_collect` | Bounded drain (max_records / timeout) → CSV/JSON.        |
 | `stream_start`   | Begin a session (bounded or infinite) → `stream_id`.     |
 | `stream_read`    | Records accumulated since the last read.                  |
-| `stream_stop`    | Kill signal for an infinite stream.                      |
+| `stream_stop`    | Kill signal for a streaming session.                     |
 | `stream_list`    | Active sessions.                                          |
 
 ## Configuration (env)
@@ -30,6 +30,7 @@ to reduce the impact to the guest.
 | `OQ_SSH_KEY`       | —                | SSH private key path (optional).     |
 | `OQ_ROOT`          | `/oqueues`       | OQFS root.                            |
 | `OQ_METADATA_FILE` | `metadata.yaml`  | Metadata filename.                   |
+| `OQ_COMMAND_TIMEOUT` | `30.0`         | Per-command timeout, seconds.        |
 
 ## Install
 

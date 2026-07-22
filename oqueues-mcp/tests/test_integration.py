@@ -1,10 +1,8 @@
 """End-to-end tests driving the real code paths via OQ_TRANSPORT=local."""
 
-import os
-import threading
 import time
 
-import cbor2
+from conftest import fifo_queue
 
 from oqueues_mcp.config import Config
 from oqueues_mcp.oqfs import Oqfs
@@ -63,22 +61,7 @@ def test_stream_completes_on_eof(fake_oqfs):
 def test_stream_timeout(fake_oqfs):
     # An OQueue whose strong_observe is a fifo that never closes: the timeout
     # watchdog must terminate the drain.
-    q = fake_oqfs / "watchdog" / "q"
-    q.mkdir(parents=True)
-    so = q / "strong_observe"
-    os.mkfifo(so)
-
-    stop = threading.Event()
-
-    def writer():
-        with open(so, "wb") as f:
-            f.write(cbor2.dumps({"tick": 1}))
-            f.flush()
-            while not stop.is_set():
-                time.sleep(0.05)
-
-    t = threading.Thread(target=writer, daemon=True)
-    t.start()
+    stop, t = fifo_queue(fake_oqfs, "watchdog/q", [{"tick": 1}])
 
     _, _, _, mgr = _stack()
     started = time.monotonic()
@@ -97,22 +80,7 @@ def test_stream_timeout(fake_oqfs):
 
 def test_stream_infinite_kill(fake_oqfs):
     # Replace strong_observe with a fifo for an unbounded stream.
-    so = fake_oqfs / "scheduler" / "events" / "strong_observe"
-    so.unlink()
-    os.mkfifo(so)
-
-    stop = threading.Event()
-
-    def writer():
-        with open(so, "wb") as f:
-            f.write(cbor2.dumps({"n": 1}))
-            f.write(cbor2.dumps({"n": 2}))
-            f.flush()
-            while not stop.is_set():
-                time.sleep(0.05)
-
-    t = threading.Thread(target=writer, daemon=True)
-    t.start()
+    stop, t = fifo_queue(fake_oqfs, "scheduler/events", [{"n": 1}, {"n": 2}])
 
     _, _, _, mgr = _stack()
     session = mgr.start("scheduler/events")  # infinite

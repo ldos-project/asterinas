@@ -16,10 +16,19 @@ from .oqfs import Oqfs
 from .streams import StreamManager
 from .transport import Transport
 
+# Cadence at which stream_collect awaits its background drain without blocking
+# the event loop.
+_COLLECT_POLL_S = 0.1
+
 _cfg: Config
 _transport: Transport
 _oqfs: Oqfs
 _streams: StreamManager
+
+
+def _json(obj) -> str:
+    """Pretty-print a tool result as JSON (the shape agents expect back)."""
+    return json.dumps(obj, indent=2)
 
 
 def _build() -> None:
@@ -61,7 +70,7 @@ async def list_oqueues() -> str:
     programmatically selecting an OQueue.
     """
     queues = await anyio.to_thread.run_sync(_oqfs.list_oqueues)
-    return json.dumps(queues, indent=2)
+    return _json(queues)
 
 
 @mcp.tool()
@@ -101,7 +110,7 @@ async def stream_collect(
     session = _streams.start(oqueue_path, max_records=max_records, timeout_s=timeout_s)
     try:
         while session.thread.is_alive():
-            await anyio.sleep(0.1)
+            await anyio.sleep(_COLLECT_POLL_S)
     finally:
         # On cancellation (or any early exit) make sure the guest `cat` dies.
         if session.snapshot()["status"] == "running":
@@ -128,7 +137,7 @@ async def stream_start(
             oqueue_path, max_records=max_records, timeout_s=timeout_s
         )
     )
-    return json.dumps(session.snapshot(), indent=2)
+    return _json(session.snapshot())
 
 
 @mcp.tool()
@@ -141,7 +150,7 @@ async def stream_read(stream_id: str, fmt: str = "csv") -> str:
     session, records = _streams.read(stream_id)
     snap = session.snapshot()
     data = await anyio.to_thread.run_sync(serialize, records, fmt)
-    return json.dumps(
+    return _json(
         {
             "stream_id": stream_id,
             "status": snap["status"],
@@ -151,8 +160,7 @@ async def stream_read(stream_id: str, fmt: str = "csv") -> str:
             "error": snap["error"],
             "format": fmt,
             "data": data,
-        },
-        indent=2,
+        }
     )
 
 
@@ -163,13 +171,13 @@ async def stream_stop(stream_id: str) -> str:
     Read any final records with `stream_read` afterward.
     """
     session = await anyio.to_thread.run_sync(_streams.stop, stream_id)
-    return json.dumps(session.snapshot(), indent=2)
+    return _json(session.snapshot())
 
 
 @mcp.tool()
 async def stream_list() -> str:
     """List all streaming sessions and their status (JSON)."""
-    return json.dumps(_streams.list(), indent=2)
+    return _json(_streams.list())
 
 
 def main() -> None:

@@ -21,6 +21,11 @@ from .cbor_stream import iter_records
 from .oqfs import Oqfs
 from .transport import Transport
 
+# Grace period between SIGTERM and SIGKILL when stopping the guest process.
+_KILL_GRACE_S = 2.0
+# Cadence at which the timeout watchdog re-checks its deadline.
+_WATCHDOG_POLL_S = 0.2
+
 
 @dataclass
 class Session:
@@ -37,6 +42,16 @@ class Session:
     status: str = "running"  # running | completed | stopped | error
     error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def finalize(self, status: str, error: str | None = None) -> bool:
+        """Move a still-running session to a terminal status; the first
+        terminal status wins. Returns whether this call applied the change."""
+        with self.lock:
+            if self.status != "running":
+                return False
+            self.status = status
+            self.error = error
+            return True
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -114,20 +129,13 @@ class StreamManager:
                     )
                 if reached:
                     self._kill(session.process)
-                    with session.lock:
-                        if session.status == "running":
-                            session.status = "completed"
+                    session.finalize("completed")
                     break
             else:
                 # Iterator exhausted: the stream closed on its own.
-                with session.lock:
-                    if session.status == "running":
-                        session.status = "completed"
+                session.finalize("completed")
         except Exception as exc:  # decode/pipe failure
-            with session.lock:
-                if session.status == "running":
-                    session.status = "error"
-                    session.error = str(exc)
+            session.finalize("error", str(exc))
         finally:
             self._kill(session.process)
 
@@ -136,10 +144,8 @@ class StreamManager:
         while time.monotonic() < deadline:
             if session.process.poll() is not None:
                 return  # already finished
-            time.sleep(min(0.2, deadline - time.monotonic()))
-        with session.lock:
-            if session.status == "running":
-                session.status = "completed"
+            time.sleep(min(_WATCHDOG_POLL_S, deadline - time.monotonic()))
+        session.finalize("completed")
         self._kill(session.process)
 
     @staticmethod
@@ -147,7 +153,7 @@ class StreamManager:
         if process.poll() is None:
             process.terminate()
             try:
-                process.wait(timeout=2.0)
+                process.wait(timeout=_KILL_GRACE_S)
             except Exception:
                 process.kill()
 
@@ -161,9 +167,7 @@ class StreamManager:
     def stop(self, stream_id: str) -> Session:
         """The kill signal for a session."""
         session = self._get(stream_id)
-        with session.lock:
-            if session.status == "running":
-                session.status = "stopped"
+        session.finalize("stopped")
         self._kill(session.process)
         return session
 

@@ -37,9 +37,10 @@ class Transport:
         ]
         return argv
 
-    def run(self, remote_command: str, timeout: float | None = 30.0) -> str:
+    def run(self, remote_command: str, timeout: float | None = None) -> str:
         """Runs ``remote_command`` and returns its stdout as text.
 
+        ``timeout`` defaults to the config's ``command_timeout`` when omitted.
         Raises ``RuntimeError`` on a non-zero exit so callers can surface the
         guest's stderr to the agent.
         """
@@ -47,7 +48,7 @@ class Transport:
             self._argv(remote_command),
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=self._cfg.command_timeout if timeout is None else timeout,
         )
         if proc.returncode != 0:
             raise RuntimeError(

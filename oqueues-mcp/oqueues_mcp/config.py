@@ -19,6 +19,7 @@ class Config:
     key: str | None
     root: str
     metadata_file: str
+    command_timeout: float
 
     @staticmethod
     def from_env() -> "Config":
@@ -30,4 +31,5 @@ class Config:
             key=os.environ.get("OQ_SSH_KEY") or None,
             root=os.environ.get("OQ_ROOT", "/oqueues"),
             metadata_file=os.environ.get("OQ_METADATA_FILE", "metadata.yaml"),
+            command_timeout=float(os.environ.get("OQ_COMMAND_TIMEOUT", "30.0")),
         )
