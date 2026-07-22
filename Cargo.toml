@@ -115,7 +115,7 @@ exclude = [
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)', 'cfg(raid_selection, values("roundrobin", "linnos", "linnos_plus", "decision_tree"))', 'cfg(raid_admission, values("heimdall"))'] }
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(baseline_asterinas)', 'cfg(ktest)'] }
 
 [workspace.lints.clippy]
 allow_attributes = "warn"

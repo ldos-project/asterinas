@@ -232,14 +232,6 @@ ifeq ($(CAPTURE_DATA), 1)
 RUSTFLAGS += --cfg=capture_data
 endif
 
-ifdef RAID_SELECTION
-RUSTFLAGS += --cfg=raid_selection="$(RAID_SELECTION)"
-endif
-
-ifdef RAID_ADMISSION
-RUSTFLAGS += --cfg=raid_admission="$(RAID_ADMISSION)"
-endif
-
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's
 # GRUB release, which is installed in /usr/bin in our Docker image.
 ifeq ($(BOOT_PROTOCOL), linux-efi-handover64)

@@ -7,21 +7,15 @@
 //! (`/dev/raid`) like any other block device, so user space can mount a
 //! filesystem on it (e.g., `mount -t ext2 /dev/raid /raid1`).
 
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+#[cfg(not(baseline_asterinas))]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(not(baseline_asterinas))]
 use aster_raid::selection_policies;
+#[cfg(not(baseline_asterinas))]
+use aster_raid::server_traits::SelectionPolicy;
 use aster_raid::{Raid1Device, Raid1DeviceError};
-#[cfg(all(
-    not(baseline_asterinas),
-    any(
-        raid_selection = "linnos",
-        raid_selection = "linnos_plus",
-        raid_selection = "decision_tree",
-        raid_admission = "heimdall"
-    )
-))]
+#[cfg(not(baseline_asterinas))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 use spin::Once;
@@ -43,6 +37,28 @@ const RAID_DEVICE_NAME: &str = "raid";
 /// by the [`aster_cmdline`] registration below.
 const RAID_MEMBERS_PARAM: &str = "raid.members";
 
+/// The kernel command-line parameter naming the read-selection policy.
+///
+/// Set via `raid.selection=<name>` where `<name>` is one of `roundrobin`
+/// (default), `linnos`, `linnos_plus`, or `decision_tree`. Choosing the policy
+/// at runtime (rather than a build-time `cfg`) keeps every policy compiled in a
+/// single build, so none can silently bitrot.
+#[cfg(not(baseline_asterinas))]
+const RAID_SELECTION_PARAM: &str = "raid.selection";
+
+/// The read-selection policy used when `raid.selection` is not set.
+#[cfg(not(baseline_asterinas))]
+const DEFAULT_RAID_SELECTION: &str = "roundrobin";
+
+/// The kernel command-line parameter selecting the admission policy.
+///
+/// Set via `raid.admission=heimdall` to enable the Heimdall performance monitor.
+/// When unset, no admission policy is used and every member is always offered to
+/// the selection policy. Choosing this at runtime keeps the Heimdall code
+/// compiled in every build rather than hidden behind a `cfg`.
+#[cfg(not(baseline_asterinas))]
+const RAID_ADMISSION_PARAM: &str = "raid.admission";
+
 /// Assembles and registers the RAID-1 device.
 ///
 /// This must run after the member disks' worker threads have been spawned
@@ -62,49 +78,35 @@ fn setup_raid1_device() -> Result<()> {
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {
-        // Observer-based submission policies need one weak observer per member.
-        #[cfg(any(
-            raid_selection = "linnos",
-            raid_selection = "linnos_plus",
-            raid_selection = "decision_tree"
-        ))]
-        let observers = {
-            use aster_virtio::device::block::server_traits::BlockIOObservable as _;
-            use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
-            members
-                .iter()
-                .map(|member| {
-                    let virtio = member
-                        .downcast_ref::<VirtIoBlockDevice>()
-                        .expect("RAID member must be a VirtIoBlockDevice");
-                    ostd::sync::Mutex::new(
-                        virtio
-                            .bio_completion_oqueue()
-                            .attach_weak_observer(4, ObservationQuery::identity())
-                            .expect("Failed to attach weak observer to bio_completion_oqueue"),
-                    )
-                })
-                .collect()
+        // The read-selection policy is chosen at runtime via the `raid.selection`
+        // kernel parameter (default: round-robin). Every policy is compiled
+        // unconditionally, so a change to one cannot silently bitrot another and
+        // CI exercises all of them in a single build.
+        let selection = RAID_SELECTION
+            .get()
+            .map(String::as_str)
+            .unwrap_or(DEFAULT_RAID_SELECTION);
+        let selection_policy: Arc<dyn SelectionPolicy> = match selection {
+            "roundrobin" => selection_policies::RoundRobinPolicy::new(members.clone())?,
+            "linnos" => selection_policies::LinnOSPolicy::new(
+                members.clone(),
+                attach_weak_observers(&members),
+            )?,
+            "linnos_plus" => selection_policies::LinnOSPlusPolicy::new(
+                members.clone(),
+                attach_weak_observers(&members),
+            )?,
+            "decision_tree" => selection_policies::DecisionTreePolicy::new(
+                members.clone(),
+                attach_weak_observers(&members),
+            )?,
+            other => {
+                warn!("[raid] unknown raid.selection '{other}'; falling back to round-robin");
+                selection_policies::RoundRobinPolicy::new(members.clone())?
+            }
         };
 
-        // Select the submission (read-selection) policy chosen at build time via
-        // the `raid_selection` cfg; round-robin is the default.
-        #[cfg(raid_selection = "linnos")]
-        let selection_policy = selection_policies::LinnOSPolicy::new(members.clone(), observers)?;
-        #[cfg(raid_selection = "linnos_plus")]
-        let selection_policy =
-            selection_policies::LinnOSPlusPolicy::new(members.clone(), observers)?;
-        #[cfg(raid_selection = "decision_tree")]
-        let selection_policy =
-            selection_policies::DecisionTreePolicy::new(members.clone(), observers)?;
-        #[cfg(not(any(
-            raid_selection = "linnos",
-            raid_selection = "linnos_plus",
-            raid_selection = "decision_tree"
-        )))]
-        let selection_policy = selection_policies::RoundRobinPolicy::new(members.clone())?;
-
-        // Build the optional Heimdall admission layer (raid_admission cfg).
+        // Build the optional admission layer (`raid.admission` kernel parameter).
         let admission = build_admission(&members);
 
         Raid1Device::init(RAID_DEVICE_NAME, members, selection_policy, admission)
@@ -134,34 +136,68 @@ fn setup_raid1_device() -> Result<()> {
     Ok(())
 }
 
-/// Builds the optional Heimdall admission layer selected at build time via the
-/// `raid_admission` cfg. Returns `None` unless `raid_admission="heimdall"`, in
-/// which case the Heimdall monitor thread is also spawned.
+/// Builds the optional admission layer selected at runtime via the
+/// `raid.admission` kernel parameter. Returns `None` (admission disabled) unless
+/// `raid.admission=heimdall`, in which case the Heimdall monitor thread is also
+/// spawned.
 #[cfg(not(baseline_asterinas))]
 fn build_admission(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Option<Arc<aster_raid::heimdall::Heimdall>> {
-    #[cfg(raid_admission = "heimdall")]
-    {
-        Some(setup_heimdall(members))
-    }
-    #[cfg(not(raid_admission = "heimdall"))]
-    {
-        let _ = members;
-        None
+    match RAID_ADMISSION.get().map(String::as_str) {
+        // Default: no admission policy.
+        None => None,
+        Some("heimdall") => Some(setup_heimdall(members)),
+        Some(other) => {
+            warn!("[raid] unknown raid.admission '{other}'; admission disabled");
+            None
+        }
     }
 }
 
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+/// Attaches one weak observer per member to its bio-completion OQueue, each
+/// wrapped in a `Mutex` as the observer-based selection policies expect.
+///
+/// # Panics
+///
+/// Panics if a member is not a `VirtIoBlockDevice`.
+#[cfg(not(baseline_asterinas))]
+fn attach_weak_observers(
+    members: &[Arc<dyn aster_block::BlockDevice>],
+) -> Vec<
+    ostd::sync::Mutex<
+        ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>,
+    >,
+> {
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+
+    members
+        .iter()
+        .map(|member| {
+            let virtio = member
+                .downcast_ref::<VirtIoBlockDevice>()
+                .expect("RAID member must be a VirtIoBlockDevice");
+            ostd::sync::Mutex::new(
+                virtio
+                    .bio_completion_oqueue()
+                    .attach_weak_observer(4, ObservationQuery::identity())
+                    .expect("Failed to attach weak observer to bio_completion_oqueue"),
+            )
+        })
+        .collect()
+}
+
+#[cfg(not(baseline_asterinas))]
 static HEIMDALL_BATCH_SIZE: AtomicU32 =
     AtomicU32::new(aster_raid::heimdall::DEFAULT_BATCH_SIZE as u32);
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+#[cfg(not(baseline_asterinas))]
 aster_cmdline::define_kv_param!("heimdall.batch_size", HEIMDALL_BATCH_SIZE);
 
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+#[cfg(not(baseline_asterinas))]
 static HEIMDALL_INFERENCE_TIMEOUT_MS: AtomicU32 =
     AtomicU32::new(aster_raid::heimdall::DEFAULT_INFERENCE_TIMEOUT_MS as u32);
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+#[cfg(not(baseline_asterinas))]
 aster_cmdline::define_kv_param!(
     "heimdall.inference_timeout_ms",
     HEIMDALL_INFERENCE_TIMEOUT_MS
@@ -170,7 +206,7 @@ aster_cmdline::define_kv_param!(
 /// Creates the Heimdall performance monitor over `members` and spawns its
 /// background inference thread. The returned handle is shared with the RAID
 /// device so the admission decisions stay in sync with the monitor.
-#[cfg(all(not(baseline_asterinas), raid_admission = "heimdall"))]
+#[cfg(not(baseline_asterinas))]
 fn setup_heimdall(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Arc<aster_raid::heimdall::Heimdall> {
@@ -282,3 +318,17 @@ fn spawn_worker_thread(raid_id: DeviceId) {
 /// [`RAID_MEMBERS_PARAM`]).
 static RAID_MEMBERS: Once<String> = Once::new();
 aster_cmdline::define_kv_param!(RAID_MEMBERS_PARAM, RAID_MEMBERS);
+
+/// The read-selection policy name, populated during early boot from the
+/// `raid.selection` kernel command-line argument (see [`RAID_SELECTION_PARAM`]).
+#[cfg(not(baseline_asterinas))]
+static RAID_SELECTION: Once<String> = Once::new();
+#[cfg(not(baseline_asterinas))]
+aster_cmdline::define_kv_param!(RAID_SELECTION_PARAM, RAID_SELECTION);
+
+/// The admission policy name, populated during early boot from the
+/// `raid.admission` kernel command-line argument (see [`RAID_ADMISSION_PARAM`]).
+#[cfg(not(baseline_asterinas))]
+static RAID_ADMISSION: Once<String> = Once::new();
+#[cfg(not(baseline_asterinas))]
+aster_cmdline::define_kv_param!(RAID_ADMISSION_PARAM, RAID_ADMISSION);
