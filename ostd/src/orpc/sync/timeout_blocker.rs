@@ -13,9 +13,9 @@ use crate::{
 
 /// A [`Blocker`] that becomes ready once an armed jiffies deadline elapses.
 ///
-/// Add it to a wait set (e.g. [`BlockOnMany::block_on`]) alongside other
-/// blockers so a thread that is otherwise waiting for events can also be woken
-/// by a timeout. This is the building block for loops that want to block until
+/// Add it to a wait set (e.g. [`BlockOnMany::block_on`]), potentially alongside other
+/// blockers, so a thread that is waiting for events can also be woken
+/// by a timeout. It could be used to build loops that want to block until
 /// *either* a message arrives *or* a deadline passes.
 ///
 /// It starts disarmed and can be armed and disarmed repeatedly:
@@ -53,8 +53,7 @@ impl TimeoutBlocker {
 
         // Wake the registered waiters once the deadline elapses. The callback
         // holds only a `Weak` reference, so it becomes a no-op if the blocker is
-        // dropped. The deadline is a self-contained value that gates no other
-        // memory, so `Relaxed` ordering is sufficient.
+        // dropped. 
         let weak = Arc::downgrade(&this);
         timer::register_callback_on_cpu(move || {
             let Some(this) = weak.upgrade() else {
