@@ -158,6 +158,7 @@ impl Bio {
             bio_inner: self.0.clone(),
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
+            #[cfg(not(baseline_asterinas))]
             submission_time: None,
             #[cfg(not(baseline_asterinas))]
             device_id: Some(block_device.id().to_raw()),
@@ -404,12 +405,14 @@ impl SubmittedBio {
     /// Unlike [`Self::num_pages`], this does not compute the value on demand and
     /// takes `&self`; it returns `None` when `num_pages` has not been set yet.
     /// The caller asserts availability where that is known.
+    #[cfg(not(baseline_asterinas))]
     pub fn get_num_pages(&self) -> Option<u32> {
         self.num_pages
     }
 
     /// Returns the number of 4KB pages covered by this bio's sector range.
     /// Note the field num_pages is only available when calling this function, but accessing it directly is not available.
+    #[cfg(not(baseline_asterinas))]
     pub fn num_pages(&mut self) -> u32 {
         *self.num_pages.get_or_insert_with(|| {
             let sectors =
@@ -449,6 +452,7 @@ impl SubmittedBio {
         }
     }
 
+    #[cfg(not(baseline_asterinas))]
     pub fn submission_time(&self) -> Option<Duration> {
         self.submission_time
     }
