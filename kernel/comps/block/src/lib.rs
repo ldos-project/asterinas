@@ -92,10 +92,10 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
     }
 
     /// Returns the number of outstanding pages for this device.
-    /// 
+    ///
     /// The default implementation is here solely to make other types
-    /// implemented this trait to compile, but it is never expected to 
-    /// be called. 
+    /// implemented this trait to compile, but it is never expected to
+    /// be called.
     fn num_outstanding_pages(&self) -> u32 {
         ostd::error!(
             "num_outstanding_pages called on a block device that does not track outstanding I/O"
@@ -104,10 +104,10 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
     }
 
     /// Returns the number of outstanding requests for this device.
-    /// 
+    ///
     /// The default implementation is here solely to make other types
-    /// implemented this trait to compile, but it is never expected to 
-    /// be called. 
+    /// implemented this trait to compile, but it is never expected to
+    /// be called.
     fn num_outstanding_requests(&self) -> u32 {
         ostd::error!(
             "num_outstanding_requests called on a block device that does not track outstanding I/O"

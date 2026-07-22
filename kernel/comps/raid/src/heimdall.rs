@@ -3,16 +3,15 @@
 #![cfg(not(baseline_asterinas))]
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
     orpc::{
         oqueue::{OQueueError, StrongObserver},
-        sync::{BlockOnMany, Blocker},
+        sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
-    sync::{WaitQueue, Waker, WakerKey},
     task::disable_preempt,
     timer::Jiffies,
 };
@@ -73,61 +72,6 @@ pub const DEFAULT_BATCH_SIZE: usize = 6;
 /// Default inference timeout in milliseconds, used when the
 /// `heimdall.inference_timeout_ms` kernel parameter is not set.
 pub const DEFAULT_INFERENCE_TIMEOUT_MS: u64 = 28;
-
-/// A [`Blocker`] that fires once an armed jiffies deadline elapses.
-struct TimeoutBlocker {
-    deadline: AtomicU64,
-    // This is added so I can somehow implement the Blocker trait.
-    wait_queue: WaitQueue,
-}
-
-impl TimeoutBlocker {
-    fn new() -> Arc<Self> {
-        let this = Arc::new(Self {
-            deadline: AtomicU64::new(u64::MAX),
-            wait_queue: WaitQueue::new(),
-        });
-
-        // Wake the registered waiters once the deadline elapses.
-        let weak = Arc::downgrade(&this);
-        ostd::timer::register_callback_on_cpu(move || {
-            let Some(this) = weak.upgrade() else {
-                // if the TimeoutBlocker somehow disappears, do nothing
-                return;
-            };
-            if Jiffies::elapsed().as_u64() >= this.deadline.load(Ordering::Relaxed) {
-                this.wait_queue.wake_all();
-            }
-        });
-
-        this
-    }
-
-    /// Arms the timeout to fire at absolute jiffies `deadline`.
-    fn arm_at(&self, deadline: u64) {
-        self.deadline.store(deadline, Ordering::Release);
-    }
-
-    /// Disarms the timeout so it never fires.
-    fn disarm(&self) {
-        self.deadline.store(u64::MAX, Ordering::Release);
-    }
-}
-
-impl Blocker for TimeoutBlocker {
-    fn should_try(&self) -> bool {
-        // should try if deadline passed
-        Jiffies::elapsed().as_u64() >= self.deadline.load(Ordering::Acquire)
-    }
-
-    fn enqueue(&self, waker: &Arc<Waker>) -> WakerKey {
-        self.wait_queue.enqueue(waker.clone())
-    }
-
-    fn remove(&self, key: WakerKey) {
-        self.wait_queue.remove(key)
-    }
-}
 
 impl Heimdall {
     /// Creates a new Heimdall monitor.
