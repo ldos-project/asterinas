@@ -58,13 +58,13 @@ macro_rules! trace_structured_data {
 
     ({$($path:tt)*}, $value:expr, $ty:ty, length = $length:expr $(,)?) => {{
         use spin::Once;
-        static PRODUCER: Once<$crate::orpc::oqueue::RefProducer<$crate::orpc::oqueue::ReflessElementDescriptor<$ty>>> = Once::new();
+        static PRODUCER: Once<$crate::orpc::oqueue::RefProducer<<$ty as $crate::orpc::oqueue::Element>::Descriptor>> = Once::new();
 
         let path: $crate::orpc::path::StaticPath = $crate::static_path!($($path)+);
         $crate::orpc::oqueue::trace_structured_data_with_len(path, &($value), $length, &PRODUCER)
     }};
 
-    ({$($path:tt)*}, $value:expr, descriptor=$descriptor:ident, length = $length:expr $(,)?) => {{
+    ({$($path:tt)*}, $value:expr, descriptor = $descriptor:ident, length = $length:expr $(,)?) => {{
         use spin::Once;
         static PRODUCER: Once<$crate::orpc::oqueue::RefProducer<$descriptor>> = Once::new();
 
