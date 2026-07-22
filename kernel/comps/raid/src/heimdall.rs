@@ -240,7 +240,7 @@ impl Heimdall {
                             }
                         }
                         Ok(None) => break, // queue is empty, move on to timeout check
-                        Err(OQueueError::Detached { .. }) => {
+                        Err(OQueueError::Revoked { .. }) => {
                             log::warn!("Heimdall: observer for device {} detached", device_idx);
                             break;
                         }
