@@ -204,11 +204,11 @@ mod test {
         }
 
         fn name(&self) -> &str {
-            todo!()
+            "mlsdisk_test_disk"
         }
 
         fn id(&self) -> DeviceId {
-            todo!()
+            DeviceId::null()
         }
     }
 
