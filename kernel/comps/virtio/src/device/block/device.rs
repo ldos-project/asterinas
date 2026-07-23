@@ -10,7 +10,7 @@ use alloc::{
 };
 use core::{
     fmt::Debug,
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use aster_block::{
@@ -64,7 +64,6 @@ pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: BioRequestSingleQueue,
-    id: DeviceId,
     name: String,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -77,7 +76,6 @@ pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: Arc<BioRequestSingleQueue>,
-    id: DeviceId,
     name: String,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -115,14 +113,16 @@ impl BlockDevice {
 
     /// Creates a new VirtIO-Block driver and registers it.
     pub(crate) fn init(transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
-        let device = DeviceInner::init(transport)?;
-
         let index = NR_BLOCK_DEVICE.fetch_add(1, Ordering::Relaxed);
         let id = DeviceId::new(
             VIRTIO_BLOCK_MAJOR_ID.get().unwrap().get(),
             MinorId::new(index * VIRTIO_DEVICE_MINORS),
         );
         let name = Self::formatted_device_name(index);
+
+        // The inner device inherits this ID; it is the single source of truth
+        // and is used to tag I/O completion stats.
+        let device = DeviceInner::init(transport, id)?;
 
         // Each bio request includes an additional 1 request and 1 response descriptor,
         // therefore this upper bound is set to (QUEUE_SIZE - 2).
@@ -134,7 +134,6 @@ impl BlockDevice {
                 queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
                 ),
-                id,
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
@@ -152,7 +151,6 @@ impl BlockDevice {
                 queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
                 )),
-                id,
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
@@ -203,11 +201,6 @@ impl BlockDevice {
     pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
         bio.submit(self)
     }
-
-    /// Sets the logical index for this device, used to tag I/O completion stats.
-    pub fn set_device_index(&self, index: u64) {
-        self.device.device_index.store(index, Ordering::Relaxed);
-    }
 }
 
 impl aster_block::BlockDevice for BlockDevice {
@@ -216,16 +209,17 @@ impl aster_block::BlockDevice for BlockDevice {
         let reply_handle = self.bio_completion_oqueue().attach_ref_producer()?;
 
         let mut bio = bio;
-        let device_index = self.device.device_index.load(Ordering::Relaxed);
-        bio.prepare_enqueue(
-            reply_handle,
-            self.queue.clone(),
-            if device_index == u64::MAX {
-                None
-            } else {
-                Some(device_index)
-            },
-        );
+        // Atomically bump the counters, capturing the pre-increment values so the
+        // outstanding counts recorded for this bio are consistent with the bump.
+        let outstanding_pages = self
+            .device
+            .num_outstanding_pages
+            .fetch_add(bio.num_pages(), Ordering::Relaxed);
+        let outstanding_requests = self
+            .device
+            .num_outstanding_requests
+            .fetch_add(1, Ordering::Relaxed);
+        bio.prepare_enqueue(reply_handle, outstanding_pages, outstanding_requests);
         let producer = self.bio_submission_oqueue().attach_value_producer()?;
         producer.produce(bio);
         Ok(())
@@ -248,7 +242,7 @@ impl aster_block::BlockDevice for BlockDevice {
     }
 
     fn id(&self) -> DeviceId {
-        self.id
+        self.device.device_id
     }
 
     fn set_partitions(&self, infos: Vec<Option<PartitionInfo>>) {
@@ -267,7 +261,10 @@ impl aster_block::BlockDevice for BlockDevice {
 
             let index = index as u32 + 1;
             let id = if index < VIRTIO_DEVICE_MINORS {
-                DeviceId::new(self.id.major(), MinorId::new(self.id.minor().get() + index))
+                DeviceId::new(
+                    self.device.device_id.major(),
+                    MinorId::new(self.device.device_id.minor().get() + index),
+                )
             } else {
                 EXTENDED_DEVICE_ID_ALLOCATOR.get().unwrap().allocate()
             };
@@ -294,6 +291,14 @@ impl aster_block::BlockDevice for BlockDevice {
             .collect();
         Some(devices)
     }
+
+    fn num_outstanding_pages(&self) -> u32 {
+        self.device.num_outstanding_pages.load(Ordering::Relaxed)
+    }
+
+    fn num_outstanding_requests(&self) -> u32 {
+        self.device.num_outstanding_requests.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug)]
@@ -306,14 +311,22 @@ struct DeviceInner {
     block_responses: Arc<DmaStream>,
     id_allocator: SyncIdAlloc,
     submitted_requests: SpinLock<BTreeMap<u16, SubmittedRequest>>,
-    device_index: AtomicU64,
+    /// The device's ID, inherited from the outer block device's standard
+    /// allocation. Used to tag I/O completion stats.
+    device_id: DeviceId,
+    num_outstanding_pages: AtomicU32,
+    num_outstanding_requests: AtomicU32,
 }
 
 impl DeviceInner {
     const QUEUE_SIZE: u16 = 64;
 
-    /// Creates and inits the device.
-    fn init(mut transport: Box<dyn VirtioTransport>) -> Result<Arc<Self>, VirtioDeviceError> {
+    /// Creates and inits the device with the given `id` (assigned by the outer
+    /// [`BlockDevice`] via standard device ID allocation).
+    fn init(
+        mut transport: Box<dyn VirtioTransport>,
+        id: DeviceId,
+    ) -> Result<Arc<Self>, VirtioDeviceError> {
         let config_manager = VirtioBlockConfig::new_manager(transport.as_ref());
 
         let config = config_manager.read_config();
@@ -355,7 +368,9 @@ impl DeviceInner {
             block_responses,
             id_allocator: SyncIdAlloc::with_capacity(Self::QUEUE_SIZE as usize),
             submitted_requests: SpinLock::new(BTreeMap::new()),
-            device_index: AtomicU64::new(u64::MAX),
+            num_outstanding_pages: AtomicU32::new(0),
+            num_outstanding_requests: AtomicU32::new(0),
+            device_id: id,
         });
 
         let cloned_device = device.clone();
@@ -430,10 +445,20 @@ impl DeviceInner {
             }
 
             // Completes the bio request
+            // let req_type = complete_request.bio_request.type_();
             complete_request.bio_request.bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
                 #[cfg(not(baseline_asterinas))]
-                bio.report_statistics();
+                {
+                    let pages = bio
+                        .get_num_pages()
+                        .expect("num_pages was not set during prepare_enqueue");
+                    self.num_outstanding_pages
+                        .fetch_sub(pages, Ordering::Relaxed);
+                    self.num_outstanding_requests
+                        .fetch_sub(1, Ordering::Relaxed);
+                    bio.report_statistics();
+                }
             });
         }
     }

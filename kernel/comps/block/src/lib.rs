@@ -90,6 +90,30 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
     fn partitions(&self) -> Option<Vec<Arc<dyn BlockDevice>>> {
         None
     }
+
+    /// Returns the number of outstanding pages for this device.
+    ///
+    /// The default implementation is here solely to make other types
+    /// implemented this trait to compile, but it is never expected to
+    /// be called.
+    fn num_outstanding_pages(&self) -> u32 {
+        ostd::error!(
+            "num_outstanding_pages called on a block device that does not track outstanding I/O"
+        );
+        panic!("num_outstanding_pages is not implemented for this block device");
+    }
+
+    /// Returns the number of outstanding requests for this device.
+    ///
+    /// The default implementation is here solely to make other types
+    /// implemented this trait to compile, but it is never expected to
+    /// be called.
+    fn num_outstanding_requests(&self) -> u32 {
+        ostd::error!(
+            "num_outstanding_requests called on a block device that does not track outstanding I/O"
+        );
+        panic!("num_outstanding_requests is not implemented for this block device");
+    }
 }
 
 /// Metadata for a block device.
