@@ -13,7 +13,7 @@ dependencies = [
 test = ["pytest>=8.0"]
 
 [project.scripts]
-mariposa = "mariposa_cli.cli:main"
+mariposa-cli = "mariposa_cli.cli:main"
 mariposa-oqueues-mcp = "mariposa_cli.oqueues.server:main"
 
 [build-system]

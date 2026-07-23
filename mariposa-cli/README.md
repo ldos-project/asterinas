@@ -1,31 +1,46 @@
 # mariposa-cli
 
 Host-side tooling for the Mariposa interlayer. A single umbrella command,
-`mariposa`, dispatches to per-component subcommands; the first component is
-**`oqueues`**, which accesses the Mariposa OQueue File System (`/oqueues`) and
-also ships an MCP server for AI agents. More components mount the same way.
+`mariposa-cli`, dispatches to per-component subcommands, each a self-contained
+interface to one part of Mariposa:
 
+- **`oqueues`** — connect to the guest's OQueue File System (OQFS); also ships
+  an MCP server for AI agents.
+- **`data_capture`** — *(planned)* capture Mariposa guest data.
+- **`mlops`** — *(planned)* Mariposa MLOps workflows.
+
+More components mount the same way.
+
+## Install
+
+The CLI must be installed before use. 
+
+```bash
+cd mariposa-cli
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .          # installs mariposa-cli AND its dependencies
+```
+
+That single command installs the runtime dependencies (`cbor2`, `polars`,
+`mcp`) and installs the `mariposa_cli` package. Because the install is editable (`-e`), it links this working tree, so source edits take effect without reinstalling. Run `mariposa-cli` from anywhere, including the repo root.
+
+## CLI
+
+Every command is `mariposa-cli <component> <subcommand> …`.
+
+### `oqueues`
+
+An interface to the guest's **OQueue File System** (OQFS, `/oqueues`).
 Everything runs on the **host** (the agent's domain) and reaches the Mariposa
 guest over SSH; the guest stays passive and only runs basic tools (`tree`,
 `find`, `cat`). All CBOR decoding and dataframe construction happen host-side to
 reduce the impact to the guest.
 
-## CLI
-
 ```bash
-mariposa oqueues list                                       # OQueues as JSON
-mariposa oqueues collect scheduler/events --max-records 100 --format json
-mariposa oqueues stream  scheduler/events                   # live tail (Ctrl-C)
+mariposa-cli oqueues list                                   # OQueues as JSON
+mariposa-cli oqueues collect scheduler/events --max-records 100 --format json
+mariposa-cli oqueues stream  scheduler/events               # live tail (Ctrl-C)
 ```
-
-From a checkout you can also run it in-tree without installing, via the
-repo-root launcher:
-
-```bash
-./mariposa oqueues list
-```
-
-### `oqueues` subcommands
 
 | Command                | Purpose                                                     |
 |------------------------|-------------------------------------------------------------|
@@ -40,10 +55,21 @@ repo-root launcher:
 drain use `stream`. The stateful MCP session tools collapse into the single live
 `stream` command, since a one-shot process has no session to poll.
 
+### `data_capture`
+
+*Planned — not yet implemented.* Will add `mariposa-cli data_capture …`
+subcommands for capturing Mariposa guest data. TODO: describe once the
+component lands.
+
+### `mlops`
+
+*Planned — not yet implemented.* Will add `mariposa-cli mlops …` subcommands for
+Mariposa MLOps workflows. TODO: describe once the component lands.
+
 ## MCP server (`oqueues` component)
 
 The `oqueues` component also exposes an MCP server, installed as the
-`mariposa-oqueues-mcp` console script (equivalent to `mariposa oqueues serve`).
+`mariposa-oqueues-mcp` console script (equivalent to `mariposa-cli oqueues serve`).
 
 | Tool             | Purpose                                                   |
 |------------------|-----------------------------------------------------------|
@@ -70,13 +96,6 @@ Both front ends read the same variables.
 | `OQ_ROOT`          | `/oqueues`       | OQFS root.                            |
 | `OQ_METADATA_FILE` | `metadata.yaml`  | Metadata filename.                   |
 | `OQ_COMMAND_TIMEOUT` | `30.0`         | Per-command timeout, seconds.        |
-
-## Install
-
-```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e .          # provides `mariposa` and `mariposa-oqueues-mcp`
-```
 
 ## Register the MCP server with Claude CLI
 

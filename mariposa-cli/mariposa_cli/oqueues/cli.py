@@ -1,4 +1,4 @@
-"""``oqueues`` CLI component — mounted under ``mariposa oqueues …``.
+"""``oqueues`` CLI component — mounted under ``mariposa-cli oqueues …``.
 
 Exposes the same operations as the MCP server (same ``OQ_*`` configuration) as
 one-shot subcommands for humans and shell scripts. The stateful MCP session
