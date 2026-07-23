@@ -21,7 +21,7 @@ import cbor2
 def _as_buffered(fp: BinaryIO) -> BinaryIO:
     if isinstance(fp, (io.BufferedIOBase, io.BytesIO)):
         return fp
-    return io.BufferedReader(fp)  # type: ignore[arg-type]
+    return io.BufferedReader(fp)
 
 
 def iter_records(fp: BinaryIO) -> Iterator[object]:

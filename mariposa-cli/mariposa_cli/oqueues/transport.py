@@ -59,7 +59,8 @@ class Transport:
 
     def popen(self, remote_command: str) -> subprocess.Popen:
         """Starts ``remote_command`` and returns the process with a binary
-        stdout pipe for streaming. The caller owns termination."""
+        stdout pipe for streaming. The caller owns termination. This is used
+        for tasks like streaming OQueues data"""
         return subprocess.Popen(
             self._argv(remote_command),
             stdout=subprocess.PIPE,

@@ -29,12 +29,36 @@ _WATCHDOG_POLL_S = 0.2
 
 @dataclass
 class Session:
+    """State of one live drain over an OQueue's ``strong_observe`` stream.
+
+    Fields:
+        stream_id:   unique handle callers use to read/stop this session.
+        oqueue_path: the OQueue being drained (as requested by the caller).
+        mode:        termination mode — ``max_records`` | ``timeout`` | ``infinite``.
+        max_records / timeout_s: the bound for the chosen mode (``None`` if unused).
+        process:     the guest-side ``cat strong_observe`` subprocess. Its stdout
+                     is the SSH data stream carrying raw CBOR bytes from the guest
+                     OS to the host; killing it closes that stream.
+        thread:      the host-side draining thread. It reads ``process`` stdout and
+                     decodes the CBOR byte stream into records in real time,
+                     appending to ``records`` as items arrive.
+        watchdog:    for ``timeout`` mode, the thread that kills ``process`` at the
+                     deadline (``None`` otherwise).
+        records:     all records decoded so far (grows as the drain runs).
+        read_cursor: index up to which the caller has already consumed ``records``,
+                     so each ``read`` returns only what is new.
+        status:      running | completed | stopped | error.
+        error:       error message when ``status == "error"``.
+        lock:        guards the mutable fields above, since the drain thread writes
+                     while callers read concurrently.
+    """
+
     stream_id: str
     oqueue_path: str
     mode: str
     max_records: int | None
     timeout_s: float | None
-    process: Any = None
+    process: Any = None  
     thread: Any = None
     watchdog: Any = None
     records: list = field(default_factory=list)
@@ -54,6 +78,8 @@ class Session:
             return True
 
     def snapshot(self) -> dict:
+        """Return a lock-safe copy of the session's public state (id, mode,
+        status, record counts, error) for reporting to the caller/agent."""
         with self.lock:
             return {
                 "stream_id": self.stream_id,
@@ -67,6 +93,13 @@ class Session:
 
 
 class StreamManager:
+    """Owns the set of live streaming sessions and their lifecycle.
+
+    Each session drains one ``strong_observe`` stream on its own background
+    thread; the manager tracks them by ``stream_id`` and exposes start / read /
+    stop / list operations plus a blocking ``collect`` convenience.
+    """
+
     def __init__(self, transport: Transport, oqfs: Oqfs):
         self._transport = transport
         self._oqfs = oqfs
@@ -79,6 +112,15 @@ class StreamManager:
         max_records: int | None = None,
         timeout_s: float | None = None,
     ) -> Session:
+        """Open a streaming session and start draining it in the background.
+
+        Infers the termination mode from the bounds (``max_records`` -> mode 1,
+        else ``timeout_s`` -> mode 2, else infinite), launches
+        ``cat strong_observe`` on the guest as a subprocess pipe, and spawns a
+        drain thread (plus a watchdog thread for the timeout mode). Returns
+        immediately with the registered ``Session``; the caller reads records
+        via ``read`` and ends the session via ``stop``.
+        """
         if max_records is not None and max_records <= 0:
             raise ValueError("max_records must be positive")
         if timeout_s is not None and timeout_s <= 0:
@@ -103,6 +145,7 @@ class StreamManager:
             process=process,
         )
         with self._lock:
+            # This makes sure the session registry is protected.
             self._sessions[session.stream_id] = session
 
         session.thread = threading.Thread(
@@ -119,6 +162,11 @@ class StreamManager:
         return session
 
     def _drain(self, session: Session) -> None:
+        """Background-thread body: decode CBOR records off the guest pipe into
+        the session's record list until a bound is hit, the stream closes, or a
+        decode/pipe error occurs, then mark the terminal status and kill the
+        guest process. In ``max_records`` mode the reader stops itself at N.
+        """
         try:
             for record in iter_records(session.process.stdout):
                 with session.lock:
@@ -140,6 +188,10 @@ class StreamManager:
             self._kill(session.process)
 
     def _watchdog(self, session: Session, timeout_s: float) -> None:
+        """Background-thread body for the timeout mode: sleep until the deadline
+        (returning early if the process already finished), then mark the session
+        completed and kill the guest process so the drain unblocks and ends.
+        """
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if session.process.poll() is not None:
@@ -150,6 +202,9 @@ class StreamManager:
 
     @staticmethod
     def _kill(process) -> None:
+        """Terminate the guest process if still running: send SIGTERM, wait a
+        grace period, then SIGKILL if it hasn't exited. No-op if already dead.
+        """
         if process.poll() is None:
             process.terminate()
             try:
@@ -183,6 +238,10 @@ class StreamManager:
         return self.read(session.stream_id)
 
     def read(self, stream_id: str) -> tuple[Session, list[Any]]:
+        """Return records decoded since the last read for this session, and the
+        session itself. Advances a per-session cursor under the lock, so each
+        record is returned exactly once across repeated polls.
+        """
         session = self._get(stream_id)
         with session.lock:
             new = session.records[session.read_cursor :]
@@ -197,10 +256,12 @@ class StreamManager:
         return session
 
     def list(self) -> list[dict]:
+        """Return a snapshot of every session created this process lifetime."""
         with self._lock:
             return [s.snapshot() for s in self._sessions.values()]
 
     def _get(self, stream_id: str) -> Session:
+        """Look up a session by id, raising ``KeyError`` if it is unknown."""
         with self._lock:
             session = self._sessions.get(stream_id)
         if session is None:
