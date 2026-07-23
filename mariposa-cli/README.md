@@ -47,7 +47,7 @@ mariposa-cli oqueues stream  scheduler/events               # live tail (Ctrl-C)
 | `tree`                 | Human-readable `tree` of `/oqueues`.                        |
 | `list`                 | Machine-readable JSON list of OQueues.                      |
 | `metadata <path>`      | Print an OQueue's `metadata.yaml`.                          |
-| `collect <path> …`     | Bounded drain → CSV/JSON (`--max-records`, `--timeout`, `--format`). |
+| `collect <path> …`     | Bounded drain → CSV/JSON (`--max-records`, `--timeout`, `--format`, `--output`). |
 | `stream <path> …`      | Live-tail as newline-delimited JSON (Ctrl-C to stop).       |
 | `serve`                | Run the OQueues MCP server over stdio.                      |
 

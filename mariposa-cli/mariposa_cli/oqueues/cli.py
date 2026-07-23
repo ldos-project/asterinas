@@ -43,7 +43,15 @@ def _cmd_collect(args) -> None:
     session, records = build_backend().streams.collect(
         args.oqueue_path, max_records=args.max_records, timeout_s=args.timeout
     )
-    _emit(serialize(records, args.format))
+    text = serialize(records, args.format)
+    if args.output:
+        # Large captures: write straight to a file instead of the terminal.
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"wrote {len(records)} records to {args.output}", file=sys.stderr)
+    else:
+        # If the alt profile is not specified, then print everything to stand out.
+        _emit(text)
     if session.status == "error":
         raise RuntimeError(f"stream error: {session.error}")
 
@@ -117,6 +125,13 @@ def register(subparsers) -> None:
     p.add_argument("oqueue_path", help="absolute or root-relative OQueue path")
     _add_bounds(p)  # add bounds (num of records or seconds) to the OQueue read
     p.add_argument("--format", choices=["csv", "json"], default="csv")
+    p.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        default=None,
+        help="write to this file instead of stdout",
+    )
     p.set_defaults(func=_cmd_collect)
 
     p = sub.add_parser(
