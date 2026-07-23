@@ -13,6 +13,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 from .backend import build_backend
 from .frames import jsonify, serialize
@@ -22,10 +23,15 @@ _STREAM_POLL_S = 0.1
 
 
 def _emit(text: str) -> None:
-    """Write serialized output to stdout with exactly one trailing newline. So this function prints the result in your terminal. It's being called by tree, list, and metadata command."""
+    """Print output to the terminal (stdout) with exactly one trailing newline.
+
+    Used by the one-shot commands that emit a single result: tree, list,
+    metadata, and collect.
+    """
     if not text:
         return
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
 
 def _cmd_tree(args) -> None:
     _emit(build_backend().oqfs.tree())
@@ -45,12 +51,11 @@ def _cmd_collect(args) -> None:
     )
     text = serialize(records, args.format)
     if args.output:
-        # Large captures: write straight to a file instead of the terminal.
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(text)
+        # With --output, write the whole result to the file instead of the terminal.
+        Path(args.output).write_text(text, encoding="utf-8")
         print(f"wrote {len(records)} records to {args.output}", file=sys.stderr)
     else:
-        # If the alt profile is not specified, then print everything to stand out.
+        # No --output given, so print everything to stdout (redirect with > to save).
         _emit(text)
     if session.status == "error":
         raise RuntimeError(f"stream error: {session.error}")
@@ -80,7 +85,8 @@ def _cmd_stream(args) -> None:
     except KeyboardInterrupt:
         streams.stop(session.stream_id)
     session.thread.join()
-    flush()  # anything that arrived between the last poll and completion
+    # Flush anything that arrived between the last poll and completion.
+    flush()
     if session.status == "error":
         raise RuntimeError(f"stream error: {session.error}")
 
@@ -123,7 +129,8 @@ def register(subparsers) -> None:
         help="Bounded drain to CSV/JSON (needs --max-records or --timeout).",
     )
     p.add_argument("oqueue_path", help="absolute or root-relative OQueue path")
-    _add_bounds(p)  # add bounds (num of records or seconds) to the OQueue read
+    # Add the --max-records / --timeout bounds that stop the drain.
+    _add_bounds(p)
     p.add_argument("--format", choices=["csv", "json"], default="csv")
     p.add_argument(
         "-o",

@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Config:
-    transport: str  # "ssh" | "local"
+    # "ssh" (reach the guest over SSH) or "local" (run commands on the host, usually for testing).
+    transport: str
     host: str
     port: int
     user: str

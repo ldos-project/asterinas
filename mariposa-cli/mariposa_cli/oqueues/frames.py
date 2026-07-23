@@ -40,7 +40,12 @@ def serialize(records: list[Any], fmt: str = "csv") -> str:
     """Serialize records to ``csv`` or ``json`` (list-of-records) text."""
     if fmt == "json":
         return json.dumps([jsonify(r) for r in records], default=str)
-    df = to_frame(records)
-    if df.is_empty():
-        return ""
-    return df.write_csv()
+    elif fmt == "csv":
+        df = to_frame(records)
+        if df.is_empty():
+            return ""
+        return df.write_csv()
+    else:
+        raise NotImplementedError(
+            f"unsupported format {fmt!r} (expected 'csv' or 'json')"
+        )

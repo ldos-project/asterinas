@@ -58,12 +58,12 @@ class Session:
     mode: str
     max_records: int | None
     timeout_s: float | None
-    process: Any = None  
+    process: Any = None
     thread: Any = None
     watchdog: Any = None
     records: list = field(default_factory=list)
     read_cursor: int = 0
-    status: str = "running"  # running | completed | stopped | error
+    status: str = "running"
     error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -145,7 +145,7 @@ class StreamManager:
             process=process,
         )
         with self._lock:
-            # This makes sure the session registry is protected.
+            # Register under the lock so concurrent starts/reads stay consistent.
             self._sessions[session.stream_id] = session
 
         session.thread = threading.Thread(
@@ -182,7 +182,8 @@ class StreamManager:
             else:
                 # Iterator exhausted: the stream closed on its own.
                 session.finalize("completed")
-        except Exception as exc:  # decode/pipe failure
+        # A decode or pipe failure ends the drain as an error.
+        except Exception as exc:
             session.finalize("error", str(exc))
         finally:
             self._kill(session.process)
@@ -195,7 +196,8 @@ class StreamManager:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if session.process.poll() is not None:
-                return  # already finished
+                # The guest process already finished on its own.
+                return
             time.sleep(min(_WATCHDOG_POLL_S, deadline - time.monotonic()))
         session.finalize("completed")
         self._kill(session.process)
