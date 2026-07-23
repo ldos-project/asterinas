@@ -17,28 +17,26 @@ class Oqfs:
         return self._transport.run(f"tree {shlex.quote(self._cfg.root)}")
 
     def list_oqueues(self) -> list[dict]:
-        """Machine-readable enumeration of OQueues.
+        """Enumerate OQueues as ``{path, relpath}`` records.
 
         An OQueue is a leaf directory containing ``strong_observe``. We find
-        those (avoiding GNU-only ``find`` flags) and derive a dotted name from
-        the path relative to the root, e.g. ``scheduler/events`` ->
-        ``scheduler.events``. The dotted name is derived, not authoritative;
-        the definitive name lives in the OQueue's metadata.
+        those (avoiding GNU-only ``find`` flags) and report each OQueue's
+        directory both absolutely (``path``) and relative to the root
+        (``relpath``). Both are usable directly as an ``oqueue_path`` argument.
+        The OQueue's authoritative name lives in its metadata, not here.
         """
         root = self._cfg.root
         out = self._transport.run(f"find {shlex.quote(root)} -name strong_observe")
         queues = []
         for line in out.splitlines():
             line = line.strip()
-            if not line.endswith("/strong_observe"):
+            if posixpath.basename(line) != "strong_observe":
                 continue
-            path = line[: -len("/strong_observe")]
-            relpath = posixpath.relpath(path, root)
+            path = posixpath.dirname(line)
             queues.append(
                 {
                     "path": path,
-                    "relpath": relpath,
-                    "name": relpath.replace("/", "."),
+                    "relpath": posixpath.relpath(path, root),
                 }
             )
         queues.sort(key=lambda q: q["relpath"])

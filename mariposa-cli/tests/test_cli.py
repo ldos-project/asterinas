@@ -11,7 +11,7 @@ from mariposa_cli import cli
 def test_cli_list(fake_oqfs, capsys):
     assert cli.main(["oqueues", "list"]) == 0
     queues = json.loads(capsys.readouterr().out)
-    assert {q["name"] for q in queues} == {"scheduler.events", "raid1.rebuilds"}
+    assert {q["relpath"] for q in queues} == {"scheduler/events", "raid1/rebuilds"}
 
 
 def test_cli_metadata(fake_oqfs, capsys):

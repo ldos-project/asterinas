@@ -13,7 +13,7 @@ def test_async_smoke(fake_oqfs):
 
     async def go():
         queues = await server.list_oqueues()
-        assert "scheduler.events" in queues
+        assert "scheduler/events" in queues
         meta = await server.read_metadata("scheduler/events")
         assert "scheduler.events" in meta
 

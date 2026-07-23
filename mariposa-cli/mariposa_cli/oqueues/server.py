@@ -67,9 +67,10 @@ async def list_tree() -> str:
 async def list_oqueues() -> str:
     """Enumerate OQueues in a machine-readable form.
 
-    Returns JSON: a list of {path, relpath, name} for every OQueue (leaf
-    directory containing `strong_observe`). Prefer this over `list_tree` when
-    programmatically selecting an OQueue.
+    Returns JSON: a list of {path, relpath} for every OQueue (leaf directory
+    containing `strong_observe`). Either field is usable directly as an
+    `oqueue_path`. Prefer this over `list_tree` when programmatically selecting
+    an OQueue.
     """
     queues = await anyio.to_thread.run_sync(_oqfs.list_oqueues)
     return _json(queues)

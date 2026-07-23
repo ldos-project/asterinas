@@ -20,8 +20,8 @@ def _stack():
 def test_list_oqueues(fake_oqfs):
     _, _, oqfs, _ = _stack()
     queues = oqfs.list_oqueues()
-    names = {q["name"] for q in queues}
-    assert names == {"scheduler.events", "raid1.rebuilds"}
+    relpaths = {q["relpath"] for q in queues}
+    assert relpaths == {"scheduler/events", "raid1/rebuilds"}
 
 
 def test_read_metadata(fake_oqfs):

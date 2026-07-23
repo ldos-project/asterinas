@@ -22,11 +22,10 @@ _STREAM_POLL_S = 0.1
 
 
 def _emit(text: str) -> None:
-    """Write serialized output to stdout with exactly one trailing newline."""
+    """Write serialized output to stdout with exactly one trailing newline. So this function prints the result in your terminal. It's being called by tree, list, and metadata command."""
     if not text:
         return
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
-
 
 def _cmd_tree(args) -> None:
     _emit(build_backend().oqfs.tree())
@@ -116,7 +115,7 @@ def register(subparsers) -> None:
         help="Bounded drain to CSV/JSON (needs --max-records or --timeout).",
     )
     p.add_argument("oqueue_path", help="absolute or root-relative OQueue path")
-    _add_bounds(p)
+    _add_bounds(p)  # add bounds (num of records or seconds) to the OQueue read
     p.add_argument("--format", choices=["csv", "json"], default="csv")
     p.set_defaults(func=_cmd_collect)
 

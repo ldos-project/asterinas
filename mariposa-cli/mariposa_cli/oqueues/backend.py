@@ -24,8 +24,8 @@ class Backend:
 
 def build_backend(cfg: Config | None = None) -> Backend:
     """Assemble the backend stack, defaulting the config to the environment."""
-    cfg = cfg or Config.from_env()
-    transport = Transport(cfg)
-    oqfs = Oqfs(cfg, transport)
+    cfg = cfg or Config.from_env()  # Load configuration from the environment variables.
+    transport = Transport(cfg)  # Build the transport layer (ssh or local)
+    oqfs = Oqfs(cfg, transport)  # Build OQFS proxy
     streams = StreamManager(transport, oqfs)
     return Backend(cfg=cfg, transport=transport, oqfs=oqfs, streams=streams)
