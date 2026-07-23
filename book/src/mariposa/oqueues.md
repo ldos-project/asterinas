@@ -20,13 +20,52 @@ Projections may also decide to discard some values, so they are not observed at 
 
 **TODO(arthurp)**: Complete
 
-## Producing in non-blocking contexts
+## Avoiding blocking while producing
 
-In general, producing into an OQueue can wait for consumer and observers if the storage of the
+Observation should not affect the behavior of the system. As such, observers are not allowed block
+producers. If producing would block, all lagging observer attachments are revoked. After an observer
+is detached, it will need to explicitly reattach.
+
+If a producer produces values two quickly it may fill the buffer before the observer gets a chance
+to catch up. This is addressed by setting and adjusting the buffer size. The initial buffer size is
+provided at OQueue creation. Producers and consumers can also provide size requests when they
+attach. The OQueue implementation will combine these to select an appropriate buffer size.
+
+TODO(arthurp): This needs to be decided and written specifically.
+
+
+Buffer sizes:
+
+* Initial creation time buffer size: based on the knowledge of the component developer. It is a
+  first guess, but probably not that accurate.
+* Observer attach buffer size: based on the execution fr 
+
+Buffer size 
+
+
+, producing into an OQueue can wait for consumer and observers if the storage of the
 OQueue is full. In contexts that cannot block (e.g., when preemption is disabled), this is
-unacceptable. 
+impossible. In other cases, it may be possible to give the observer a chance to process the value
+(by scheduling it), but we still want to limit the time the observer takes to preserve liveness. 
+
+
+
+There are various ways to handle this, but we implement two. The mode is chosen when the OQueue is
+created.
+
+If the producer would block, all lagging observer attachments are revoked. OQueues configured
+   this way can be used in so-called "atomic-mode" (see
+   [`ostd::task::atomic_mode`](../../../ostd/src/task/atomic_mode.rs)).
+
+We also provide OQueues which do not allow strong observers at all, to entirely eliminate this
+problem.
 
 **TODO(arthurp)**: The below is more notes than real documentation.
+
+2. If the producer would block, the system gives the observer a chance to run (by scheduling it) and
+   if it is still lagging, revokes it's attachment. OQueues configured this way will *always* panic
+   when used in atomic-mode, even if they did not block.
+
 
 There are 3 general ways to handle this:
 
