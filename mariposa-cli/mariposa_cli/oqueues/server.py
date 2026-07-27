@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .backend import build_backend
 from .config import Config
-from .frames import serialize
+from .serialize import serialize
 from .oqfs import Oqfs
 from .streams import StreamManager
 from .transport import Transport
@@ -67,8 +67,8 @@ async def list_tree() -> str:
 async def list_oqueues() -> str:
     """Enumerate OQueues in a machine-readable form.
 
-    Returns JSON: a list of {path, relpath} for every OQueue (leaf directory
-    containing `strong_observe`). Either field is usable directly as an
+    Returns JSON: a list of {path, relpath} for every OQueue (directory
+    containing the metadata file). Either field is usable directly as an
     `oqueue_path`. Prefer this over `list_tree` when programmatically selecting
     an OQueue.
     """
@@ -95,9 +95,9 @@ async def stream_collect(
 ) -> str:
     """Drain an OQueue's `strong_observe` stream and return a dataframe.
 
-    For bounded modes. Supply `max_records` (mode 1) and/or `timeout_s` (mode 2);
-    whichever bound is hit first stops the drain. At least one bound is required
-    — for an unbounded stream use `stream_start`.
+    For bounded modes. Supply `max_records` and/or `timeout_s`; whichever bound
+    is hit first stops the drain. At least one bound is required — for an
+    unbounded stream use `stream_start`.
 
     The drain runs on its own thread; this call awaits it without blocking the
     server, so other tools (including reads of other streams) stay responsive.
@@ -131,9 +131,10 @@ async def stream_start(
     """Begin a streaming session and return its `stream_id` (JSON).
 
     Returns immediately; the drain runs on its own background thread. Mode is
-    inferred: `max_records` -> mode 1, else `timeout_s` -> mode 2, else infinite
-    -> mode 3. Poll with `stream_read`; end an infinite stream with `stream_stop`.
-    Start as many sessions as you like — they drain concurrently.
+    inferred from the bounds: `max_records` bounds it by record count,
+    `timeout_s` bounds it by time, and with neither it runs infinite. Poll with
+    `stream_read`; end an infinite stream with `stream_stop`. Start as many
+    sessions as you like — they drain concurrently.
     """
     session = await anyio.to_thread.run_sync(
         lambda: _streams.start(

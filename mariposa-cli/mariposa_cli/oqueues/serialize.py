@@ -1,8 +1,8 @@
-"""Turn decoded CBOR records into a serialized dataframe.
+"""Serialize decoded CBOR records to text (``csv`` or ``json``).
 
-Polars is the dataframe engine (Arrow-backed, fast on record streams).
-``pl.json_normalize`` flattens nested maps into columns, which CBOR views tend
-to produce. Records with bytes/undefined values are coerced to a JSON-safe form
+Polars is used internally as the dataframe engine (Arrow-backed, fast on record
+streams); ``pl.json_normalize`` flattens the nested maps that CBOR views tend to
+produce. Records with bytes/undefined values are coerced to a JSON-safe form
 first so serialization never fails on an exotic CBOR type.
 """
 
@@ -23,7 +23,7 @@ def jsonify(value: Any) -> Any:
     return value
 
 
-def to_frame(records: list[Any]) -> pl.DataFrame:
+def _to_polars_frame(records: list[Any]) -> pl.DataFrame:
     rows = [jsonify(r) for r in records]
     # Wrap non-map records so they still land in a column.
     rows = [r if isinstance(r, dict) else {"value": r} for r in rows]
@@ -36,12 +36,12 @@ def to_frame(records: list[Any]) -> pl.DataFrame:
         return pl.DataFrame({"record_json": [json.dumps(r) for r in rows]})
 
 
-def serialize(records: list[Any], fmt: str = "csv") -> str:
+def serialize(records: list[Any], fmt: str) -> str:
     """Serialize records to ``csv`` or ``json`` (list-of-records) text."""
     if fmt == "json":
         return json.dumps([jsonify(r) for r in records], default=str)
     elif fmt == "csv":
-        df = to_frame(records)
+        df = _to_polars_frame(records)
         if df.is_empty():
             return ""
         return df.write_csv()

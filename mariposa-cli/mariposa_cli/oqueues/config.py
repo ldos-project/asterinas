@@ -27,7 +27,7 @@ class Config:
         return Config(
             transport=os.environ.get("OQ_TRANSPORT", "ssh"),
             host=os.environ.get("OQ_SSH_HOST", "127.0.0.1"),
-            port=int(os.environ.get("OQ_SSH_PORT", "61541")),
+            port=int(os.environ.get("OQ_SSH_PORT", "2222")),
             user=os.environ.get("OQ_SSH_USER", "root"),
             key=os.environ.get("OQ_SSH_KEY") or None,
             root=os.environ.get("OQ_ROOT", "/oqueues"),

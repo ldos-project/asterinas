@@ -13,16 +13,17 @@ More components mount the same way.
 
 ## Install
 
-The CLI must be installed before use. 
+The CLI must be installed before use. It runs from any Python ≥3.11
+environment; the block below is *one example* setup using a virtualenv. 
 
 ```bash
 cd mariposa-cli
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .          # installs mariposa-cli AND its dependencies
+python3 -m venv .venv && . .venv/bin/activate   # example: isolate in a venv
+pip install -e .                                 # installs mariposa-cli AND its dependencies
 ```
 
-That single command installs the runtime dependencies (`cbor2`, `polars`,
-`mcp`) and installs the `mariposa_cli` package. Because the install is editable (`-e`), it links this working tree, so source edits take effect without reinstalling. Run `mariposa-cli` from anywhere, including the repo root.
+`pip install -e .` installs the runtime dependencies (`cbor2`, `polars`,
+`mcp`) and the `mariposa_cli` package. Because the install is editable (`-e`), it links this working tree, so source edits take effect without reinstalling. Run `mariposa-cli` from anywhere, including the repo root.
 
 ## CLI
 
@@ -47,7 +48,7 @@ mariposa-cli oqueues stream  scheduler/events               # live tail (Ctrl-C)
 | `tree`                 | Human-readable `tree` of `/oqueues`.                        |
 | `list`                 | Machine-readable JSON list of OQueues.                      |
 | `metadata <path>`      | Print an OQueue's `metadata.yaml`.                          |
-| `collect <path> …`     | Bounded drain → CSV/JSON (`--max-records`, `--timeout`, `--format`, `--output`). |
+| `collect <path> …`     | Bounded drain → CSV/JSON (`--max-records`/`-n`, `--timeout`/`-t`, `--format`, `--output`). |
 | `stream <path> …`      | Live-tail as newline-delimited JSON (Ctrl-C to stop).       |
 | `serve`                | Run the OQueues MCP server over stdio.                      |
 
@@ -90,7 +91,7 @@ Both front ends read the same variables.
 |--------------------|------------------|--------------------------------------|
 | `OQ_TRANSPORT`     | `ssh`            | `ssh` or `local` (host, for tests).  |
 | `OQ_SSH_HOST`      | `127.0.0.1`      | Guest SSH host (QEMU-forwarded).     |
-| `OQ_SSH_PORT`      | `61541`          | Forwarded SSH port (`SSH_PORT`).     |
+| `OQ_SSH_PORT`      | `2222`           | Forwarded SSH port (`SSH_PORT`).     |
 | `OQ_SSH_USER`      | `root`           | SSH user.                            |
 | `OQ_SSH_KEY`       | —                | SSH private key path (optional).     |
 | `OQ_ROOT`          | `/oqueues`       | OQFS root.                            |
@@ -106,18 +107,9 @@ register the installed binary once:
 ```bash
 claude mcp add oqueues -s user \
   -e OQ_SSH_HOST=127.0.0.1 \
-  -e OQ_SSH_PORT=61541 \
+  -e OQ_SSH_PORT=2222 \
   -- $ASTERINAS_HOME/mariposa-cli/.venv/bin/mariposa-oqueues-mcp
 ```
 
 Boot the kernel (with `SSH_PORT` overridden), then any `claude` session gets the
 `oqueues` tools. Verify with `claude mcp list` or `/mcp` inside a session.
-
-## Test
-
-Uses `OQ_TRANSPORT=local` against a fake `/oqueues` tree — no kernel needed.
-
-```bash
-. .venv/bin/activate && pip install -e '.[test]'
-PYTHONPATH="$PWD:$PWD/tests" pytest -q
-```

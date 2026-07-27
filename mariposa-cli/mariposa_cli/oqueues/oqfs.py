@@ -19,18 +19,24 @@ class Oqfs:
     def list_oqueues(self) -> list[dict]:
         """Enumerate OQueues as ``{path, relpath}`` records.
 
-        An OQueue is a leaf directory containing ``strong_observe``. We find
-        those (avoiding GNU-only ``find`` flags) and report each OQueue's
-        directory both absolutely (``path``) and relative to the root
-        (``relpath``). Both are usable directly as an ``oqueue_path`` argument.
-        The OQueue's authoritative name lives in its metadata, not here.
+        An OQueue is a directory containing the metadata file
+        (``self._cfg.metadata_file``); every OQueue has one, whereas
+        ``strong_observe`` is optional, so matching on metadata future-proofs
+        enumeration against OQueues without a strong observer. We find those
+        (avoiding GNU-only ``find`` flags) and report each OQueue's directory
+        both absolutely (``path``) and relative to the root (``relpath``). Both
+        are usable directly as an ``oqueue_path`` argument. The OQueue's
+        authoritative name lives in its metadata, not here.
         """
         root = self._cfg.root
-        out = self._transport.run(f"find {shlex.quote(root)} -name strong_observe")
+        metadata_file = self._cfg.metadata_file
+        out = self._transport.run(
+            f"find {shlex.quote(root)} -name {shlex.quote(metadata_file)}"
+        )
         queues = []
         for line in out.splitlines():
             line = line.strip()
-            if posixpath.basename(line) != "strong_observe":
+            if posixpath.basename(line) != metadata_file:
                 continue
             path = posixpath.dirname(line)
             queues.append(

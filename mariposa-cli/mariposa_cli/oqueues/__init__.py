@@ -5,6 +5,7 @@ Provides two front ends over one shared backend:
 * ``server`` — an MCP server for AI agents (``mariposa-oqueues-mcp``).
 * ``cli``    — subcommands mounted under ``mariposa-cli oqueues …``.
 
-``server`` is not imported here so the CLI path does not pull in the MCP SDK;
-import ``mariposa_cli.oqueues.server`` explicitly (as the console script does).
+When invoked through the ``mariposa-cli oqueues`` command-line interface, the
+``server`` submodule is never imported, so the CLI entry path does not pull in
+the MCP SDK. To use the server, import ``mariposa_cli.oqueues.server`` explicitly.
 """

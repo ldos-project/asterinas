@@ -11,6 +11,7 @@ The guest process is killed on every stop path, which closes the drain.
 """
 
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -58,9 +59,9 @@ class Session:
     mode: str
     max_records: int | None
     timeout_s: float | None
-    process: Any = None
-    thread: Any = None
-    watchdog: Any = None
+    process: subprocess.Popen | None = None
+    thread: threading.Thread | None = None
+    watchdog: threading.Thread | None = None
     records: list = field(default_factory=list)
     read_cursor: int = 0
     status: str = "running"
@@ -114,8 +115,8 @@ class StreamManager:
     ) -> Session:
         """Open a streaming session and start draining it in the background.
 
-        Infers the termination mode from the bounds (``max_records`` -> mode 1,
-        else ``timeout_s`` -> mode 2, else infinite), launches
+        Infers the termination mode from the bounds (``max_records`` by count,
+        else ``timeout_s`` by time, else ``infinite``), launches
         ``cat strong_observe`` on the guest as a subprocess pipe, and spawns a
         drain thread (plus a watchdog thread for the timeout mode). Returns
         immediately with the registered ``Session``; the caller reads records
@@ -233,9 +234,7 @@ class StreamManager:
                 "collect requires max_records or timeout_s; "
                 "use start for an unbounded stream"
             )
-        session = self.start(
-            oqueue_path, max_records=max_records, timeout_s=timeout_s
-        )
+        session = self.start(oqueue_path, max_records=max_records, timeout_s=timeout_s)
         session.thread.join()
         return self.read(session.stream_id)
 

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from .backend import build_backend
-from .frames import jsonify, serialize
+from .serialize import jsonify, serialize
 
 # Cadence at which `stream` polls its background drain for new records.
 _STREAM_POLL_S = 0.1
@@ -51,11 +51,9 @@ def _cmd_collect(args) -> None:
     )
     text = serialize(records, args.format)
     if args.output:
-        # With --output, write the whole result to the file instead of the terminal.
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"wrote {len(records)} records to {args.output}", file=sys.stderr)
     else:
-        # No --output given, so print everything to stdout (redirect with > to save).
         _emit(text)
     if session.status == "error":
         raise RuntimeError(f"stream error: {session.error}")
@@ -100,10 +98,10 @@ def _cmd_serve(args) -> None:
 
 def _add_bounds(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--max-records", type=int, default=None, help="stop after N records"
+        "-n", "--max-records", type=int, default=None, help="stop after N records"
     )
     parser.add_argument(
-        "--timeout", type=float, default=None, help="stop after S seconds"
+        "-t", "--timeout", type=float, default=None, help="stop after S seconds"
     )
 
 
@@ -129,7 +127,6 @@ def register(subparsers) -> None:
         help="Bounded drain to CSV/JSON (needs --max-records or --timeout).",
     )
     p.add_argument("oqueue_path", help="absolute or root-relative OQueue path")
-    # Add the --max-records / --timeout bounds that stop the drain.
     _add_bounds(p)
     p.add_argument("--format", choices=["csv", "json"], default="csv")
     p.add_argument(

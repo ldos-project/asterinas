@@ -28,10 +28,14 @@ class Transport:
         if self._cfg.key:
             argv += ["-i", self._cfg.key]
         argv += [
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             f"{self._cfg.user}@{self._cfg.host}",
             remote_command,
         ]
