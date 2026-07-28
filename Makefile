@@ -103,7 +103,7 @@ DEV_TRUSTED_PUBLIC_KEY ?=
 PYTHON_PROJECTS= \
 	kernel/comps/mariposa_data_capture/python \
 	kernel/comps/raid/python \
-	tools/howdone \
+	tools \
 	mariposa-cli
 # Specific files for format which are not .py
 EXTRA_PYTHON_FILES= \

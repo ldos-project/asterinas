@@ -44,7 +44,9 @@ def main():
     hidden2_size = models[0]["net.2.weight"].shape[0]
     output_size = models[0]["net.4.weight"].shape[0]
 
-    print(f"Network: {input_size} -> {hidden1_size} (ReLU) -> {hidden2_size} (ReLU) -> {output_size}")
+    print(
+        f"Network: {input_size} -> {hidden1_size} (ReLU) -> {hidden2_size} (ReLU) -> {output_size}"
+    )
     print()
 
     # Extract weights and biases for each device.
