@@ -82,7 +82,7 @@ def _cmd_stream(args) -> None:
         sys.stdout.flush()
 
     try:
-        for record in stream.iter_live():
+        for record in stream:
             emit(record)
     except KeyboardInterrupt:
         stream.stop()

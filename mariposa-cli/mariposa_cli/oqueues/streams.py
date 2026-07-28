@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import uuid
+from enum import StrEnum
 
 from .cbor_stream import iter_records
 from .oqfs import Oqfs
@@ -36,12 +37,30 @@ _WATCHDOG_POLL_S = 0.2
 _END = object()
 
 
+class Mode(StrEnum):
+    """How a stream decides to stop draining."""
+
+    MAX_RECORDS = "max_records"
+    TIMEOUT = "timeout"
+    INFINITE = "infinite"
+
+
+class Status(StrEnum):
+    """Lifecycle state of a stream."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
 class Stream:
     """One live drain over an OQueue's ``strong_observe`` stream.
 
     Construct with the bounds, call ``start()`` to launch the guest ``cat`` and
-    its drain thread, then consume records with ``iter_live()`` (blocking) or
-    ``read()`` (drain what is queued now). End an infinite stream with ``stop()``.
+    its drain thread, then consume records by iterating the stream (blocking,
+    ``for record in stream``) or with ``read()`` (drain what is queued now). End
+    an infinite stream with ``stop()``.
     """
 
     def __init__(
@@ -59,11 +78,11 @@ class Stream:
         self.max_records = max_records
         self.timeout_s = timeout_s
         if max_records is not None:
-            self.mode = "max_records"
+            self.mode = Mode.MAX_RECORDS
         elif timeout_s is not None:
-            self.mode = "timeout"
+            self.mode = Mode.TIMEOUT
         else:
-            self.mode = "infinite"
+            self.mode = Mode.INFINITE
 
         self.process: subprocess.Popen | None = None
         self.thread: threading.Thread | None = None
@@ -73,14 +92,14 @@ class Stream:
         self._produced = 0
         self._consumed = 0
         self._stop_requested = threading.Event()
-        self.status = "running"
+        self.status = Status.RUNNING
         self.error: str | None = None
 
     def start(self) -> "Stream":
         """Launch the guest ``cat`` and start draining it in the background.
 
-        Returns immediately with ``self``; the caller consumes records via
-        ``iter_live`` / ``read`` and ends the stream via ``stop``.
+        Returns immediately with ``self``; the caller consumes records by
+        iterating the stream or via ``read`` and ends the stream via ``stop``.
         """
         if self.max_records is not None and self.max_records <= 0:
             raise ValueError("max_records must be positive")
@@ -104,7 +123,7 @@ class Stream:
         the queue until a bound is hit, the stream closes, or a decode/pipe error
         occurs, then record the terminal status and kill the guest process.
         """
-        terminal = "completed"
+        terminal = Status.COMPLETED
         try:
             for record in iter_records(self.process.stdout):
                 self._queue.put(record)
@@ -115,10 +134,10 @@ class Stream:
                 # Loop fell through: the pipe closed on its own (EOF).
                 pass
             if self._stop_requested.is_set():
-                terminal = "stopped"
+                terminal = Status.STOPPED
         except Exception as exc:
             self.error = str(exc)
-            terminal = "error"
+            terminal = Status.ERROR
         finally:
             self._kill()
             self.status = terminal
@@ -162,8 +181,11 @@ class Stream:
             self._consumed += 1
         return out
 
-    def iter_live(self):
-        """Yield records as they arrive, blocking until the stream ends."""
+    def __iter__(self):
+        """Yield records as they arrive, blocking until the stream ends.
+
+        Lets a caller live-tail the stream with ``for record in stream: ...``.
+        """
         while True:
             item = self._queue.get()
             if item is _END:
@@ -175,7 +197,7 @@ class Stream:
         """Start a bounded drain, block until it finishes, and return its records.
 
         A bound is required: without ``max_records`` or ``timeout_s`` the drain
-        would run forever. Use a live ``Stream`` (``start`` + ``iter_live``) for
+        would run forever. Use a live ``Stream`` (``start`` then iterate it) for
         an unbounded stream.
         """
         if self.max_records is None and self.timeout_s is None:
