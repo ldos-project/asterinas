@@ -11,15 +11,13 @@ tools (``stream_start``/``read``/``stop``/``list``) collapse into a single live
 
 import argparse
 import json
+import os
 import sys
-import time
 from pathlib import Path
 
 from .backend import build_backend
 from .serialize import jsonify, serialize
-
-# Cadence at which `stream` polls its background drain for new records.
-_STREAM_POLL_S = 0.1
+from .streams import Stream
 
 
 def _emit(text: str) -> None:
@@ -45,48 +43,60 @@ def _cmd_metadata(args) -> None:
     _emit(build_backend().oqfs.read_metadata(args.oqueue_path))
 
 
-def _cmd_collect(args) -> None:
-    session, records = build_backend().streams.collect(
-        args.oqueue_path, max_records=args.max_records, timeout_s=args.timeout
+def _build_stream(args) -> Stream:
+    backend = build_backend()
+    return Stream(
+        backend.transport,
+        backend.oqfs,
+        args.oqueue_path,
+        max_records=args.max_records,
+        timeout_s=args.timeout,
     )
+
+
+def _cmd_collect(args) -> None:
+    stream = _build_stream(args)
+    records = stream.collect()
     text = serialize(records, args.format)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"wrote {len(records)} records to {args.output}", file=sys.stderr)
     else:
         _emit(text)
-    if session.status == "error":
-        raise RuntimeError(f"stream error: {session.error}")
+    if stream.status == "error":
+        raise RuntimeError(f"stream error: {stream.error}")
 
 
 def _cmd_stream(args) -> None:
     """Live-tail an OQueue, printing each record as newline-delimited JSON.
 
     Runs until a bound (``--max-records`` / ``--timeout``) is hit, the stream
-    closes, or the user interrupts with Ctrl-C — whichever comes first.
+    closes, or the user interrupts with Ctrl-C — whichever comes first. Blocks
+    on the record queue, so an idle stream costs no CPU.
     """
-    streams = build_backend().streams
-    session = streams.start(
-        args.oqueue_path, max_records=args.max_records, timeout_s=args.timeout
-    )
+    stream = _build_stream(args)
+    stream.start()
 
-    def flush() -> None:
-        _, new = streams.read(session.stream_id)
-        for record in new:
-            sys.stdout.write(json.dumps(jsonify(record)) + "\n")
+    def emit(record) -> None:
+        sys.stdout.write(json.dumps(jsonify(record)) + "\n")
         sys.stdout.flush()
 
     try:
-        while session.thread.is_alive():
-            flush()
-            time.sleep(_STREAM_POLL_S)
+        for record in stream.iter_live():
+            emit(record)
     except KeyboardInterrupt:
-        streams.stop(session.stream_id)
-    session.thread.join()
-    # Flush anything that arrived between the last poll and completion.
-    flush()
-    if session.status == "error":
-        raise RuntimeError(f"stream error: {session.error}")
+        stream.stop()
+        # Print anything drained between the interrupt and the stop.
+        for record in stream.read():
+            emit(record)
+    except BrokenPipeError:
+        # The downstream reader (e.g. `head`) closed the pipe: stop the drain
+        # and exit cleanly. Redirect stdout to /dev/null. 
+        stream.stop()
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return
+    if stream.status == "error":
+        raise RuntimeError(f"stream error: {stream.error}")
 
 
 def _cmd_serve(args) -> None:

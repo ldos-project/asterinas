@@ -43,7 +43,7 @@ def _build() -> None:
     _cfg = backend.cfg
     _transport = backend.transport
     _oqfs = backend.oqfs
-    _streams = backend.streams
+    _streams = StreamManager(_transport, _oqfs)
 
 
 _build()

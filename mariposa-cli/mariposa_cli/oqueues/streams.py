@@ -1,22 +1,26 @@
-"""Streaming sessions over ``strong_observe``.
+"""Streaming over a single OQueue's ``strong_observe``.
 
-One background thread per session drains ``cat strong_observe`` on the guest and
-decodes CBOR into an in-memory record list. Termination is one of three modes:
+A ``Stream`` owns one background drain of ``cat strong_observe`` on the guest,
+decoding CBOR items onto a ``queue.Queue`` as they arrive.
+Termination is one of three modes:
 
 * ``max_records`` — the reader stops itself after N records.
 * ``timeout``     — a watchdog terminates the process after T seconds.
-* ``infinite``    — runs until ``stop()`` (the agent's kill signal) or EOF.
+* ``infinite``    — runs until ``stop()`` (the kill signal) or EOF.
 
-The guest process is killed on every stop path, which closes the drain.
+The terminal ``status`` is written only by the drain thread — ``stop()`` and the
+watchdog just kill the guest process and let the drain observe the resulting EOF. 
+
+The CLI drives a single ``Stream`` directly. The MCP server, which juggles many
+concurrent sessions, tracks them through a ``StreamManager``.
 """
 
+import queue
 import shlex
 import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any
 
 from .cbor_stream import iter_records
 from .oqfs import Oqfs
@@ -27,84 +31,199 @@ _KILL_GRACE_S = 2.0
 # Cadence at which the timeout watchdog re-checks its deadline.
 _WATCHDOG_POLL_S = 0.2
 
+# Pushed onto the record queue when the drain ends, so a blocking consumer wakes
+# up at end-of-stream instead of waiting forever.
+_END = object()
 
-@dataclass
-class Session:
-    """State of one live drain over an OQueue's ``strong_observe`` stream.
 
-    Fields:
-        stream_id:   unique handle callers use to read/stop this session.
-        oqueue_path: the OQueue being drained (as requested by the caller).
-        mode:        termination mode — ``max_records`` | ``timeout`` | ``infinite``.
-        max_records / timeout_s: the bound for the chosen mode (``None`` if unused).
-        process:     the guest-side ``cat strong_observe`` subprocess. Its stdout
-                     is the SSH data stream carrying raw CBOR bytes from the guest
-                     OS to the host; killing it closes that stream.
-        thread:      the host-side draining thread. It reads ``process`` stdout and
-                     decodes the CBOR byte stream into records in real time,
-                     appending to ``records`` as items arrive.
-        watchdog:    for ``timeout`` mode, the thread that kills ``process`` at the
-                     deadline (``None`` otherwise).
-        records:     all records decoded so far (grows as the drain runs).
-        read_cursor: index up to which the caller has already consumed ``records``,
-                     so each ``read`` returns only what is new.
-        status:      running | completed | stopped | error.
-        error:       error message when ``status == "error"``.
-        lock:        guards the mutable fields above, since the drain thread writes
-                     while callers read concurrently.
+class Stream:
+    """One live drain over an OQueue's ``strong_observe`` stream.
+
+    Construct with the bounds, call ``start()`` to launch the guest ``cat`` and
+    its drain thread, then consume records with ``iter_live()`` (blocking) or
+    ``read()`` (drain what is queued now). End an infinite stream with ``stop()``.
     """
 
-    stream_id: str
-    oqueue_path: str
-    mode: str
-    max_records: int | None
-    timeout_s: float | None
-    process: subprocess.Popen | None = None
-    thread: threading.Thread | None = None
-    watchdog: threading.Thread | None = None
-    records: list = field(default_factory=list)
-    read_cursor: int = 0
-    status: str = "running"
-    error: str | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    def __init__(
+        self,
+        transport: Transport,
+        oqfs: Oqfs,
+        oqueue_path: str,
+        max_records: int | None = None,
+        timeout_s: float | None = None,
+    ):
+        self._transport = transport
+        self._oqfs = oqfs
+        self.stream_id = uuid.uuid4().hex
+        self.oqueue_path = oqueue_path
+        self.max_records = max_records
+        self.timeout_s = timeout_s
+        if max_records is not None:
+            self.mode = "max_records"
+        elif timeout_s is not None:
+            self.mode = "timeout"
+        else:
+            self.mode = "infinite"
 
-    def finalize(self, status: str, error: str | None = None) -> bool:
-        """Move a still-running session to a terminal status; the first
-        terminal status wins. Returns whether this call applied the change."""
-        with self.lock:
-            if self.status != "running":
-                return False
-            self.status = status
-            self.error = error
-            return True
+        self.process: subprocess.Popen | None = None
+        self.thread: threading.Thread | None = None
+        self.watchdog: threading.Thread | None = None
+
+        self._queue: queue.Queue = queue.Queue()
+        self._produced = 0
+        self._consumed = 0
+        self._stop_requested = threading.Event()
+        self.status = "running"
+        self.error: str | None = None
+
+    def start(self) -> "Stream":
+        """Launch the guest ``cat`` and start draining it in the background.
+
+        Returns immediately with ``self``; the caller consumes records via
+        ``iter_live`` / ``read`` and ends the stream via ``stop``.
+        """
+        if self.max_records is not None and self.max_records <= 0:
+            raise ValueError("max_records must be positive")
+        if self.timeout_s is not None and self.timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+
+        device = self._oqfs.strong_observe_path(self.oqueue_path)
+        self.process = self._transport.popen(f"cat {shlex.quote(device)}")
+
+        self.thread = threading.Thread(target=self._drain, daemon=True)
+        self.thread.start()
+
+        if self.timeout_s is not None:
+            self.watchdog = threading.Thread(target=self._watchdog, daemon=True)
+            self.watchdog.start()
+
+        return self
+
+    def _drain(self) -> None:
+        """Background-thread body: decode CBOR records off the guest pipe onto
+        the queue until a bound is hit, the stream closes, or a decode/pipe error
+        occurs, then record the terminal status and kill the guest process.
+        """
+        terminal = "completed"
+        try:
+            for record in iter_records(self.process.stdout):
+                self._queue.put(record)
+                self._produced += 1
+                if self.max_records is not None and self._produced >= self.max_records:
+                    break
+            else:
+                # Loop fell through: the pipe closed on its own (EOF).
+                pass
+            if self._stop_requested.is_set():
+                terminal = "stopped"
+        except Exception as exc:
+            self.error = str(exc)
+            terminal = "error"
+        finally:
+            self._kill()
+            self.status = terminal
+            self._queue.put(_END)
+
+    def _watchdog(self) -> None:
+        """Timeout-mode watchdog: kill the guest process at the deadline (unless
+        it already finished) so the drain unblocks and ends as ``completed``.
+        """
+        deadline = time.monotonic() + self.timeout_s
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                return
+            time.sleep(min(_WATCHDOG_POLL_S, deadline - time.monotonic()))
+        self._kill()
+
+    def _kill(self) -> None:
+        """Terminate the guest process if still running: SIGTERM, wait a grace
+        period, then SIGKILL. Safe to call from several threads and when already
+        dead (``Popen.wait`` is internally locked).
+        """
+        p = self.process
+        if p is not None and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=_KILL_GRACE_S)
+            except Exception:
+                p.kill()
+
+    def read(self) -> list:
+        """Return the records queued since the last read (non-blocking)."""
+        out = []
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is _END:
+                break
+            out.append(item)
+            self._consumed += 1
+        return out
+
+    def iter_live(self):
+        """Yield records as they arrive, blocking until the stream ends."""
+        while True:
+            item = self._queue.get()
+            if item is _END:
+                return
+            self._consumed += 1
+            yield item
+
+    def collect(self) -> list:
+        """Start a bounded drain, block until it finishes, and return its records.
+
+        A bound is required: without ``max_records`` or ``timeout_s`` the drain
+        would run forever. Use a live ``Stream`` (``start`` + ``iter_live``) for
+        an unbounded stream.
+        """
+        if self.max_records is None and self.timeout_s is None:
+            raise ValueError(
+                "collect requires max_records or timeout_s; "
+                "use a live stream for an unbounded drain"
+            )
+        self.start()
+        self.join()
+        return self.read()
+
+    def stop(self) -> "Stream":
+        """The kill signal: request a stop, kill the guest process, and wait for
+        the drain to finalize (so ``status`` is settled when this returns)."""
+        self._stop_requested.set()
+        self._kill()
+        self.join()
+        return self
+
+    def join(self, timeout: float | None = None) -> None:
+        """Wait for the drain thread to finish."""
+        if self.thread is not None:
+            self.thread.join(timeout)
 
     def snapshot(self) -> dict:
-        """Return a lock-safe copy of the session's public state (id, mode,
-        status, record counts, error) for reporting to the caller/agent."""
-        with self.lock:
-            return {
-                "stream_id": self.stream_id,
-                "oqueue_path": self.oqueue_path,
-                "mode": self.mode,
-                "status": self.status,
-                "records_total": len(self.records),
-                "records_unread": len(self.records) - self.read_cursor,
-                "error": self.error,
-            }
+        """Return a copy of the stream's public state for reporting to callers."""
+        return {
+            "stream_id": self.stream_id,
+            "oqueue_path": self.oqueue_path,
+            "mode": self.mode,
+            "status": self.status,
+            "records_total": self._produced,
+            "records_unread": self._produced - self._consumed,
+            "error": self.error,
+        }
 
 
 class StreamManager:
-    """Owns the set of live streaming sessions and their lifecycle.
+    """Registry of live ``Stream``s, used only by the MCP server.
 
-    Each session drains one ``strong_observe`` stream on its own background
-    thread; the manager tracks them by ``stream_id`` and exposes start / read /
-    stop / list operations plus a blocking ``collect`` convenience.
+    The MCP server can hold many concurrent sessions and must look them up by
+    ``stream_id`` across separate tool calls, so it tracks them here.
     """
 
     def __init__(self, transport: Transport, oqfs: Oqfs):
         self._transport = transport
         self._oqfs = oqfs
-        self._sessions: dict[str, Session] = {}
+        self._streams: dict[str, Stream] = {}
         self._lock = threading.Lock()
 
     def start(
@@ -112,159 +231,37 @@ class StreamManager:
         oqueue_path: str,
         max_records: int | None = None,
         timeout_s: float | None = None,
-    ) -> Session:
-        """Open a streaming session and start draining it in the background.
-
-        Infers the termination mode from the bounds (``max_records`` by count,
-        else ``timeout_s`` by time, else ``infinite``), launches
-        ``cat strong_observe`` on the guest as a subprocess pipe, and spawns a
-        drain thread (plus a watchdog thread for the timeout mode). Returns
-        immediately with the registered ``Session``; the caller reads records
-        via ``read`` and ends the session via ``stop``.
-        """
-        if max_records is not None and max_records <= 0:
-            raise ValueError("max_records must be positive")
-        if timeout_s is not None and timeout_s <= 0:
-            raise ValueError("timeout_s must be positive")
-
-        if max_records is not None:
-            mode = "max_records"
-        elif timeout_s is not None:
-            mode = "timeout"
-        else:
-            mode = "infinite"
-
-        device = self._oqfs.strong_observe_path(oqueue_path)
-        process = self._transport.popen(f"cat {shlex.quote(device)}")
-
-        session = Session(
-            stream_id=uuid.uuid4().hex,
-            oqueue_path=oqueue_path,
-            mode=mode,
+    ) -> Stream:
+        """Create a ``Stream``, start draining it, and register it by id."""
+        stream = Stream(
+            self._transport,
+            self._oqfs,
+            oqueue_path,
             max_records=max_records,
             timeout_s=timeout_s,
-            process=process,
-        )
+        ).start()
         with self._lock:
-            # Register under the lock so concurrent starts/reads stay consistent.
-            self._sessions[session.stream_id] = session
+            self._streams[stream.stream_id] = stream
+        return stream
 
-        session.thread = threading.Thread(
-            target=self._drain, args=(session,), daemon=True
-        )
-        session.thread.start()
+    def read(self, stream_id: str) -> tuple[Stream, list]:
+        """Return ``(stream, records-since-last-read)`` for a session."""
+        stream = self._get(stream_id)
+        return stream, stream.read()
 
-        if timeout_s is not None:
-            session.watchdog = threading.Thread(
-                target=self._watchdog, args=(session, timeout_s), daemon=True
-            )
-            session.watchdog.start()
-
-        return session
-
-    def _drain(self, session: Session) -> None:
-        """Background-thread body: decode CBOR records off the guest pipe into
-        the session's record list until a bound is hit, the stream closes, or a
-        decode/pipe error occurs, then mark the terminal status and kill the
-        guest process. In ``max_records`` mode the reader stops itself at N.
-        """
-        try:
-            for record in iter_records(session.process.stdout):
-                with session.lock:
-                    session.records.append(record)
-                    reached = (
-                        session.max_records is not None
-                        and len(session.records) >= session.max_records
-                    )
-                if reached:
-                    self._kill(session.process)
-                    session.finalize("completed")
-                    break
-            else:
-                # Iterator exhausted: the stream closed on its own.
-                session.finalize("completed")
-        # A decode or pipe failure ends the drain as an error.
-        except Exception as exc:
-            session.finalize("error", str(exc))
-        finally:
-            self._kill(session.process)
-
-    def _watchdog(self, session: Session, timeout_s: float) -> None:
-        """Background-thread body for the timeout mode: sleep until the deadline
-        (returning early if the process already finished), then mark the session
-        completed and kill the guest process so the drain unblocks and ends.
-        """
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if session.process.poll() is not None:
-                # The guest process already finished on its own.
-                return
-            time.sleep(min(_WATCHDOG_POLL_S, deadline - time.monotonic()))
-        session.finalize("completed")
-        self._kill(session.process)
-
-    @staticmethod
-    def _kill(process) -> None:
-        """Terminate the guest process if still running: send SIGTERM, wait a
-        grace period, then SIGKILL if it hasn't exited. No-op if already dead.
-        """
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=_KILL_GRACE_S)
-            except Exception:
-                process.kill()
-
-    def collect(
-        self,
-        oqueue_path: str,
-        max_records: int | None = None,
-        timeout_s: float | None = None,
-    ) -> tuple[Session, list[Any]]:
-        """Start a bounded drain, block until it finishes, and return
-        ``(session, records)``.
-
-        A bound is required: without ``max_records`` or ``timeout_s`` the drain
-        would run forever and this call would never return — use ``start`` for
-        an unbounded session. This is the blocking counterpart the CLI uses; the
-        MCP server drives the same session non-blockingly so it can cancel.
-        """
-        if max_records is None and timeout_s is None:
-            raise ValueError(
-                "collect requires max_records or timeout_s; "
-                "use start for an unbounded stream"
-            )
-        session = self.start(oqueue_path, max_records=max_records, timeout_s=timeout_s)
-        session.thread.join()
-        return self.read(session.stream_id)
-
-    def read(self, stream_id: str) -> tuple[Session, list[Any]]:
-        """Return records decoded since the last read for this session, and the
-        session itself. Advances a per-session cursor under the lock, so each
-        record is returned exactly once across repeated polls.
-        """
-        session = self._get(stream_id)
-        with session.lock:
-            new = session.records[session.read_cursor :]
-            session.read_cursor = len(session.records)
-        return session, new
-
-    def stop(self, stream_id: str) -> Session:
+    def stop(self, stream_id: str) -> Stream:
         """The kill signal for a session."""
-        session = self._get(stream_id)
-        session.finalize("stopped")
-        self._kill(session.process)
-        return session
+        return self._get(stream_id).stop()
 
     def list(self) -> list[dict]:
         """Return a snapshot of every session created this process lifetime."""
         with self._lock:
-            return [s.snapshot() for s in self._sessions.values()]
+            return [s.snapshot() for s in self._streams.values()]
 
-    def _get(self, stream_id: str) -> Session:
+    def _get(self, stream_id: str) -> Stream:
         """Look up a session by id, raising ``KeyError`` if it is unknown."""
         with self._lock:
-            session = self._sessions.get(stream_id)
-        if session is None:
+            stream = self._streams.get(stream_id)
+        if stream is None:
             raise KeyError(f"unknown stream_id: {stream_id}")
-        return session
+        return stream
