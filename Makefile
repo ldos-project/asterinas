@@ -98,6 +98,18 @@ DEV_SUBSTITUTER ?=
 DEV_TRUSTED_PUBLIC_KEY ?= 
 # End of Cachix binary cache settings
 
+# Python formatting settings
+# Directories to search for python files
+PYTHON_PROJECTS= \
+	kernel/comps/mariposa_data_capture/python \
+	kernel/comps/raid/python \
+	tools/howdone \
+	mariposa-cli
+# Specific files for format which are not .py
+EXTRA_PYTHON_FILES= \
+	tools/howdone/howdone
+# End of python formatting settings
+
 # ========================= End of Makefile options. ==========================
 
 SHELL := /bin/bash
@@ -478,6 +490,7 @@ format:
 	@nixfmt ./distro
 	@$(MAKE) --no-print-directory -C test/initramfs format
 	@$(MAKE) --no-print-directory -C test/nixos format
+	@black $(PYTHON_PROJECTS) $(EXTRA_PYTHON_FILES)
 
 .PHONY: check
 check: private WORKSPACE_MEMBER_DIRS = \
@@ -507,6 +520,8 @@ check: $(CARGO_OSDK)
 	@typos
 	@# Check formatting issues of Nix files under distro directory
 	@nixfmt --check ./distro
+	@# Check python
+	@black --check $(PYTHON_PROJECTS) $(EXTRA_PYTHON_FILES)
 
 # Here we build our mount cache
 # TODO make this rule depend on the dockerfile version see #34
