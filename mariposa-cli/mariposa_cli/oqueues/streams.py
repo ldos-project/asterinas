@@ -9,7 +9,7 @@ Termination is one of three modes:
 * ``infinite``    — runs until ``stop()`` (the kill signal) or EOF.
 
 The terminal ``status`` is written only by the drain thread — ``stop()`` and the
-watchdog just kill the guest process and let the drain observe the resulting EOF. 
+watchdog just kill the guest process and let the drain observe the resulting EOF.
 
 The CLI drives a single ``Stream`` directly. The MCP server, which juggles many
 concurrent sessions, tracks them through a ``StreamManager``.

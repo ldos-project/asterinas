@@ -91,7 +91,7 @@ def _cmd_stream(args) -> None:
             emit(record)
     except BrokenPipeError:
         # The downstream reader (e.g. `head`) closed the pipe: stop the drain
-        # and exit cleanly. Redirect stdout to /dev/null. 
+        # and exit cleanly. Redirect stdout to /dev/null.
         stream.stop()
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return
