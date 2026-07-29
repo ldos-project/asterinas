@@ -32,7 +32,8 @@ use static_assertions::assert_obj_safe;
 use crate::{
     orpc::{
         oqueue::{
-            Cursor, InlineStrongObserver, OQueueError, ObservationQuery, ResourceUnavailableSnafu,
+            Cursor, ElementDescriptor, InlineStrongObserver, OQueueError, ObservationQuery,
+            ReflessElementDescriptor, ResourceUnavailableSnafu,
             single_thread_ring_buffer::RingBuffer,
         },
         path::Path,
@@ -57,10 +58,10 @@ new_key_type! {
 /// to support locking and lock-free implementation. It could even provide a way to use a
 /// hypothetical `dyn OQueueDynImplementation<T>` backend; however, `OQueueDynImplementation` would
 /// require quite a few type-erased unsafe operations.
-pub(crate) struct OQueueImplementation<T: ?Sized> {
+pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     // TODO(arthurp): A number of methods perform allocation while this lock is held. Do we actually
     // want to disable IRQs?
-    inner: SpinLock<OQueueInner<T>, LocalIrqDisabled>,
+    inner: SpinLock<OQueueInner<D>, LocalIrqDisabled>,
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
@@ -69,7 +70,7 @@ pub(crate) struct OQueueImplementation<T: ?Sized> {
     pub(super) read_wait_queue: WaitQueue,
 }
 
-impl<T: ?Sized + 'static> OQueueImplementation<T> {
+impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Create a new OQueue.
     ///
     /// * `len` is the ring buffer length used for consumers and strong-observers.
@@ -122,7 +123,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// observation ring buffer.
     fn new_observation_ring_buffer<U>(
         self: &Arc<Self>,
-        query: ObservationQuery<T, U>,
+        query: ObservationQuery<D, U>,
         len: usize,
         is_strong: bool,
         revocable: bool,
@@ -152,7 +153,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// Attach a strong observer.
     pub(super) fn attach_strong_observer<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<T, U>,
+        query: super::ObservationQuery<D, U>,
     ) -> Result<super::StrongObserver<U>, super::OQueueError>
     where
         U: Copy + Send + 'static,
@@ -164,7 +165,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// falls too far behind.
     pub(super) fn attach_revocable_strong_observer<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<T, U>,
+        query: super::ObservationQuery<D, U>,
     ) -> Result<super::StrongObserver<U>, super::OQueueError>
     where
         U: Copy + Send + 'static,
@@ -174,7 +175,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
 
     fn attach_strong_observer_inner<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<T, U>,
+        query: super::ObservationQuery<D, U>,
         revocable: bool,
     ) -> Result<super::StrongObserver<U>, super::OQueueError>
     where
@@ -197,7 +198,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// exist for `T: !Copy`.
     pub(super) fn attach_inline_strong_observer(
         self: &Arc<Self>,
-        f: impl Fn(&T) + Send + 'static,
+        f: impl for<'a> Fn(&'a D::Element<'a>) + Send + 'static,
     ) -> Result<InlineStrongObserver, super::OQueueError> {
         let mut inner = self.inner.lock();
         let key = inner.inline_strong_observers.insert(Box::new(f));
@@ -232,7 +233,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
             .remove(observer_id)
             .expect("tried to attach inline strong observer for observer_id which did not exist");
         let query = (observation_ring_buffer.query as Box<dyn Any>)
-            .downcast::<ObservationQuery<T, U>>()
+            .downcast::<ObservationQuery<D, U>>()
             .expect("tried to attach inline strong observer with a different type from original attachment");
 
         // Drain the ring buffer into the function. A revoked observer has no buffer, so there is
@@ -245,12 +246,16 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
             }
         }
 
-        // Register the actual handler
-        let key = inner.inline_strong_observers.insert(Box::new(move |v| {
+        // Register the actual handler. The type ascription (rather than letting `insert` infer
+        // it) is required for rustc to unify the closure's argument lifetime with `MD::Message`'s
+        // own GAT lifetime, as `for<'a> Fn(&'a MD::Element<'a>)` requires.
+        #[expect(clippy::type_complexity)]
+        let handler: Box<dyn for<'a> Fn(&'a D::Element<'a>) + Send> = Box::new(move |v| {
             if let Some(v) = query.call(v) {
                 f(&v)
             }
-        }));
+        });
+        let key = inner.inline_strong_observers.insert(handler);
 
         Ok(key)
     }
@@ -259,7 +264,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     pub(super) fn attach_weak_observer<U>(
         self: &Arc<Self>,
         history_len: usize,
-        query: super::ObservationQuery<T, U>,
+        query: super::ObservationQuery<D, U>,
     ) -> Result<super::WeakObserver<U>, super::OQueueError>
     where
         U: Copy + Send + 'static,
@@ -276,14 +281,14 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     }
 
     /// Create a new reference to `self` without its OQueue kind.
-    pub(super) fn as_any_oqueue(self: &Arc<Self>) -> super::AnyOQueueRef<T> {
+    pub(super) fn as_any_oqueue(self: &Arc<Self>) -> super::AnyOQueueRef<D> {
         super::AnyOQueueRef {
             inner: self.clone(),
         }
     }
 }
 
-impl<T: ?Sized + 'static> OQueueImplementation<T> {
+impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// True if try_produce into self is *expected* to succeed. It may still fail if there is a
     /// concurrent producer.
     fn can_produce(&self) -> bool {
@@ -291,7 +296,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     }
 
     /// Produce a value by reference, blocking until it completes.
-    pub(super) fn produce_ref(&self, v: &T) {
+    pub(super) fn produce_ref<'a>(&self, v: &'a D::Element<'a>) {
         self.put_wait_queue.wait_until(|| {
             if self.try_produce_ref(v) {
                 Some(())
@@ -303,7 +308,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
 
     /// Attempt to produce a value by reference. This executes all the queries on `v` and places the
     /// query results into the appropriate observation ring buffers.
-    pub(super) fn try_produce_ref(&self, v: &T) -> bool {
+    pub(super) fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> bool {
         let mut inner = self.inner.lock();
         assert!(inner.consumer_ring_buffer.is_none());
         // A slow observer must never block a producer, so drop any whose ring is full. As this is
@@ -333,7 +338,7 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     /// Attach an producer expecting references to the OQueue if it has no consumers.
     pub(super) fn attach_ref_producer(
         self: &Arc<Self>,
-    ) -> Result<super::RefProducer<T>, super::OQueueError> {
+    ) -> Result<super::RefProducer<D>, super::OQueueError> {
         if self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -348,7 +353,10 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
     }
 }
 
-impl<T: Send + 'static> OQueueImplementation<T> {
+// This impl block is specific to `ReflessElementDescriptor<T>` (rather than generic over any
+// `D: ElementDescriptor`) because producing/consuming by value requires an owned (`'static`)
+// message.
+impl<T: Send + 'static> OQueueImplementation<ReflessElementDescriptor<T>> {
     /// Produce into the OQueue. Blocking until space is available
     pub(super) fn produce(&self, v: T) {
         let mut v = v;
@@ -485,7 +493,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
 }
 
 /// The part of [`OQueueImplementation`] which is protected by a lock.
-struct OQueueInner<T: ?Sized> {
+struct OQueueInner<D: ElementDescriptor> {
     /// The ring buffer used for consumers.
     consumer_ring_buffer: Option<RingBuffer>,
     /// The number of attached consumers. This is required to detect when the `consumer_ring_buffer`
@@ -494,7 +502,7 @@ struct OQueueInner<T: ?Sized> {
     /// The ring buffers used for observers. If a ring buffer is no longer needed, due to a
     /// detachment, its slot will be set to `None` and ignored. `None` slots are reused for later
     /// attachments.
-    observer_ring_buffers: SlotMap<ObserverKey, ObservationRingBuffer<T>>,
+    observer_ring_buffers: SlotMap<ObserverKey, ObservationRingBuffer<D>>,
     // TODO: PERFORMANCE: There will be a bunch of cases where there is *only* a consumer ring
     // buffer, or *only* a single observer ring. It would be nice if either could be inlined. As of
     // now, the consumer is always inlined even when it's not in use, and the observer never is.
@@ -502,12 +510,17 @@ struct OQueueInner<T: ?Sized> {
     // same query.
     /// Inline strong observers of the message type. These will be called during production.
     #[expect(clippy::type_complexity)]
-    inline_strong_observers: SlotMap<InlineObserverKey, Box<dyn Fn(&T) + Send>>,
-    /// The inline consume if there is one.
-    inline_consumer: Option<Box<dyn Fn(T) + Send>>,
+    inline_strong_observers:
+        SlotMap<InlineObserverKey, Box<dyn for<'a> Fn(&'a D::Element<'a>) + Send>>,
+    /// The inline consumer if there is one.
+    ///
+    /// This is only ever populated when `MD = ReflessElementDescriptor<T>` (see
+    /// `OQueueImplementation<ReflessElementDescriptor<T>>`'s by-value impl block), since only an
+    /// owned, `'static` message can be consumed by value.
+    inline_consumer: Option<Box<dyn Fn(D::Element<'static>) + Send>>,
 }
 
-impl<T: ?Sized> OQueueInner<T> {
+impl<D: ElementDescriptor> OQueueInner<D> {
     /// True if all ring buffers can produce.
     ///
     /// Revoked observers are ignored, cus they won't get produced to at all.
@@ -536,18 +549,20 @@ impl<T: ?Sized> OQueueInner<T> {
     }
 }
 
-/// A partially type erased [`ObservationQuery`] with `U` (the query output type) erased, but `T`
-/// (the message type) retained statically. This is used in the OQueue machinery to dispatch to the
-/// query and produce it's result into a [`RingBuffer`].
-trait ErasedObservationQuery<T: ?Sized>: Send + Any {
+/// A partially type erased [`ObservationQuery`] with `U` (the query output type) erased, but `MD`
+/// (the message descriptor) retained statically. This is used in the OQueue machinery to dispatch
+/// to the query and produce it's result into a [`RingBuffer`].
+trait ErasedObservationQuery<D: ElementDescriptor>: Send + Any {
     /// Call the query and then produce the value into the provided ring buffer. The ring buffer
     /// must have a type matching the result of the query (`U` below). Returns false if the value
     /// could not be produced into `ring_buffer`.
-    fn call_into(&self, v: &T, ring_buffer: &mut RingBuffer) -> bool;
+    fn call_into<'a>(&self, v: &'a D::Element<'a>, ring_buffer: &mut RingBuffer) -> bool;
 }
 
-impl<T: ?Sized + 'static, U: Send + 'static> ErasedObservationQuery<T> for ObservationQuery<T, U> {
-    fn call_into(&self, v: &T, ring_buffer: &mut RingBuffer) -> bool {
+impl<D: ElementDescriptor + 'static, U: Send + 'static> ErasedObservationQuery<D>
+    for ObservationQuery<D, U>
+{
+    fn call_into<'a>(&self, v: &'a D::Element<'a>, ring_buffer: &mut RingBuffer) -> bool {
         if let Some(v) = self.call(v) {
             ring_buffer.try_produce(v).is_none()
         } else {
@@ -558,11 +573,11 @@ impl<T: ?Sized + 'static, U: Send + 'static> ErasedObservationQuery<T> for Obser
 
 /// A wrapper over [`RingBuffer`] which provides the information needed to perform produce and
 /// observe operations without exposing the type of the observed value (`U`).
-struct ObservationRingBuffer<T: ?Sized> {
+struct ObservationRingBuffer<D: ElementDescriptor> {
     // TODO: PERFORMANCE: Replace the dyn ref and optimize based on the known structure of
     // ObservationQuery. This should remove a level of pointer indirection.
-    /// The query to filter `T` and place the result into the ring buffer.
-    query: Box<dyn ErasedObservationQuery<T>>,
+    /// The query to filter the message and place the result into the ring buffer.
+    query: Box<dyn ErasedObservationQuery<D>>,
     /// Function to extract a value from the ring buffer with strong observer semantics and place it
     /// in the memory pointed to by `dest`. This indirection is needed since the type `U` in the
     /// ring buffer is not statically known.
@@ -595,11 +610,11 @@ struct ObservationRingBuffer<T: ?Sized> {
     revocable: bool,
 }
 
-impl<T: ?Sized + 'static> ObservationRingBuffer<T> {
-    /// Create a new ring buffer for a message type `T` and an observed type of `U`. This will be
-    /// used to store values of type `U` for observation.
+impl<D: ElementDescriptor + 'static> ObservationRingBuffer<D> {
+    /// Create a new ring buffer for a message descriptor `MD` and an observed type of `U`. This
+    /// will be used to store values of type `U` for observation.
     fn new<U: Copy + Send + 'static>(
-        query: ObservationQuery<T, U>,
+        query: ObservationQuery<D, U>,
         len: usize,
     ) -> Result<Self, AllocError> {
         let ring_buffer = RingBuffer::new::<U>(len)?;
@@ -742,7 +757,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
 assert_obj_safe!(UntypedOQueueImplementation);
 
-impl<T: ?Sized + 'static> UntypedOQueueImplementation for OQueueImplementation<T> {
+impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImplementation<D> {
     fn detach_strong_observer(&self, observer_id: ObserverKey) {
         let mut inner = self.inner.lock();
         inner.observer_ring_buffers.remove(observer_id);
