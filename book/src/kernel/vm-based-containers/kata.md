@@ -126,7 +126,7 @@ docker run -it \
     -v "${ASTERINAS_SRC}:/root/asterinas" \
     -v "${KATA_SRC}:/root/kata-containers" \
     -w /root/kata-containers \
-    ldosproject/asterinas:0.17.2-ldos-20260728
+    ldosproject/kata:0.17.2-ldos-20260728
 ```
 
 This setup lets you rebuild the kernel
