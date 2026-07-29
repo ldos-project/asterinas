@@ -96,6 +96,7 @@ FROM build-base
 
 # Install all Asterinas dependent packages
 RUN apt update && apt-get install -y --no-install-recommends \
+    black=24.2.0-1ubuntu1 \
     bridge-utils \
     clang-format       `# formatting general tests` \
     cpio \
