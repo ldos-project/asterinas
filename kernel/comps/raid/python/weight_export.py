@@ -21,15 +21,19 @@ def build_arg_parser(description: str) -> argparse.ArgumentParser:
     """Build an argument parser with the arguments common to all generators."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
-        "--models", nargs="+", required=True,
+        "--models",
+        nargs="+",
+        required=True,
         help="Paths to .pt model files, one per device in order",
     )
     parser.add_argument(
-        "--template", required=True,
+        "--template",
+        required=True,
         help="Path to the Jinja2 template (.rs.j2)",
     )
     parser.add_argument(
-        "--output", required=True,
+        "--output",
+        required=True,
         help="Path for the generated Rust file (.rs)",
     )
     return parser
@@ -44,7 +48,9 @@ def print_architecture(state: dict, device_idx: int) -> None:
     """Print model architecture for sanity check."""
     print(f"  Device {device_idx}:")
     for name, tensor in state.items():
-        print(f"    {name:20s}  shape={str(list(tensor.shape)):16s}  dtype={tensor.dtype}")
+        print(
+            f"    {name:20s}  shape={str(list(tensor.shape)):16s}  dtype={tensor.dtype}"
+        )
 
 
 def load_models(paths: list) -> list:

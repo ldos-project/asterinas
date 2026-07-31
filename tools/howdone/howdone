@@ -5,7 +5,7 @@
 #   "PyYAML==6.0.3",
 # ]
 # ///
- 
+
 import argparse
 import fcntl
 import os
@@ -21,12 +21,15 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print(f"""\
+    print(
+        f"""\
 ERROR: PyYAML is not installed.
 You can either install it (e.g. apt install python3-yaml), or launch this script with uv: 
           
 uv run {sys.argv[0]}
-""", file=sys.stderr)
+""",
+        file=sys.stderr,
+    )
     raise
 
 
@@ -70,7 +73,9 @@ def validate_output_dir_config(config: dict) -> None:
         else:
             raise ValueError("output_dir.argument must be a string or list")
         if not any("{OUTPUT_DIR}" in item for item in args_list):
-            raise ValueError("output_dir.argument must contain {OUTPUT_DIR} in at least one item")
+            raise ValueError(
+                "output_dir.argument must contain {OUTPUT_DIR} in at least one item"
+            )
 
 
 def substitute_output_dir(s: str, output_dir: Path) -> str:
@@ -111,7 +116,9 @@ def popen_args(command: str | list) -> dict:
         return dict(args=command, shell=False)
 
 
-def run_noninteractive(command: str | list, output_file: Path, environ: dict, cwd: str | None) -> int:
+def run_noninteractive(
+    command: str | list, output_file: Path, environ: dict, cwd: str | None
+) -> int:
     """Run a command, capturing stdout+stderr to output_file. Returns exit code."""
     process = subprocess.Popen(
         **popen_args(command),
@@ -136,7 +143,9 @@ def run_noninteractive(command: str | list, output_file: Path, environ: dict, cw
                     # The child will have received the SIGINT already, so we just drain it's output.
                     pass
     except (IOError, OSError) as e:
-        log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+        log_message(
+            f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands."
+        )
     finally:
         process.wait()
 
@@ -147,7 +156,9 @@ def run_noninteractive(command: str | list, output_file: Path, environ: dict, cw
     return code
 
 
-def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: str | None) -> int:
+def run_interactive(
+    command: str | list, output_file: Path, environ: dict, cwd: str | None
+) -> int:
     """Run a command interactively via a PTY, teeing output to output_file. Returns exit code."""
     header = f"{format_command_line(command)}\n\n"
 
@@ -205,7 +216,9 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
                 os.close(master_fd)
                 process.wait()
         except (IOError, OSError) as e:
-            log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+            log_message(
+                f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands."
+            )
     else:
         # The input is not a TTY, so just do normal file I/O
         process = subprocess.Popen(
@@ -231,7 +244,9 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
                         # The child will have received the SIGINT already, so we just drain it's output.
                         pass
         except (IOError, OSError) as e:
-            log_message(f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands.")
+            log_message(
+                f"Error occurred while running {format_command_line(command)}\n{e}\nContinuing with other commands."
+            )
         finally:
             process.wait()
 
@@ -242,10 +257,11 @@ def run_interactive(command: str | list, output_file: Path, environ: dict, cwd: 
     return code
 
 
-_YR = "\033[0m"     # reset
-_YK = "\033[36m"    # key   - cyan
-_YV = "\033[33m"    # value - yellow
+_YR = "\033[0m"  # reset
+_YK = "\033[36m"  # key   - cyan
+_YV = "\033[33m"  # value - yellow
 _YC = "\033[2;32m"  # comment - dim green
+
 
 def run(args):
     # Find config file if not provided
@@ -317,7 +333,10 @@ def run(args):
             elif when_str.lower() == "before":
                 run_before = True
             else:
-                print(f"Error: Invalid 'when' for command. Found '{when_str}' in {cmd!r}", file=sys.stderr)
+                print(
+                    f"Error: Invalid 'when' for command. Found '{when_str}' in {cmd!r}",
+                    file=sys.stderr,
+                )
                 return 1
             actual_cmd = cmd["command"]
         else:
@@ -332,26 +351,36 @@ def run(args):
         log_message(f"Running (output to {name}): {format_command_line(cmd)}")
         code = run_noninteractive(cmd, output_dir / name, environ, cwd)
         if code != 0:
-            log_message(f"Command failed with code {code} (command was {format_command_line(cmd)})")
+            log_message(
+                f"Command failed with code {code} (command was {format_command_line(cmd)})"
+            )
 
     main_command = args.cmd
     # if the main command is a single element then unwrap it, so that it is run in a full shell.
     if len(main_command) == 1:
         main_command = main_command[0]
     if "argument" in output_dir_config:
-        main_command = append_output_dir_arg(main_command, output_dir_config["argument"], output_dir)
+        main_command = append_output_dir_arg(
+            main_command, output_dir_config["argument"], output_dir
+        )
 
     output_file = output_dir / config["output_file"]
-    log_message(f"Running (output to {config['output_file']}): {format_command_line(main_command)}")
+    log_message(
+        f"Running (output to {config['output_file']}): {format_command_line(main_command)}"
+    )
     code = run_interactive(main_command, output_file, environ, cwd)
     if code != 0:
-        log_message(f"Command failed with code {code} (command was {format_command_line(main_command)})")
+        log_message(
+            f"Command failed with code {code} (command was {format_command_line(main_command)})"
+        )
 
     for name, cmd in after_commands:
         log_message(f"Running (output to {name}): {format_command_line(cmd)}")
         code = run_noninteractive(cmd, output_dir / name, environ, cwd)
         if code != 0:
-            log_message(f"Command failed with code {code} (command was {format_command_line(cmd)})")
+            log_message(
+                f"Command failed with code {code} (command was {format_command_line(cmd)})"
+            )
 
     return 0
 
@@ -411,7 +440,12 @@ NOTE: Killing howdone directly with signals (even SIGINT) will leave the command
         named `.howdone.yaml`. The search will stop at the users home directory. Only the first file found will be used.
         """,
     )
-    parser.add_argument("-n", "--name", type=str, help="Provide a name for the run. This is simply placed in the meta.yaml file.")
+    parser.add_argument(
+        "-n",
+        "--name",
+        type=str,
+        help="Provide a name for the run. This is simply placed in the meta.yaml file.",
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-d", "--dir", type=Path, help="Output to the given directory")
     group.add_argument(
