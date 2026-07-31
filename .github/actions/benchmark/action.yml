@@ -134,7 +134,7 @@ runs:
 
     - name: Store benchmark results
       if: ${{ inputs.task == 'result' }}
-      uses: ldos-project/github-action-benchmark@v5
+      uses: ldos-project/github-action-benchmark@04125aff02691443d02f4b23c4eb08e8b0c5c4a9
       with:
         # Use glob pattern to find all generated config files
         output-file-path: "configs/config_*.json"
