@@ -6,7 +6,16 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
-use ostd::{Error, orpc::orpc_server, sync::Mutex};
+use ostd::{
+    Error,
+    orpc::{
+        oqueue::{Consumer, RefProducer},
+        orpc_server,
+        sync::{BlockOnMany, Blocker, TimeoutBlocker},
+    },
+    sync::Mutex,
+    timer::TIMER_FREQ,
+};
 
 use crate::server_traits::{BioCandidates, SelectionPolicy};
 
@@ -509,5 +518,176 @@ impl SelectionPolicy for LinnOSPlusPolicy {
                 return Ok(self.members[fallback_idx].clone());
             }
         }
+    }
+}
+
+/// Max candidate indices carried in one [`SelectionRequestWire`]; extras are dropped with a warning.
+const MAX_REQUEST_CANDIDATES: usize = 8;
+
+/// Request sent to the userspace policy server: the admitted candidate member indices for the read
+/// being routed. Fixed-size to stay `Copy` (required for OQueue observation); encodes as a CBOR
+/// array of `candidate_count` followed by [`MAX_REQUEST_CANDIDATES`] unsigned integers.
+#[derive(Debug, Clone, Copy)]
+pub struct SelectionRequestWire {
+    candidate_count: u32,
+    candidates: [u32; MAX_REQUEST_CANDIDATES],
+}
+
+impl SelectionRequestWire {
+    /// Pack an array of candidate indicis to a SelectionRequestWire
+    fn from_candidates(candidates: &[usize]) -> Self {
+        if candidates.len() > MAX_REQUEST_CANDIDATES {
+            log::warn!(
+                "[raid] selection request has {} candidates, more than the {MAX_REQUEST_CANDIDATES} supported; truncating",
+                candidates.len()
+            );
+        }
+        let mut wire = [0u32; MAX_REQUEST_CANDIDATES];
+        let mut count = 0u32;
+        for (slot, &candidate) in wire.iter_mut().zip(candidates) {
+            *slot = candidate as u32;
+            count += 1;
+        }
+        Self {
+            candidate_count: count,
+            candidates: wire,
+        }
+    }
+}
+
+impl serde::Serialize for SelectionRequestWire {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> core::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+
+        let mut tup = serializer.serialize_tuple(1 + MAX_REQUEST_CANDIDATES)?;
+        tup.serialize_element(&self.candidate_count)?;
+        for candidate in &self.candidates {
+            tup.serialize_element(candidate)?;
+        }
+        tup.end()
+    }
+}
+
+/// Max wait for the server's reply before falling back, so a hung server can't stall RAID I/O.
+const REPLY_TIMEOUT_MS: u64 = 200;
+
+/// The endpoints of one synchronous request/reply exchange, kept under one lock so at most one
+/// exchange is in flight at a time.
+struct SelectionChannel {
+    request_producer: RefProducer<SelectionRequestWire>,
+    reply_consumer: Consumer<u32>,
+    reply_timeout: Arc<TimeoutBlocker>,
+    block_on_many: BlockOnMany,
+}
+
+/// Selection policy driven by a userspace server over OQFS: each call sends the admitted candidates
+/// and blocks (bounded by [`REPLY_TIMEOUT_MS`]) for the server's reply.
+///
+/// Falls back to round-robin among the candidates when no server is attached (e.g. early boot or
+/// after it exits), on a reply timeout, or on a reply naming a no-longer-admitted candidate.
+#[orpc_server]
+pub struct UserspacePolicy {
+    read_cursor: AtomicUsize,
+    members: Vec<Arc<dyn BlockDevice>>,
+    channel: Mutex<SelectionChannel>,
+}
+
+impl core::fmt::Debug for UserspacePolicy {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UserspacePolicy")
+            .field("read_cursor", &self.read_cursor)
+            .field("members", &self.members)
+            .finish()
+    }
+}
+
+impl UserspacePolicy {
+    pub fn new(
+        members: Vec<Arc<dyn BlockDevice>>,
+        request_producer: RefProducer<SelectionRequestWire>,
+        reply_consumer: Consumer<u32>,
+    ) -> Result<Arc<Self>, Error> {
+        let channel = SelectionChannel {
+            request_producer,
+            reply_consumer,
+            reply_timeout: TimeoutBlocker::new(),
+            block_on_many: BlockOnMany::new(),
+        };
+        let server = Self::new_with(|orpc_internal, _| Self {
+            orpc_internal,
+            read_cursor: AtomicUsize::new(0),
+            members,
+            channel: Mutex::new(channel),
+        });
+
+        Ok(server)
+    }
+
+    /// Produces `candidates` as a request and blocks for the server's reply, bounded by
+    /// [`REPLY_TIMEOUT_MS`]. Returns `None` (without producing anything) if no server is attached
+    /// to the request stream, or with a warning if the wait times out.
+    fn request_selection(&self, candidates: &[usize]) -> Option<usize> {
+        let mut channel = self.channel.lock();
+        let SelectionChannel {
+            request_producer,
+            reply_consumer,
+            reply_timeout,
+            block_on_many,
+        } = &mut *channel;
+
+        // If no Userspace policy server is attached.
+        if !request_producer.has_observers() {
+            return None;
+        }
+        request_producer.produce_ref(&SelectionRequestWire::from_candidates(candidates));
+
+        reply_timeout.arm_after(REPLY_TIMEOUT_MS * TIMER_FREQ / 1000);
+        let reply = loop {
+            if let Some(value) = reply_consumer.try_consume() {
+                break Some(value);
+            }
+            // if time out.
+            if reply_timeout.should_try() {
+                break None;
+            }
+            let blockers: [&dyn Blocker; 2] = [&*reply_consumer, &**reply_timeout];
+            block_on_many.block_on(blockers.into_iter());
+        };
+        reply_timeout.disarm();
+
+        match reply {
+            Some(value) => Some(value as usize),
+            None => {
+                log::warn!(
+                    "[raid] userspace policy server did not reply within {REPLY_TIMEOUT_MS}ms; falling back"
+                );
+                None
+            }
+        }
+    }
+}
+
+impl SelectionPolicy for UserspacePolicy {
+    fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        let candidates = selection.candidates;
+
+        if let Some(device_idx) = self.request_selection(candidates) {
+            if candidates.contains(&device_idx) {
+                return Ok(self.members[device_idx].clone());
+            }
+            // The server named a device that is not currently admitted (or predates a change in
+            // membership); fall through to the round-robin fallback.
+            log::warn!(
+                "[raid] userspace policy server replied with device {device_idx}, not in the \
+                 current candidate set; falling back to round-robin"
+            );
+        }
+
+        let fallback_idx =
+            candidates[self.read_cursor.fetch_add(1, Ordering::Relaxed) % candidates.len()];
+        Ok(self.members[fallback_idx].clone())
     }
 }

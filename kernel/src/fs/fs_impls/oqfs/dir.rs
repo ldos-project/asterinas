@@ -14,7 +14,9 @@
 //!
 //! A directory plays one of two roles:
 //!
-//! - **OQueue leaf** — It lists the fixed files [`strong_observe::FILE_NAME`] and [`metadata::FILE_NAME`].
+//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus exactly one of
+//!   [`strong_observe::FILE_NAME`] or [`produce::FILE_NAME`], depending on the export's single
+//!   direction (see [`leaf_file_names`] and `ostd::orpc::oqueue::ExportDirection`).
 //! - **non-leaf** (including the root) — It lists the distinct next components of every exported
 //!   path that it is a prefix of.
 //!
@@ -26,11 +28,11 @@ use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::registry,
+    oqueue::{ExportDirection, registry},
     path::{Path, PathComponentRef},
 };
 
-use super::{BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, strong_observe};
+use super::{BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, produce, strong_observe};
 use crate::{
     fs::{
         file::{InodeMode, InodeType, StatusFlags, mkmod},
@@ -51,6 +53,17 @@ use crate::{
 fn live_export_paths() -> impl Iterator<Item = Path> {
     registry::clean_exports();
     registry::list_export_paths().into_iter()
+}
+
+/// Returns the fixed files served by an OQueue leaf directory: [`metadata::FILE_NAME`] plus, per
+/// the export's [`ExportDirection`], either [`strong_observe::FILE_NAME`] or
+/// [`produce::FILE_NAME`]. Only the metadata file is listed if the export has disappeared.
+fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
+    match registry::lookup_export(oqueue).map(|export| export.direction()) {
+        Some(ExportDirection::Observe) => vec![strong_observe::FILE_NAME, metadata::FILE_NAME],
+        Some(ExportDirection::Produce) => vec![produce::FILE_NAME, metadata::FILE_NAME],
+        None => vec![metadata::FILE_NAME],
+    }
 }
 
 /// convert an OQueue [`Path`] to filesystem path components: names stay as-is, indices become their
@@ -156,10 +169,8 @@ impl DirInode {
 
     /// Returns whether `name` is currently a valid child of this directory.
     fn has_child(&self, name: &str) -> bool {
-        if let Some(_oqueue) = self.as_oqueue() {
-            // if the directory corresponds to an OQueue, then
-            // it can only contains two files.
-            name == strong_observe::FILE_NAME || name == metadata::FILE_NAME
+        if let Some(oqueue) = self.as_oqueue() {
+            leaf_file_names(&oqueue).contains(&name)
         } else {
             self.child_dir_names().iter().any(|child| child == name)
         }
@@ -233,10 +244,15 @@ impl Inode for DirInode {
         }
 
         if let Some(oqueue) = self.as_oqueue() {
-            // This directory is an exported OQueue, so its children are the observation files.
+            // This directory is an exported OQueue, so its children are the fixed files for its
+            // single direction (see `leaf_file_names`).
             self.warn_if_prefix_conflict(&oqueue);
+            if !leaf_file_names(&oqueue).contains(&name) {
+                return Err(Error::new(Errno::ENOENT));
+            }
             return match name {
                 strong_observe::FILE_NAME => Ok(strong_observe::new_inode(self.fs.clone(), oqueue)),
+                produce::FILE_NAME => Ok(produce::new_inode(self.fs.clone(), oqueue)),
                 metadata::FILE_NAME => Ok(metadata::new_inode(self.fs.clone(), oqueue)),
                 _ => Err(Error::new(Errno::ENOENT)),
             };
@@ -259,7 +275,7 @@ impl Inode for DirInode {
         // Entries beyond `.` and `..` (reserved offsets 1 and 2), as `(name, type)`.
         let children: Vec<(String, InodeType)> = if let Some(oqueue) = self.as_oqueue() {
             self.warn_if_prefix_conflict(&oqueue);
-            [strong_observe::FILE_NAME, metadata::FILE_NAME]
+            leaf_file_names(&oqueue)
                 .into_iter()
                 .map(|name| (name.to_string(), InodeType::File))
                 .collect()

@@ -155,6 +155,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), raid)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
+# Only the RAID1 test depends on the userspace selection-policy server, so this stays scoped to
+# `AUTO_TEST=raid` rather than being an always-applied `OSDK.toml` kcmd arg.
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="raid.selection=userspace"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)

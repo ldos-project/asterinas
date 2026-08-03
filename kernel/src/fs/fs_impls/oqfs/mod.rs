@@ -11,16 +11,23 @@
 //! The directory tree mirrors the OQueue export registry and is recomputed live on every
 //! `lookup`/`readdir`, since queues register and unregister at runtime. An OQueue whose path is
 //! `a.b[3].c` appears as the directory `/oqueues/a/b/3/c` (names become directory components,
-//! indices become numeric components). Each such leaf directory contains:
+//! indices become numeric components). Each such leaf directory is a single-direction tunnel (see
+//! `ostd::orpc::oqueue::ExportDirection`) and contains `metadata.yaml` plus exactly one of:
 //!
-//! - `strong_observe` — a per-open stream of every value produced after `open`, as a
-//!   CBOR byte stream (see [`strong_observe`]). Behaves like a char device.
-//! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]).
+//! - `strong_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
+//!   [`ostd::orpc::oqueue::registry::register_with`]: a per-open CBOR stream of every value
+//!   produced after `open` (see [`strong_observe`]).
+//! - `produce` — for an OQueue exported via
+//!   [`ostd::orpc::oqueue::registry::register_producible`]: a per-open handle that lets userspace
+//!   produce CBOR-encoded values into the OQueue (see [`produce`]).
+//! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]), present on
+//!   every leaf regardless of direction.
 //!
 //! # Modules
 //!
 //! - [`dir`]: the volatile directory tree.
 //! - [`strong_observe`]: the `strong_observe` stream file.
+//! - [`produce`]: the `produce` file.
 //! - [`metadata`]: the `metadata.yaml` file.
 
 use core::{
@@ -45,6 +52,7 @@ use crate::{
 
 mod dir;
 mod metadata;
+mod produce;
 mod strong_observe;
 
 /// Magic number for the OQueue filesystem (`"oqfs"`).
@@ -363,5 +371,56 @@ mod tests {
         // the observer's ring buffer rather than delivering a truncated prefix.
         let bytes = read_all(stream.as_ref());
         assert!(bytes.is_empty(), "a revoked stream drops its buffered data");
+    }
+
+    #[ktest]
+    fn produce_file_writes_reach_the_oqueue() {
+        crate::time::clocks::init_for_ktest();
+
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("decision"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
+        let consumer = registry::register_producible(&path, &queue);
+
+        let fs = OQueueFs::new();
+        let leaf = fs
+            .root_inode()
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("decision")
+            .unwrap()
+            .lookup("0")
+            .unwrap();
+
+        // The leaf directory is a one-way user-to-kernel tunnel: it lists `produce` (and
+        // `metadata.yaml`), but not `strong_observe`.
+        let mut names = Vec::<String>::new();
+        leaf.readdir_at(0, &mut names).unwrap();
+        assert!(names.iter().any(|name| name == produce::FILE_NAME));
+        assert!(!names.iter().any(|name| name == strong_observe::FILE_NAME));
+
+        let handle = match leaf
+            .lookup(produce::FILE_NAME)
+            .unwrap()
+            .open(AccessMode::O_WRONLY, StatusFlags::empty())
+        {
+            Some(Ok(handle)) => handle,
+            _ => panic!("opening produce should mint a write handle"),
+        };
+
+        // Encode `7u32` as CBOR (single-byte unsigned int) and write it through the produce file.
+        let mut record = Vec::new();
+        serde::Serialize::serialize(&7u32, &mut minicbor_serde::Serializer::new(&mut record))
+            .unwrap();
+        let mut reader = VmReader::from(&record[..]).to_fallible();
+        let written = handle
+            .write_at(0, &mut reader, StatusFlags::empty())
+            .unwrap();
+        assert_eq!(written, record.len());
+
+        assert_eq!(consumer.consume(), 7);
     }
 }

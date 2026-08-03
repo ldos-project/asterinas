@@ -186,7 +186,7 @@ $(EXT2_IMAGE):
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@fallocate -l 512M $(EXFAT_IMAGE)
+	@truncate -s 512M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 # We use truncate for capture files because sparse allocation will save disk-space in the host, the
