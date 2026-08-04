@@ -107,7 +107,7 @@ jobs:
       # FIXME: Remove the following line after fixing the parallel execution of network benchmarks.
       max-parallel: 1
     timeout-minutes: 60
-    container: 
+    container:
       image: ldosproject/asterinas:0.17.2-ldos-20260728
       options: -v /dev:/dev --privileged
 
