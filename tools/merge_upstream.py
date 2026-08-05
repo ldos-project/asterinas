@@ -15,6 +15,38 @@ def replace_string_in_file(f, src, dst):
         file.write(new_string)
 
 
+def replace_version_strings(f, src_name, src_version, dest_name, dest_version):
+    replace_string_in_file(
+        f,
+        f"{src_name}/asterinas:{src_version}",
+        f"{dest_name}/asterinas:{dest_version}",
+    )
+    replace_string_in_file(
+        f,
+        f"{src_name}/osdk:{src_version}",
+        f"{dest_name}/osdk:{dest_version}",
+    )
+    replace_string_in_file(
+        f,
+        f"{src_name}/nix:{src_version}",
+        f"{dest_name}/nix:{dest_version}",
+    )
+    replace_string_in_file(
+        f,
+        f"{src_name}/kata:{src_version}",
+        f"{dest_name}/kata:{dest_version}",
+    )
+    replace_string_in_file(f, f"{src_version}", f"{dest_version}")
+    git_add(f)
+
+
+# checks if there are modified or staged changes
+# this doesn't look at untracked files, because those aren't lost during a hard reset
+def has_uncommitted_changes():
+    result = subprocess.run(["git", "diff", "--quiet", "HEAD"])
+    return result.returncode != 0
+
+
 def run_cmd(cmd):
     try:
         result = subprocess.run(
@@ -48,6 +80,7 @@ def get_commit_hash(msg):
 def delete_file(f):
     if os.path.exists(f):
         os.remove(f)
+        print(f"Deleted {f}")
     else:
         print(f"{f} not found")
 
@@ -109,28 +142,9 @@ if __name__ == "__main__":
         files = out.split("\n")
 
         for f in files:
-            replace_string_in_file(
-                f,
-                f"ldosproject/asterinas:{ldos_version}",
-                f"asterinas/asterinas:{upstream_version}",
+            replace_version_strings(
+                f, "ldosproject", ldos_version, "asterinas", upstream_version
             )
-            replace_string_in_file(
-                f,
-                f"ldosproject/osdk:{ldos_version}",
-                f"asterinas/osdk:{upstream_version}",
-            )
-            replace_string_in_file(
-                f,
-                f"ldosproject/nix:{ldos_version}",
-                f"asterinas/nix:{upstream_version}",
-            )
-            replace_string_in_file(
-                f,
-                f"ldosproject/kata:{ldos_version}",
-                f"asterinas/kata:{upstream_version}",
-            )
-            replace_string_in_file(f, f"{ldos_version}", f"{upstream_version}")
-            git_add(f)
 
         replace_string_in_file(
             ".github/actions/benchmark/action.yml",
@@ -139,6 +153,7 @@ if __name__ == "__main__":
         )
         git_add(".github/actions/benchmark/action.yml")
 
+        # save ldos_version for the finish stage (DOCKER_IMAGE_VERSION will be overwritten)
         with open("DOCKER_IMAGE_VERSION_TEMP", "w", encoding="utf-8") as file:
             file.write(ldos_version)
         print("Wrote DOCKER_IMAGE_VERSION_TEMP")
@@ -173,43 +188,27 @@ if __name__ == "__main__":
         files = out.split("\n")
 
         for f in files:
-            replace_string_in_file(
-                f,
-                f"asterinas/asterinas:{upstream_version}",
-                f"ldosproject/asterinas:{ldos_version}",
+            replace_version_strings(
+                f, "asterinas", upstream_version, "ldosproject", ldos_version
             )
-            replace_string_in_file(
-                f,
-                f"asterinas/osdk:{upstream_version}",
-                f"ldosproject/osdk:{ldos_version}",
-            )
-            replace_string_in_file(
-                f,
-                f"asterinas/nix:{upstream_version}",
-                f"ldosproject/nix:{ldos_version}",
-            )
-            replace_string_in_file(
-                f,
-                f"asterinas/kata:{upstream_version}",
-                f"ldosproject/kata:{ldos_version}",
-            )
-            replace_string_in_file(f, f"{upstream_version}", f"{ldos_version}")
-            git_add(f)
 
         replace_string_in_file(
             ".github/actions/benchmark/action.yml",
             "github.com/asterinas",
             "github.com/ldos-project",
         )
+
         out = git_add(".github/actions/benchmark/action.yml")
         out = git_commit("merge_upstream.py: merge finish")
         print(out)
 
         delete_file("DOCKER_IMAGE_VERSION_TEMP")
-        print("Deleted DOCKER_IMAGE_VERSION_TEMP")
 
-        # ok so now we have the merge commit, then the merge_upstream.py start commit, then the merge_upstream.py finish commit
-        # so we need to squash the top 2 commits into the merge commit
+        # git history is ordered as follows:
+        #   merge_upstream.py finish commit
+        #   merge_upstream.py start commit
+        #   merge commit
+        # top 2 commits will be squashed into the merge commit
         # to do this we soft reset to above the merge commit (so all the changes are staged), then commit all three at once
 
         msg = run_cmd(["git", "log", "--format=%B", "-1", "HEAD~2"])
@@ -223,13 +222,15 @@ if __name__ == "__main__":
         print(out)
 
         delete_file("DOCKER_IMAGE_VERSION_TEMP")
-        print("Deleted DOCKER_IMAGE_VERSION_TEMP")
 
-        # resets back to above the merge_upstream.py start commit
-        commit_hash = get_commit_hash("merge_upstream.py: merge start")
+        if has_uncommitted_changes():
+            print("There are uncommitted changes, please run git stash before aborting")
+        else:
+            # resets back to above the merge_upstream.py start commit
+            commit_hash = get_commit_hash("merge_upstream.py: merge start")
 
-        out = run_cmd(["git", "reset", "--hard", f"{commit_hash}^"])
-        print(out)
+            out = run_cmd(["git", "reset", "--hard", f"{commit_hash}^"])
+            print(out)
 
     else:
         print("Invalid argument!")
