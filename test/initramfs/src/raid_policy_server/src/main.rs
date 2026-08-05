@@ -18,8 +18,8 @@
 //! on every read it needs to route.
 //!
 //! The values on both OQueues are plain CBOR arrays/unsigned integers (produced via
-//! `minicbor_serde` on the kernel side), so this program only needs to encode and decode CBOR
-//! unsigned integers and definite-length array headers -- no CBOR crate dependency is needed.
+//! `minicbor_serde` on the kernel side), so this program decodes and encodes them with the
+//! `minicbor` crate -- the same CBOR library the kernel side is built on.
 
 use std::{
     collections::VecDeque,
@@ -43,49 +43,22 @@ const HISTORY_LEN: usize = 4;
 /// Size of the read buffer used when draining an OQueue stream file.
 const READ_CHUNK_SIZE: usize = 4096;
 
-/// Decodes one CBOR unsigned-integer-encoded header (an unsigned integer itself, major type 0; or
-/// a definite-length array's element count, major type 4) from the front of `bytes`, checking that
-/// its major type matches `expected_major`.
+/// Decodes a definite-length CBOR array of exactly `len` unsigned integers from the front of
+/// `bytes` into `out`.
 ///
-/// Returns `(value, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete encoding,
-/// or if the major type doesn't match (not a shape this stream ever produces).
-fn decode_cbor_major_uint(bytes: &[u8], expected_major: u8) -> Option<(u64, usize)> {
-    let first = *bytes.first()?;
-    if first >> 5 != expected_major {
+/// Returns the number of bytes consumed, or `None` if `bytes` does not yet hold a complete
+/// record, or the record isn't a `len`-element array of unsigned integers (not a shape this
+/// stream ever produces). On `None`, `out` may have been partially written; callers must not read
+/// it.
+fn decode_uint_array(bytes: &[u8], out: &mut [u64]) -> Option<usize> {
+    let mut decoder = minicbor::decode::Decoder::new(bytes);
+    if decoder.array().ok()? != Some(out.len() as u64) {
         return None;
     }
-    match first & 0x1F {
-        info @ 0..=23 => Some((info as u64, 1)),
-        24 => Some((*bytes.get(1)? as u64, 2)),
-        25 => {
-            let b: [u8; 2] = bytes.get(1..3)?.try_into().ok()?;
-            Some((u16::from_be_bytes(b) as u64, 3))
-        }
-        26 => {
-            let b: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
-            Some((u32::from_be_bytes(b) as u64, 5))
-        }
-        27 => {
-            let b: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
-            Some((u64::from_be_bytes(b), 9))
-        }
-        _ => None,
+    for element in out.iter_mut() {
+        *element = decoder.u64().ok()?;
     }
-}
-
-/// Decodes one CBOR unsigned integer (major type 0) from the front of `bytes`.
-///
-/// Returns `(value, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete encoding.
-fn decode_cbor_uint(bytes: &[u8]) -> Option<(u64, usize)> {
-    decode_cbor_major_uint(bytes, 0)
-}
-
-/// Decodes a CBOR definite-length array header (major type 4) from the front of `bytes`.
-///
-/// Returns `(element_count, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete
-/// header.
-fn decode_cbor_array_header(bytes: &[u8]) -> Option<(u64, usize)> {
-    decode_cbor_major_uint(bytes, 4)
+    Some(decoder.position())
 }
 
 /// Number of elements in a `bio_completion` record: `[latency_us, outstanding_pages, queue_len,
@@ -100,16 +73,8 @@ const BIO_COMPLETION_RECORD_LEN: usize = 5;
 /// Only `elements[0]` (the latency, in microseconds) is used by [`choose_member`]'s average-latency
 /// policy today; the other fields are decoded and available for a future policy to use.
 fn decode_bio_completion_record(bytes: &[u8]) -> Option<([u64; BIO_COMPLETION_RECORD_LEN], usize)> {
-    let (len, mut consumed) = decode_cbor_array_header(bytes)?;
-    if len != BIO_COMPLETION_RECORD_LEN as u64 {
-        return None;
-    }
     let mut elements = [0u64; BIO_COMPLETION_RECORD_LEN];
-    for element in &mut elements {
-        let (value, n) = decode_cbor_uint(&bytes[consumed..])?;
-        *element = value;
-        consumed += n;
-    }
+    let consumed = decode_uint_array(bytes, &mut elements)?;
     Some((elements, consumed))
 }
 
@@ -127,38 +92,11 @@ const SELECTION_REQUEST_RECORD_LEN: usize = 1 + MAX_REQUEST_CANDIDATES;
 /// Returns `(candidates, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete
 /// record.
 fn decode_selection_request(bytes: &[u8]) -> Option<(Vec<u32>, usize)> {
-    let (len, mut consumed) = decode_cbor_array_header(bytes)?;
-    if len != SELECTION_REQUEST_RECORD_LEN as u64 {
-        return None;
-    }
     let mut elements = [0u64; SELECTION_REQUEST_RECORD_LEN];
-    for element in &mut elements {
-        let (value, n) = decode_cbor_uint(&bytes[consumed..])?;
-        *element = value;
-        consumed += n;
-    }
+    let consumed = decode_uint_array(bytes, &mut elements)?;
     let count = (elements[0] as usize).min(MAX_REQUEST_CANDIDATES);
     let candidates = elements[1..1 + count].iter().map(|&v| v as u32).collect();
     Some((candidates, consumed))
-}
-
-/// Encodes `value` as a CBOR unsigned integer (major type 0), appending it to `out`.
-fn encode_cbor_uint(value: u64, out: &mut Vec<u8>) {
-    if value < 24 {
-        out.push(value as u8);
-    } else if value <= u8::MAX as u64 {
-        out.push(0x18);
-        out.push(value as u8);
-    } else if value <= u16::MAX as u64 {
-        out.push(0x19);
-        out.extend_from_slice(&(value as u16).to_be_bytes());
-    } else if value <= u32::MAX as u64 {
-        out.push(0x1A);
-        out.extend_from_slice(&(value as u32).to_be_bytes());
-    } else {
-        out.push(0x1B);
-        out.extend_from_slice(&value.to_be_bytes());
-    }
 }
 
 /// Max attempts before giving up waiting for an OQueue path or directory to appear.
@@ -343,7 +281,7 @@ fn main() {
         let chosen = choose_member(&histories, &round_robin, &candidates);
 
         record.clear();
-        encode_cbor_uint(chosen as u64, &mut record);
+        minicbor::encode(chosen as u64, &mut record).expect("encoding a u64 cannot fail");
         if let Err(err) = decision_file.write_all(&record) {
             eprintln!("raid_policy_server: failed to write a decision: {err}");
             return;
