@@ -203,7 +203,7 @@ fn attach_weak_observers(
 /// Exposes each member's `bio_completion` OQueue over OQFS, at
 /// `/oqueues/raid1/bio_completion/<index>/`.
 ///
-/// Each OQueue is exposed via a projection onto [`BioCompletionStatsWire`], a plain-field mirror of
+/// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror of
 /// the whole [`BlockDeviceCompletionStats`] encoded as a fixed 5-element CBOR
 /// array (see its `Serialize` impl).
 #[cfg(not(baseline_asterinas))]
@@ -219,7 +219,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
         registry::register_with(
             &path!(raid1.bio_completion[{ index }]),
             &virtio.bio_completion_oqueue().as_any_oqueue(),
-            |stats: &BlockDeviceCompletionStats| BioCompletionStatsWire::from(*stats),
+            |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
         );
     }
 }
@@ -228,7 +228,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
 /// [`expose_bio_completion_oqueues`]).
 #[cfg(not(baseline_asterinas))]
 #[derive(Debug, Clone, Copy)]
-struct BioCompletionStatsWire {
+struct BioCompletionStatsMessage {
     latency_us: u64,
     outstanding_pages: u32,
     queue_len: u32,
@@ -237,7 +237,7 @@ struct BioCompletionStatsWire {
 }
 
 #[cfg(not(baseline_asterinas))]
-impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsWire {
+impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsMessage {
     fn from(stats: aster_block::bio::BlockDeviceCompletionStats) -> Self {
         Self {
             latency_us: stats.latency.as_micros() as u64,
@@ -250,8 +250,17 @@ impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsWi
 }
 
 /// Encodes as a definite-length CBOR array of 5 unsigned integers, in field-declaration order.
+///
+/// This is hand-written rather than `#[derive(Serialize)]` because a derive on a named-field
+/// struct calls `Serializer::serialize_struct`, which `minicbor_serde` (like most non-self-describing
+/// formats) renders as a map keyed by each field's name string, not a bare array — larger to encode
+/// and incompatible with the fixed-shape array the userspace `raid_policy_server` decodes. There is
+/// no serde container/field attribute that turns a named-field struct's derive into a positional
+/// array instead (only tuple structs get array encoding for free, which would mean dropping the
+/// field names used throughout this module for no additional compactness, since this manual impl
+/// already emits the minimal form: a bare array of raw integers with no key overhead).
 #[cfg(not(baseline_asterinas))]
-impl serde::Serialize for BioCompletionStatsWire {
+impl serde::Serialize for BioCompletionStatsMessage {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
@@ -273,7 +282,7 @@ impl serde::Serialize for BioCompletionStatsWire {
 /// and decision consumer handed to [`selection_policies::UserspacePolicy`].
 #[cfg(not(baseline_asterinas))]
 fn setup_userspace_policy() -> (
-    ostd::orpc::oqueue::RefProducer<selection_policies::SelectionRequestWire>,
+    ostd::orpc::oqueue::RefProducer<selection_policies::SelectionRequestMessage>,
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
     use ostd::orpc::oqueue::{
@@ -281,7 +290,7 @@ fn setup_userspace_policy() -> (
     };
 
     let request_path = path!(raid1.selection_request);
-    let request_oqueue = OQueueRef::<selection_policies::SelectionRequestWire>::new(
+    let request_oqueue = OQueueRef::<selection_policies::SelectionRequestMessage>::new(
         SELECTION_QUEUE_CAPACITY,
         request_path.clone(),
     );

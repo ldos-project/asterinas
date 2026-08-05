@@ -521,20 +521,20 @@ impl SelectionPolicy for LinnOSPlusPolicy {
     }
 }
 
-/// Max candidate indices carried in one [`SelectionRequestWire`]; extras are dropped with a warning.
+/// Max candidate indices carried in one [`SelectionRequestMessage`]; extras are dropped with a warning.
 const MAX_REQUEST_CANDIDATES: usize = 8;
 
 /// Request sent to the userspace policy server: the admitted candidate member indices for the read
 /// being routed. Fixed-size to stay `Copy` (required for OQueue observation); encodes as a CBOR
 /// array of `candidate_count` followed by [`MAX_REQUEST_CANDIDATES`] unsigned integers.
 #[derive(Debug, Clone, Copy)]
-pub struct SelectionRequestWire {
+pub struct SelectionRequestMessage {
     candidate_count: u32,
     candidates: [u32; MAX_REQUEST_CANDIDATES],
 }
 
-impl SelectionRequestWire {
-    /// Pack an array of candidate indicis to a SelectionRequestWire
+impl SelectionRequestMessage {
+    /// Pack an array of candidate indicis to a SelectionRequestMessage
     fn from_candidates(candidates: &[usize]) -> Self {
         if candidates.len() > MAX_REQUEST_CANDIDATES {
             log::warn!(
@@ -555,7 +555,7 @@ impl SelectionRequestWire {
     }
 }
 
-impl serde::Serialize for SelectionRequestWire {
+impl serde::Serialize for SelectionRequestMessage {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
@@ -577,7 +577,7 @@ const REPLY_TIMEOUT_MS: u64 = 200;
 /// The endpoints of one synchronous request/reply exchange, kept under one lock so at most one
 /// exchange is in flight at a time.
 struct SelectionChannel {
-    request_producer: RefProducer<SelectionRequestWire>,
+    request_producer: RefProducer<SelectionRequestMessage>,
     reply_consumer: Consumer<u32>,
     reply_timeout: Arc<TimeoutBlocker>,
     block_on_many: BlockOnMany,
@@ -607,7 +607,7 @@ impl core::fmt::Debug for UserspacePolicy {
 impl UserspacePolicy {
     pub fn new(
         members: Vec<Arc<dyn BlockDevice>>,
-        request_producer: RefProducer<SelectionRequestWire>,
+        request_producer: RefProducer<SelectionRequestMessage>,
         reply_consumer: Consumer<u32>,
     ) -> Result<Arc<Self>, Error> {
         let channel = SelectionChannel {
@@ -642,7 +642,7 @@ impl UserspacePolicy {
         if !request_producer.has_observers() {
             return None;
         }
-        request_producer.produce_ref(&SelectionRequestWire::from_candidates(candidates));
+        request_producer.produce_ref(&SelectionRequestMessage::from_candidates(candidates));
 
         reply_timeout.arm_after(REPLY_TIMEOUT_MS * TIMER_FREQ / 1000);
         let reply = loop {

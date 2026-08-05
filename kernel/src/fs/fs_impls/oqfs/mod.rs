@@ -11,8 +11,9 @@
 //! The directory tree mirrors the OQueue export registry and is recomputed live on every
 //! `lookup`/`readdir`, since queues register and unregister at runtime. An OQueue whose path is
 //! `a.b[3].c` appears as the directory `/oqueues/a/b/3/c` (names become directory components,
-//! indices become numeric components). Each such leaf directory is a single-direction tunnel (see
-//! `ostd::orpc::oqueue::ExportDirection`) and contains `metadata.yaml` plus exactly one of:
+//! indices become numeric components). Each such leaf directory contains `metadata.yaml` plus
+//! whichever of the following its export currently carries — an export may carry either, or both,
+//! independently:
 //!
 //! - `strong_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
 //!   [`ostd::orpc::oqueue::registry::register_with`]: a per-open CBOR stream of every value
@@ -21,7 +22,7 @@
 //!   [`ostd::orpc::oqueue::registry::register_producible`]: a per-open handle that lets userspace
 //!   produce CBOR-encoded values into the OQueue (see [`produce`]).
 //! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]), present on
-//!   every leaf regardless of direction.
+//!   every leaf regardless of which attachments it carries.
 //!
 //! # Modules
 //!
@@ -422,5 +423,106 @@ mod tests {
         assert_eq!(written, record.len());
 
         assert_eq!(consumer.consume(), 7);
+    }
+
+    #[ktest]
+    fn strong_observe_and_produce_are_root_only() {
+        // Pins the permission restriction across the WHOLE filesystem: the two data files
+        // (`mkmod!(u+r)` / `mkmod!(u+w)`), every directory (`mkmod!(u+rx)`), and `metadata.yaml`
+        // (`mkmod!(u+r)`) are all owner-only on an
+        // inode whose owner is always root (`Metadata::new_file` hardcodes `Uid::new_root()` /
+        // `Gid::new_root()`). Together, this means only root (or a root-owned process) can open
+        // either file; `check_permission` (shared, unmodified VFS code) is what turns these bits
+        // into that enforcement for a real process, but ktests run outside any POSIX-thread/
+        // credentials context, so `check_permission` itself is a no-op here (see
+        // `Inode::check_permission`'s early return when there is no current task's posix thread)
+        // and cannot be exercised end-to-end from a bare ktest. Asserting the mode bits and
+        // ownership directly still catches the regression this guards against: reverting either
+        // file back to world-accessible, or changing its ownership away from root.
+        crate::time::clocks::init_for_ktest();
+
+        let observe_path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("perm_observe"),
+            PathComponent::Index(0),
+        ]);
+        let observe_queue = ConsumableOQueueRef::<usize>::new(4, observe_path.clone());
+        registry::register(&observe_path, &observe_queue.as_any_oqueue());
+
+        let produce_path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("perm_produce"),
+            PathComponent::Index(0),
+        ]);
+        let produce_queue = ConsumableOQueueRef::<u32>::new(4, produce_path.clone());
+        let _consumer = registry::register_producible(&produce_path, &produce_queue);
+
+        let fs = OQueueFs::new();
+        let root = fs.root_inode();
+
+        let observe_leaf = root
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("perm_observe")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(strong_observe::FILE_NAME)
+            .unwrap();
+        let observe_meta = observe_leaf.metadata();
+        assert_eq!(observe_meta.uid, Uid::new_root());
+        assert_eq!(observe_meta.gid, Gid::new_root());
+        assert!(observe_meta.mode.is_owner_readable());
+        assert!(!observe_meta.mode.is_group_readable());
+        assert!(!observe_meta.mode.is_other_readable());
+
+        let produce_leaf = root
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("perm_produce")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(produce::FILE_NAME)
+            .unwrap();
+        let produce_meta = produce_leaf.metadata();
+        assert_eq!(produce_meta.uid, Uid::new_root());
+        assert_eq!(produce_meta.gid, Gid::new_root());
+        assert!(produce_meta.mode.is_owner_writable());
+        assert!(!produce_meta.mode.is_group_writable());
+        assert!(!produce_meta.mode.is_other_writable());
+
+        // The DIRECTORIES must be root-only too, otherwise an unprivileged process can still walk
+        // `/oqueues` and enumerate every exported OQueue and its path -- the leaf files being
+        // unreadable does not hide the registry's structure.
+        for dir in [
+            root.clone(),
+            root.lookup("oqfstest").unwrap(),
+            root.lookup("oqfstest").unwrap().lookup("perm_observe").unwrap(),
+        ] {
+            let meta = dir.metadata();
+            assert_eq!(meta.uid, Uid::new_root());
+            assert_eq!(meta.gid, Gid::new_root());
+            assert!(meta.mode.is_owner_readable() && meta.mode.is_owner_executable());
+            assert!(!meta.mode.is_group_readable() && !meta.mode.is_group_executable());
+            assert!(!meta.mode.is_other_readable() && !meta.mode.is_other_executable());
+        }
+
+        // ...and so must `metadata.yaml`, which names the message type of each exported OQueue.
+        let metadata_file = root
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("perm_observe")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(metadata::FILE_NAME)
+            .unwrap();
+        let metadata_meta = metadata_file.metadata();
+        assert_eq!(metadata_meta.uid, Uid::new_root());
+        assert_eq!(metadata_meta.gid, Gid::new_root());
+        assert!(metadata_meta.mode.is_owner_readable());
+        assert!(!metadata_meta.mode.is_group_readable());
+        assert!(!metadata_meta.mode.is_other_readable());
     }
 }

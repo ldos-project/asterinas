@@ -186,7 +186,10 @@ $(EXT2_IMAGE):
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@truncate -s 512M $(EXFAT_IMAGE)
+	@# Unlike truncate, `fallocate -x` (posix_fallocate) really allocates the blocks
+	@# instead of leaving a sparse hole, while still degrading gracefully to zeroing
+	@# on filesystems that lack fast allocation.
+	@fallocate -x -l 512M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 # We use truncate for capture files because sparse allocation will save disk-space in the host, the

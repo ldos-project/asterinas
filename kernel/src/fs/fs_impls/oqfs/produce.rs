@@ -16,7 +16,7 @@ use core::time::Duration;
 use inherit_methods_macro::inherit_methods;
 use ostd::{
     orpc::{
-        oqueue::{CborProduce, registry},
+        oqueue::{CborProducer, ProduceCborError, registry},
         path::Path,
     },
     sync::Mutex,
@@ -59,9 +59,12 @@ pub(super) struct ProduceInode {
 pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
     let oqueue_fs = fs.upgrade().unwrap();
     let ino = oqueue_fs.alloc_id();
+    // Security is enforced by permissions rather than by the export's direction: `strong_observe`
+    // and `produce` files are both owner-only, and `Metadata::new_file` always sets the owner to
+    // root, so only root (or root-owned processes) can open either.
     let metadata = Metadata::new_file(
         ino,
-        mkmod!(a+w),
+        mkmod!(u+w),
         BLOCK_SIZE,
         oqueue_fs.sb().container_dev_id,
     );
@@ -152,14 +155,14 @@ struct ProduceFile {
     /// The type-erased producer accepting CBOR records. Behind a mutex because it is not `Sync`;
     /// the lock is a sleeping mutex, so blocking under it (in `producer.produce_cbor`, which may
     /// block waiting for OQueue space) only serializes writers of this same open handle.
-    producer: Mutex<Box<dyn CborProduce>>,
+    producer: Mutex<Box<dyn CborProducer>>,
     /// Bytes written but not yet decoded into a complete CBOR record.
     pending: Mutex<Vec<u8>>,
     pollee: Pollee,
 }
 
 impl ProduceFile {
-    fn new(producer: Box<dyn CborProduce>) -> Self {
+    fn new(producer: Box<dyn CborProducer>) -> Self {
         Self {
             producer: Mutex::new(producer),
             pending: Mutex::new(Vec::new()),
@@ -175,9 +178,16 @@ impl ProduceFile {
 
         let producer = self.producer.lock();
         loop {
-            let consumed = producer
-                .produce_cbor(&pending)
-                .map_err(|_| Error::new(Errno::ENODEV))?;
+            let consumed = producer.produce_cbor(&pending).map_err(|err| match err {
+                ProduceCborError::OQueue { .. } => Error::new(Errno::ENODEV),
+                ProduceCborError::Malformed { .. } | ProduceCborError::SchemaMismatch { .. } => {
+                    Error::with_message(
+                        Errno::EINVAL,
+                        "the OQueue produce file received a record that could not be decoded",
+                    )
+                }
+                _ => Error::new(Errno::ENODEV),
+            })?;
             if consumed == 0 {
                 break;
             }

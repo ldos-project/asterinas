@@ -19,7 +19,9 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use log::warn;
 use minicbor_serde::Serializer;
+use ostd_macros::ostd_error;
 use serde::{Serialize, de::DeserializeOwned};
+use snafu::Snafu;
 
 use super::{
     AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _, OQueueError,
@@ -27,24 +29,14 @@ use super::{
     WeakAnyOQueueRef,
 };
 
-/// The single direction of an exported OQueue's data flow.
-///
-/// Every OQueue export is a one-way tunnel: either the kernel produces values that userspace
-/// observes (`Observe`, via the `strong_observe` file), or userspace produces values that the
-/// kernel consumes (`Produce`, via the `produce` file). Never both — see [`OQueueExport`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportDirection {
-    /// Kernel -> user: userspace observes values produced in the kernel.
-    Observe,
-    /// User -> kernel: userspace produces values consumed in the kernel.
-    Produce,
-}
-
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
 ///
 /// Stored in the export registry so consumers can enumerate and read queues by
-/// [`Path`](crate::orpc::path::Path) without naming the message type. This is a factory: it mints
-/// a fresh [`CborStrongObserve`] per reader, so multiple readers each receive the full stream.
+/// [`Path`](crate::orpc::path::Path) without naming the message type. An export can independently
+/// carry an observe attachment, a produce attachment, or both: [`register`](super::registry::register)
+/// / [`register_with`](super::registry::register_with) add an observe attachment, and
+/// [`register_producible`](super::registry::register_producible) adds a produce attachment. This is
+/// a factory: attaching mints a fresh per-reader (or per-writer) handle.
 pub trait OQueueExport: Send + Sync {
     /// Returns the name of the message type, for use in file metadata.
     fn type_name(&self) -> &'static str;
@@ -52,13 +44,22 @@ pub trait OQueueExport: Send + Sync {
     /// Returns whether the underlying OQueue still exists.
     fn is_alive(&self) -> bool;
 
-    /// Returns this export's single data-flow direction.
-    fn direction(&self) -> ExportDirection;
+    /// Returns whether this export carries an observe attachment, i.e. whether
+    /// [`attach_strong_observer`](Self::attach_strong_observer) can succeed.
+    fn supports_observe(&self) -> bool {
+        false
+    }
+
+    /// Returns whether this export carries a produce attachment, i.e. whether
+    /// [`attach_producer`](Self::attach_producer) can succeed.
+    fn supports_produce(&self) -> bool {
+        false
+    }
 
     /// Attaches a fresh observer and returns it as a CBOR record source.
     ///
     /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
-    /// export whose [`direction`](Self::direction) is [`ExportDirection::Produce`].
+    /// export that does not [`supports_observe`](Self::supports_observe).
     fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
@@ -66,23 +67,46 @@ pub trait OQueueExport: Send + Sync {
     /// Attaches a fresh producer that accepts CBOR-encoded values from userspace.
     ///
     /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
-    /// export whose [`direction`](Self::direction) is [`ExportDirection::Observe`].
-    fn attach_producer(&self) -> Result<Box<dyn CborProduce>, OQueueError> {
+    /// export that does not [`supports_produce`](Self::supports_produce).
+    fn attach_producer(&self) -> Result<Box<dyn CborProducer>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
 }
 
+/// Error produced by [`CborProducer::produce_cbor`] when the bytes at the front of the buffer
+/// cannot be produced into the OQueue as-is.
+#[non_exhaustive]
+#[ostd_error]
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub(super)))]
+pub enum ProduceCborError {
+    /// The underlying OQueue is gone.
+    #[snafu(transparent)]
+    #[ostd(context(source))]
+    OQueue {
+        /// The underlying OQueue error.
+        source: OQueueError,
+    },
+    /// The bytes at the front of the buffer are not well-formed CBOR.
+    #[snafu(display("Malformed CBOR record ({context})"))]
+    Malformed,
+    /// The bytes at the front of the buffer are well-formed CBOR but do not decode as the expected
+    /// message type.
+    #[snafu(display("CBOR record does not match the expected message schema ({context})"))]
+    SchemaMismatch,
+}
+
 /// A per-reader handle that accepts CBOR-encoded bytes from userspace and produces the decoded
 /// values into an OQueue, with the message type erased.
-pub trait CborProduce: Send {
+pub trait CborProducer: Send {
     /// Attempts to decode one CBOR-encoded record from the front of `bytes` and, if complete,
     /// blocks (if necessary) until there is space to produce it into the OQueue.
     ///
     /// Returns the number of bytes consumed from the front of `bytes` on success. Returns `Ok(0)`
     /// if `bytes` does not yet contain a complete record (the caller should append more bytes and
-    /// retry). Returns `Err` (typically [`OQueueError::Revoked`]) once the underlying OQueue is
-    /// gone.
-    fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, OQueueError>;
+    /// retry). Returns `Err` if `bytes` starts with malformed CBOR, if the CBOR item does not
+    /// decode as the expected message type, or once the underlying OQueue is gone.
+    fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError>;
 }
 
 /// A per-reader observer that yields CBOR-encoded records, with the message type erased.
@@ -106,24 +130,20 @@ pub trait CborStrongObserve: Send {
 type AttachStrongObserveFn<T> =
     Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborStrongObserve>, OQueueError> + Send + Sync>;
 
-/// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProduce`]. Only
+/// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProducer`]. Only
 /// present on exports registered via [`super::registry::register_producible`].
 type AttachProducerFn<T> =
-    Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborProduce>, OQueueError> + Send + Sync>;
-
-/// The single attach closure an [`OQueueExportHandle`] holds, tying its [`ExportDirection`] to the
-/// one closure it may call — holding both would let a handle serve both directions, which
-/// [`OQueueExport`] forbids.
-enum Attachment<T: 'static> {
-    Observe(AttachStrongObserveFn<T>),
-    Produce(AttachProducerFn<T>),
-}
+    Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborProducer>, OQueueError> + Send + Sync>;
 
 /// The concrete [`OQueueExport`] for an OQueue with message type `T`.
-struct OQueueExportHandle<T: 'static> {
+///
+/// `observe` and `produce` are held separately (rather than through a direction discriminant) so
+/// an export can carry either, or both, independently of one another.
+pub(super) struct OQueueExportHandle<T: 'static> {
     weak: WeakAnyOQueueRef<T>,
     type_name: &'static str,
-    attachment: Attachment<T>,
+    observe: Option<AttachStrongObserveFn<T>>,
+    produce: Option<AttachProducerFn<T>>,
 }
 
 impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
@@ -135,23 +155,24 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         self.weak.upgrade().is_some()
     }
 
-    fn direction(&self) -> ExportDirection {
-        match &self.attachment {
-            Attachment::Observe(_) => ExportDirection::Observe,
-            Attachment::Produce(_) => ExportDirection::Produce,
-        }
+    fn supports_observe(&self) -> bool {
+        self.observe.is_some()
+    }
+
+    fn supports_produce(&self) -> bool {
+        self.produce.is_some()
     }
 
     fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError> {
-        let Attachment::Observe(attach_fn) = &self.attachment else {
+        let Some(attach_fn) = &self.observe else {
             return Err(UnsupportedSnafu.build());
         };
         let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
         attach_fn(&oqueue)
     }
 
-    fn attach_producer(&self) -> Result<Box<dyn CborProduce>, OQueueError> {
-        let Attachment::Produce(attach_fn) = &self.attachment else {
+    fn attach_producer(&self) -> Result<Box<dyn CborProducer>, OQueueError> {
+        let Some(attach_fn) = &self.produce else {
             return Err(UnsupportedSnafu.build());
         };
         let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
@@ -204,54 +225,57 @@ where
     Ok(Box::new(CborStrongObserver { observer }))
 }
 
-/// Builds a type-erased, observe-direction export handle for an OQueue whose whole message is
-/// streamed via the identity projection (so the message type's derived `Serialize` is used).
+/// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
+/// whole message is streamed via the identity projection (so the message type's derived
+/// `Serialize` is used).
 pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
     oqueue: &AnyOQueueRef<T>,
-) -> Arc<dyn OQueueExport> {
-    Arc::new(OQueueExportHandle {
+) -> OQueueExportHandle<T> {
+    OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
-        attachment: Attachment::Observe(Box::new(|oqueue| {
+        observe: Some(Box::new(|oqueue| {
             attach_cbor_observer(oqueue, ObservationQuery::<T, T>::identity())
         })),
-    })
+        produce: None,
+    }
 }
 
-/// Builds a type-erased, observe-direction export handle for an OQueue whose messages are streamed
-/// through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is the `Copy + Serialize`
-/// value placed in the stream.
+/// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
+/// messages are streamed through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is
+/// the `Copy + Serialize` value placed in the stream.
 pub(super) fn make_export_with<T, U, F>(
     oqueue: &AnyOQueueRef<T>,
     project: F,
-) -> Arc<dyn OQueueExport>
+) -> OQueueExportHandle<T>
 where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
     F: Fn(&T) -> U + Send + Sync + 'static,
 {
     let project = Arc::new(project);
-    Arc::new(OQueueExportHandle {
+    OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
-        attachment: Attachment::Observe(Box::new(move |oqueue| {
+        observe: Some(Box::new(move |oqueue| {
             let project = project.clone();
             attach_cbor_observer(
                 oqueue,
                 ObservationQuery::new(move |msg: &T| (*project)(msg)),
             )
         })),
-    })
+        produce: None,
+    }
 }
 
-/// A [`CborProduce`] backed by a [`ValueProducer<T>`], decoding each CBOR record as a `T` and
+/// A [`CborProducer`] backed by a [`ValueProducer<T>`], decoding each CBOR record as a `T` and
 /// producing it into the OQueue.
 struct CborValueProducer<T> {
     producer: ValueProducer<T>,
 }
 
-impl<T: Send + DeserializeOwned + 'static> CborProduce for CborValueProducer<T> {
-    fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, OQueueError> {
+impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T> {
+    fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError> {
         if bytes.is_empty() {
             return Ok(0);
         }
@@ -264,8 +288,7 @@ impl<T: Send + DeserializeOwned + 'static> CborProduce for CborValueProducer<T> 
             Err(err) if err.is_end_of_input() => return Ok(0),
             Err(err) => {
                 warn!("OQueue produce file received a malformed CBOR record: {err}");
-                // Drop one byte so a bad record cannot wedge the stream.
-                return Ok(1);
+                return Err(MalformedSnafu.build());
             }
             Ok(()) => {}
         }
@@ -281,7 +304,7 @@ impl<T: Send + DeserializeOwned + 'static> CborProduce for CborValueProducer<T> 
                     "OQueue produce file received a CBOR record that does not decode as {}: {err}",
                     core::any::type_name::<T>()
                 );
-                return Ok(item_len);
+                return Err(SchemaMismatchSnafu.build());
             }
         };
 
@@ -290,21 +313,77 @@ impl<T: Send + DeserializeOwned + 'static> CborProduce for CborValueProducer<T> 
     }
 }
 
-/// Builds a type-erased, produce-direction export handle for a [`super::ConsumableOQueue`]: it
-/// accepts values produced from userspace (see [`super::registry::register_producible`]) but,
-/// unlike [`make_export`]/[`make_export_with`], does not also support `strong_observe`.
+/// Builds a type-erased export handle carrying only a produce attachment for a
+/// [`super::ConsumableOQueue`]: it accepts values produced from userspace (see
+/// [`super::registry::register_producible`]).
 ///
 /// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&AnyOQueueRef<T>`) enforces at
 /// compile time that only a `ConsumableOQueue` can be made producible.
 pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned + 'static>(
     oqueue: &ConsumableOQueueRef<T>,
-) -> Arc<dyn OQueueExport> {
-    Arc::new(OQueueExportHandle {
+) -> OQueueExportHandle<T> {
+    OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
-        attachment: Attachment::Produce(Box::new(|oqueue| {
+        observe: None,
+        produce: Some(Box::new(|oqueue| {
             let producer = oqueue.attach_value_producer()?;
-            Ok(Box::new(CborValueProducer { producer }) as Box<dyn CborProduce>)
+            Ok(Box::new(CborValueProducer { producer }) as Box<dyn CborProducer>)
         })),
-    })
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use crate::{orpc::oqueue::ConsumableOQueueRef, path, prelude::*};
+
+    /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
+    fn decode_records(buf: &[u8]) -> Vec<u64> {
+        let mut de = minicbor_serde::Deserializer::new(buf);
+        let mut records = Vec::new();
+        while de.decoder().position() < buf.len() {
+            records.push(serde::Deserialize::deserialize(&mut de).unwrap());
+        }
+        records
+    }
+
+    #[ktest]
+    fn handle_serves_observe_and_produce_independently() {
+        let path = path!(export.bidirectional[1]);
+        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
+
+        // A single `OQueueExportHandle` can carry both attachments at once; this is representable
+        // even though the registry no longer lets two separate registrations at the same path
+        // merge into one (see `registry::insert_export`). Combine the observe half from
+        // `make_export` and the produce half from `make_produce_export` into one handle, exactly
+        // as a caller who needs both would build it directly.
+        let observe_only = make_export(&queue.as_any_oqueue());
+        let produce_only = make_produce_export(&queue);
+        let handle = OQueueExportHandle {
+            weak: observe_only.weak,
+            type_name: observe_only.type_name,
+            observe: observe_only.observe,
+            produce: produce_only.produce,
+        };
+        assert!(handle.supports_observe());
+        assert!(handle.supports_produce());
+
+        let observer = handle.attach_strong_observer().unwrap();
+        let producer = handle.attach_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+
+        // A single userspace write through the produce attachment reaches both the consumer and
+        // the independently attached observer.
+        let mut record = Vec::new();
+        serde::Serialize::serialize(&7usize, &mut minicbor_serde::Serializer::new(&mut record))
+            .unwrap();
+        producer.produce_cbor(&record).unwrap();
+
+        assert_eq!(consumer.consume(), 7);
+
+        let mut buf = Vec::new();
+        assert!(observer.try_strong_observe_into(&mut buf).unwrap());
+        assert_eq!(decode_records(&buf), [7]);
+    }
 }

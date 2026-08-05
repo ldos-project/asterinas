@@ -70,7 +70,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
-pub use export::{CborProduce, CborStrongObserve, ExportDirection, OQueueExport};
+pub use export::{CborProducer, CborStrongObserve, OQueueExport, ProduceCborError};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;

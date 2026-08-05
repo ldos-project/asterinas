@@ -14,9 +14,9 @@
 //!
 //! A directory plays one of two roles:
 //!
-//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus exactly one of
-//!   [`strong_observe::FILE_NAME`] or [`produce::FILE_NAME`], depending on the export's single
-//!   direction (see [`leaf_file_names`] and `ostd::orpc::oqueue::ExportDirection`).
+//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus [`strong_observe::FILE_NAME`] and/or
+//!   [`produce::FILE_NAME`], depending on which attachments the export currently carries (see
+//!   [`leaf_file_names`]); an export may carry either, or both, independently.
 //! - **non-leaf** (including the root) — It lists the distinct next components of every exported
 //!   path that it is a prefix of.
 //!
@@ -28,7 +28,7 @@ use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{ExportDirection, registry},
+    oqueue::registry,
     path::{Path, PathComponentRef},
 };
 
@@ -55,15 +55,23 @@ fn live_export_paths() -> impl Iterator<Item = Path> {
     registry::list_export_paths().into_iter()
 }
 
-/// Returns the fixed files served by an OQueue leaf directory: [`metadata::FILE_NAME`] plus, per
-/// the export's [`ExportDirection`], either [`strong_observe::FILE_NAME`] or
-/// [`produce::FILE_NAME`]. Only the metadata file is listed if the export has disappeared.
+/// Returns the fixed files served by an OQueue leaf directory: [`metadata::FILE_NAME`] plus
+/// [`strong_observe::FILE_NAME`] and/or [`produce::FILE_NAME`], depending on which attachments the
+/// export currently carries. Only the metadata file is listed if the export has disappeared.
 fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
-    match registry::lookup_export(oqueue).map(|export| export.direction()) {
-        Some(ExportDirection::Observe) => vec![strong_observe::FILE_NAME, metadata::FILE_NAME],
-        Some(ExportDirection::Produce) => vec![produce::FILE_NAME, metadata::FILE_NAME],
-        None => vec![metadata::FILE_NAME],
+    let Some(export) = registry::lookup_export(oqueue) else {
+        return vec![metadata::FILE_NAME];
+    };
+
+    let mut names = Vec::new();
+    if export.supports_observe() {
+        names.push(strong_observe::FILE_NAME);
     }
+    if export.supports_produce() {
+        names.push(produce::FILE_NAME);
+    }
+    names.push(metadata::FILE_NAME);
+    names
 }
 
 /// convert an OQueue [`Path`] to filesystem path components: names stay as-is, indices become their
@@ -107,7 +115,12 @@ impl DirInode {
         ino: u64,
         container_dev_id: device_id::DeviceId,
     ) -> Arc<dyn Inode> {
-        let metadata = Metadata::new_dir(ino, mkmod!(a+rx), BLOCK_SIZE, container_dev_id);
+        // Root-only, like every other OQFS inode. `Metadata::new_dir` always sets the owner to
+        // root, so owner-only `rx` lets root list and traverse while denying everyone else. This
+        // has to match the leaf files: leaving directories world-traversable would let an
+        // unprivileged process walk `/oqueues` and enumerate every exported OQueue and its path,
+        // even though it could not open `strong_observe` or `produce`.
+        let metadata = Metadata::new_dir(ino, mkmod!(u+rx), BLOCK_SIZE, container_dev_id);
         let fs_weak: Weak<dyn FileSystem> = fs.clone();
         Arc::new_cyclic(|weak_self| DirInode {
             prefix,

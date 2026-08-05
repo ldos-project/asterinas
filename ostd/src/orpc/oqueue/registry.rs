@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::{
     AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase as _,
-    export::{OQueueExport, make_export, make_export_with, make_produce_export},
+    export::{OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export},
 };
 use crate::{
     orpc::{
@@ -156,9 +156,9 @@ where
 /// userspace writer can attach a producer (e.g. via the OQueue filesystem's `produce` file) and
 /// send values of type `T` into the queue by writing their CBOR encoding.
 ///
-/// Unlike [`register`]/[`register_with`], this is a user-to-kernel tunnel only (see
-/// [`super::ExportDirection`]); only a [`ConsumableOQueueRef`] can be passed. Attaches and returns
-/// the queue's consumer, guaranteeing one exists before the queue is reachable as producible.
+/// Unlike [`register`]/[`register_with`], this is a user-to-kernel tunnel only; only a
+/// [`ConsumableOQueueRef`] can be passed. Attaches and returns the queue's consumer, guaranteeing
+/// one exists before the queue is reachable as producible.
 ///
 /// # Panics
 ///
@@ -181,9 +181,9 @@ pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOw
 ///
 /// # Panics
 ///
-/// Panics if a live export already exists at `path`: a path is a single one-way stream (see
-/// [`super::ExportDirection`]), so a second live export there is a programming error.
-fn insert_export(path: &Path, handle: Arc<dyn OQueueExport>) {
+/// Panics if a live export already exists at `path`: a path is a single export, so a second live
+/// export there is a programming error.
+fn insert_export<T: Send + 'static>(path: &Path, handle: OQueueExportHandle<T>) {
     let mut map = exports();
     let map = map.as_mut().unwrap();
     if let Some(existing) = map.get(path)
@@ -194,7 +194,7 @@ fn insert_export(path: &Path, handle: Arc<dyn OQueueExport>) {
             path
         );
     }
-    map.insert(path.clone(), handle);
+    map.insert(path.clone(), Arc::new(handle));
 }
 
 /// Get a handle to the OQueue exported at `path`, if any.
