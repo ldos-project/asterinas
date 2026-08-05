@@ -1,5 +1,5 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, oqueue-reader, raid-policy-server, benchmark, conformance, regression
+, oqueue-reader, raid-policies, benchmark, conformance, regression
 , dnsServer, authorized_keys, enablePython }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
@@ -57,9 +57,19 @@ in stdenvNoCC.mkDerivation {
     # The OQueue filesystem CBOR reader, always available in-guest.
     cp ${oqueue-reader}/bin/read_oqueues $out/usr/bin/read_oqueues
 
-    # The userspace RAID-1 selection policy server; always available, but only launched by `init`
-    # when booted with `raid.selection=userspace`.
-    cp ${raid-policy-server}/bin/raid_policy_server $out/usr/bin/raid_policy_server
+    # The userspace RAID-1 selection policies and their supervisor; always available, but the
+    # supervisor is only launched by `init` when booted with `raid.selection=userspace`.
+    #
+    # The supervisor treats any installed `raid_policy_<name>` binary as a valid policy, so adding a
+    # brand-new policy is a DROP-IN: create the crate, add it to the workspace `members`, and add one
+    # `cp` line here. No edit to `common`, the supervisor, or any existing policy crate is needed.
+    cp ${raid-policies}/bin/raid_policy_supervisor $out/usr/bin/raid_policy_supervisor
+    cp ${raid-policies}/bin/raid_policy_avg_latency $out/usr/bin/raid_policy_avg_latency
+    cp ${raid-policies}/bin/raid_policy_roundrobin $out/usr/bin/raid_policy_roundrobin
+    cp ${raid-policies}/bin/raid_policy_linnos $out/usr/bin/raid_policy_linnos
+    cp ${raid-policies}/bin/raid_policy_linnos_plus $out/usr/bin/raid_policy_linnos_plus
+    cp ${raid-policies}/bin/raid_policy_decision_tree $out/usr/bin/raid_policy_decision_tree
+    cp ${raid-policies}/bin/raid_policy_lowest_index $out/usr/bin/raid_policy_lowest_index
 
     cp -r ${etc}/* $out/etc/
 

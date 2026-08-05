@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "raid_policy_roundrobin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[[bin]]
+name = "raid_policy_roundrobin"
+path = "src/main.rs"
+
+[dependencies]
+raid_policy_common = { path = "../common" }

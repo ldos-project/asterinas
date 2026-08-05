@@ -35,12 +35,12 @@ in rec {
     pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
   # The OQueue filesystem CBOR reader, always included so `/oqueues` can be inspected in-guest.
   oqueue-reader = pkgs.callPackage ./oqueue-reader.nix { };
-  # The userspace RAID-1 selection policy server, always included (like `oqueue-reader`); it is
-  # only exercised when booted with `raid.selection=userspace`.
-  raid-policy-server = pkgs.callPackage ./raid-policy-server.nix { };
+  # The userspace RAID-1 selection policies (one binary per policy) plus their supervisor, always
+  # included (like `oqueue-reader`); only exercised when booted with `raid.selection=userspace`.
+  raid-policies = pkgs.callPackage ./raid-policies.nix { };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
-    inherit busybox oqueue-reader raid-policy-server;
+    inherit busybox oqueue-reader raid-policies;
     benchmark = if enableBenchmarkTest then benchmark else null;
     conformance = if enableConformanceTest then conformance else null;
     regression = if enableRegressionTest then regression else null;

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# `raid_policy_common`: the library crate (rlib) shared by every policy program. It holds exactly
+# what every policy needs and nothing policy-specific — OQFS attach/retry, the CBOR codec for both
+# wire formats, `SelectionRequest` decoding, the per-member completion history and its draining
+# thread, the 31-element feature vector, and the shared candidate-loop control flow. This is static
+# compilation of shared source, NOT runtime/dynamic linking.
+[package]
+name = "raid_policy_common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[lib]
+name = "raid_policy_common"
+path = "src/lib.rs"
+
+[dependencies]
+# Same `minicbor` major version as the kernel side (see
+# `kernel/comps/mariposa_data_capture/Cargo.toml`), so both ends of the OQFS wire format are
+# read/written by the same CBOR library. This is the only external dependency in the workspace.
+minicbor = { version = "2.2.2", features = ["std"] }

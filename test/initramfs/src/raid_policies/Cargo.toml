@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# The RAID-1 userspace read-selection policies, structured as ONE STANDALONE PROGRAM PER POLICY.
+#
+# The OQFS file interface (`/oqueues/...`) is the plugin boundary: each policy is its own crate with
+# its own `main`, sharing only the `raid_policy_common` rlib (ordinary static compilation of shared
+# source — NOT dynamic linking). Swapping a policy means swapping a *process*, driven by
+# `raid_policy_supervisor`.
+#
+# Adding a brand-new policy must require ONLY a new crate directory here plus one line in `members`
+# below and one line in the nix install list (`test/initramfs/nix/initramfs.nix`). It must require no
+# edit to `common`, to the supervisor, or to any existing policy crate — `lowest_index` is the
+# deliberately-trivial proof of that.
+#
+# Like `raid_policy_server` before it, this is its own workspace root (`[workspace]`) so it is not
+# swept into the kernel's root Cargo workspace; it is built by `test/initramfs/nix/raid-policies.nix`
+# and copied into the initramfs.
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "avg_latency",
+    "roundrobin",
+    "linnos",
+    "linnos_plus",
+    "decision_tree",
+    "lowest_index",
+    "supervisor",
+]

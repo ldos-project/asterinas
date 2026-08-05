@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "raid_policy_supervisor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[[bin]]
+name = "raid_policy_supervisor"
+path = "src/main.rs"
+
+# The supervisor swaps policy PROCESSES; it never links any policy's decision logic, so it has no
+# dependencies (not even `common`). Adding a new policy requires no edit here.
+[dependencies]

@@ -525,17 +525,32 @@ impl SelectionPolicy for LinnOSPlusPolicy {
 const MAX_REQUEST_CANDIDATES: usize = 8;
 
 /// Request sent to the userspace policy server: the admitted candidate member indices for the read
-/// being routed. Fixed-size to stay `Copy` (required for OQueue observation); encodes as a CBOR
-/// array of `candidate_count` followed by [`MAX_REQUEST_CANDIDATES`] unsigned integers.
+/// being routed, plus the two features a userspace program cannot derive from the completion stream
+/// on its own (see the field docs). Fixed-size to stay `Copy` (required for OQueue observation);
+/// encodes as a CBOR array of `candidate_count`, `request_size_pages`, [`MAX_REQUEST_CANDIDATES`]
+/// candidate slots, then [`MAX_REQUEST_CANDIDATES`] outstanding-page slots.
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionRequestMessage {
     candidate_count: u32,
+    /// Size (in 4KB pages) of the still-pending bio being routed. A completion stream only reports
+    /// sizes of *already completed* requests, so this pending request's size must be carried here
+    /// for the userspace feature vector to match the kernel policies' exactly.
+    request_size_pages: u32,
     candidates: [u32; MAX_REQUEST_CANDIDATES],
+    /// Each candidate's *live* number of outstanding 4KB pages, in the slot matching its candidate
+    /// slot. This differs from the completion stream's `outstanding_pages` (recorded at submission
+    /// of an already-completed request), so it too must be sampled here and carried to userspace.
+    outstanding_pages: [u32; MAX_REQUEST_CANDIDATES],
 }
 
 impl SelectionRequestMessage {
-    /// Pack an array of candidate indicis to a SelectionRequestMessage
-    fn from_candidates(candidates: &[usize]) -> Self {
+    /// Pack the admitted candidates together with the pending request's size and each candidate's
+    /// live outstanding-page count (sampled from `members`) into a `SelectionRequestMessage`.
+    fn from_selection(
+        candidates: &[usize],
+        request_size_pages: u32,
+        members: &[Arc<dyn BlockDevice>],
+    ) -> Self {
         if candidates.len() > MAX_REQUEST_CANDIDATES {
             log::warn!(
                 "[raid] selection request has {} candidates, more than the {MAX_REQUEST_CANDIDATES} supported; truncating",
@@ -543,14 +558,24 @@ impl SelectionRequestMessage {
             );
         }
         let mut wire = [0u32; MAX_REQUEST_CANDIDATES];
+        let mut outstanding = [0u32; MAX_REQUEST_CANDIDATES];
         let mut count = 0u32;
-        for (slot, &candidate) in wire.iter_mut().zip(candidates) {
+        for ((slot, out_slot), &candidate) in wire
+            .iter_mut()
+            .zip(outstanding.iter_mut())
+            .zip(candidates)
+        {
             *slot = candidate as u32;
+            // Sample the same live outstanding-page count the in-kernel policies read via
+            // `members[candidate].num_outstanding_pages()`, so the userspace feature vector matches.
+            *out_slot = members[candidate].num_outstanding_pages();
             count += 1;
         }
         Self {
             candidate_count: count,
+            request_size_pages,
             candidates: wire,
+            outstanding_pages: outstanding,
         }
     }
 }
@@ -562,10 +587,14 @@ impl serde::Serialize for SelectionRequestMessage {
     ) -> core::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeTuple;
 
-        let mut tup = serializer.serialize_tuple(1 + MAX_REQUEST_CANDIDATES)?;
+        let mut tup = serializer.serialize_tuple(2 + 2 * MAX_REQUEST_CANDIDATES)?;
         tup.serialize_element(&self.candidate_count)?;
+        tup.serialize_element(&self.request_size_pages)?;
         for candidate in &self.candidates {
             tup.serialize_element(candidate)?;
+        }
+        for outstanding in &self.outstanding_pages {
+            tup.serialize_element(outstanding)?;
         }
         tup.end()
     }
@@ -626,10 +655,11 @@ impl UserspacePolicy {
         Ok(server)
     }
 
-    /// Produces `candidates` as a request and blocks for the server's reply, bounded by
-    /// [`REPLY_TIMEOUT_MS`]. Returns `None` (without producing anything) if no server is attached
-    /// to the request stream, or with a warning if the wait times out.
-    fn request_selection(&self, candidates: &[usize]) -> Option<usize> {
+    /// Produces `candidates` (with the pending request's `request_size_pages`) as a request and
+    /// blocks for the server's reply, bounded by [`REPLY_TIMEOUT_MS`]. Returns `None` (without
+    /// producing anything) if no server is attached to the request stream, or with a warning if the
+    /// wait times out.
+    fn request_selection(&self, candidates: &[usize], request_size_pages: u32) -> Option<usize> {
         let mut channel = self.channel.lock();
         let SelectionChannel {
             request_producer,
@@ -642,7 +672,11 @@ impl UserspacePolicy {
         if !request_producer.has_observers() {
             return None;
         }
-        request_producer.produce_ref(&SelectionRequestMessage::from_candidates(candidates));
+        request_producer.produce_ref(&SelectionRequestMessage::from_selection(
+            candidates,
+            request_size_pages,
+            &self.members,
+        ));
 
         reply_timeout.arm_after(REPLY_TIMEOUT_MS * TIMER_FREQ / 1000);
         let reply = loop {
@@ -672,9 +706,13 @@ impl UserspacePolicy {
 
 impl SelectionPolicy for UserspacePolicy {
     fn select_block_device(&self, selection: BioCandidates) -> Result<Arc<dyn BlockDevice>, Error> {
+        // Read the pending bio's size before taking the shared borrow of `candidates`: `num_pages()`
+        // needs `&mut bio`, and this size (of a still-pending request) is one of the two features the
+        // userspace policy cannot derive from the completion stream, so it travels in the request.
+        let request_size_pages = selection.bio.num_pages();
         let candidates = selection.candidates;
 
-        if let Some(device_idx) = self.request_selection(candidates) {
+        if let Some(device_idx) = self.request_selection(candidates, request_size_pages) {
             if candidates.contains(&device_idx) {
                 return Ok(self.members[device_idx].clone());
             }

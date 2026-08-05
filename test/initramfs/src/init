@@ -27,11 +27,12 @@ mount -t oqueue none /oqueues
 mount -t ext2 /dev/vda /ext2
 mount -t exfat /dev/vdb /exfat
 
-# The userspace RAID-1 selection policy reads and writes OQueues that only exist when the kernel
-# was booted with `raid.selection=userspace`; only start the server in that case, and start it
-# before mounting `/raid1`, since mounting drives reads that block on the server's first decision.
+# The userspace RAID-1 selection policies read and write OQueues that only exist when the kernel was
+# booted with `raid.selection=userspace`; only start the supervisor in that case, and start it before
+# mounting `/raid1`, since mounting drives reads that block on the policy's first decision. The
+# supervisor starts a default policy (`avg_latency`) and swaps the running policy PROCESS on request.
 if grep -q 'raid.selection=userspace' /proc/cmdline; then
-    raid_policy_server &
+    raid_policy_supervisor &
 fi
 
 mount -t ext2 /dev/raid /raid1
