@@ -34,13 +34,12 @@ use ostd::{
     sync::{Waker, WakerKey},
 };
 
-use super::{Benchmark, BenchmarkHarness, time};
+use super::{BENCH_Q_TYPE, Benchmark, BenchmarkHarness, time};
 use crate::{
     benchmarks::legacy_oqueue::{
         self, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
         ringbuffer::MPMCOQueue,
     },
-    kcmdline::get_kernel_cmd_line,
     thread::kernel_thread::ThreadOptions,
     time::Clock as _,
 };
@@ -1113,13 +1112,13 @@ impl OQueueLegacyBenchmark {
 
 impl Benchmark for OQueueLegacyBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
-        let karg = get_kernel_cmd_line().expect("no kernel command line");
         self.input = Some(OQueueLegacyBenchmarkInput {
             n_threads,
             n_messages: N_MESSAGES_PER_THREAD * n_threads,
-            q_type: karg
-                .get_module_arg_by_name::<String>("bench", "q_type")
-                .expect("missing bench.q_type=... on kernel command line"),
+            q_type: BENCH_Q_TYPE
+                .get()
+                .expect("missing bench.q_type=... on kernel command line")
+                .clone(),
         });
     }
 
@@ -1333,7 +1332,6 @@ impl OQueueBenchmark {
 
 impl Benchmark for OQueueBenchmark {
     fn init(&mut self, n_threads: usize, _n_repeat: usize, _iter: usize) {
-        let _karg = get_kernel_cmd_line().expect("no kernel command line");
         self.input = Some(OQueueBenchmarkInput { n_threads });
     }
 

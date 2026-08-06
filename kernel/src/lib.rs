@@ -69,7 +69,6 @@ mod time;
 mod util;
 // TODO: Add vDSO support for other architectures.
 mod benchmarks;
-pub mod kcmdline;
 #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 mod vdso;
 mod vm;

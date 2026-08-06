@@ -2,6 +2,8 @@
 
 //! Kernel initialization.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use aster_cmdline::INIT_PROC_ARGS;
 use aster_time::Instant;
 use component::InitStage;
@@ -14,7 +16,6 @@ use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
 #[cfg(not(baseline_asterinas))]
 use ostd::path;
 use ostd::{
-    boot::boot_info,
     cpu::CpuId,
     ignore_err,
     power::{ExitCode, poweroff},
@@ -31,17 +32,13 @@ use crate::event::{EventContext, TaskId};
 use crate::{
     benchmarks,
     fs::vfs::path::{MountNamespace, PathResolver},
-    kcmdline,
-    kcmdline::{KCmdlineArg, set_kernel_cmd_line},
     prelude::*,
     process::{Process, spawn_init_process},
     sched,
     sched::SchedPolicy,
-    thread::{self, kernel_thread::ThreadOptions},
-    vm::{
-        self,
-        vmar::huge_pages::{set_huge_mapping_enabled, set_huge_mapping_preserve_on_dontneed},
-    },
+    thread,
+    thread::kernel_thread::ThreadOptions,
+    vm,
 };
 
 pub(super) fn main() {
@@ -181,15 +178,9 @@ fn first_kthread() {
 
     print_banner();
 
-    // Run benchmarks when bench.name is set in the kernel args
-    if kcmdline::get_kernel_cmd_line()
-        .expect("no kernel command line")
-        .get_module_args("bench")
-        .is_some()
-    {
-        benchmarks::BenchmarkHarness::run(
-            kcmdline::get_kernel_cmd_line().expect("no kernel command line"),
-        );
+    // Run benchmarks when bench.benchmark is set in the kernel args
+    if benchmarks::is_benchmark_enabled() {
+        benchmarks::BenchmarkHarness::run();
         poweroff(ExitCode::Success);
     }
 
@@ -204,11 +195,7 @@ fn first_kthread() {
     benchmarks::oqueue_roundtrip::init_after_init_process();
 
     #[cfg(not(baseline_asterinas))]
-    if kcmdline::get_kernel_cmd_line()
-        .expect("no kernel command line")
-        .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")
-        .unwrap_or(false)
-    {
+    if VM_HUGEPAGED_ENABLED.load(Ordering::Relaxed) {
         vm::hugepaged::HugepagedServer::spawn(
             INIT_PROCESS.get().expect("initialed already").clone(),
         );
@@ -216,22 +203,14 @@ fn first_kthread() {
 
     #[cfg(target_arch = "x86_64")]
     #[cfg(not(baseline_asterinas))]
-    if kcmdline::get_kernel_cmd_line()
-        .expect("no kernel command line")
-        .get_module_arg_by_name::<bool>("pmu", "dtlb_enabled")
-        .unwrap_or(false)
-    {
+    if PMU_DTLB_ENABLED.load(Ordering::Relaxed) {
         let pmu = crate::arch::pmu::PmuServer::spawn();
         pmu.reset();
         pmu.start();
     }
 
     #[cfg(not(baseline_asterinas))]
-    if kcmdline::get_kernel_cmd_line()
-        .expect("no kernel command line")
-        .get_module_arg_by_name::<bool>("scheduler", "capture_data")
-        .unwrap_or(false)
-    {
+    if SCHEDULER_CAPTURE_DATA.load(Ordering::Relaxed) {
         use ostd::orpc::oqueue::LifetimelessElementDescriptor;
 
         if let Some(oqueue) = lookup_by_path::<LifetimelessElementDescriptor<SchedulingEvent>>(
@@ -275,11 +254,7 @@ fn first_kthread() {
     }
 
     #[cfg(not(baseline_asterinas))]
-    if kcmdline::get_kernel_cmd_line()
-        .expect("no kernel command line")
-        .get_module_arg_by_name("io", "capture_block_io")
-        .unwrap_or(false)
-    {
+    if IO_CAPTURE_BLOCK_IO.load(Ordering::Relaxed) {
         use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 
         use crate::data_capture::new_data_capture_data_file_by_type;
@@ -339,24 +314,6 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     // in case any irq handler uses work queue as bottom half
     thread::work_queue::init_in_first_kthread();
 
-    let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
-    set_kernel_cmd_line(karg.clone());
-
-    thread::oops::configure();
-
-    let huge_mapping_enabled = karg
-        .get_module_arg_by_name::<bool>("vm", "huge_mapping_enabled")
-        .unwrap_or(false);
-    set_huge_mapping_enabled(huge_mapping_enabled);
-
-    let huge_mapping_preserve_on_dontneed = karg
-        .get_module_arg_by_name::<bool>("vm", "huge_mapping_preserve_on_dontneed")
-        .unwrap_or(false);
-    if huge_mapping_preserve_on_dontneed {
-        error!("vm.huge_mapping_preserve_on_dontneed=true is not currently honored.")
-    }
-    set_huge_mapping_preserve_on_dontneed(huge_mapping_preserve_on_dontneed);
-
     #[cfg(not(baseline_asterinas))]
     {
         data_capture::start_capture_devices();
@@ -384,3 +341,21 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
 
 static INIT_PATH: Once<String> = Once::new();
 aster_cmdline::define_kv_param!("init", INIT_PATH);
+
+/// Run hugepaged.
+static VM_HUGEPAGED_ENABLED: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("vm.hugepaged_enabled", VM_HUGEPAGED_ENABLED);
+
+/// Capture scheduling events.
+static SCHEDULER_CAPTURE_DATA: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("scheduler.capture_data", SCHEDULER_CAPTURE_DATA);
+
+/// Capture block device I/O operations.
+static IO_CAPTURE_BLOCK_IO: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("io.capture_block_io", IO_CAPTURE_BLOCK_IO);
+
+/// Produce TLB counter statistics into an OQueue.
+#[cfg(target_arch = "x86_64")]
+static PMU_DTLB_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+aster_cmdline::define_flag_param!("pmu.dtlb_enabled", PMU_DTLB_ENABLED);

@@ -2,7 +2,11 @@
 
 //! OQueue data capture utilities.
 
-use core::{result::Result, time::Duration};
+use core::{
+    result::Result,
+    sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
+};
 
 use aster_block::BlockDevice;
 use ostd::{
@@ -15,8 +19,9 @@ use ostd::{
     },
 };
 use serde::Serialize;
+use spin::Once;
 
-use crate::{kcmdline, prelude::*, util::timer::TimerServer};
+use crate::{prelude::*, util::timer::TimerServer};
 
 #[orpc_server]
 struct DataCaptureManager {}
@@ -62,25 +67,18 @@ fn find_block_device(device_name: &str) -> Option<Arc<dyn BlockDevice>> {
 
 /// Initializes a data capture device based on a specified kernel argument.
 ///
-/// Retrieves the kernel argument `data_capture.<arg_name>`. If present, attempts to find the
+/// Retrieves the kernel argument `data_capture.device`. If present, attempts to find the
 /// corresponding block device. If found, passes the device to `init_device`. If the argument is
 /// missing, this logs a warning. If the device can't be found, it logs an error.
-fn init_capture_device_from_arg(
-    arg_name: &str,
-    init_device: impl FnOnce(Arc<dyn BlockDevice + 'static>),
-) {
-    let cmdline = kcmdline::get_kernel_cmd_line();
-    let Some(name) =
-        cmdline.and_then(|cl| cl.get_module_arg_by_name::<String>("data_capture", arg_name))
-    else {
+fn init_capture_device_from_arg(init_device: impl FnOnce(Arc<dyn BlockDevice + 'static>)) {
+    let Some(name) = DATA_CAPTURE_DEVICE_NAME.get() else {
         warn!(
-            "[kernel] Missing argument 'data_capture.{}'; disabling the associated data capture.",
-            arg_name
+            "[kernel] Missing argument 'data_capture.device'; disabling the associated data capture.",
         );
         return;
     };
 
-    match find_block_device(&name) {
+    match find_block_device(name) {
         Some(device) => {
             init_device(device);
             info!("[kernel] Initialized data capture device ({})", name);
@@ -92,20 +90,18 @@ fn init_capture_device_from_arg(
 }
 
 pub(super) fn start_capture_devices() {
-    init_capture_device_from_arg("device", |server| {
+    init_capture_device_from_arg(|server| {
         DATA_CAPTURE_DEVICE
             .lock()
             .replace(mariposa_data_capture::DataCaptureDeviceServer::new(server));
     });
 
-    // Start a server which syncs the data_capture devices every `secs` seconds based on the
-    // kcmdline arg `data_capture.sync_period`. If `data_capture.sync_period` is not provided or is
-    // <= 0, then do not sync periodically.
-    if let Some(secs) = kcmdline::get_kernel_cmd_line()
-        .and_then(|cl| cl.get_module_arg_by_name("data_capture", "sync_period"))
-        && secs > 0.0
-    {
-        DataCaptureManager::spawn(Duration::from_secs_f32(secs));
+    // Start a server which syncs the data_capture devices every `ms` milliseconds based on the
+    // kernel command line arg `data_capture.sync_period`. If `data_capture.sync_period` is not
+    // provided or is <= 0, then do not sync periodically.
+    let ms = DATA_CAPTURE_SYNC_PERIOD_MS.load(Ordering::Relaxed);
+    if ms > 0 {
+        DataCaptureManager::spawn(Duration::from_millis(ms as u64));
     }
 }
 
@@ -185,3 +181,11 @@ pub fn new_data_capture_data_file_by_type<
         ignore_err!(capture_file.start());
     }
 }
+
+/// The name of the device to output captured data to.
+static DATA_CAPTURE_DEVICE_NAME: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("data_capture.device", DATA_CAPTURE_DEVICE_NAME);
+
+/// Synchronize the data to the device every 'n' ms.
+static DATA_CAPTURE_SYNC_PERIOD_MS: AtomicU32 = AtomicU32::new(0);
+aster_cmdline::define_kv_param!("data_capture.sync_period", DATA_CAPTURE_SYNC_PERIOD_MS);
