@@ -6,9 +6,10 @@ extern crate alloc;
 pub mod framework;
 pub mod oqueue;
 pub mod path;
+pub mod serialization;
 pub mod statistics;
 pub mod sync;
 
-pub use orpc_macros::{orpc_impl, orpc_server, orpc_trait};
+pub use orpc_macros::{TupleSerialize, orpc_impl, orpc_server, orpc_trait};
 
 pub use crate::{new_server, orpc_common::errors};

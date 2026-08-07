@@ -7,6 +7,7 @@ mod orpc_server;
 mod orpc_trait;
 mod parsing_utils;
 mod select;
+mod tuple_serialize;
 
 use proc_macro::TokenStream;
 use syn::{
@@ -224,4 +225,38 @@ pub fn select(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
     input
+}
+
+/// Implement `serde::Serialize` for a struct by serializing it as a tuple, instead of a map with
+/// field names. This reduces the encoding overhead at the cost of the data no longer being fully
+/// self describing. It has type information, but not field names.
+///
+/// All fields must implement `Serialize`, and serialization uses that impl. So, the serialized
+/// value will not be a flat tuple, but instead of tuple of the other serializations which may be of
+/// any type (tuple, record, etc).
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(TupleSerialize)]
+/// struct SimpleStruct {
+///     field1: u64,
+///     field2: u32,
+/// }
+/// ```
+///
+/// This will generate:
+/// ```ignore
+/// impl serde::Serialize for SimpleStruct {
+///     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+///         let mut tup = serializer.serialize_tuple(2)?;
+///         tup.serialize_element(&self.field1)?;
+///         tup.serialize_element(&self.field2)?;
+///         tup.end()
+///     }
+/// }
+/// ```
+#[proc_macro_derive(TupleSerialize)]
+pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
+    tuple_serialize::tuple_serialize_derive(input)
 }
