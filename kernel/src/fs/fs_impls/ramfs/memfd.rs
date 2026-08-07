@@ -11,7 +11,10 @@ use aster_block::bio::BioWaiter;
 use aster_rights::Rights;
 use inherit_methods_macro::inherit_methods;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{oqueue::OQueueRef, orpc_impl};
+use ostd::orpc::{
+    oqueue::{OQueueRef, ReflessElementDescriptor},
+    orpc_impl,
+};
 use ostd::{new_server, orpc::orpc_server};
 use spin::Once;
 
@@ -106,10 +109,10 @@ impl MemfdInode {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageIOObservable for MemfdInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
 }
 
 #[cfg(not(baseline_asterinas))]
