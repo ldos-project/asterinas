@@ -15,7 +15,13 @@ use options::{
     Congestion, DeferAccept, Inq, KEEPALIVE_INTERVAL, KeepIdle, MaxSegment, NoDelay, SynCnt,
     UserTimeout, WindowClamp,
 };
-use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
+use ostd::{
+    self,
+    orpc::oqueue::{Element, OQueueBase, ObservationQuery, registry},
+    path,
+    sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard},
+    trace_structured_data,
+};
 use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
@@ -427,6 +433,31 @@ impl SocketPrivate for StreamSocket {
     }
 }
 
+#[derive(Element)]
+struct ConnectCall<'a> {
+    self_: &'a StreamSocket,
+    socket_addr: &'a SocketAddr,
+}
+
+#[derive(Element)]
+struct ConnectReturn<'a> {
+    self_: &'a StreamSocket,
+    ret: &'a Result<()>,
+}
+
+fn test() {
+    let oq = registry::lookup_by_path::<ConnectCallDescriptor>(&path!(
+        kernel.net.socket.ip.stream.Socket.connect.call
+    ))
+    .unwrap();
+    let obs = oq
+        .attach_strong_observer(ObservationQuery::new(|r: &ConnectCall| {
+            r.self_.is_nonblocking.load(Ordering::Relaxed)
+        }))
+        .unwrap();
+    let _x = obs.strong_observe();
+}
+
 impl Socket for StreamSocket {
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
@@ -440,14 +471,57 @@ impl Socket for StreamSocket {
         init_stream.bind(&endpoint, can_reuse)
     }
 
+    // IDEALLY this would replace all the macros insize the function.
+    // #[trace_structured_data]
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
-        let remote_endpoint = socket_addr.try_into()?;
+        trace_structured_data!(
+            { kernel.net.socket.ip.stream.Socket.connect.call },
+            ConnectCall {
+                self_: self,
+                socket_addr: &socket_addr,
+            },
+            descriptor = ConnectCallDescriptor,
+            length = 16
+        );
 
-        if let Some(result) = self.start_connect(&remote_endpoint) {
-            return result;
-        }
+        // WITH A MACRO:
+        //
+        // trace_call!(
+        //     { kernel.net.socket.ip.stream.Socket.connect },
+        //     {
+        //         self: &StreamSocket,
+        //         socket_addr: SocketAddr,
+        //     }
+        // );
 
-        self.wait_events(IoEvents::OUT, None, || self.check_connect())
+        let ret = (|| {
+            let remote_endpoint = socket_addr.try_into()?;
+
+            if let Some(result) = self.start_connect(&remote_endpoint) {
+                return result;
+            }
+
+            self.wait_events(IoEvents::OUT, None, || self.check_connect())
+        })();
+
+        trace_structured_data!(
+            { kernel.net.socket.ip.stream.Socket.connect.ret },
+            ConnectReturn {
+                self_: self,
+                ret: &ret
+            },
+            descriptor = ConnectReturnDescriptor,
+            length = 1024
+        );
+
+        // WITH A MACRO:
+        //
+        // trace_ret!(
+        //     { kernel.net.socket.ip.stream.Socket.connect },
+        //     { self: &StreamSocket } -> Result<()>
+        // );
+
+        ret
     }
 
     fn listen(&self, backlog: usize) -> Result<()> {
