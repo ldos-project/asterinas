@@ -12,7 +12,7 @@ use ostd::{
             notifier::{Notifier, NotifierOQueues},
             spawn_thread,
         },
-        oqueue::{OQueue, OQueueRef},
+        oqueue::{OQueue, OQueueRef, ReflessElementDescriptor},
         orpc_impl, orpc_server,
     },
     sync::WaitQueue,
@@ -37,7 +37,7 @@ impl Notifier for TimerServer {
         }
     }
 
-    fn notification_oqueue(&self) -> OQueueRef<()>;
+    fn notification_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<()>>;
 }
 
 impl TimerServer {

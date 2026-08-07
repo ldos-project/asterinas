@@ -14,7 +14,7 @@ use device_id::DeviceId;
 use hashbrown::HashMap;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef},
+    oqueue::{OQueue as _, OQueueRef, ReflessElementDescriptor},
     orpc_impl,
 };
 use ostd::{
@@ -618,10 +618,10 @@ impl RamInode {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl PageIOObservable for RamInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
 }
 
 #[cfg(not(baseline_asterinas))]

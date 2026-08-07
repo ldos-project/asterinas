@@ -75,7 +75,7 @@ use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-use crate::orpc::oqueue::RefProducer;
+use crate::orpc::oqueue::{RefProducer, ReflessElementDescriptor};
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
@@ -130,12 +130,14 @@ pub(crate) fn init() {
 }
 
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
+static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<ReflessElementDescriptor<SchedulingEvent>>> =
+    Once::new();
 
 /// Get the producer handle for the scheduling event OQueue. This will panic if called before
 /// [`init()`].
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-fn get_scheduling_event_producer() -> &'static crate::orpc::oqueue::RefProducer<SchedulingEvent> {
+fn get_scheduling_event_producer() -> &'static RefProducer<ReflessElementDescriptor<SchedulingEvent>>
+{
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
 
