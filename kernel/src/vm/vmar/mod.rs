@@ -42,7 +42,7 @@ pub struct PageFaultOQueueMessage {
 pub mod oqueues {
     use core::{sync::atomic::AtomicUsize, time::Duration};
 
-    use ostd::orpc::oqueue::OQueueRef;
+    use ostd::orpc::oqueue::{OQueueRef, ReflessElementDescriptor};
     use spin::Once;
 
     use super::PageFaultOQueueMessage;
@@ -65,19 +65,23 @@ pub mod oqueues {
         }
     }
 
-    pub(super) static PAGE_FAULT_OQUEUE: Once<OQueueRef<ObservableEvent<PageFaultOQueueMessage>>> =
-        Once::new();
+    pub(super) static PAGE_FAULT_OQUEUE: Once<
+        OQueueRef<ReflessElementDescriptor<ObservableEvent<PageFaultOQueueMessage>>>,
+    > = Once::new();
 
     pub static GLOBAL_RSS: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) static RSS_DELTA_OQUEUE: Once<OQueueRef<ObservableEvent<isize>>> = Once::new();
+    pub(super) static RSS_DELTA_OQUEUE: Once<
+        OQueueRef<ReflessElementDescriptor<ObservableEvent<isize>>>,
+    > = Once::new();
 
     #[expect(unused)]
-    pub fn get_rss_delta_oqueue() -> OQueueRef<ObservableEvent<isize>> {
+    pub fn get_rss_delta_oqueue() -> OQueueRef<ReflessElementDescriptor<ObservableEvent<isize>>> {
         RSS_DELTA_OQUEUE.wait().clone()
     }
 
-    pub fn get_page_fault_oqueue() -> OQueueRef<ObservableEvent<PageFaultOQueueMessage>> {
+    pub fn get_page_fault_oqueue()
+    -> OQueueRef<ReflessElementDescriptor<ObservableEvent<PageFaultOQueueMessage>>> {
         PAGE_FAULT_OQUEUE.wait().clone()
     }
 }

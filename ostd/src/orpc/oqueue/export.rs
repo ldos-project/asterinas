@@ -20,9 +20,9 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use minicbor_serde::Serializer;
 use serde::Serialize;
 
-use super::{
-    AnyOQueueRef, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu, StrongObserver,
-    WeakAnyOQueueRef,
+use super::{OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu, StrongObserver};
+use crate::orpc::oqueue::{
+    AnyOQueueRef, ElementDescriptor, ReflessElementDescriptor, WeakAnyOQueueRef,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -63,8 +63,13 @@ pub trait CborStrongObserve: Send {
 /// can serve both the identity case (whole message) and the projection case (a `Copy + Serialize`
 /// summary). The closure is built where the relevant bounds are known — in
 /// [`make_export`]/[`make_export_with`] — and captures whatever projection it needs.
-type AttachFn<T> =
-    Box<dyn Fn(&AnyOQueueRef<T>) -> Result<Box<dyn CborStrongObserve>, OQueueError> + Send + Sync>;
+type AttachFn<T> = Box<
+    dyn Fn(
+            &AnyOQueueRef<ReflessElementDescriptor<T>>,
+        ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
+        + Send
+        + Sync,
+>;
 
 /// The concrete [`OQueueExport`] for an OQueue with message type `T`.
 ///
@@ -74,7 +79,7 @@ type AttachFn<T> =
 /// baked in at construction, since the observed type `U` and its `Copy + Serialize` bound cannot
 /// survive to this erased handle.
 struct OQueueExportHandle<T: 'static> {
-    weak: WeakAnyOQueueRef<T>,
+    weak: WeakAnyOQueueRef<ReflessElementDescriptor<T>>,
     type_name: &'static str,
     attach_strong_observer_fn: AttachFn<T>,
 }
@@ -127,12 +132,11 @@ impl<U: Copy + Send + Serialize + 'static> CborStrongObserve for CborStrongObser
 }
 
 /// Attaches a strong observer with the given query and wraps it as a CBOR record source.
-fn attach_cbor_observer<T, U>(
-    oqueue: &AnyOQueueRef<T>,
-    query: ObservationQuery<T, U>,
+fn attach_cbor_observer<D: ElementDescriptor, U>(
+    oqueue: &AnyOQueueRef<D>,
+    query: ObservationQuery<D, U>,
 ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
 where
-    T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
 {
     let observer = oqueue.attach_revocable_strong_observer(query)?;
@@ -142,13 +146,13 @@ where
 /// Builds a type-erased export handle for an OQueue whose whole message is streamed via the
 /// identity projection (so the message type's derived `Serialize` is used).
 pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
-    oqueue: &AnyOQueueRef<T>,
+    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
 ) -> Arc<dyn OQueueExport> {
     Arc::new(OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
         attach_strong_observer_fn: Box::new(|oqueue| {
-            attach_cbor_observer(oqueue, ObservationQuery::<T, T>::identity())
+            attach_cbor_observer(oqueue, ObservationQuery::identity())
         }),
     })
 }
@@ -157,7 +161,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 /// caller-supplied projection `project: Fn(&T) -> U`, where `U` is the `Copy + Serialize` value
 /// placed in the stream.
 pub(super) fn make_export_with<T, U, F>(
-    oqueue: &AnyOQueueRef<T>,
+    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
     project: F,
 ) -> Arc<dyn OQueueExport>
 where

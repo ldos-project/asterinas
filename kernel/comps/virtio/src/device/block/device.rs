@@ -24,14 +24,17 @@ use aster_block::{
 use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef};
+use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::orpc_impl;
 use ostd::{
     arch::trap::TrapFrame,
     debug, info,
     mm::{PAGE_SIZE, VmIo, dma::DmaStream},
-    orpc::orpc_server,
+    orpc::{
+        oqueue::{OQueueRef, ReflessElementDescriptor},
+        orpc_server,
+    },
     sync::SpinLock,
 };
 use snafu::ResultExt;
@@ -85,7 +88,9 @@ pub struct BlockDevice {
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
     fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio>;
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
+    fn bio_completion_oqueue(
+        &self,
+    ) -> OQueueRef<ReflessElementDescriptor<BlockDeviceCompletionStats>>;
 }
 
 impl BlockDevice {
