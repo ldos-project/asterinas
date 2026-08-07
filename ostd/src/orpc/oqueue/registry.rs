@@ -12,8 +12,8 @@ use log::warn;
 use serde::Serialize;
 
 use super::{
-    AnyOQueueRef,
-    export::{OQueueExport, make_export, make_export_with},
+    AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase as _,
+    export::{OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export},
 };
 use crate::{
     orpc::{
@@ -152,21 +152,49 @@ where
     insert_export(path, make_export_with(oqueue, project));
 }
 
-/// Insert an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
+/// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production: a
+/// userspace writer can attach a producer (e.g. via the OQueue filesystem's `produce` file) and
+/// send values of type `T` into the queue by writing their CBOR encoding.
 ///
-/// A path identifies a single stream, so a second export at an already-occupied live path is a
-/// programming error: it is ignored with a warning. A stale entry (its OQueue already dropped) is
-/// replaced.
-fn insert_export(path: &Path, handle: Arc<dyn OQueueExport>) {
+/// Unlike [`register`]/[`register_with`], this is a user-to-kernel tunnel only; only a
+/// [`ConsumableOQueueRef`] can be passed. Attaches and returns the queue's consumer, guaranteeing
+/// one exists before the queue is reachable as producible.
+///
+/// # Panics
+///
+/// Panics if a live export already exists at `path` (see [`insert_export`]), or if a consumer
+/// cannot be attached.
+pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOwned + 'static>(
+    path: &Path,
+    oqueue: &ConsumableOQueueRef<T>,
+) -> Consumer<T> {
+    ensure_registered(path, &oqueue.as_any_oqueue());
+    insert_export(path, make_produce_export(oqueue));
+    oqueue
+        .attach_consumer()
+        .expect("a freshly registered producible OQueue always allows attaching its consumer")
+}
+
+/// Inserts an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
+///
+/// A stale entry (its OQueue already dropped) is replaced silently.
+///
+/// # Panics
+///
+/// Panics if a live export already exists at `path`: a path is a single export, so a second live
+/// export there is a programming error.
+fn insert_export<T: Send + 'static>(path: &Path, handle: OQueueExportHandle<T>) {
     let mut map = exports();
     let map = map.as_mut().unwrap();
     if let Some(existing) = map.get(path)
         && existing.is_alive()
     {
-        warn!("Ignoring duplicate OQueue export for path {}", path);
-        return;
+        panic!(
+            "OQueue export for path {} is already exposed; refusing to double-expose it",
+            path
+        );
     }
-    map.insert(path.clone(), handle);
+    map.insert(path.clone(), Arc::new(handle));
 }
 
 /// Get a handle to the OQueue exported at `path`, if any.
@@ -256,11 +284,7 @@ fn get_type_map<'a, T: ?Sized + 'static>(
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{
-        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _},
-        path, path_pattern,
-        prelude::*,
-    };
+    use crate::{orpc::oqueue::ConsumableOQueueRef, path, path_pattern, prelude::*};
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())
@@ -390,25 +414,37 @@ mod test {
     }
 
     #[ktest]
-    fn export_one_per_path_and_cleanup() {
+    fn export_replaces_dead_entry_after_cleanup() {
         let path = path!(observe.dup[1]);
         let queue1 = ConsumableOQueueRef::<usize>::new(4, path.clone());
         register(&path, &queue1.as_any_oqueue());
 
-        // A second, live export at the same path is rejected (one stream per path).
+        // Once the underlying queue is gone the handle is dead and `clean_exports` reaps it, so
+        // registering a fresh queue at the same path afterward is not a double-exposure.
+        drop(queue1);
+        assert!(!lookup_export(&path).unwrap().is_alive());
+        clean_exports();
+        assert!(lookup_export(&path).is_none());
+
         let queue2 = ConsumableOQueueRef::<usize>::new(4, path.clone());
         register(&path, &queue2.as_any_oqueue());
         assert_eq!(
             list_export_paths().iter().filter(|p| **p == path).count(),
             1
         );
+    }
 
-        // Once the underlying queue is gone the handle is dead and `clean_exports` reaps it.
-        drop(queue1);
-        drop(queue2);
-        assert!(!lookup_export(&path).unwrap().is_alive());
-        clean_exports();
-        assert!(lookup_export(&path).is_none());
+    #[ktest]
+    #[should_panic]
+    fn export_rejects_duplicate_live_export() {
+        let path = path!(observe.dup2[1]);
+        let queue1 = ConsumableOQueueRef::<usize>::new(4, path.clone());
+        register(&path, &queue1.as_any_oqueue());
+
+        // A second, live export at the same path must fail loudly rather than being silently
+        // dropped (it is a one-stream-per-path programming error).
+        let queue2 = ConsumableOQueueRef::<usize>::new(4, path.clone());
+        register(&path, &queue2.as_any_oqueue());
     }
 
     #[ktest]

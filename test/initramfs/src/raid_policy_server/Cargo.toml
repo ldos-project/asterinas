@@ -1,0 +1,22 @@
+# This crate is not part of the main Asterinas Cargo workspace (see the root `Cargo.toml`); it is
+# a standalone host/userspace tool built by `test/initramfs/nix/raid-policy-server.nix` and copied
+# into the initramfs. `[workspace]` here makes it its own workspace root so it isn't accidentally
+# swept into the root workspace (matches `test/nixos/Cargo.toml`).
+[workspace]
+
+[package]
+name = "raid_policy_server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[[bin]]
+name = "raid_policy_server"
+path = "src/main.rs"
+
+[dependencies]
+# Same `minicbor` major version as the kernel side (see
+# `kernel/comps/mariposa_data_capture/Cargo.toml`), so both ends of the OQFS wire format are
+# read/written by the same CBOR library.
+minicbor = { version = "2.2.2", features = ["std"] }

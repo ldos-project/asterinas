@@ -70,7 +70,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
-pub use export::{CborStrongObserve, OQueueExport};
+pub use export::{CborProducer, CborStrongObserve, OQueueExport, ProduceCborError};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -510,6 +510,12 @@ impl<T: Send + ?Sized + 'static> RefProducer<T> {
     /// would block, `true` if the value was successfully produced.
     pub fn try_produce_ref(&self, v: &T) -> bool {
         self.oqueue.try_produce_ref(v)
+    }
+
+    /// True if at least one observer is currently attached to this OQueue, e.g. so a caller can
+    /// decide whether waiting for a reaction to a produced value is worthwhile.
+    pub fn has_observers(&self) -> bool {
+        self.oqueue.has_observers()
     }
 }
 

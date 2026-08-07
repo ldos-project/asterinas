@@ -1,6 +1,6 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, oqueue-reader, benchmark, conformance, regression, dnsServer, authorized_keys
-, enablePython }:
+, oqueue-reader, raid-policy-server, benchmark, conformance, regression
+, dnsServer, authorized_keys, enablePython }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -56,6 +56,10 @@ in stdenvNoCC.mkDerivation {
 
     # The OQueue filesystem CBOR reader, always available in-guest.
     cp ${oqueue-reader}/bin/read_oqueues $out/usr/bin/read_oqueues
+
+    # The userspace RAID-1 selection policy server; always available, but only launched by `init`
+    # when booted with `raid.selection=userspace`.
+    cp ${raid-policy-server}/bin/raid_policy_server $out/usr/bin/raid_policy_server
 
     cp -r ${etc}/* $out/etc/
 
