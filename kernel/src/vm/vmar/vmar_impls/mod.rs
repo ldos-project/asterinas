@@ -19,7 +19,7 @@ use align_ext::AlignExt;
 use aster_util::per_cpu_counter::PerCpuCounter;
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::OQueueRef;
+use ostd::orpc::oqueue::{OQueueRef, ReflessElementDescriptor};
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::VmSpace,
@@ -59,7 +59,8 @@ pub struct Vmar {
     rss_hwm_counters: [CpuLocalBox<AtomicIsize>; NUM_RSS_COUNTERS],
     /// OQueue Producer to notify policies about page fault events
     #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
+    page_fault_oqueue_producer:
+        OQueueRef<ReflessElementDescriptor<oqueues::ObservableEvent<PageFaultOQueueMessage>>>,
 }
 
 impl Vmar {

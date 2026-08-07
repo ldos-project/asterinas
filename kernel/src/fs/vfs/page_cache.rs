@@ -18,7 +18,8 @@ use ostd::{
         framework::spawn_thread,
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
-            OQueueRef, RefProducer, query::ObservationQuery, reply::ReplyQueue,
+            OQueueRef, RefProducer, ReflessElementDescriptor, query::ObservationQuery,
+            reply::ReplyQueue,
         },
         orpc_impl, orpc_server,
     },
@@ -473,7 +474,7 @@ struct PageCacheManagerInner {
     pages: LruCache<usize, CachePage>,
     builtin_prefetch_policy: Option<BuiltinPrefetchPolicy>,
     outstanding_requests: OutstandingRequests,
-    page_cache_read_info_producer: Option<RefProducer<PageCacheReadInfo>>,
+    page_cache_read_info_producer: Option<RefProducer<ReflessElementDescriptor<PageCacheReadInfo>>>,
 }
 
 impl PageCacheManagerInner {
@@ -793,10 +794,10 @@ impl Debug for PageCacheManager {
 
 #[orpc_impl]
 impl PageIOObservable for PageCacheManager {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<usize>>;
 }
 
 // XXX: How is Pager handled in ORPC? Do I also need to refactor that?
@@ -861,7 +862,8 @@ impl server_traits::PageCache for PageCacheManager {
         self.backend()
     }
 
-    fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo>;
+    fn page_cache_read_info_oqueue(&self)
+    -> OQueueRef<ReflessElementDescriptor<PageCacheReadInfo>>;
 }
 
 /// A page in the page cache.

@@ -228,7 +228,11 @@ fn first_kthread() {
         .get_module_arg_by_name::<bool>("scheduler", "capture_data")
         .unwrap_or(false)
     {
-        if let Some(oqueue) = lookup_by_path::<SchedulingEvent>(&path!(scheduler.events)) {
+        use ostd::orpc::oqueue::ReflessElementDescriptor;
+
+        if let Some(oqueue) =
+            lookup_by_path::<ReflessElementDescriptor<SchedulingEvent>>(&path!(scheduler.events))
+        {
             #[derive(Debug, Clone, Copy, Serialize)]
             struct KernelSchedulingEvent {
                 timestamp: Instant,
@@ -273,6 +277,7 @@ fn first_kthread() {
         .unwrap_or(false)
     {
         use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
+        use ostd::orpc::oqueue::ReflessElementDescriptor;
 
         use crate::data_capture::new_data_capture_data_file_by_type;
 
@@ -283,7 +288,7 @@ fn first_kthread() {
             context: EventContext,
         }
         new_data_capture_data_file_by_type(path!(io.block.submitted), 500 * 1024 * 1024, || {
-            ObservationQuery::new(|e: &SubmittedBio| {
+            ObservationQuery::<ReflessElementDescriptor<_>, _>::new(|e: &SubmittedBio| {
                 let sid_range = e.sid_range();
                 let context = EventContext::new();
                 SubmittedBioEvent {
@@ -300,7 +305,7 @@ fn first_kthread() {
             context: EventContext,
         }
         new_data_capture_data_file_by_type(path!(io.block.completion), 500 * 1024 * 1024, || {
-            ObservationQuery::new(|stats| {
+            ObservationQuery::<ReflessElementDescriptor<_>, _>::new(|stats| {
                 let context = EventContext::new();
                 BlockDeviceCompletionEvent {
                     stats: *stats,

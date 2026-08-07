@@ -3,7 +3,7 @@
 use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
 use ostd::{
     orpc::{
-        oqueue::{ConsumableOQueueRef, OQueueRef},
+        oqueue::{ConsumableOQueueRef, OQueueRef, ReflessElementDescriptor},
         orpc_trait,
     },
     path,
@@ -19,7 +19,9 @@ pub trait BlockIOObservable {
 
     /// The OQueue containing every write request. This includes both sync and async writes and any
     /// other write operations on other traits
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats> {
+    fn bio_completion_oqueue(
+        &self,
+    ) -> OQueueRef<ReflessElementDescriptor<BlockDeviceCompletionStats>> {
         OQueueRef::new(4096, path!(io.block_io.bio_completion[unique]))
     }
 }

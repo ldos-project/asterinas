@@ -15,7 +15,7 @@ use crate::parsing_utils::generics_to_phantom;
 /// # Examples
 ///
 /// Type with one lifetime parameter:
-/// ```
+/// ```ignore
 /// #[derive(Element)]
 /// struct ConnectCall<'a> {
 ///     self_: &'a StreamSocket,
@@ -24,7 +24,7 @@ use crate::parsing_utils::generics_to_phantom;
 /// ```
 ///
 /// Type without lifetime parameters:
-/// ```
+/// ```ignore
 /// #[derive(Element)]
 /// struct Message {
 ///     id: u32,

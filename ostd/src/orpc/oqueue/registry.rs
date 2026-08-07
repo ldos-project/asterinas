@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     orpc::{
-        oqueue::WeakAnyOQueueRef,
+        oqueue::{ElementDescriptor, ReflessElementDescriptor, WeakAnyOQueueRef},
         path::{Path, PathPattern},
     },
     sync::{Mutex, MutexGuard},
@@ -35,12 +35,12 @@ struct PathMap {
 }
 
 impl PathMap {
-    fn new<T: ?Sized + 'static>() -> Self {
+    fn new<D: ElementDescriptor + 'static>() -> Self {
         Self {
             clean_fn: |type_map| {
                 type_map
                     .map
-                    .retain(|_, queue| downcast_oqueue::<T>(queue).upgrade().is_some())
+                    .retain(|_, queue| downcast_oqueue::<D>(queue).upgrade().is_some())
             },
             map: Default::default(),
         }
@@ -69,34 +69,34 @@ fn registry() -> MutexGuard<'static, Option<RegistryMap>> {
 ///
 /// If an existing OQueue is registered with the same type and path, this will replace that OQueue
 /// and emit a warning.
-pub fn register_no_export<T: ?Sized + 'static>(path: &Path, v: &AnyOQueueRef<T>) {
+pub fn register_no_export<D: ElementDescriptor + 'static>(path: &Path, v: &AnyOQueueRef<D>) {
     let mut map = registry();
-    let entry = get_entry::<T>(&mut map, path);
+    let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = &entry
-        && downcast_oqueue::<T>(entry.get()).upgrade().is_some()
+        && downcast_oqueue::<D>(entry.get()).upgrade().is_some()
     {
         warn!("Overwriting OQueue registry entry with path {}", path);
     }
-    entry.insert(Box::<WeakAnyOQueueRef<T>>::new(v.downgrade()));
+    entry.insert(Box::<WeakAnyOQueueRef<D>>::new(v.downgrade()));
 }
 
 /// Ensure `path` is present in [`TYPED_OQUEUE_REGISTRY`], inserting it if absent.
-fn ensure_registered<T: ?Sized + 'static>(path: &Path, v: &AnyOQueueRef<T>) {
+fn ensure_registered<D: ElementDescriptor + 'static>(path: &Path, v: &AnyOQueueRef<D>) {
     let mut map = registry();
-    let entry = get_entry::<T>(&mut map, path);
+    let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = &entry
-        && downcast_oqueue::<T>(entry.get()).upgrade().is_some()
+        && downcast_oqueue::<D>(entry.get()).upgrade().is_some()
     {
         return;
     }
-    entry.insert(Box::<WeakAnyOQueueRef<T>>::new(v.downgrade()));
+    entry.insert(Box::<WeakAnyOQueueRef<D>>::new(v.downgrade()));
 }
 
 /// Get the OQueue from a box stored in the OQueue registry.
-fn downcast_oqueue<'a, T: ?Sized + 'static>(
+fn downcast_oqueue<'a, D: ElementDescriptor + 'static>(
     v: &'a Box<dyn Any + Send + Sync + 'static>,
-) -> &'a WeakAnyOQueueRef<T> {
-    v.downcast_ref::<WeakAnyOQueueRef<T>>()
+) -> &'a WeakAnyOQueueRef<D> {
+    v.downcast_ref::<WeakAnyOQueueRef<D>>()
         .expect("The entry has the type T")
 }
 
@@ -133,7 +133,10 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
 /// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use [`register_with`]
 /// to stream a projected summary instead, or [`register_no_export`] for queues that must not be
 /// exported.
-pub fn register<T: Copy + Send + Serialize + 'static>(path: &Path, oqueue: &AnyOQueueRef<T>) {
+pub fn register<T: Copy + Send + Serialize + 'static>(
+    path: &Path,
+    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+) {
     ensure_registered(path, oqueue);
     insert_export(path, make_export(oqueue));
 }
@@ -144,8 +147,11 @@ pub fn register<T: Copy + Send + Serialize + 'static>(path: &Path, oqueue: &AnyO
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
 /// extracted from it.
-pub fn register_with<T, U, F>(path: &Path, oqueue: &AnyOQueueRef<T>, project: F)
-where
+pub fn register_with<T, U, F>(
+    path: &Path,
+    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+    project: F,
+) where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
     F: Fn(&T) -> U + Send + Sync + 'static,
@@ -213,27 +219,29 @@ pub fn clean_exports() {
 }
 
 /// Get the OQueue with the given type and name.
-pub fn lookup_by_path<T: ?Sized + 'static>(path: &Path) -> Option<AnyOQueueRef<T>> {
+pub fn lookup_by_path<D: ElementDescriptor + 'static>(path: &Path) -> Option<AnyOQueueRef<D>> {
     let mut map = registry();
-    let entry = get_entry::<T>(&mut map, path);
+    let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = entry {
-        downcast_oqueue::<T>(entry.get()).upgrade()
+        downcast_oqueue::<D>(entry.get()).upgrade()
     } else {
         None
     }
 }
 
 /// Get all OQueues whose names match a given pattern.
-pub fn lookup_by_path_pattern<T: ?Sized + 'static>(pat: &PathPattern) -> Vec<AnyOQueueRef<T>> {
+pub fn lookup_by_path_pattern<D: ElementDescriptor + 'static>(
+    pat: &PathPattern,
+) -> Vec<AnyOQueueRef<D>> {
     let mut map = registry();
-    let type_map = get_type_map::<T>(&mut map);
+    let type_map = get_type_map::<D>(&mut map);
     type_map
         .map
         .iter()
         .filter_map(|(path, queue)| {
             if pat.matches(path) {
                 queue
-                    .downcast_ref::<WeakAnyOQueueRef<T>>()
+                    .downcast_ref::<WeakAnyOQueueRef<D>>()
                     .expect("The entry has the type T")
                     .upgrade()
             } else {
@@ -244,16 +252,16 @@ pub fn lookup_by_path_pattern<T: ?Sized + 'static>(pat: &PathPattern) -> Vec<Any
 }
 
 /// Get all OQueues of a given type.
-pub fn lookup_by_type<T: ?Sized + 'static>() -> Vec<AnyOQueueRef<T>> {
+pub fn lookup_by_type<D: ElementDescriptor + 'static>() -> Vec<AnyOQueueRef<D>> {
     let mut map = registry();
-    let type_map = get_type_map::<T>(&mut map);
+    let type_map = get_type_map::<D>(&mut map);
 
     type_map
         .map
         .values()
         .filter_map(|value| {
             value
-                .downcast_ref::<WeakAnyOQueueRef<T>>()
+                .downcast_ref::<WeakAnyOQueueRef<D>>()
                 .unwrap()
                 .upgrade()
         })
@@ -261,28 +269,28 @@ pub fn lookup_by_type<T: ?Sized + 'static>() -> Vec<AnyOQueueRef<T>> {
 }
 
 /// Get the entry for a specific type and name out of `map`.
-fn get_entry<'a, 'b, T: ?Sized + 'static>(
+fn get_entry<'a, 'b, D: ElementDescriptor + 'static>(
     map: &'a mut MutexGuard<'static, Option<RegistryMap>>,
     path: &'b Path,
 ) -> EntryRef<'a, 'b, Path, Path, Box<dyn Any + Send + Sync>, DefaultHashBuilder> {
-    get_type_map::<T>(map).map.entry_ref(path)
+    get_type_map::<D>(map).map.entry_ref(path)
 }
 
-/// Get the name--OQueue map associated with the given `T`.
-fn get_type_map<'a, T: ?Sized + 'static>(
+/// Get the name--OQueue map associated with the given `D`.
+fn get_type_map<'a, D: ElementDescriptor + 'static>(
     map: &'a mut MutexGuard<'static, Option<RegistryMap>>,
 ) -> &'a mut PathMap {
     map.as_mut()
         .unwrap()
-        .entry(TypeId::of::<T>())
-        .or_insert_with(|| PathMap::new::<T>())
+        .entry(TypeId::of::<D>())
+        .or_insert_with(|| PathMap::new::<D>())
 }
 
 #[cfg(ktest)]
 mod test {
     use super::*;
     use crate::{
-        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef},
+        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, ReflessElementDescriptor},
         path, path_pattern,
         prelude::*,
     };
@@ -296,8 +304,8 @@ mod test {
         let path = path!(test.queue[1]);
         let _queue = new_oqueue(&path);
 
-        assert!(lookup_by_path::<usize>(&path).is_some());
-        assert!(lookup_by_path::<i32>(&path).is_none());
+        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
+        assert!(lookup_by_path::<ReflessElementDescriptor<i32>>(&path).is_none());
     }
 
     #[ktest(expect_redundant_test_prefix)]
@@ -310,19 +318,24 @@ mod test {
         let _queue2 = new_oqueue(&path2);
         let _queue3 = new_oqueue(&path3);
 
-        let results = lookup_by_path_pattern::<usize>(&path_pattern!(a.b[*]));
+        let results =
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.b[*]));
         assert_eq!(results.len(), 2);
 
-        let results = lookup_by_path_pattern::<usize>(&path_pattern!(a.c[*]));
+        let results =
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.c[*]));
         assert_eq!(results.len(), 1);
 
-        let results = lookup_by_path_pattern::<usize>(&path_pattern!(a.*[*]));
+        let results =
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[*]));
         assert_eq!(results.len(), 3);
 
-        let results = lookup_by_path_pattern::<usize>(&path_pattern!(a.*[1]));
+        let results =
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[1]));
         assert_eq!(results.len(), 2);
 
-        let results = lookup_by_path_pattern::<usize>(&path_pattern!(a.*[2]));
+        let results =
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[2]));
         assert_eq!(results.len(), 1);
     }
 
@@ -334,15 +347,23 @@ mod test {
         let _queue1 = new_oqueue(&path1);
         let _queue2 = new_oqueue(&path2);
 
-        let results = lookup_by_type::<usize>();
+        let results = lookup_by_type::<ReflessElementDescriptor<usize>>();
         assert_eq!(results.len(), 2);
     }
 
     #[ktest]
     fn nonexistent_lookup() {
-        assert!(lookup_by_path::<usize>(&path!(nonexistent.path[1])).is_none());
-        assert!(lookup_by_path_pattern::<usize>(&path_pattern!(nonexistent[*])).is_empty());
-        assert!(lookup_by_type::<usize>().is_empty());
+        assert!(
+            lookup_by_path::<ReflessElementDescriptor<usize>>(&path!(nonexistent.path[1]))
+                .is_none()
+        );
+        assert!(
+            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(
+                &path_pattern!(nonexistent[*])
+            )
+            .is_empty()
+        );
+        assert!(lookup_by_type::<ReflessElementDescriptor<usize>>().is_empty());
     }
 
     /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
@@ -453,12 +474,12 @@ mod test {
         let path = path!(observe.both[1]);
         // The constructor registers to TYPED_OQUEUE_REGISTRY only; the queue is not exported yet.
         let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        assert!(lookup_by_path::<usize>(&path).is_some());
+        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_none());
 
         // `register` adds it to OQFS_REGISTRY while keeping the TYPED_OQUEUE_REGISTRY entry.
         register(&path, &queue.as_any_oqueue());
-        assert!(lookup_by_path::<usize>(&path).is_some());
+        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_some());
     }
 
@@ -467,11 +488,11 @@ mod test {
         let path = path!(observe.anon[1]);
         // An anonymous queue is not registered by its constructor.
         let queue = ConsumableOQueueRef::<usize>::new_anonymous(4);
-        assert!(lookup_by_path::<usize>(&path).is_none());
+        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_none());
 
         // `register` puts it in both maps: `ensure_registered` covers TYPED_OQUEUE_REGISTRY.
         register(&path, &queue.as_any_oqueue());
-        assert!(lookup_by_path::<usize>(&path).is_some());
+        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_some());
     }
 

@@ -14,15 +14,16 @@ use super::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    oqueue::{OQueue, OQueueBase, OQueueError, OQueueRef, query::ObservationQuery},
+    oqueue::{OQueue, OQueueBase, OQueueError, ReflessElementDescriptor, query::ObservationQuery},
     sync::select,
 };
+use crate::orpc::oqueue::OQueueRef;
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
 pub trait Outstanding {
     /// The OQueue that publishes the number of outstanding requests (requests - replies).
-    fn outstanding_oqueue(&self) -> OQueueRef<isize> {
+    fn outstanding_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<isize>> {
         OQueueRef::new_anonymous(4)
     }
 }
@@ -45,8 +46,8 @@ impl OutstandingCounter {
     /// Spawn a new `OutstandingCounter` server which observes `request_oqueue` and
     /// `reply_oqueue`.
     pub fn spawn<T: 'static, U: 'static>(
-        request_oqueue: impl OQueueBase<T>,
-        reply_oqueue: impl OQueueBase<U>,
+        request_oqueue: impl OQueueBase<ReflessElementDescriptor<T>>,
+        reply_oqueue: impl OQueueBase<ReflessElementDescriptor<U>>,
     ) -> Result<Arc<Self>, OQueueError> {
         let server = Self::new_with(|orpc_internal, _| Self {
             orpc_internal,
@@ -90,5 +91,5 @@ impl OutstandingCounter {
 
 #[orpc_impl]
 impl Outstanding for OutstandingCounter {
-    fn outstanding_oqueue(&self) -> OQueueRef<isize>;
+    fn outstanding_oqueue(&self) -> OQueueRef<ReflessElementDescriptor<isize>>;
 }

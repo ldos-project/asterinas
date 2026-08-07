@@ -36,7 +36,7 @@ pub(crate) fn test_produce_direct(queue: ConsumableOQueueRef<TestMessage>) {
     assert!(queue.try_produce(test_message).is_ok());
 }
 
-pub(crate) fn test_produce_ref_direct(queue: OQueueRef<TestMessage>) {
+pub(crate) fn test_produce_ref_direct(queue: OQueueRef<ReflessElementDescriptor<TestMessage>>) {
     let observer = queue
         .attach_strong_observer(ObservationQuery::identity())
         .unwrap();
