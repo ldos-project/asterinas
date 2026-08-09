@@ -12,8 +12,10 @@ use log::warn;
 use serde::Serialize;
 
 use super::{
-    AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase as _,
-    export::{OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export},
+    AnyOQueueRef, ConsumableOQueueRef, OQueueBase as _,
+    export::{
+        OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
+    },
 };
 use crate::{
     orpc::{
@@ -157,22 +159,17 @@ where
 /// send values of type `T` into the queue by writing their CBOR encoding.
 ///
 /// Unlike [`register`]/[`register_with`], this is a user-to-kernel tunnel only; only a
-/// [`ConsumableOQueueRef`] can be passed. Attaches and returns the queue's consumer, guaranteeing
-/// one exists before the queue is reachable as producible.
+/// [`ConsumableOQueueRef`] can be passed.
 ///
 /// # Panics
 ///
-/// Panics if a live export already exists at `path` (see [`insert_export`]), or if a consumer
-/// cannot be attached.
+/// Panics if a live export already exists at `path` (see [`insert_export`]).
 pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOwned + 'static>(
     path: &Path,
     oqueue: &ConsumableOQueueRef<T>,
-) -> Consumer<T> {
+) {
     ensure_registered(path, &oqueue.as_any_oqueue());
     insert_export(path, make_produce_export(oqueue));
-    oqueue
-        .attach_consumer()
-        .expect("a freshly registered producible OQueue always allows attaching its consumer")
 }
 
 /// Inserts an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
@@ -284,7 +281,11 @@ fn get_type_map<'a, T: ?Sized + 'static>(
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{orpc::oqueue::ConsumableOQueueRef, path, path_pattern, prelude::*};
+    use crate::{
+        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef},
+        path, path_pattern,
+        prelude::*,
+    };
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())

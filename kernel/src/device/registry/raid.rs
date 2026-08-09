@@ -203,9 +203,9 @@ fn attach_weak_observers(
 /// Exposes each member's `bio_completion` OQueue over OQFS, at
 /// `/oqueues/raid1/bio_completion/<index>/`.
 ///
-/// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror of
-/// the whole [`BlockDeviceCompletionStats`] encoded as a fixed 5-element CBOR
-/// array (see its `Serialize` impl).
+/// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror
+/// of the whole [`BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
+/// field name).
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
@@ -227,7 +227,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
 /// A `Copy` projection of [`BlockDeviceCompletionStats`] exposing every field to userspace (see
 /// [`expose_bio_completion_oqueues`]).
 #[cfg(not(baseline_asterinas))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 struct BioCompletionStatsMessage {
     latency_us: u64,
     outstanding_pages: u32,
@@ -249,34 +249,6 @@ impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsMe
     }
 }
 
-/// Encodes as a definite-length CBOR array of 5 unsigned integers, in field-declaration order.
-///
-/// This is hand-written rather than `#[derive(Serialize)]` because a derive on a named-field
-/// struct calls `Serializer::serialize_struct`, which `minicbor_serde` (like most non-self-describing
-/// formats) renders as a map keyed by each field's name string, not a bare array — larger to encode
-/// and incompatible with the fixed-shape array the userspace `raid_policy_server` decodes. There is
-/// no serde container/field attribute that turns a named-field struct's derive into a positional
-/// array instead (only tuple structs get array encoding for free, which would mean dropping the
-/// field names used throughout this module for no additional compactness, since this manual impl
-/// already emits the minimal form: a bare array of raw integers with no key overhead).
-#[cfg(not(baseline_asterinas))]
-impl serde::Serialize for BioCompletionStatsMessage {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> core::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeTuple;
-
-        let mut tup = serializer.serialize_tuple(5)?;
-        tup.serialize_element(&self.latency_us)?;
-        tup.serialize_element(&self.outstanding_pages)?;
-        tup.serialize_element(&self.queue_len)?;
-        tup.serialize_element(&self.request_size_pages)?;
-        tup.serialize_element(&self.device_id)?;
-        tup.end()
-    }
-}
-
 /// Creates the RAID-1 selection request OQueue (`/oqueues/raid1/selection_request/`, kernel -> user)
 /// and decision OQueue (`/oqueues/raid1/decision/`, user -> kernel), returning the request producer
 /// and decision consumer handed to [`selection_policies::UserspacePolicy`].
@@ -286,7 +258,8 @@ fn setup_userspace_policy() -> (
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
     use ostd::orpc::oqueue::{
-        ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef, registry,
+        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
+        registry,
     };
 
     let request_path = path!(raid1.selection_request);
@@ -303,7 +276,10 @@ fn setup_userspace_policy() -> (
     let decision_path = path!(raid1.decision);
     let decision_oqueue =
         ConsumableOQueueRef::<u32>::new(SELECTION_QUEUE_CAPACITY, decision_path.clone());
-    let decision_consumer = registry::register_producible(&decision_path, &decision_oqueue);
+    registry::register_producible(&decision_path, &decision_oqueue);
+    let decision_consumer = decision_oqueue
+        .attach_consumer()
+        .expect("the RAID-1 decision OQueue always allows attaching its consumer");
 
     (request_producer, decision_consumer)
 }

@@ -16,7 +16,10 @@ name = "raid_policy_server"
 path = "src/main.rs"
 
 [dependencies]
-# Same `minicbor` major version as the kernel side (see
-# `kernel/comps/mariposa_data_capture/Cargo.toml`), so both ends of the OQFS wire format are
-# read/written by the same CBOR library.
-minicbor = { version = "2.2.2", features = ["std"] }
+# Both ends of the OQFS wire format declare their messages with `serde` derive and encode/decode
+# through `minicbor-serde`; `minicbor` is used directly only for stream framing (probing how many
+# bytes one complete CBOR record occupies), matching `produce_cbor` in
+# `ostd/src/orpc/oqueue/export.rs`. Versions match the root workspace's pins.
+minicbor = { version = "2.2", features = ["std"] }
+minicbor-serde = { version = "0.6", features = ["std"] }
+serde = { version = "1.0.192", features = ["derive"] }

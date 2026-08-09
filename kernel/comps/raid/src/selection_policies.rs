@@ -525,9 +525,8 @@ impl SelectionPolicy for LinnOSPlusPolicy {
 const MAX_REQUEST_CANDIDATES: usize = 8;
 
 /// Request sent to the userspace policy server: the admitted candidate member indices for the read
-/// being routed. Fixed-size to stay `Copy` (required for OQueue observation); encodes as a CBOR
-/// array of `candidate_count` followed by [`MAX_REQUEST_CANDIDATES`] unsigned integers.
-#[derive(Debug, Clone, Copy)]
+/// being routed. Fixed-size to stay `Copy` (required for OQueue observation).
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct SelectionRequestMessage {
     candidate_count: u32,
     candidates: [u32; MAX_REQUEST_CANDIDATES],
@@ -552,22 +551,6 @@ impl SelectionRequestMessage {
             candidate_count: count,
             candidates: wire,
         }
-    }
-}
-
-impl serde::Serialize for SelectionRequestMessage {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> core::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeTuple;
-
-        let mut tup = serializer.serialize_tuple(1 + MAX_REQUEST_CANDIDATES)?;
-        tup.serialize_element(&self.candidate_count)?;
-        for candidate in &self.candidates {
-            tup.serialize_element(candidate)?;
-        }
-        tup.end()
     }
 }
 

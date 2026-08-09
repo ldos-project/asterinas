@@ -391,7 +391,7 @@ impl<T: Send + 'static> OQueueImplementation<T> {
                 consumer(v);
             } else {
                 // No consumer attached, so `v` has nowhere to land; warn instead of dropping it
-                // silently (`registry::register_producible` normally prevents reaching this).
+                // silently.
                 warn!(
                     "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
                 );

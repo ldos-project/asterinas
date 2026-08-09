@@ -3,23 +3,24 @@
 //! `raid_policy_server`: a userspace RAID-1 read-selection policy over OQFS (`/oqueues`).
 //!
 //! In the background, this drains each RAID-1 member's `bio_completion` OQueue (exposed at
-//! `/oqueues/raid1/bio_completion/<index>/strong_observe` as a fixed 5-element CBOR array —
-//! `[latency_us, outstanding_pages, queue_len, request_size_pages, device_id]`, see
-//! `BioCompletionStatsWire` in `kernel/src/device/registry/raid.rs`), keeping the four most recent
-//! latency samples per member.
+//! `/oqueues/raid1/bio_completion/<index>/strong_observe` as a CBOR map keyed by field name —
+//! `{latency_us, outstanding_pages, queue_len, request_size_pages, device_id}`, see
+//! `BioCompletionStatsMessage` in `kernel/src/device/registry/raid.rs`), keeping the four most
+//! recent latency samples per member.
 //!
 //! Selection itself is kernel-triggered request/reply, run one at a time on the main thread: block
-//! reading one selection request (the admitted candidate indices, a fixed CBOR array; see
-//! `SelectionRequestWire` in `kernel/comps/raid/src/selection_policies.rs`) from
+//! reading one selection request (a CBOR map of the admitted candidate indices; see
+//! `SelectionRequestMessage` in `kernel/comps/raid/src/selection_policies.rs`) from
 //! `/oqueues/raid1/selection_request/strong_observe`, choose the candidate with the lowest recent
 //! average latency (round-robin among candidates with no data yet), and write exactly one reply
 //! (that member's index) to `/oqueues/raid1/decision/produce`. The kernel's `UserspacePolicy`
 //! (`kernel/comps/raid/src/selection_policies.rs`) produces one request and blocks for this reply
 //! on every read it needs to route.
 //!
-//! The values on both OQueues are plain CBOR arrays/unsigned integers (produced via
-//! `minicbor_serde` on the kernel side), so this program decodes and encodes them with the
-//! `minicbor` crate -- the same CBOR library the kernel side is built on.
+//! Both ends declare their messages with `serde` derive and encode/decode through `minicbor-serde`:
+//! the kernel serializes each record as a CBOR map keyed by field-name strings (with `candidates` a
+//! nested CBOR array), and this program deserializes it into a mirror struct. Each decision reply is
+//! a bare CBOR unsigned integer.
 
 use std::{
     collections::VecDeque,
@@ -43,60 +44,56 @@ const HISTORY_LEN: usize = 4;
 /// Size of the read buffer used when draining an OQueue stream file.
 const READ_CHUNK_SIZE: usize = 4096;
 
-/// Decodes a definite-length CBOR array of exactly `len` unsigned integers from the front of
-/// `bytes` into `out`.
-///
-/// Returns the number of bytes consumed, or `None` if `bytes` does not yet hold a complete
-/// record, or the record isn't a `len`-element array of unsigned integers (not a shape this
-/// stream ever produces). On `None`, `out` may have been partially written; callers must not read
-/// it.
-fn decode_uint_array(bytes: &[u8], out: &mut [u64]) -> Option<usize> {
-    let mut decoder = minicbor::decode::Decoder::new(bytes);
-    if decoder.array().ok()? != Some(out.len() as u64) {
-        return None;
-    }
-    for element in out.iter_mut() {
-        *element = decoder.u64().ok()?;
-    }
-    Some(decoder.position())
-}
-
-/// Number of elements in a `bio_completion` record: `[latency_us, outstanding_pages, queue_len,
-/// request_size_pages, device_id]` (see `BioCompletionStatsWire` in
-/// `kernel/src/device/registry/raid.rs`).
-const BIO_COMPLETION_RECORD_LEN: usize = 5;
-
-/// Decodes one `bio_completion` record (a fixed 5-element CBOR array of unsigned integers) from
-/// the front of `bytes`.
-///
-/// Returns `(elements, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete record.
-/// Only `elements[0]` (the latency, in microseconds) is used by [`choose_member`]'s average-latency
-/// policy today; the other fields are decoded and available for a future policy to use.
-fn decode_bio_completion_record(bytes: &[u8]) -> Option<([u64; BIO_COMPLETION_RECORD_LEN], usize)> {
-    let mut elements = [0u64; BIO_COMPLETION_RECORD_LEN];
-    let consumed = decode_uint_array(bytes, &mut elements)?;
-    Some((elements, consumed))
-}
-
 /// Maximum admitted candidate indices carried in one selection request; must match
 /// `MAX_REQUEST_CANDIDATES` in `kernel/comps/raid/src/selection_policies.rs`.
 const MAX_REQUEST_CANDIDATES: usize = 8;
 
-/// Elements in a `selection_request` record: a candidate count followed by
-/// [`MAX_REQUEST_CANDIDATES`] fixed slots.
-const SELECTION_REQUEST_RECORD_LEN: usize = 1 + MAX_REQUEST_CANDIDATES;
+#[derive(serde::Deserialize)]
+#[allow(dead_code)] // fields other than `latency_us` mirror the wire format but are unused today
+struct BioCompletionStats {
+    latency_us: u64,
+    outstanding_pages: u32,
+    queue_len: u32,
+    request_size_pages: u32,
+    device_id: u32,
+}
 
-/// Decodes one selection request record (a candidate count followed by fixed slots, all CBOR
-/// unsigned integers) from the front of `bytes`.
+#[derive(serde::Deserialize)]
+struct SelectionRequest {
+    candidate_count: u32,
+    candidates: [u32; MAX_REQUEST_CANDIDATES],
+}
+
+/// Frames and decodes one CBOR record of type `T` from the front of `bytes`, mirroring the
+/// `produce_cbor` method in `ostd/src/orpc/oqueue/export.rs`.
 ///
-/// Returns `(candidates, bytes_consumed)`, or `None` if `bytes` does not yet hold a complete
-/// record.
-fn decode_selection_request(bytes: &[u8]) -> Option<(Vec<u32>, usize)> {
-    let mut elements = [0u64; SELECTION_REQUEST_RECORD_LEN];
-    let consumed = decode_uint_array(bytes, &mut elements)?;
-    let count = (elements[0] as usize).min(MAX_REQUEST_CANDIDATES);
-    let candidates = elements[1..1 + count].iter().map(|&v| v as u32).collect();
-    Some((candidates, consumed))
+/// `minicbor` probes for one complete, well-formed CBOR item — the only job kept at the low
+/// `minicbor` level, because it distinguishes "not enough bytes yet" from "malformed", which the
+/// `minicbor-serde` layer alone cannot — and then `minicbor-serde` structurally decodes that item
+/// into `T`.
+///
+/// Returns `Ok(None)` when `bytes` does not yet hold a complete record (read more and retry from the
+/// same offset), `Ok(Some((value, bytes_consumed)))` on success, and `Err(..)` when the bytes form a
+/// complete record that is malformed or does not decode as `T` (a loud failure, not an infinite
+/// retry).
+fn decode_record<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<Option<(T, usize)>, Box<dyn std::error::Error>> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let mut probe = minicbor::decode::Decoder::new(bytes);
+    match probe.skip() {
+        Err(err) if err.is_end_of_input() => return Ok(None),
+        Err(err) => return Err(err.into()),
+        Ok(()) => {}
+    }
+    let item_len = probe.position();
+
+    let mut deserializer = minicbor_serde::Deserializer::new(&bytes[..item_len]);
+    let value = T::deserialize(&mut deserializer)?;
+    Ok(Some((value, item_len)))
 }
 
 /// Max attempts before giving up waiting for an OQueue path or directory to appear.
@@ -178,16 +175,26 @@ fn drain_bio_completion(index: usize, history: Arc<Mutex<VecDeque<u64>>>) {
         pending.extend_from_slice(&chunk[..read]);
 
         let mut consumed_total = 0;
-        while let Some((record, consumed)) = decode_bio_completion_record(&pending[consumed_total..])
-        {
-            consumed_total += consumed;
-            let latency_us = record[0];
+        loop {
+            let stats = match decode_record::<BioCompletionStats>(&pending[consumed_total..]) {
+                Ok(Some((stats, consumed))) => {
+                    consumed_total += consumed;
+                    stats
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    eprintln!(
+                        "raid_policy_server: member {index}'s bio_completion stream is malformed: {err}"
+                    );
+                    return;
+                }
+            };
 
             let mut history = history.lock().unwrap();
             if history.len() >= HISTORY_LEN {
                 history.pop_front();
             }
-            history.push_back(latency_us);
+            history.push_back(stats.latency_us);
         }
         pending.drain(..consumed_total);
     }
@@ -260,9 +267,17 @@ fn main() {
     loop {
         // Block for the next kernel-triggered selection request.
         let candidates = loop {
-            if let Some((candidates, consumed)) = decode_selection_request(&pending) {
-                pending.drain(..consumed);
-                break candidates;
+            match decode_record::<SelectionRequest>(&pending) {
+                Ok(Some((request, consumed))) => {
+                    pending.drain(..consumed);
+                    let count = (request.candidate_count as usize).min(MAX_REQUEST_CANDIDATES);
+                    break request.candidates[..count].to_vec();
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("raid_policy_server: selection request stream is malformed: {err}");
+                    return;
+                }
             }
             let read = match request_file.read(&mut chunk) {
                 Ok(0) => {
@@ -281,7 +296,11 @@ fn main() {
         let chosen = choose_member(&histories, &round_robin, &candidates);
 
         record.clear();
-        minicbor::encode(chosen as u64, &mut record).expect("encoding a u64 cannot fail");
+        serde::Serialize::serialize(
+            &(chosen as u64),
+            &mut minicbor_serde::Serializer::new(&mut record),
+        )
+        .expect("serializing a u64 cannot fail");
         if let Err(err) = decision_file.write_all(&record) {
             eprintln!("raid_policy_server: failed to write a decision: {err}");
             return;

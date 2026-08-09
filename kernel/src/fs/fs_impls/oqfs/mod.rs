@@ -384,7 +384,8 @@ mod tests {
             PathComponent::Index(0),
         ]);
         let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
-        let consumer = registry::register_producible(&path, &queue);
+        registry::register_producible(&path, &queue);
+        let consumer = queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
         let leaf = fs
@@ -455,7 +456,8 @@ mod tests {
             PathComponent::Index(0),
         ]);
         let produce_queue = ConsumableOQueueRef::<u32>::new(4, produce_path.clone());
-        let _consumer = registry::register_producible(&produce_path, &produce_queue);
+        registry::register_producible(&produce_path, &produce_queue);
+        let _consumer = produce_queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
         let root = fs.root_inode();
@@ -498,7 +500,10 @@ mod tests {
         for dir in [
             root.clone(),
             root.lookup("oqfstest").unwrap(),
-            root.lookup("oqfstest").unwrap().lookup("perm_observe").unwrap(),
+            root.lookup("oqfstest")
+                .unwrap()
+                .lookup("perm_observe")
+                .unwrap(),
         ] {
             let meta = dir.metadata();
             assert_eq!(meta.uid, Uid::new_root());

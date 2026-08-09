@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # Builds `raid_policy_server`, the userspace RAID-1 read-selection policy server that talks to the
-# kernel over OQFS (`/oqueues`), as a normal cargo package. `Cargo.lock` pins the crate's one
-# dependency (`minicbor`); `rustPlatform.buildRustPackage`'s `cargoLock.lockFile` vendors it from
-# crates.io via fixed-output derivations keyed by the lockfile's own per-package checksums, which
-# is how a cargo build gets its dependencies inside the network-less nix build sandbox.
+# kernel over OQFS (`/oqueues`), as a normal cargo package.
 { rustPlatform, glibc }:
 rustPlatform.buildRustPackage {
   pname = "raid-policy-server";
