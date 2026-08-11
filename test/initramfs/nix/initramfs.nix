@@ -1,6 +1,6 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
-, oqueue-reader, raid-policy-server, benchmark, conformance, regression
-, dnsServer, authorized_keys, enablePython }:
+, oqueue-reader, raid-policy-server, oqbench-server, benchmark, conformance
+, regression, dnsServer, authorized_keys, enablePython }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -61,6 +61,9 @@ in stdenvNoCC.mkDerivation {
     # The userspace RAID-1 selection policy server; always available, but only launched by `init`
     # when booted with `raid.selection=userspace`.
     cp ${raid-policy-server}/bin/raid_policy_server $out/usr/bin/raid_policy_server
+
+    # The userspace peer of the OQFS round-trip microbenchmark; only launched with `oqbench.enable`.
+    cp ${oqbench-server}/bin/oqbench_server $out/usr/bin/oqbench_server
 
     cp -r ${etc}/* $out/etc/
 

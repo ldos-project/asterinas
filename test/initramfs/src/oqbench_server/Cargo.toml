@@ -1,0 +1,17 @@
+# Standalone userspace tool, its own workspace root so it isn't swept into the root workspace.
+[workspace]
+
+[package]
+name = "oqbench_server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[[bin]]
+name = "oqbench_server"
+path = "src/main.rs"
+
+[dependencies]
+# Same `minicbor` major version as the kernel side, so both ends share the CBOR wire format.
+minicbor = { version = "2.2.2", features = ["std"] }
