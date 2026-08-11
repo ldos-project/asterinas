@@ -38,9 +38,13 @@ pub(super) struct MetadataInode {
 pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
     let oqueue_fs = fs.upgrade().unwrap();
     let ino = oqueue_fs.alloc_id();
+    // Root-only, like every other OQFS inode: `Metadata::new_file` always sets the owner to root,
+    // so owner-only bits mean only root can read this. The whole filesystem is restricted, not
+    // just the data files -- a world-readable `metadata.yaml` would let an unprivileged process
+    // enumerate the message type of every exported OQueue.
     let metadata = Metadata::new_file(
         ino,
-        mkmod!(a+r),
+        mkmod!(u+r),
         BLOCK_SIZE,
         oqueue_fs.sb().container_dev_id,
     );

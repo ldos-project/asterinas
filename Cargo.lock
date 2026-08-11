@@ -308,6 +308,7 @@ dependencies = [
  "device-id",
  "log",
  "ostd",
+ "serde",
  "snafu",
  "spin",
 ]

@@ -341,6 +341,11 @@ impl<T: ?Sized + 'static> OQueueImplementation<T> {
             oqueue: self.clone(),
         })
     }
+
+    /// True if at least one strong or weak observer is currently attached.
+    pub(super) fn has_observers(&self) -> bool {
+        !self.inner.lock().observer_ring_buffers.is_empty()
+    }
 }
 
 impl<T: Send + 'static> OQueueImplementation<T> {
@@ -384,6 +389,12 @@ impl<T: Send + 'static> OQueueImplementation<T> {
                 assert!(v.is_none());
             } else if let Some(consumer) = &inner.inline_consumer {
                 consumer(v);
+            } else {
+                // No consumer attached, so `v` has nowhere to land; warn instead of dropping it
+                // silently.
+                warn!(
+                    "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
+                );
             }
             drop(inner);
 

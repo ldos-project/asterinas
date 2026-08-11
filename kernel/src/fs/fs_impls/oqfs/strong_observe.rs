@@ -66,9 +66,12 @@ pub(super) struct StrongObserveInode {
 pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
     let oqueue_fs = fs.upgrade().unwrap();
     let ino = oqueue_fs.alloc_id();
+    // Security is enforced by permissions rather than by the export's direction: `strong_observe`
+    // and `produce` files are both owner-only, and `Metadata::new_file` always sets the owner to
+    // root, so only root (or root-owned processes) can open either.
     let metadata = Metadata::new_file(
         ino,
-        mkmod!(a+r),
+        mkmod!(u+r),
         BLOCK_SIZE,
         oqueue_fs.sb().container_dev_id,
     );

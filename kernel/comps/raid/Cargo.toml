@@ -12,6 +12,7 @@ aster-virtio = { workspace = true }
 aster-time = { workspace = true }
 device-id = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
 snafu = { workspace = true }
 spin = { workspace = true }
 

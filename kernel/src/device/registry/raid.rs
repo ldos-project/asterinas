@@ -18,6 +18,8 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 #[cfg(not(baseline_asterinas))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
+#[cfg(not(baseline_asterinas))]
+use ostd::path;
 use spin::Once;
 
 use crate::{
@@ -40,9 +42,7 @@ const RAID_MEMBERS_PARAM: &str = "raid.members";
 /// The kernel command-line parameter naming the read-selection policy.
 ///
 /// Set via `raid.selection=<name>` where `<name>` is one of `roundrobin`
-/// (default), `linnos`, `linnos_plus`, or `decision_tree`. Choosing the policy
-/// at runtime (rather than a build-time `cfg`) keeps every policy compiled in a
-/// single build, so none can silently bitrot.
+/// (default), `linnos`, `linnos_plus`, `decision_tree`, or `userspace`.
 #[cfg(not(baseline_asterinas))]
 const RAID_SELECTION_PARAM: &str = "raid.selection";
 
@@ -78,6 +78,10 @@ fn setup_raid1_device() -> Result<()> {
 
     #[cfg(not(baseline_asterinas))]
     let init_result = {
+        // Expose the members' completion streams under `/oqueues` regardless of which selection
+        // policy is configured, so the same observation surface is available in every boot.
+        expose_bio_completion_oqueues(&members);
+
         // The read-selection policy is chosen at runtime via the `raid.selection`
         // kernel parameter (default: round-robin). Every policy is compiled
         // unconditionally, so a change to one cannot silently bitrot another and
@@ -100,6 +104,14 @@ fn setup_raid1_device() -> Result<()> {
                 members.clone(),
                 attach_weak_observers(&members),
             )?,
+            "userspace" => {
+                let (request_producer, decision_consumer) = setup_userspace_policy();
+                selection_policies::UserspacePolicy::new(
+                    members.clone(),
+                    request_producer,
+                    decision_consumer,
+                )?
+            }
             other => {
                 warn!("[raid] unknown raid.selection '{other}'; falling back to round-robin");
                 selection_policies::RoundRobinPolicy::new(members.clone())?
@@ -187,6 +199,97 @@ fn attach_weak_observers(
         })
         .collect()
 }
+
+/// Exposes each member's `bio_completion` OQueue over OQFS, at
+/// `/oqueues/raid1/bio_completion/<index>/`.
+///
+/// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror
+/// of the whole [`BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
+/// field name).
+#[cfg(not(baseline_asterinas))]
+fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
+    use aster_block::bio::BlockDeviceCompletionStats;
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+    use ostd::orpc::oqueue::{OQueueBase as _, registry};
+
+    for (index, member) in members.iter().enumerate() {
+        let virtio = member
+            .downcast_ref::<VirtIoBlockDevice>()
+            .expect("RAID member must be a VirtIoBlockDevice");
+        registry::register_with(
+            &path!(raid1.bio_completion[{ index }]),
+            &virtio.bio_completion_oqueue().as_any_oqueue(),
+            |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
+        );
+    }
+}
+
+/// A `Copy` projection of [`BlockDeviceCompletionStats`] exposing every field to userspace (see
+/// [`expose_bio_completion_oqueues`]).
+///
+/// Mirrored by `BioCompletionStats` in `test/initramfs/src/raid_policy_server/src/main.rs`.
+#[cfg(not(baseline_asterinas))]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+struct BioCompletionStatsMessage {
+    latency_us: u64,
+    outstanding_pages: u32,
+    queue_len: u32,
+    request_size_pages: u32,
+    device_id: u32,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsMessage {
+    fn from(stats: aster_block::bio::BlockDeviceCompletionStats) -> Self {
+        Self {
+            latency_us: stats.latency.as_micros() as u64,
+            outstanding_pages: stats.outstanding_pages,
+            queue_len: stats.queue_len,
+            request_size_pages: stats.request_size_pages,
+            device_id: stats.device_id,
+        }
+    }
+}
+
+/// Creates the RAID-1 selection request OQueue (`/oqueues/raid1/selection_request/`, kernel -> user)
+/// and decision OQueue (`/oqueues/raid1/decision/`, user -> kernel), returning the request producer
+/// and decision consumer handed to [`selection_policies::UserspacePolicy`].
+#[cfg(not(baseline_asterinas))]
+fn setup_userspace_policy() -> (
+    ostd::orpc::oqueue::RefProducer<selection_policies::SelectionRequestMessage>,
+    ostd::orpc::oqueue::Consumer<u32>,
+) {
+    use ostd::orpc::oqueue::{
+        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
+        registry,
+    };
+
+    let request_path = path!(raid1.selection_request);
+    let request_oqueue = OQueueRef::<selection_policies::SelectionRequestMessage>::new(
+        SELECTION_QUEUE_CAPACITY,
+        request_path.clone(),
+    );
+    // Register the request queue so user space policy server can observe requests.
+    registry::register(&request_path, &request_oqueue.as_any_oqueue());
+    let request_producer = request_oqueue
+        .attach_ref_producer()
+        .expect("the RAID-1 selection request OQueue always allows a ref producer");
+
+    let decision_path = path!(raid1.decision);
+    let decision_oqueue =
+        ConsumableOQueueRef::<u32>::new(SELECTION_QUEUE_CAPACITY, decision_path.clone());
+    registry::register_producible(&decision_path, &decision_oqueue);
+    let decision_consumer = decision_oqueue
+        .attach_consumer()
+        .expect("the RAID-1 decision OQueue always allows attaching its consumer");
+
+    (request_producer, decision_consumer)
+}
+
+/// Capacity of the RAID-1 selection request and decision OQueues: one usable slot, since at most one
+/// request/reply exchange is ever in flight.
+#[cfg(not(baseline_asterinas))]
+const SELECTION_QUEUE_CAPACITY: usize = 2;
 
 #[cfg(not(baseline_asterinas))]
 static HEIMDALL_BATCH_SIZE: AtomicU32 =
