@@ -10,6 +10,7 @@ use crate::{
 
 mod block;
 pub(super) mod char;
+mod oqbench;
 mod raid;
 
 pub(super) fn init_in_first_kthread() {
@@ -17,6 +18,9 @@ pub(super) fn init_in_first_kthread() {
     // By this time, all the block devices are registeded and spawned,
     // including the RAID member devices. So we can spawn the RAID thread now.
     raid::init_in_first_kthread();
+    // Start the OQFS round-trip microbenchmark's kernel driver on its own thread; inert unless
+    // enabled with `oqbench.enable`.
+    oqbench::init_in_first_kthread();
 }
 
 pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {

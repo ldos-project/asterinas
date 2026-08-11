@@ -18,6 +18,7 @@ aster-input.workspace = true
 aster-logger.workspace = true
 aster-network.workspace = true
 aster-nvme.workspace = true
+aster-oqueue-roundtrip-bench.workspace = true
 aster-raid.workspace = true
 aster-rights.workspace = true
 aster-rights-proc.workspace = true

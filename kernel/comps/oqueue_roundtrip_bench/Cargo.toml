@@ -1,0 +1,15 @@
+[package]
+name = "aster-oqueue-roundtrip-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# OQueue/ORPC transport, the TSC time base, and `power::poweroff`.
+ostd = { workspace = true }
+# `println!` to the console devices that `qemu.log` captures (unlike `ostd::early_print`).
+aster-logger = { workspace = true }
+# Registers the `oqbench.*` kernel-command-line parameters.
+aster-cmdline = { workspace = true }
+
+[lints]
+workspace = true
