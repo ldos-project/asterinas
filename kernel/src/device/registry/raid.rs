@@ -226,6 +226,8 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
 
 /// A `Copy` projection of [`BlockDeviceCompletionStats`] exposing every field to userspace (see
 /// [`expose_bio_completion_oqueues`]).
+///
+/// Mirrored by `BioCompletionStats` in `test/initramfs/src/raid_policy_server/src/main.rs`.
 #[cfg(not(baseline_asterinas))]
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 struct BioCompletionStatsMessage {

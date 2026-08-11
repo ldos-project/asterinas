@@ -526,6 +526,8 @@ const MAX_REQUEST_CANDIDATES: usize = 8;
 
 /// Request sent to the userspace policy server: the admitted candidate member indices for the read
 /// being routed. Fixed-size to stay `Copy` (required for OQueue observation).
+///
+/// Mirrored by `SelectionRequest` in `test/initramfs/src/raid_policy_server/src/main.rs`.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct SelectionRequestMessage {
     candidate_count: u32,

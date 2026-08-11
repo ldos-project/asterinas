@@ -25,7 +25,7 @@
 use std::{
     collections::VecDeque,
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -48,6 +48,7 @@ const READ_CHUNK_SIZE: usize = 4096;
 /// `MAX_REQUEST_CANDIDATES` in `kernel/comps/raid/src/selection_policies.rs`.
 const MAX_REQUEST_CANDIDATES: usize = 8;
 
+/// Mirrors `BioCompletionStatsMessage` in `kernel/src/device/registry/raid.rs`.
 #[derive(serde::Deserialize)]
 #[allow(dead_code)] // fields other than `latency_us` mirror the wire format but are unused today
 struct BioCompletionStats {
@@ -58,6 +59,7 @@ struct BioCompletionStats {
     device_id: u32,
 }
 
+/// Mirrors `SelectionRequestMessage` in `kernel/comps/raid/src/selection_policies.rs`.
 #[derive(serde::Deserialize)]
 struct SelectionRequest {
     candidate_count: u32,
@@ -263,7 +265,6 @@ fn main() {
     let mut replied_first = false;
     let mut pending = Vec::new();
     let mut chunk = [0u8; READ_CHUNK_SIZE];
-    let mut record = Vec::new();
     loop {
         // Block for the next kernel-triggered selection request.
         let candidates = loop {
@@ -295,13 +296,12 @@ fn main() {
 
         let chosen = choose_member(&histories, &round_robin, &candidates);
 
-        record.clear();
-        serde::Serialize::serialize(
+        if let Err(err) = serde::Serialize::serialize(
             &(chosen as u64),
-            &mut minicbor_serde::Serializer::new(&mut record),
-        )
-        .expect("serializing a u64 cannot fail");
-        if let Err(err) = decision_file.write_all(&record) {
+            &mut minicbor_serde::Serializer::new(minicbor::encode::write::Writer::new(
+                &mut decision_file,
+            )),
+        ) {
             eprintln!("raid_policy_server: failed to write a decision: {err}");
             return;
         }
