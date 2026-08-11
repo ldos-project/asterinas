@@ -95,6 +95,32 @@ mod test {
     }
 
     #[ktest]
+    fn element_derive_with_type_param_no_lifetime() {
+        #[derive(Element)]
+        struct WithTypeParamNoLifetime<T: 'static> {
+            value: T,
+        }
+
+        assert_impl_all!(WithTypeParamNoLifetime<usize>: Element);
+
+        let queue = OQueueRef::<<WithTypeParamNoLifetime<u32> as Element>::Descriptor>::new(
+            4,
+            Path::test(),
+        );
+        let producer = queue.attach_ref_producer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParamNoLifetime<u32>| {
+                m.value
+            }))
+            .unwrap();
+
+        let value = 999u32;
+        producer.produce_ref(&WithTypeParamNoLifetime { value });
+        let observed = observer.strong_observe().unwrap();
+        assert_eq!(observed, 999);
+    }
+
+    #[ktest]
     fn element_derive_with_type_param() {
         #[derive(Element)]
         struct WithTypeParam<'a, T> {
