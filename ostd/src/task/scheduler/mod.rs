@@ -70,12 +70,13 @@ pub mod info;
 
 use core::time::Duration;
 
+use orpc_macros::Element;
 use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-use crate::orpc::oqueue::{RefProducer, ReflessElementDescriptor};
+use crate::orpc::oqueue::ElementRefProducer;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
@@ -130,14 +131,12 @@ pub(crate) fn init() {
 }
 
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<ReflessElementDescriptor<SchedulingEvent>>> =
-    Once::new();
+static SCHEDULING_EVENT_PRODUCER: Once<ElementRefProducer<SchedulingEvent>> = Once::new();
 
 /// Get the producer handle for the scheduling event OQueue. This will panic if called before
 /// [`init()`].
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-fn get_scheduling_event_producer() -> &'static RefProducer<ReflessElementDescriptor<SchedulingEvent>>
-{
+fn get_scheduling_event_producer() -> &'static ElementRefProducer<SchedulingEvent> {
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
 
@@ -191,6 +190,7 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
+#[cfg_attr(not(baseline_asterinas), derive(Element))]
 pub struct SchedulingEvent {
     /// The task
     pub task: Arc<Task>,

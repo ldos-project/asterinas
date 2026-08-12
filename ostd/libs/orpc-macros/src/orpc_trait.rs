@@ -43,7 +43,7 @@ pub fn orpc_trait_macro_impl(
                     }
                     None => {
                         errors.push(quote_spanned! { trait_item_method.sig.output.span() =>
-                            compile_error!("ORPC methods must return either a Result or an OQueueRef")
+                            compile_error!("ORPC methods must return either a Result or an ElementOQueueRef")
                         });
                     }
                 }

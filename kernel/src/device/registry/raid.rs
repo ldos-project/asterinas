@@ -19,7 +19,7 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 #[cfg(not(baseline_asterinas))]
-use ostd::{orpc::oqueue::ReflessElementDescriptor, path};
+use ostd::{orpc::oqueue::OQueueRef, path};
 use spin::Once;
 
 use crate::{
@@ -256,14 +256,11 @@ impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsMe
 /// and decision consumer handed to [`selection_policies::UserspacePolicy`].
 #[cfg(not(baseline_asterinas))]
 fn setup_userspace_policy() -> (
-    ostd::orpc::oqueue::RefProducer<
-        ReflessElementDescriptor<selection_policies::SelectionRequestMessage>,
-    >,
+    ostd::orpc::oqueue::ElementRefProducer<selection_policies::SelectionRequestMessage>,
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
     use ostd::orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
-        registry,
+        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, registry,
     };
 
     let request_path = path!(raid1.selection_request);

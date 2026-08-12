@@ -7,37 +7,48 @@ use core::marker::PhantomData;
 pub use orpc_macros::Element;
 
 /// A trait for types which encapsulate a element type [`Self::Element`]. This wrapper is required
-/// for types with lifetime parameters. Most normal types can use [`ReflessElementDescriptor<T>`].
+/// for types with lifetime parameters. You should never have to implement this trait yourself. It
+/// will be generated automatically if you derive [`Element`].
 ///
-/// This cannot simply be [`Self::Element`], because that may take a lifetime parameter and Rust
-/// does not support passing type constructors (generic types without their argument bound) as type
-/// parameters.
+/// Most normal types can use [`LifetimelessElementDescriptor<T>`].
+///
+/// This type cannot be replaced with [`Self::Element`] itself, because that takes a lifetime
+/// parameter and Rust does not support passing type constructors (generic types without their
+/// argument bound) as type parameters.
 pub trait ElementDescriptor: 'static {
     /// The element type, which may depend on a lifetime parameter.
     type Element<'a>: ?Sized;
 }
 
-/// An element which can be placed in an OQueue.
+/// An element which can be placed in an OQueue. This trait should always be handled by a generic
+/// impl or derived.
 pub trait Element {
     /// The descriptor for this element type.
     ///
-    /// For many types this will be [`ReflessElementDescriptor<Self>`]. For types with lifetime
+    /// For many types this will be [`LifetimelessElementDescriptor<Self>`]. For types with lifetime
     /// parameters, this will be a special descriptor type which carries the universally quantified
     /// element type as [`Element`](`ElementDescriptor::Element`).
     type Descriptor: ElementDescriptor;
 }
 
-/// A [`ElementDescriptor`] for types without a lifetime parameter.
-pub struct ReflessElementDescriptor<T: ?Sized> {
+/// A [`ElementDescriptor`] for types without a lifetime parameter. This is by far the most common
+/// descriptor.
+pub struct LifetimelessElementDescriptor<T: ?Sized> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: ?Sized + 'static> ElementDescriptor for ReflessElementDescriptor<T> {
+impl<T: ?Sized + 'static> ElementDescriptor for LifetimelessElementDescriptor<T> {
     type Element<'a> = T;
 }
 
+// Impls of ElementDescriptor for standard types.
+
 impl<T: Copy + 'static> Element for T {
-    type Descriptor = ReflessElementDescriptor<T>;
+    type Descriptor = LifetimelessElementDescriptor<Self>;
+}
+
+impl<T: Copy + 'static> Element for [T] {
+    type Descriptor = LifetimelessElementDescriptor<Self>;
 }
 
 #[cfg(ktest)]
@@ -48,8 +59,8 @@ mod test {
     use super::*;
     use crate::orpc::{
         oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
-            ObservationQuery,
+            ConsumableOQueue as _, ConsumableOQueueRef, ElementOQueueRef, OQueue as _,
+            OQueueBase as _, ObservationQuery,
         },
         path::Path,
     };
@@ -82,7 +93,7 @@ mod test {
         assert_impl_all!(OneLifetime<'static>: Element);
         assert_impl_all!(OneLifetimeDescriptor: ElementDescriptor);
 
-        let queue = OQueueRef::<OneLifetimeDescriptor>::new(4, Path::test());
+        let queue = ElementOQueueRef::<OneLifetime>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &OneLifetime| *m.value))
@@ -103,10 +114,7 @@ mod test {
 
         assert_impl_all!(WithTypeParamNoLifetime<usize>: Element);
 
-        let queue = OQueueRef::<<WithTypeParamNoLifetime<u32> as Element>::Descriptor>::new(
-            4,
-            Path::test(),
-        );
+        let queue = ElementOQueueRef::<WithTypeParamNoLifetime<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParamNoLifetime<u32>| {
@@ -129,7 +137,7 @@ mod test {
 
         assert_impl_all!(WithTypeParamDescriptor<u32>: ElementDescriptor);
 
-        let queue = OQueueRef::<WithTypeParamDescriptor<u32>>::new(4, Path::test());
+        let queue = ElementOQueueRef::<WithTypeParam<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParam<u32>| *m.value))
@@ -153,7 +161,7 @@ mod test {
 
         assert_impl_all!(WithWhereClauseDescriptor<u32>: ElementDescriptor);
 
-        let queue = OQueueRef::<WithWhereClauseDescriptor<u32>>::new(4, Path::test());
+        let queue = ElementOQueueRef::<WithWhereClause<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithWhereClause<u32>| *m.value))
@@ -175,7 +183,7 @@ mod test {
 
         assert_impl_all!(MultiTypeParamsDescriptor<u32, usize>: ElementDescriptor);
 
-        let queue = OQueueRef::<MultiTypeParamsDescriptor<u32, usize>>::new(4, Path::test());
+        let queue = ElementOQueueRef::<MultiTypeParams<u32, usize>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &MultiTypeParams<u32, usize>| {

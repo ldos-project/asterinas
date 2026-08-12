@@ -9,7 +9,7 @@ use aster_block::{BlockDevice, bio::BlockDeviceCompletionStats};
 use ostd::{
     Error,
     orpc::{
-        oqueue::{Consumer, RefProducer, ReflessElementDescriptor},
+        oqueue::{Consumer, ElementRefProducer},
         orpc_server,
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
@@ -562,7 +562,7 @@ const REPLY_TIMEOUT_MS: u64 = 200;
 /// The endpoints of one synchronous request/reply exchange, kept under one lock so at most one
 /// exchange is in flight at a time.
 struct SelectionChannel {
-    request_producer: RefProducer<ReflessElementDescriptor<SelectionRequestMessage>>,
+    request_producer: ElementRefProducer<SelectionRequestMessage>,
     reply_consumer: Consumer<u32>,
     reply_timeout: Arc<TimeoutBlocker>,
     block_on_many: BlockOnMany,
@@ -592,7 +592,7 @@ impl core::fmt::Debug for UserspacePolicy {
 impl UserspacePolicy {
     pub fn new(
         members: Vec<Arc<dyn BlockDevice>>,
-        request_producer: RefProducer<ReflessElementDescriptor<SelectionRequestMessage>>,
+        request_producer: ElementRefProducer<SelectionRequestMessage>,
         reply_consumer: Consumer<u32>,
     ) -> Result<Arc<Self>, Error> {
         let channel = SelectionChannel {

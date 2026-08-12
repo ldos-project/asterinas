@@ -27,7 +27,7 @@ use syn::{
 /// variant](https://docs.rs/snafu/latest/snafu/derive.Snafu.html#delegating-to-the-underlying-error) for
 /// `orpc::errors::RPCError`.)
 ///
-/// `fn name(&self) -> OQueueRef<Msg>` defines an OQueue which is exported from the server to be directly used by
+/// `fn name(&self) -> ElementOQueueRef<Msg>` defines an OQueue which is exported from the server to be directly used by
 /// clients of the server. These methods must have a "default implementation" which returns a new OQueue of the correct
 /// type. This will be run only when a server is constructed. This requirement will be relaxed once the OQueue
 /// implementation matures to the point that there is a universal OQueue implementation.
@@ -41,7 +41,7 @@ use syn::{
 /// #[orpc_trait]
 /// trait Counter {
 ///     fn atomic_incr(&self, additional: AdditionalAmount) -> Result<usize, RPCError>;
-///     fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount> {
+///     fn incr_oqueue(&self) -> ElementOQueueRef<AdditionalAmount> {
 ///         LockingQueue::new(8)
 ///     }
 /// }
@@ -119,7 +119,7 @@ pub fn orpc_server(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///         Ok(v + addend)
 ///     }
 ///
-///     fn incr_oqueue(&self) -> OQueueRef<AdditionalAmount>;
+///     fn incr_oqueue(&self) -> ElementOQueueRef<AdditionalAmount>;
 /// }
 /// ```
 ///
@@ -265,7 +265,7 @@ pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
 /// Derive macro for the `Element` trait.
 ///
 /// This macro generates an `ElementDescriptor` for types with lifetime parameters,
-/// or uses `ReflessElementDescriptor` for types without lifetime parameters.
+/// or uses `LifetimelessElementDescriptor` for types without lifetime parameters.
 #[proc_macro_derive(Element)]
 pub fn element_derive(input: TokenStream) -> TokenStream {
     element::element_derive(input)

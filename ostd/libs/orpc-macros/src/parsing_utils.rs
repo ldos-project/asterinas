@@ -9,7 +9,7 @@ pub(crate) enum ORPCMethodKind<'a> {
         #[expect(unused)]
         return_type: &'a Type,
     },
-    /// An accessor method for an OQueue. This returns some `OQueueRef<T>`.
+    /// An accessor method for an OQueue. This returns some `ElementOQueueRef<T>`.
     OQueue { return_type: &'a Type },
 }
 
@@ -24,7 +24,7 @@ impl ORPCMethodKind<'_> {
             let name = path_segment.ident.to_string();
             return match name.as_str() {
                 "Result" => Some(ORPCMethodKind::Orpc { return_type: typ }),
-                "OQueueRef" | "ConsumableOQueueRef" => {
+                "OQueueRef" | "ElementOQueueRef" | "ConsumableOQueueRef" => {
                     Some(ORPCMethodKind::OQueue { return_type: typ })
                 }
                 _ => None,

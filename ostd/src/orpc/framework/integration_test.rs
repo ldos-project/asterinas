@@ -26,8 +26,8 @@ mod test {
                 spawn_thread,
             },
             oqueue::{
-                ConsumableOQueue, ConsumableOQueueRef, Consumer, OQueueBase, generic_test,
-                query::ObservationQuery,
+                ConsumableOQueue, ConsumableOQueueRef, Consumer, OQueueBase, ObservationQuery,
+                generic_test,
             },
         },
         prelude::Arc,

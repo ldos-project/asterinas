@@ -228,11 +228,11 @@ fn first_kthread() {
         .get_module_arg_by_name::<bool>("scheduler", "capture_data")
         .unwrap_or(false)
     {
-        use ostd::orpc::oqueue::ReflessElementDescriptor;
+        use ostd::orpc::oqueue::LifetimelessElementDescriptor;
 
-        if let Some(oqueue) =
-            lookup_by_path::<ReflessElementDescriptor<SchedulingEvent>>(&path!(scheduler.events))
-        {
+        if let Some(oqueue) = lookup_by_path::<LifetimelessElementDescriptor<SchedulingEvent>>(
+            &path!(scheduler.events),
+        ) {
             #[derive(Debug, Clone, Copy, Serialize)]
             struct KernelSchedulingEvent {
                 timestamp: Instant,
@@ -277,7 +277,6 @@ fn first_kthread() {
         .unwrap_or(false)
     {
         use aster_block::bio::{BlockDeviceCompletionStats, SubmittedBio};
-        use ostd::orpc::oqueue::ReflessElementDescriptor;
 
         use crate::data_capture::new_data_capture_data_file_by_type;
 
@@ -287,32 +286,40 @@ fn first_kthread() {
             timestamp: Option<Instant>,
             context: EventContext,
         }
-        new_data_capture_data_file_by_type(path!(io.block.submitted), 500 * 1024 * 1024, || {
-            ObservationQuery::<ReflessElementDescriptor<_>, _>::new(|e: &SubmittedBio| {
-                let sid_range = e.sid_range();
-                let context = EventContext::new();
-                SubmittedBioEvent {
-                    byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
-                    timestamp: e.submission_time().map(|t| t.into()),
-                    context,
-                }
-            })
-        });
+        new_data_capture_data_file_by_type::<SubmittedBio, _>(
+            path!(io.block.submitted),
+            500 * 1024 * 1024,
+            || {
+                ObservationQuery::new(|e: &SubmittedBio| {
+                    let sid_range = e.sid_range();
+                    let context = EventContext::new();
+                    SubmittedBioEvent {
+                        byte_range: (sid_range.start.to_offset(), sid_range.end.to_offset()),
+                        timestamp: e.submission_time().map(|t| t.into()),
+                        context,
+                    }
+                })
+            },
+        );
 
         #[derive(Clone, Copy, Serialize)]
         struct BlockDeviceCompletionEvent {
             stats: BlockDeviceCompletionStats,
             context: EventContext,
         }
-        new_data_capture_data_file_by_type(path!(io.block.completion), 500 * 1024 * 1024, || {
-            ObservationQuery::<ReflessElementDescriptor<_>, _>::new(|stats| {
-                let context = EventContext::new();
-                BlockDeviceCompletionEvent {
-                    stats: *stats,
-                    context,
-                }
-            })
-        });
+        new_data_capture_data_file_by_type::<BlockDeviceCompletionStats, _>(
+            path!(io.block.completion),
+            500 * 1024 * 1024,
+            || {
+                ObservationQuery::new(|stats| {
+                    let context = EventContext::new();
+                    BlockDeviceCompletionEvent {
+                        stats: *stats,
+                        context,
+                    }
+                })
+            },
+        );
     }
 }
 

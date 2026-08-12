@@ -9,7 +9,7 @@ use crate::parsing_utils::generics_to_phantom;
 /// Derive macro for the [`Element`] trait.
 ///
 /// This macro generates an [`ElementDescriptor`] for types with lifetime parameters, or uses
-/// [`ReflessElementDescriptor`] for types without lifetime parameters. These are used to provide
+/// [`LifetimelessElementDescriptor`] for types without lifetime parameters. These are used to provide
 /// [`Element::Descriptor`]
 ///
 /// # Examples
@@ -48,10 +48,10 @@ pub fn element_derive(input: TokenStream) -> TokenStream {
     // Generate code based on lifetime count
     let expanded = match lifetime_count {
         0 => {
-            // No lifetimes: use ReflessElementDescriptor
+            // No lifetimes: use LifetimelessElementDescriptor
             quote! {
                 impl #impl_generics ::ostd::orpc::oqueue::Element for #struct_ident #ty_generics #where_clause {
-                    type Descriptor = ::ostd::orpc::oqueue::ReflessElementDescriptor<#struct_ident #ty_generics>;
+                    type Descriptor = ::ostd::orpc::oqueue::LifetimelessElementDescriptor<#struct_ident #ty_generics>;
                 }
             }
         }

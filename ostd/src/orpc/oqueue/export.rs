@@ -24,9 +24,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, ElementDescriptor, OQueueBase as _,
-    OQueueError, ObservationQuery, ReflessElementDescriptor, RevokedSnafu, StrongObserver,
-    UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
+    AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, ElementDescriptor,
+    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
+    StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -129,7 +129,7 @@ pub trait CborStrongObserve: Send {
 /// The observed type `U` (identity or a projection) is erased inside the closure.
 type AttachStrongObserveFn<T> = Box<
     dyn Fn(
-            &AnyOQueueRef<ReflessElementDescriptor<T>>,
+            &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
         ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
         + Send
         + Sync,
@@ -138,7 +138,9 @@ type AttachStrongObserveFn<T> = Box<
 /// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProducer`]. Only
 /// present on exports registered via [`super::registry::register_producible`].
 type AttachProducerFn<T> = Box<
-    dyn Fn(&AnyOQueueRef<ReflessElementDescriptor<T>>) -> Result<Box<dyn CborProducer>, OQueueError>
+    dyn Fn(
+            &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+        ) -> Result<Box<dyn CborProducer>, OQueueError>
         + Send
         + Sync,
 >;
@@ -148,7 +150,7 @@ type AttachProducerFn<T> = Box<
 /// `observe` and `produce` are held separately (rather than through a direction discriminant) so
 /// an export can carry either, or both, independently of one another.
 pub(super) struct OQueueExportHandle<T: 'static> {
-    weak: WeakAnyOQueueRef<ReflessElementDescriptor<T>>,
+    weak: WeakAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     type_name: &'static str,
     observe: Option<AttachStrongObserveFn<T>>,
     produce: Option<AttachProducerFn<T>>,
@@ -236,7 +238,7 @@ where
 /// whole message is streamed via the identity projection (so the message type's derived
 /// `Serialize` is used).
 pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
-    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
 ) -> OQueueExportHandle<T> {
     OQueueExportHandle {
         weak: oqueue.downgrade(),
@@ -252,7 +254,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 /// messages are streamed through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is
 /// the `Copy + Serialize` value placed in the stream.
 pub(super) fn make_export_with<T, U, F>(
-    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
     project: F,
 ) -> OQueueExportHandle<T>
 where

@@ -79,7 +79,7 @@ mod tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::oqueue::{OQueue, OQueueBase, OQueueRef, ObservationQuery, ReflessElementDescriptor},
+        orpc::oqueue::{ElementOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
         path,
         prelude::*,
     };
@@ -104,7 +104,7 @@ mod tests {
         let server = builder.build();
 
         // Attach an OQueue to the capture
-        let oqueue: OQueueRef<ReflessElementDescriptor<u32>> = OQueueRef::new(4, path.clone());
+        let oqueue: ElementOQueueRef<u32> = OQueueRef::new(4, path.clone());
         let attachment = ObserverRegistration {
             path,
             observer: oqueue

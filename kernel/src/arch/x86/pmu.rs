@@ -8,9 +8,7 @@ use ostd::{
     new_server,
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
-        oqueue::{
-            OQueue, OQueueBase, OQueueRef, ReflessElementDescriptor, query::ObservationQuery,
-        },
+        oqueue::{ElementOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
         orpc_server,
     },
     path,
@@ -34,7 +32,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
 pub struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<ReflessElementDescriptor<DtlbMisses>>,
+    dtlb_miss_count_oqueue: ElementOQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {

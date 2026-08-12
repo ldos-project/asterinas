@@ -12,14 +12,16 @@ use log::warn;
 use serde::Serialize;
 
 use super::{
-    AnyOQueueRef, ConsumableOQueueRef, OQueueBase as _,
+    ConsumableOQueueRef, OQueueBase as _,
     export::{
         OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
     },
 };
 use crate::{
     orpc::{
-        oqueue::{ElementDescriptor, ReflessElementDescriptor, WeakAnyOQueueRef},
+        oqueue::{
+            AnyOQueueRef, ElementDescriptor, LifetimelessElementDescriptor, WeakAnyOQueueRef,
+        },
         path::{Path, PathPattern},
     },
     sync::{Mutex, MutexGuard},
@@ -135,7 +137,7 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
 /// exported.
 pub fn register<T: Copy + Send + Serialize + 'static>(
     path: &Path,
-    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
 ) {
     ensure_registered(path, oqueue);
     insert_export(path, make_export(oqueue));
@@ -149,7 +151,7 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
 /// extracted from it.
 pub fn register_with<T, U, F>(
     path: &Path,
-    oqueue: &AnyOQueueRef<ReflessElementDescriptor<T>>,
+    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
     project: F,
 ) where
     T: Send + 'static,
@@ -290,7 +292,7 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 mod test {
     use super::*;
     use crate::{
-        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, ReflessElementDescriptor},
+        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, LifetimelessElementDescriptor},
         path, path_pattern,
         prelude::*,
     };
@@ -304,8 +306,8 @@ mod test {
         let path = path!(test.queue[1]);
         let _queue = new_oqueue(&path);
 
-        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
-        assert!(lookup_by_path::<ReflessElementDescriptor<i32>>(&path).is_none());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<i32>>(&path).is_none());
     }
 
     #[ktest(expect_redundant_test_prefix)]
@@ -319,23 +321,23 @@ mod test {
         let _queue3 = new_oqueue(&path3);
 
         let results =
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.b[*]));
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(&path_pattern!(a.b[*]));
         assert_eq!(results.len(), 2);
 
         let results =
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.c[*]));
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(&path_pattern!(a.c[*]));
         assert_eq!(results.len(), 1);
 
         let results =
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[*]));
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(&path_pattern!(a.*[*]));
         assert_eq!(results.len(), 3);
 
         let results =
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[1]));
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(&path_pattern!(a.*[1]));
         assert_eq!(results.len(), 2);
 
         let results =
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(&path_pattern!(a.*[2]));
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(&path_pattern!(a.*[2]));
         assert_eq!(results.len(), 1);
     }
 
@@ -347,23 +349,23 @@ mod test {
         let _queue1 = new_oqueue(&path1);
         let _queue2 = new_oqueue(&path2);
 
-        let results = lookup_by_type::<ReflessElementDescriptor<usize>>();
+        let results = lookup_by_type::<LifetimelessElementDescriptor<usize>>();
         assert_eq!(results.len(), 2);
     }
 
     #[ktest]
     fn nonexistent_lookup() {
         assert!(
-            lookup_by_path::<ReflessElementDescriptor<usize>>(&path!(nonexistent.path[1]))
+            lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path!(nonexistent.path[1]))
                 .is_none()
         );
         assert!(
-            lookup_by_path_pattern::<ReflessElementDescriptor<usize>>(
+            lookup_by_path_pattern::<LifetimelessElementDescriptor<usize>>(
                 &path_pattern!(nonexistent[*])
             )
             .is_empty()
         );
-        assert!(lookup_by_type::<ReflessElementDescriptor<usize>>().is_empty());
+        assert!(lookup_by_type::<LifetimelessElementDescriptor<usize>>().is_empty());
     }
 
     /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
@@ -474,12 +476,12 @@ mod test {
         let path = path!(observe.both[1]);
         // The constructor registers to TYPED_OQUEUE_REGISTRY only; the queue is not exported yet.
         let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_none());
 
         // `register` adds it to OQFS_REGISTRY while keeping the TYPED_OQUEUE_REGISTRY entry.
         register(&path, &queue.as_any_oqueue());
-        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_some());
     }
 
@@ -488,11 +490,11 @@ mod test {
         let path = path!(observe.anon[1]);
         // An anonymous queue is not registered by its constructor.
         let queue = ConsumableOQueueRef::<usize>::new_anonymous(4);
-        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_none());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_none());
 
         // `register` puts it in both maps: `ensure_registered` covers TYPED_OQUEUE_REGISTRY.
         register(&path, &queue.as_any_oqueue());
-        assert!(lookup_by_path::<ReflessElementDescriptor<usize>>(&path).is_some());
+        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_some());
     }
 

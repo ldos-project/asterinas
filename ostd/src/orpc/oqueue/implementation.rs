@@ -32,8 +32,8 @@ use static_assertions::assert_obj_safe;
 use crate::{
     orpc::{
         oqueue::{
-            Cursor, ElementDescriptor, InlineStrongObserver, OQueueError, ObservationQuery,
-            ReflessElementDescriptor, ResourceUnavailableSnafu,
+            Cursor, ElementDescriptor, InlineStrongObserver, LifetimelessElementDescriptor,
+            OQueueError, ObservationQuery, ResourceUnavailableSnafu,
             single_thread_ring_buffer::RingBuffer,
         },
         path::Path,
@@ -49,7 +49,7 @@ new_key_type! {
 }
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
-/// internally. Externally, code will use [`super::OQueueRef`] and similar.
+/// internally. Externally, code will use [`super::ElementOQueueRef`] and similar.
 ///
 /// ## Adding implementations
 ///
@@ -353,10 +353,10 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     }
 }
 
-// This impl block is specific to `ReflessElementDescriptor<T>` (rather than generic over any
+// This impl block is specific to `LifetimelessElementDescriptor<T>` (rather than generic over any
 // `D: ElementDescriptor`) because producing/consuming by value requires an owned (`'static`)
 // message.
-impl<T: Send + 'static> OQueueImplementation<ReflessElementDescriptor<T>> {
+impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
     /// Produce into the OQueue. Blocking until space is available
     pub(super) fn produce(&self, v: T) {
         let mut v = v;
@@ -514,8 +514,8 @@ struct OQueueInner<D: ElementDescriptor> {
         SlotMap<InlineObserverKey, Box<dyn for<'a> Fn(&'a D::Element<'a>) + Send>>,
     /// The inline consumer if there is one.
     ///
-    /// This is only ever populated when `MD = ReflessElementDescriptor<T>` (see
-    /// `OQueueImplementation<ReflessElementDescriptor<T>>`'s by-value impl block), since only an
+    /// This is only ever populated when `MD = LifetimelessElementDescriptor<T>` (see
+    /// `OQueueImplementation<LifetimelessElementDescriptor<T>>`'s by-value impl block), since only an
     /// owned, `'static` message can be consumed by value.
     inline_consumer: Option<Box<dyn Fn(D::Element<'static>) + Send>>,
 }
