@@ -6,29 +6,16 @@ use core::{
 };
 
 use align_ext::AlignExt;
-use aster_block::SECTOR_SIZE;
-#[cfg(baseline_asterinas)]
-use aster_block::bio::BioWaiter;
+use aster_block::{SECTOR_SIZE, bio::BioWaiter};
 use aster_util::slot_vec::SlotVec;
 use device_id::DeviceId;
 use hashbrown::HashMap;
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef},
-    orpc_impl,
-};
 use ostd::{
     mm::{HasSize, io::util::HasVmReaderWriter},
-    new_server,
-    orpc::orpc_server,
     sync::{PreemptDisabled, RwLockWriteGuard},
 };
 
 use super::{memfd::MemfdInode, xattr::RamXattr, *};
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::{CachePage, PageCacheBackend};
-#[cfg(not(baseline_asterinas))]
-use crate::fs::vfs::server_traits::{AsyncReadRequest, AsyncWriteRequest};
 use crate::{
     device::{self, DeviceType},
     fs::{
@@ -39,10 +26,9 @@ use crate::{
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::{Extension, FallocMode, Inode, InodeIo, Metadata, MknodType, SymbolicLink},
-            page_cache::PageCache,
+            page_cache::{CachePage, PageCache, PageCacheBackend},
             path::{is_dot, is_dot_or_dotdot, is_dotdot},
             registry::{FsCreationCtx, FsProperties, FsType},
-            server_traits::{self, PageIOObservable, PageStore},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
@@ -82,7 +68,7 @@ impl RamFs {
             name,
             _anon_device_id: anon_device_id,
             sb: SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX, root_dev_id),
-            root: new_server!(|weak_root| RamInode {
+            root: Arc::new_cyclic(|weak_root| RamInode {
                 inner: Inner::new_dir(weak_root.clone(), weak_root.clone()),
                 metadata: SpinLock::new(InodeMeta::new_dir(
                     mkmod!(a+rx, u+w),
@@ -131,7 +117,6 @@ impl FileSystem for RamFs {
 }
 
 /// An inode of `RamFs`.
-#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 pub(super) struct RamInode {
     /// Inode inner specifics
     inner: Inner,
@@ -483,7 +468,7 @@ impl RamInode {
         gid: Gid,
         parent: &Weak<RamInode>,
     ) -> Arc<Self> {
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_dir(weak_self.clone(), parent.clone()),
             metadata: SpinLock::new(InodeMeta::new_dir(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -497,7 +482,7 @@ impl RamInode {
     }
 
     fn new_file(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_file(weak_self.clone()),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -518,7 +503,7 @@ impl RamInode {
         uid: Uid,
         gid: Gid,
     ) -> Arc<Self> {
-        new_server!(|_| RamInode {
+        Arc::new(RamInode {
             inner: Inner::new_file_in_memfd(weak_self.clone()),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: weak_self.as_ptr() as u64,
@@ -532,7 +517,7 @@ impl RamInode {
     }
 
     fn new_symlink(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_symlink(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -558,7 +543,7 @@ impl RamInode {
             DeviceType::Char => Inner::new_char_device(dev_id),
         };
 
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner,
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -572,7 +557,7 @@ impl RamInode {
     }
 
     fn new_socket(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_socket(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -586,7 +571,7 @@ impl RamInode {
     }
 
     fn new_named_pipe(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
-        new_server!(|weak_self| RamInode {
+        Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_named_pipe(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
@@ -615,50 +600,6 @@ impl RamInode {
     }
 }
 
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl PageIOObservable for RamInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
-}
-
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl PageStore for RamInode {
-    fn read_page_async(&self, req: AsyncReadRequest) -> Result<()> {
-        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
-        // Initially, any block/page in a RamFs inode contains all zeros
-        req.handle
-            .frame
-            .writer()
-            .to_fallible()
-            .fill_zeros(req.handle.frame.size())
-            .unwrap();
-        self.page_reads_reply_oqueue()
-            .produce_ref(&req.handle.idx)?;
-        req.reply_handle.produce(req.handle);
-        Ok(())
-    }
-
-    fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()> {
-        // TODO:OPTIMIZATION: Avoid the clone.
-        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
-        self.page_writes_reply_oqueue()
-            .produce_ref(&req.handle.idx)?;
-        if let Some(reply_handle) = req.reply_handle {
-            reply_handle.produce(req.handle);
-        }
-        Ok(())
-    }
-
-    fn npages(&self) -> Result<usize> {
-        Ok(self.metadata.lock().blocks)
-    }
-}
-
-#[cfg(baseline_asterinas)]
 impl PageCacheBackend for RamInode {
     fn read_page_async(&self, _idx: usize, frame: &CachePage) -> Result<BioWaiter> {
         // Initially, any block/page in a RamFs inode contains all zeros

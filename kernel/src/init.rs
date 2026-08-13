@@ -365,7 +365,6 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     crate::vdso::init_in_first_kthread();
     crate::vm::vmar::init_in_first_kthread();
     crate::syscall::init_in_first_kthread();
-    crate::fs::vfs::init_in_first_kthread();
 }
 
 fn print_banner() {
