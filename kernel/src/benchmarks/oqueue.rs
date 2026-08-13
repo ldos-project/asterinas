@@ -24,7 +24,7 @@ use ostd::{
     info,
     orpc::{
         oqueue::{
-            ConsumableOQueue, ConsumableOQueueRef, ElementOQueueRef, LifetimelessElementDescriptor,
+            ConsumableOQueue, ConsumableOQueueRef, GenericOQueueRef, LifetimelessElementDescriptor,
             OQueue as OtherOQueue, OQueueRef, ObservationQuery,
         },
         sync::Blocker,
@@ -1329,8 +1329,8 @@ impl OQueueBenchmark {
         })
     }
 
-    fn get_ref_oqueue(&self) -> ElementOQueueRef<u64> {
-        OQueueRef::new_anonymous(2 << 20)
+    fn get_ref_oqueue(&self) -> OQueueRef<u64> {
+        GenericOQueueRef::new_anonymous(2 << 20)
     }
 
     fn get_consumable_oqueue(&self) -> ConsumableOQueueRef<u64> {

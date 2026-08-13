@@ -20,7 +20,7 @@ use super::{
 use crate::{
     orpc::{
         oqueue::{
-            AnyOQueueRef, ElementDescriptor, LifetimelessElementDescriptor, WeakAnyOQueueRef,
+            ElementDescriptor, GenericAnyOQueueRef, LifetimelessElementDescriptor, WeakAnyOQueueRef,
         },
         path::{Path, PathPattern},
     },
@@ -71,7 +71,7 @@ fn registry() -> MutexGuard<'static, Option<RegistryMap>> {
 ///
 /// If an existing OQueue is registered with the same type and path, this will replace that OQueue
 /// and emit a warning.
-pub fn register_no_export<D: ElementDescriptor + 'static>(path: &Path, v: &AnyOQueueRef<D>) {
+pub fn register_no_export<D: ElementDescriptor + 'static>(path: &Path, v: &GenericAnyOQueueRef<D>) {
     let mut map = registry();
     let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = &entry
@@ -83,7 +83,7 @@ pub fn register_no_export<D: ElementDescriptor + 'static>(path: &Path, v: &AnyOQ
 }
 
 /// Ensure `path` is present in [`TYPED_OQUEUE_REGISTRY`], inserting it if absent.
-fn ensure_registered<D: ElementDescriptor + 'static>(path: &Path, v: &AnyOQueueRef<D>) {
+fn ensure_registered<D: ElementDescriptor + 'static>(path: &Path, v: &GenericAnyOQueueRef<D>) {
     let mut map = registry();
     let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = &entry
@@ -137,7 +137,7 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
 /// exported.
 pub fn register<T: Copy + Send + Serialize + 'static>(
     path: &Path,
-    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
 ) {
     ensure_registered(path, oqueue);
     insert_export(path, make_export(oqueue));
@@ -151,7 +151,7 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
 /// extracted from it.
 pub fn register_with<T, U, F>(
     path: &Path,
-    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     project: F,
 ) where
     T: Send + 'static,
@@ -221,7 +221,9 @@ pub fn clean_exports() {
 }
 
 /// Get the OQueue with the given type and name.
-pub fn lookup_by_path<D: ElementDescriptor + 'static>(path: &Path) -> Option<AnyOQueueRef<D>> {
+pub fn lookup_by_path<D: ElementDescriptor + 'static>(
+    path: &Path,
+) -> Option<GenericAnyOQueueRef<D>> {
     let mut map = registry();
     let entry = get_entry::<D>(&mut map, path);
     if let EntryRef::Occupied(entry) = entry {
@@ -234,7 +236,7 @@ pub fn lookup_by_path<D: ElementDescriptor + 'static>(path: &Path) -> Option<Any
 /// Get all OQueues whose names match a given pattern.
 pub fn lookup_by_path_pattern<D: ElementDescriptor + 'static>(
     pat: &PathPattern,
-) -> Vec<AnyOQueueRef<D>> {
+) -> Vec<GenericAnyOQueueRef<D>> {
     let mut map = registry();
     let type_map = get_type_map::<D>(&mut map);
     type_map
@@ -254,7 +256,7 @@ pub fn lookup_by_path_pattern<D: ElementDescriptor + 'static>(
 }
 
 /// Get all OQueues of a given type.
-pub fn lookup_by_type<D: ElementDescriptor + 'static>() -> Vec<AnyOQueueRef<D>> {
+pub fn lookup_by_type<D: ElementDescriptor + 'static>() -> Vec<GenericAnyOQueueRef<D>> {
     let mut map = registry();
     let type_map = get_type_map::<D>(&mut map);
 

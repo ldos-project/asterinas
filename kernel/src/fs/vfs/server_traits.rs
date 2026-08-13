@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::{
-    ConsumableOQueueRef, ElementDescriptor, ElementOQueueRef, OQueueRef, ValueProducer,
+    ConsumableOQueueRef, ElementDescriptor, GenericOQueueRef, OQueueRef, ValueProducer,
     reply::ReplyQueue,
 };
 use ostd::orpc::orpc_trait;
@@ -49,24 +49,24 @@ impl From<PageHandle> for AsyncWriteRequest {
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue<D: ElementDescriptor + 'static>() -> OQueueRef<D> {
-    OQueueRef::new_anonymous(8)
+fn new_oqueue<D: ElementDescriptor + 'static>() -> GenericOQueueRef<D> {
+    GenericOQueueRef::new_anonymous(8)
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue_with_len<D: ElementDescriptor + 'static>(len: usize) -> OQueueRef<D> {
-    OQueueRef::new_anonymous(len)
+fn new_oqueue_with_len<D: ElementDescriptor + 'static>(len: usize) -> GenericOQueueRef<D> {
+    GenericOQueueRef::new_anonymous(len)
 }
 
 #[orpc_trait]
 pub trait PageIOObservable {
     #[cfg(not(baseline_asterinas))]
-    fn page_reads_oqueue(&self) -> ElementOQueueRef<usize> {
+    fn page_reads_oqueue(&self) -> OQueueRef<usize> {
         new_oqueue()
     }
 
     #[cfg(not(baseline_asterinas))]
-    fn page_reads_reply_oqueue(&self) -> ElementOQueueRef<usize> {
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: This must be longer than the largest number of IO that can be outstanding in the
         // system. Otherwise a produce into this OQueue in the interrupt handler will block panicking
         // the kernel.
@@ -74,12 +74,12 @@ pub trait PageIOObservable {
     }
 
     #[cfg(not(baseline_asterinas))]
-    fn page_writes_oqueue(&self) -> ElementOQueueRef<usize> {
+    fn page_writes_oqueue(&self) -> OQueueRef<usize> {
         new_oqueue()
     }
 
     #[cfg(not(baseline_asterinas))]
-    fn page_writes_reply_oqueue(&self) -> ElementOQueueRef<usize> {
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize> {
         // TODO: as page_reads_reply_oqueue
         new_oqueue_with_len(32)
     }
@@ -201,7 +201,7 @@ pub trait PageCache {
     fn underlying_page_store(&self) -> Result<Arc<dyn PageStore>>;
 
     #[cfg(not(baseline_asterinas))]
-    fn page_cache_read_info_oqueue(&self) -> ElementOQueueRef<PageCacheReadInfo> {
+    fn page_cache_read_info_oqueue(&self) -> OQueueRef<PageCacheReadInfo> {
         new_oqueue_with_len(32)
     }
 }

@@ -5,7 +5,7 @@ use orpc_macros::orpc_trait;
 
 use crate::orpc::{
     errors::RPCError,
-    oqueue::{ElementOQueueRef, OQueueRef},
+    oqueue::{GenericOQueueRef, OQueueRef},
 };
 
 /// ORPC trait for a simple notifier
@@ -15,7 +15,7 @@ pub trait Notifier {
     fn notify(&self) -> Result<(), RPCError>;
 
     /// OQueue for listening to notifications.
-    fn notification_oqueue(&self) -> ElementOQueueRef<()> {
-        OQueueRef::new_anonymous(1)
+    fn notification_oqueue(&self) -> OQueueRef<()> {
+        GenericOQueueRef::new_anonymous(1)
     }
 }

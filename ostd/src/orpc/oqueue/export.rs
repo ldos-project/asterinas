@@ -24,7 +24,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    AnyOQueueRef, ConsumableOQueue as _, ConsumableOQueueRef, ElementDescriptor,
+    ConsumableOQueue as _, ConsumableOQueueRef, ElementDescriptor, GenericAnyOQueueRef,
     LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
     StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
 };
@@ -129,7 +129,7 @@ pub trait CborStrongObserve: Send {
 /// The observed type `U` (identity or a projection) is erased inside the closure.
 type AttachStrongObserveFn<T> = Box<
     dyn Fn(
-            &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+            &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
         ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
         + Send
         + Sync,
@@ -139,7 +139,7 @@ type AttachStrongObserveFn<T> = Box<
 /// present on exports registered via [`super::registry::register_producible`].
 type AttachProducerFn<T> = Box<
     dyn Fn(
-            &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+            &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
         ) -> Result<Box<dyn CborProducer>, OQueueError>
         + Send
         + Sync,
@@ -224,7 +224,7 @@ impl<U: Copy + Send + Serialize + 'static> CborStrongObserve for CborStrongObser
 
 /// Attaches a strong observer with the given query and wraps it as a CBOR record source.
 fn attach_cbor_observer<D: ElementDescriptor, U>(
-    oqueue: &AnyOQueueRef<D>,
+    oqueue: &GenericAnyOQueueRef<D>,
     query: ObservationQuery<D, U>,
 ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
 where
@@ -238,7 +238,7 @@ where
 /// whole message is streamed via the identity projection (so the message type's derived
 /// `Serialize` is used).
 pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
-    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
 ) -> OQueueExportHandle<T> {
     OQueueExportHandle {
         weak: oqueue.downgrade(),
@@ -254,7 +254,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 /// messages are streamed through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is
 /// the `Copy + Serialize` value placed in the stream.
 pub(super) fn make_export_with<T, U, F>(
-    oqueue: &AnyOQueueRef<LifetimelessElementDescriptor<T>>,
+    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     project: F,
 ) -> OQueueExportHandle<T>
 where
@@ -326,7 +326,7 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
 /// [`super::ConsumableOQueue`]: it accepts values produced from userspace (see
 /// [`super::registry::register_producible`]).
 ///
-/// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&AnyOQueueRef<T>`) enforces at
+/// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&GenericAnyOQueueRef<T>`) enforces at
 /// compile time that only a `ConsumableOQueue` can be made producible.
 pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned + 'static>(
     oqueue: &ConsumableOQueueRef<T>,

@@ -24,9 +24,7 @@ use aster_block::{
 use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{
-    ConsumableOQueue as _, ConsumableOQueueRef, ElementOQueueRef, OQueue as _,
-};
+use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::orpc_impl;
 use ostd::{
@@ -87,7 +85,7 @@ pub struct BlockDevice {
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
     fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio>;
-    fn bio_completion_oqueue(&self) -> ElementOQueueRef<BlockDeviceCompletionStats>;
+    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
 }
 
 impl BlockDevice {

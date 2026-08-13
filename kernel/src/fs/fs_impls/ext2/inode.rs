@@ -10,7 +10,7 @@ use device_id::DeviceId;
 use inherit_methods_macro::inherit_methods;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::{
-    oqueue::{ElementOQueueRef, OQueue as _},
+    oqueue::{OQueue as _, OQueueRef},
     orpc_impl,
 };
 use ostd::{
@@ -2052,10 +2052,10 @@ impl InodeBlockManager {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::PageIOObservable for InodeBlockManager {
-    fn page_reads_oqueue(&self) -> ElementOQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> ElementOQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> ElementOQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> ElementOQueueRef<usize>;
+    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
+    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
+    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
 }
 
 #[cfg(not(baseline_asterinas))]

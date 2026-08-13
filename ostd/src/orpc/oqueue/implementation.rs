@@ -49,7 +49,7 @@ new_key_type! {
 }
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
-/// internally. Externally, code will use [`super::ElementOQueueRef`] and similar.
+/// internally. Externally, code will use [`super::OQueueRef`] and similar.
 ///
 /// ## Adding implementations
 ///
@@ -281,8 +281,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     }
 
     /// Create a new reference to `self` without its OQueue kind.
-    pub(super) fn as_any_oqueue(self: &Arc<Self>) -> super::AnyOQueueRef<D> {
-        super::AnyOQueueRef {
+    pub(super) fn as_any_oqueue(self: &Arc<Self>) -> super::GenericAnyOQueueRef<D> {
+        super::GenericAnyOQueueRef {
             inner: self.clone(),
         }
     }
@@ -338,11 +338,11 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attach an producer expecting references to the OQueue if it has no consumers.
     pub(super) fn attach_ref_producer(
         self: &Arc<Self>,
-    ) -> Result<super::RefProducer<D>, super::OQueueError> {
+    ) -> Result<super::GenericRefProducer<D>, super::OQueueError> {
         if self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
-        Ok(super::RefProducer {
+        Ok(super::GenericRefProducer {
             oqueue: self.clone(),
         })
     }

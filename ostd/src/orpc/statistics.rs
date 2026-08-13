@@ -17,14 +17,14 @@ use super::{
     oqueue::{OQueue, OQueueBase, OQueueError, query::ObservationQuery},
     sync::select,
 };
-use crate::orpc::oqueue::{ElementDescriptor, ElementOQueueRef, OQueueRef};
+use crate::orpc::oqueue::{ElementDescriptor, GenericOQueueRef, OQueueRef};
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
 pub trait Outstanding {
     /// The OQueue that publishes the number of outstanding requests (requests - replies).
-    fn outstanding_oqueue(&self) -> ElementOQueueRef<isize> {
-        OQueueRef::new_anonymous(4)
+    fn outstanding_oqueue(&self) -> OQueueRef<isize> {
+        GenericOQueueRef::new_anonymous(4)
     }
 }
 
@@ -91,5 +91,5 @@ impl OutstandingCounter {
 
 #[orpc_impl]
 impl Outstanding for OutstandingCounter {
-    fn outstanding_oqueue(&self) -> ElementOQueueRef<isize>;
+    fn outstanding_oqueue(&self) -> OQueueRef<isize>;
 }

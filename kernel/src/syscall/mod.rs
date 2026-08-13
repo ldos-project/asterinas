@@ -420,7 +420,7 @@ pub mod oqueue {
     use core::time::Duration;
 
     use ostd::{
-        orpc::oqueue::{ElementOQueueRef, OQueueRef},
+        orpc::oqueue::{GenericOQueueRef, OQueueRef},
         path,
     };
     use serde::Serialize;
@@ -435,13 +435,13 @@ pub mod oqueue {
         pub timestamp: Duration,
     }
 
-    static SOCKET_OQUEUE: Once<ElementOQueueRef<SocketOQueueMessage>> = Once::new();
+    static SOCKET_OQUEUE: Once<OQueueRef<SocketOQueueMessage>> = Once::new();
 
     pub fn init_in_first_kthread() {
-        SOCKET_OQUEUE.call_once(|| OQueueRef::new(1024, path!(syscall.socket_oqueue)));
+        SOCKET_OQUEUE.call_once(|| GenericOQueueRef::new(1024, path!(syscall.socket_oqueue)));
     }
 
-    pub fn get_socket_oqueue() -> ElementOQueueRef<SocketOQueueMessage> {
+    pub fn get_socket_oqueue() -> OQueueRef<SocketOQueueMessage> {
         SOCKET_OQUEUE.wait().clone()
     }
 }

@@ -121,7 +121,7 @@ pub(crate) fn generate_orpc_method_body(
     }
 }
 
-/// Generate the method implementation for an OQueue access method. The method just extract the ElementOQueueRef from inside
+/// Generate the method implementation for an OQueue access method. The method just extract the OQueueRef from inside
 /// the servers `orpc_internal` struct.
 fn process_oqueue_method(
     method_implementations: &mut Vec<proc_macro2::TokenStream>,

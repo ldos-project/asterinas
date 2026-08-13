@@ -76,7 +76,7 @@ use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-use crate::orpc::oqueue::ElementRefProducer;
+use crate::orpc::oqueue::RefProducer;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
@@ -94,7 +94,7 @@ pub(crate) fn init() {
         use serde::Serialize;
 
         use crate::{
-            orpc::oqueue::{OQueue, OQueueBase, OQueueRef, registry},
+            orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, registry},
             path,
         };
 
@@ -114,7 +114,7 @@ pub(crate) fn init() {
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
         let path = path!(scheduler.events);
-        let oqueue = OQueueRef::new(1024, path.clone());
+        let oqueue = GenericOQueueRef::new(1024, path.clone());
 
         // Export the queue so it appears under the OQueue filesystem (e.g. at
         // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
@@ -131,12 +131,12 @@ pub(crate) fn init() {
 }
 
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-static SCHEDULING_EVENT_PRODUCER: Once<ElementRefProducer<SchedulingEvent>> = Once::new();
+static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
 
 /// Get the producer handle for the scheduling event OQueue. This will panic if called before
 /// [`init()`].
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
-fn get_scheduling_event_producer() -> &'static ElementRefProducer<SchedulingEvent> {
+fn get_scheduling_event_producer() -> &'static RefProducer<SchedulingEvent> {
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
 

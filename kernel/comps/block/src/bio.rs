@@ -9,7 +9,7 @@ use aster_util::mem_obj_slice::Slice;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{Element, ElementRefProducer, OQueueError};
+use ostd::orpc::oqueue::{Element, OQueueError, RefProducer};
 use ostd::{
     Error,
     error::AccessDeniedSnafu,
@@ -346,7 +346,7 @@ pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 
     #[cfg(not(baseline_asterinas))]
-    reply_handle: Option<ElementRefProducer<BlockDeviceCompletionStats>>,
+    reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
 
     #[cfg(not(baseline_asterinas))]
     submission_time: Option<Duration>,
@@ -464,7 +464,7 @@ impl SubmittedBio {
     #[cfg(not(baseline_asterinas))]
     pub fn prepare_enqueue(
         &mut self,
-        reply_handle: ElementRefProducer<BlockDeviceCompletionStats>,
+        reply_handle: RefProducer<BlockDeviceCompletionStats>,
         outstanding_pages: u32,
         outstanding_requests: u32,
     ) {

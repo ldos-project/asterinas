@@ -74,8 +74,8 @@ mod test {
     use super::*;
     use crate::orpc::{
         oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, ElementOQueueRef, OQueue as _,
-            OQueueBase as _, ObservationQuery,
+            ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
+            ObservationQuery,
         },
         path::Path,
     };
@@ -108,7 +108,7 @@ mod test {
         assert_impl_all!(OneLifetime<'static>: Element);
         assert_impl_all!(OneLifetimeDescriptor: ElementDescriptor);
 
-        let queue = ElementOQueueRef::<OneLifetime>::new(4, Path::test());
+        let queue = OQueueRef::<OneLifetime>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &OneLifetime| *m.value))
@@ -129,7 +129,7 @@ mod test {
 
         assert_impl_all!(WithTypeParamNoLifetime<usize>: Element);
 
-        let queue = ElementOQueueRef::<WithTypeParamNoLifetime<u32>>::new(4, Path::test());
+        let queue = OQueueRef::<WithTypeParamNoLifetime<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParamNoLifetime<u32>| {
@@ -152,7 +152,7 @@ mod test {
 
         assert_impl_all!(WithTypeParamDescriptor<u32>: ElementDescriptor);
 
-        let queue = ElementOQueueRef::<WithTypeParam<u32>>::new(4, Path::test());
+        let queue = OQueueRef::<WithTypeParam<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParam<u32>| *m.value))
@@ -176,7 +176,7 @@ mod test {
 
         assert_impl_all!(WithWhereClauseDescriptor<u32>: ElementDescriptor);
 
-        let queue = ElementOQueueRef::<WithWhereClause<u32>>::new(4, Path::test());
+        let queue = OQueueRef::<WithWhereClause<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &WithWhereClause<u32>| *m.value))
@@ -198,7 +198,7 @@ mod test {
 
         assert_impl_all!(MultiTypeParamsDescriptor<u32, usize>: ElementDescriptor);
 
-        let queue = ElementOQueueRef::<MultiTypeParams<u32, usize>>::new(4, Path::test());
+        let queue = OQueueRef::<MultiTypeParams<u32, usize>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &MultiTypeParams<u32, usize>| {
