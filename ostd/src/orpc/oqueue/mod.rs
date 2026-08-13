@@ -8,20 +8,52 @@
 //!
 //! The OQueue interface is 3 traits:
 //!
-//! * [`OQueueBase<T>`] provides observation. This is the base trait provided by all OQueues.
+//! * [`OQueueBase<D>`] provides observation. This is the base trait provided by all OQueues.
 //! * [`ConsumableOQueue<T: Send>`] provides produce by value and consume. Element ownership is
 //!   passed from the producer to the consumer. This is used for OQueues which are communication
 //!   channels between servers. The transfer of ownership allows the message to contain values that
 //!   should not or can not be cloned.
-//! * [`OQueue<T>`] provides produce by reference, but not consume. Element ownership is kept by the
+//! * [`OQueue<D>`] provides produce by reference, but not consume. Element ownership is kept by the
 //!   producer, so consumers cannot exist. This is used for OQueues which expose internal component
 //!   state since it does not require copying the message before producing it. Only the observed
 //!   parts of the message need to be copied.
 //!
-//! There are 4 reference types for OQueues. 3 concrete structs implement the traits above:
-//! [`ElementOQueueBaseRef<T>`], [`ConsumableOQueueRef<T: Send>`], [`ElementOQueueRef<T>`]. A 4th struct
-//! [`ElementAnyOQueueRef<T>`] implements both `ConsumableOQueueRef<T>` and `ElementOQueueRef<T>`. It
-//! represents an OQueue of unknown type.
+//! There are 4 reference types for OQueues. 3 concrete structs (or aliases there of) implement the
+//! traits above: [`ElementOQueueBaseRef<T>`], [`ConsumableOQueueRef<T: Send>`],
+//! [`ElementOQueueRef<T>`]. A 4th [`ElementAnyOQueueRef<T>`] implements both `ConsumableOQueue<T>`
+//! and `OQueue<T>`. It represents an OQueue of unknown type.
+//!
+//! This mix of aliases and structs is admittedly confusing (see the Element Descriptors section,
+//! for details), but is required to support producing values with with lifetime parameters. What
+//! you should actually write is fairly straight-forward:
+//!
+//! * If you are specifying the type of an OQueue or `RefProducer` with a specific element type `T`,
+//!   use [`ElementOQueueBaseRef<T>`],  [`ElementOQueueRef<T>`], [`ElementAnyOQueueRef<T>`],
+//!   [`ElementRefProducer<T>`]. Do not use any of the `Element` aliases with an inferred type
+//!   parameter.
+//! * If you constructing an OQueue or using an inferred element type, use [`OQueueBaseRef`],
+//!   [`OQueueRef`], [`AnyOQueueRef`], [`RefProducer`].
+//! * If you are writing code that is generic over the element type of an OQueue, use a type
+//!   parameter `D: ElementDescriptor` and [`OQueueRef<D>`], etc.
+//!
+//! `ConsumableOQueueRef`, `ValueProducer`, observers, and consumers, are unaffected by this because
+//! they can never include parameteric lifetimes.
+//!
+//! Lifetime parameters are requires to allow making OQueue elements from the arguments to a
+//! function, which is critical automatic OQueues on functions. Imagine a method:
+//! ```ignore
+//! fn f(&self, buf: &[u8], n: usize) { ... }
+//! ```
+//! This actually has the lifetimes `fn f<'a>(&'a self, buf: &'a [u8], n: usize)`. To capture these
+//! arguments into a struct you need:
+//! ```ignore
+//! struct Args<'a> {
+//!     self_: &'a Self,
+//!     buf: &'a [u8],
+//!     n: usize
+//! }
+//! ```
+//! This kind of case creates the need for the complexity above.
 //!
 //! Attachment operations on OQueues can fail at call time if they are not supported or are not
 //! allowed. This can occur because the OQueue is of the wrong kind (e.g., a `ElementAnyOQueueRef`
@@ -34,7 +66,7 @@
 //! Anything placed in a OQueue must implement [`Element`]. This means it has an
 //! [`ElementDescriptor`] which captures any lifetime parameter information in the type. This is
 //! trivial for most types because they don't have lifetime parameters. All [`Copy`] types are
-//! automatically `Element`s, and other types, even those with lifetime parameters, can `derive` it.
+//! automatically `Element`, and other types, even those with lifetime parameters, can `derive` it.
 //!
 //! In many cases the descriptor can be inferred, so this will be an implementation detail. However,
 //! trait bound errors may reference these traits and the user may need to specify them
@@ -51,17 +83,20 @@
 //! ## Implementation
 //!
 //! The types in this module are mostly wrappers around a single underlying implementation type (see
-//! [`ElementOQueueRef::inner`], for example). The wrappers carry additional information required to
+//! [`OQueueRef::inner`], for example). The wrappers carry additional information required to
 //! correctly and safely use the underlying implementation. They also provide abstractions which
 //! match the conceptual model of OQueues. Having this layer of wrappers will also simplify any
 //! future changes to the implementation.
+//!
+//! ## Element Descriptors
+//!
+//! The concrete OQueue traits and types take an element descriptor type instead of the type
+//! directly. This descriptor is a type implementing [`ElementDescriptor`]. It has a member
+//! `Element<'a>` which represents the actual element type for any lifetime (`for<'a> Element<'a>`
+//! in Rust terms). This is used in when producing values to accept values with any lifetime and
+//! attaching observers to pass a value with any lifetime to the projection.
+//!
 
-///
-/// Generally, use [`ElementAnyOQueueRef<T>`] instead of this type directly. The
-/// [`ElementDescriptor`] type is always [`<T as Element>::Descriptor`](`Element::Descriptor`),
-/// where the element type of the OQueue is `T`, and that alias removes that from your code.
-/// However, this type is used directly when calling methods or when the descriptor needs to be
-/// inferred.
 // TODO: Do we need a 5th struct `UntypedOQueueRef` has no message type parameter and represents an
 // unknown OQueue. It only supports casting dynamically to an `ElementAnyOQueueRef<T>`.
 use alloc::{

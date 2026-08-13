@@ -13,8 +13,23 @@ pub use orpc_macros::Element;
 /// Most normal types can use [`LifetimelessElementDescriptor<T>`].
 ///
 /// This type cannot be replaced with [`Self::Element`] itself, because that takes a lifetime
-/// parameter and Rust does not support passing type constructors (generic types without their
-/// argument bound) as type parameters.
+/// parameter and Rust does not support passing type universally quantified types as type
+/// parameters.
+///
+/// As an example, consider the example from [the `oqueue` module](crate::orpc::oqueue).
+/// ```ignore
+/// struct Args<'a> {
+///     self_: &'a Self,
+///     buf: &'a [u8],
+///     n: usize
+/// }
+/// ```
+/// has the descriptor:
+/// ```ignore
+/// struct ArgsDescriptor {
+///     type Element<'a> = Args<a'>
+/// }
+/// ```
 pub trait ElementDescriptor: 'static {
     /// The element type, which may depend on a lifetime parameter.
     type Element<'a>: ?Sized;
