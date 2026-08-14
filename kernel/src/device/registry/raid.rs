@@ -19,7 +19,7 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 #[cfg(not(baseline_asterinas))]
-use ostd::path;
+use ostd::{orpc::oqueue::GenericOQueueRef, path};
 use spin::Once;
 
 use crate::{
@@ -260,15 +260,11 @@ fn setup_userspace_policy() -> (
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
     use ostd::orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
-        registry,
+        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, registry,
     };
 
     let request_path = path!(raid1.selection_request);
-    let request_oqueue = OQueueRef::<selection_policies::SelectionRequestMessage>::new(
-        SELECTION_QUEUE_CAPACITY,
-        request_path.clone(),
-    );
+    let request_oqueue = GenericOQueueRef::new(SELECTION_QUEUE_CAPACITY, request_path.clone());
     // Register the request queue so user space policy server can observe requests.
     registry::register(&request_path, &request_oqueue.as_any_oqueue());
     let request_producer = request_oqueue

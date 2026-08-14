@@ -24,7 +24,7 @@ impl ORPCMethodKind<'_> {
             let name = path_segment.ident.to_string();
             return match name.as_str() {
                 "Result" => Some(ORPCMethodKind::Orpc { return_type: typ }),
-                "OQueueRef" | "ConsumableOQueueRef" => {
+                "GenericOQueueRef" | "OQueueRef" | "ConsumableOQueueRef" => {
                     Some(ORPCMethodKind::OQueue { return_type: typ })
                 }
                 _ => None,

@@ -35,7 +35,7 @@ mod tests {
         orpc::{
             errors::RPCError,
             oqueue::{
-                ConsumableOQueue, ConsumableOQueueRef, OQueue, OQueueBase, OQueueRef,
+                ConsumableOQueue, ConsumableOQueueRef, GenericOQueueRef, OQueue, OQueueBase,
                 ObservationQuery,
             },
             path::Path,
@@ -87,7 +87,7 @@ mod tests {
 
     #[ktest]
     fn monitor_updates_from_strong_observer() {
-        let values = OQueueRef::new(2, Path::test());
+        let values = GenericOQueueRef::new(2, Path::test());
         let server = spawn_server();
         server
             .monitor

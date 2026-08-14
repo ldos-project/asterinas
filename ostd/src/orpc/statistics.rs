@@ -14,16 +14,17 @@ use super::{
         shutdown::{self, ShutdownState},
         spawn_thread,
     },
-    oqueue::{OQueue, OQueueBase, OQueueError, OQueueRef, query::ObservationQuery},
+    oqueue::{OQueue, OQueueBase, OQueueError, query::ObservationQuery},
     sync::select,
 };
+use crate::orpc::oqueue::{ElementDescriptor, GenericOQueueRef, OQueueRef};
 
 /// An ORPC trait exposing an OQueue of outstanding request counts.
 #[orpc_trait]
 pub trait Outstanding {
     /// The OQueue that publishes the number of outstanding requests (requests - replies).
     fn outstanding_oqueue(&self) -> OQueueRef<isize> {
-        OQueueRef::new_anonymous(4)
+        GenericOQueueRef::new_anonymous(4)
     }
 }
 
@@ -44,7 +45,7 @@ impl shutdown::Shutdown for OutstandingCounter {
 impl OutstandingCounter {
     /// Spawn a new `OutstandingCounter` server which observes `request_oqueue` and
     /// `reply_oqueue`.
-    pub fn spawn<T: 'static, U: 'static>(
+    pub fn spawn<T: ElementDescriptor + 'static, U: ElementDescriptor + 'static>(
         request_oqueue: impl OQueueBase<T>,
         reply_oqueue: impl OQueueBase<U>,
     ) -> Result<Arc<Self>, OQueueError> {

@@ -8,7 +8,7 @@ use ostd::{
     new_server,
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
-        oqueue::{OQueue, OQueueBase, OQueueRef, query::ObservationQuery},
+        oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
         orpc_server,
     },
     path,
@@ -48,7 +48,7 @@ impl PmuServer {
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
         let server = new_server!(|_| Self {
-            dtlb_miss_count_oqueue: OQueueRef::<DtlbMisses>::new(32, path!(pmu.dtlb_miss_count)),
+            dtlb_miss_count_oqueue: GenericOQueueRef::new(32, path!(pmu.dtlb_miss_count)),
         });
         Ok(server)
     }

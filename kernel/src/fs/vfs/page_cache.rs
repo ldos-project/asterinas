@@ -18,7 +18,7 @@ use ostd::{
         framework::spawn_thread,
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
-            OQueueRef, RefProducer, query::ObservationQuery, reply::ReplyQueue,
+            OQueueRef, ObservationQuery, RefProducer, reply::ReplyQueue,
         },
         orpc_impl, orpc_server,
     },

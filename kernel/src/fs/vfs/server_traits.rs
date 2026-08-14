@@ -3,7 +3,10 @@
 use alloc::sync::Arc;
 
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{ConsumableOQueueRef, OQueueRef, ValueProducer, reply::ReplyQueue};
+use ostd::orpc::oqueue::{
+    ConsumableOQueueRef, ElementDescriptor, GenericOQueueRef, OQueueRef, ValueProducer,
+    reply::ReplyQueue,
+};
 use ostd::orpc::orpc_trait;
 use serde::Serialize;
 
@@ -46,13 +49,13 @@ impl From<PageHandle> for AsyncWriteRequest {
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue<T: Send + 'static>() -> OQueueRef<T> {
-    OQueueRef::new_anonymous(8)
+fn new_oqueue<D: ElementDescriptor + 'static>() -> GenericOQueueRef<D> {
+    GenericOQueueRef::new_anonymous(8)
 }
 
 #[cfg(not(baseline_asterinas))]
-fn new_oqueue_with_len<T: Send + 'static>(len: usize) -> OQueueRef<T> {
-    OQueueRef::new_anonymous(len)
+fn new_oqueue_with_len<D: ElementDescriptor + 'static>(len: usize) -> GenericOQueueRef<D> {
+    GenericOQueueRef::new_anonymous(len)
 }
 
 #[orpc_trait]

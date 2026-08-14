@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 /// A set of macros for use with ORPC. The most important are the ORPC attribute macros `orpc_trait`, `orpc_server`, and
 /// `orpc_impl`. The `select` macro (for waiting on multiple OQueues) is also defined here.
+mod element;
 mod orpc_impl;
 mod orpc_monitor;
 mod orpc_server;
@@ -259,4 +260,13 @@ pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_derive(TupleSerialize)]
 pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
     tuple_serialize::tuple_serialize_derive(input)
+}
+
+/// Derive macro for the `Element` trait.
+///
+/// This macro generates an `ElementDescriptor` for types with lifetime parameters,
+/// or uses `LifetimelessElementDescriptor` for types without lifetime parameters.
+#[proc_macro_derive(Element)]
+pub fn element_derive(input: TokenStream) -> TokenStream {
+    element::element_derive(input)
 }

@@ -24,8 +24,8 @@ use ostd::{
     info,
     orpc::{
         oqueue::{
-            ConsumableOQueue, ConsumableOQueueRef, OQueue as OtherOQueue, OQueueRef,
-            ObservationQuery,
+            ConsumableOQueue, ConsumableOQueueRef, GenericOQueueRef, LifetimelessElementDescriptor,
+            OQueue as OtherOQueue, OQueueRef, ObservationQuery,
         },
         sync::Blocker,
     },
@@ -509,7 +509,7 @@ fn produce_bench_legacy(
     );
 }
 
-fn produce_bench<Q: OtherOQueue<u64>>(
+fn produce_bench<Q: OtherOQueue<LifetimelessElementDescriptor<u64>>>(
     input: &OQueueBenchmarkInput,
     q: &Arc<Q>,
     completed: &Arc<AtomicUsize>,
@@ -1330,7 +1330,7 @@ impl OQueueBenchmark {
     }
 
     fn get_ref_oqueue(&self) -> OQueueRef<u64> {
-        OQueueRef::new_anonymous(2 << 20)
+        GenericOQueueRef::new_anonymous(2 << 20)
     }
 
     fn get_consumable_oqueue(&self) -> ConsumableOQueueRef<u64> {

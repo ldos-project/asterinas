@@ -10,7 +10,7 @@ use ostd::{
     error, ignore_err, info, new_server,
     orpc::{
         framework::{notifier::Notifier as _, spawn_thread},
-        oqueue::{OQueueBase as _, ObservationQuery, registry::lookup_by_type},
+        oqueue::{Element, OQueueBase as _, ObservationQuery, registry::lookup_by_type},
         orpc_server,
         path::Path,
     },
@@ -151,14 +151,14 @@ pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
 /// This is because `Path` is not `Copy`, so it can't go in the event. (see
 /// https://github.com/ldos-project/asterinas/issues/232)
 pub fn new_data_capture_data_file_by_type<
-    T: Send + 'static,
+    T: Element,
     E: Copy + Sync + Send + Serialize + 'static,
 >(
     capture_path: Path,
     length: usize,
-    query: impl Fn() -> ObservationQuery<T, E>,
+    query: impl Fn() -> ObservationQuery<T::Descriptor, E>,
 ) {
-    let oqueues = lookup_by_type::<T>();
+    let oqueues = lookup_by_type::<T::Descriptor>();
     if !oqueues.is_empty() {
         let Some(capture_file) =
             new_data_capture_file::<E>(mariposa_data_capture::FileDescriptor {

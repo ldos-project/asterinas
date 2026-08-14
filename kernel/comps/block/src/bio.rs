@@ -9,7 +9,7 @@ use aster_util::mem_obj_slice::Slice;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{OQueueError, RefProducer};
+use ostd::orpc::oqueue::{Element, OQueueError, RefProducer};
 use ostd::{
     Error,
     error::AccessDeniedSnafu,
@@ -341,6 +341,7 @@ impl Default for BioWaiter {
 /// A submitted `Bio` object.
 ///
 /// The request queue
+#[cfg_attr(not(baseline_asterinas), derive(Element))]
 pub struct SubmittedBio {
     bio_inner: Arc<BioInner>,
 

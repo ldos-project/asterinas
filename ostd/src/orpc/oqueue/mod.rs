@@ -8,26 +8,69 @@
 //!
 //! The OQueue interface is 3 traits:
 //!
-//! * [`OQueueBase<T>`] provides observation. This is the base trait provided by all OQueues.
-//! * [`ConsumableOQueue<T: Send>`] provides produce by value and consume. Message ownership is
+//! * [`OQueueBase<D>`] provides observation. This is the base trait provided by all OQueues.
+//! * [`ConsumableOQueue<T: Send>`] provides produce by value and consume. Element ownership is
 //!   passed from the producer to the consumer. This is used for OQueues which are communication
 //!   channels between servers. The transfer of ownership allows the message to contain values that
 //!   should not or can not be cloned.
-//! * [`OQueue<T>`] provides produce by reference, but not consume. Message ownership is kept by the
+//! * [`OQueue<D>`] provides produce by reference, but not consume. Element ownership is kept by the
 //!   producer, so consumers cannot exist. This is used for OQueues which expose internal component
 //!   state since it does not require copying the message before producing it. Only the observed
 //!   parts of the message need to be copied.
 //!
-//! There are 4 reference types for OQueues. 3 concrete structs implement the traits above:
-//! [`OQueueBaseRef<T>`], [`ConsumableOQueueRef<T: Send>`], [`OQueueRef<T>`]. A 4th struct
-//! [`AnyOQueueRef<T>`] implements both `ConsumableOQueueRef<T>` and `OQueueRef<T>`. It
-//! represents an OQueue of unknown type.
+//! There are 4 reference types for OQueues. 3 concrete structs (or aliases there of) implement the
+//! traits above: [`OQueueBaseRef<T>`], [`ConsumableOQueueRef<T: Send>`],
+//! [`OQueueRef<T>`]. A 4th [`AnyOQueueRef<T>`] implements both `ConsumableOQueue<T>`
+//! and `OQueue<T>`. It represents an OQueue of unknown type.
+//!
+//! This mix of aliases and structs is admittedly confusing (see the Element Descriptors section,
+//! for details), but is required to support producing values with with lifetime parameters. What
+//! you should actually write is fairly straight-forward:
+//!
+//! * If you are specifying the type of an OQueue or `GenericRefProducer` with a specific element type `T`,
+//!   use [`OQueueBaseRef<T>`],  [`OQueueRef<T>`], [`AnyOQueueRef<T>`],
+//!   [`RefProducer<T>`]. Do not use any of the `Element` aliases with an inferred type
+//!   parameter.
+//! * If you constructing an OQueue or using an inferred element type, use [`GenericOQueueBaseRef`],
+//!   [`GenericOQueueRef`], [`GenericAnyOQueueRef`], [`GenericRefProducer`].
+//! * If you are writing code that is generic over the element type of an OQueue, use a type
+//!   parameter `D: ElementDescriptor` and [`GenericOQueueRef<D>`], etc.
+//!
+//! `ConsumableOQueueRef`, `ValueProducer`, observers, and consumers, are unaffected by this because
+//! they never have arguments with lifetime parameters.
+//!
+//! Lifetime parameters are requires to allow making OQueue elements from the arguments to a
+//! function, which is critical automatic OQueues on functions. Imagine a method:
+//! ```ignore
+//! fn f(&self, buf: &[u8], n: usize) { ... }
+//! ```
+//! This actually has the lifetimes `fn f<'a>(&'a self, buf: &'a [u8], n: usize)`. To capture these
+//! arguments into a struct you need:
+//! ```ignore
+//! struct Args<'a> {
+//!     self_: &'a Self,
+//!     buf: &'a [u8],
+//!     n: usize
+//! }
+//! ```
+//! This kind of case creates the need for the complexity above.
 //!
 //! Attachment operations on OQueues can fail at call time if they are not supported or are not
 //! allowed. This can occur because the OQueue is of the wrong kind (e.g., a `AnyOQueueRef`
 //! referencing an observation queue cannot provide a consume handle), or if a specific kind of
 //! attachment is banned for safety (e.g., an OQueue filled by the scheduler does not allow strong
 //! observers to eliminate the risk of produce blocking).
+//!
+//! ## Elements in OQueues
+//!
+//! Anything placed in a OQueue must implement [`Element`]. This means it has an
+//! [`ElementDescriptor`] which captures any lifetime parameter information in the type. This is
+//! trivial for most types because they don't have lifetime parameters. All [`Copy`] types are
+//! automatically `Element`, and other types, even those with lifetime parameters, can `derive` it.
+//!
+//! In many cases the descriptor can be inferred, so this will be an implementation detail. However,
+//! trait bound errors may reference these traits and the user may need to specify them
+//! occasionally.
 //!
 //! ## Observation
 //!
@@ -40,14 +83,22 @@
 //! ## Implementation
 //!
 //! The types in this module are mostly wrappers around a single underlying implementation type (see
-//! [`OQueueRef::inner`], for example). The wrappers carry additional information required to
+//! [`GenericOQueueRef::inner`], for example). The wrappers carry additional information required to
 //! correctly and safely use the underlying implementation. They also provide abstractions which
 //! match the conceptual model of OQueues. Having this layer of wrappers will also simplify any
 //! future changes to the implementation.
+//!
+//! ## Element Descriptors
+//!
+//! The concrete OQueue traits and types take an element descriptor type instead of the type
+//! directly. This descriptor is a type implementing [`ElementDescriptor`]. It has a member
+//! `Element<'a>` which represents the actual element type for any lifetime (`for<'a> Element<'a>`
+//! in Rust terms). This is used in when producing values to accept values with any lifetime and
+//! attaching observers to pass a value with any lifetime to the projection.
+//!
 
 // TODO: Do we need a 5th struct `UntypedOQueueRef` has no message type parameter and represents an
 // unknown OQueue. It only supports casting dynamically to an `AnyOQueueRef<T>`.
-
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
@@ -62,6 +113,7 @@ use core::{
     ops::{Add, Sub},
 };
 
+mod element;
 pub mod export;
 mod implementation;
 pub mod query;
@@ -70,6 +122,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
+pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborStrongObserve, OQueueExport, ProduceCborError};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
@@ -136,12 +189,12 @@ pub enum TryProduceError<T> {
 }
 
 /// The interface provided by all OQueues.
-pub trait OQueueBase<T: ?Sized> {
+pub trait OQueueBase<D: ElementDescriptor + 'static> {
     /// Attach a strong observer which will observe values of type `U` which are extracted from
     /// the messages using the query.
     fn attach_strong_observer<U>(
         &self,
-        query: ObservationQuery<T, U>,
+        query: ObservationQuery<D, U>,
     ) -> Result<StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
@@ -154,7 +207,7 @@ pub trait OQueueBase<T: ?Sized> {
     /// untrusted or userspace-facing observers that must never be able to stall kernel execution.
     fn attach_revocable_strong_observer<U>(
         &self,
-        query: ObservationQuery<T, U>,
+        query: ObservationQuery<D, U>,
     ) -> Result<StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
@@ -167,7 +220,7 @@ pub trait OQueueBase<T: ?Sized> {
     /// observes the entire message without requiring a filter.
     fn attach_inline_strong_observer(
         &self,
-        f: impl Fn(&T) + Send + 'static,
+        f: impl for<'a> Fn(&'a D::Element<'a>) + Send + 'static,
     ) -> Result<InlineStrongObserver, OQueueError>;
 
     /// Attach a weak observer which will observer values of type `U` which are extracted from
@@ -176,7 +229,7 @@ pub trait OQueueBase<T: ?Sized> {
     fn attach_weak_observer<U>(
         &self,
         history_len: usize,
-        query: ObservationQuery<T, U>,
+        query: ObservationQuery<D, U>,
     ) -> Result<WeakObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
@@ -186,19 +239,19 @@ pub trait OQueueBase<T: ?Sized> {
 
     /// Erase the kind of OQueue. This will not allow additional operations to succeed. It
     /// simply makes the checks dynamic.
-    fn as_any_oqueue(&self) -> AnyOQueueRef<T>;
+    fn as_any_oqueue(&self) -> GenericAnyOQueueRef<D>;
 }
 
 #[cfg(not(baseline_asterinas))]
 #[doc(hidden)]
-pub fn trace_structured_data_with_len<T: ?Sized + Send + 'static>(
+pub fn trace_structured_data_with_len<'a, D: ElementDescriptor>(
     path: StaticPath,
-    value: &T,
+    value: &'a D::Element<'a>,
     length: usize,
-    producer: &'static spin::Once<RefProducer<T>>,
+    producer: &'static spin::Once<GenericRefProducer<D>>,
 ) {
     let producer = producer.call_once(|| {
-        let oqueue = OQueueRef::<T>::new(length, Path::Static(path));
+        let oqueue = GenericOQueueRef::<D>::new(length, Path::Static(path));
         oqueue.attach_ref_producer().unwrap()
     });
 
@@ -206,9 +259,9 @@ pub fn trace_structured_data_with_len<T: ?Sized + Send + 'static>(
 }
 
 /// An OQueue for communication which support producing by value and consumers.
-pub trait ConsumableOQueue<T>: OQueueBase<T>
+pub trait ConsumableOQueue<T>: OQueueBase<LifetimelessElementDescriptor<T>>
 where
-    T: Send,
+    T: Send + 'static,
 {
     /// Attach a producer to the queue which will use it for communication by moving messaged
     /// into the OQueue.
@@ -227,28 +280,33 @@ where
 }
 
 /// An OQueue for observation which support producing by reference and does not allow consumers.
-pub trait OQueue<T: ?Sized>: OQueueBase<T> {
+pub trait OQueue<D: ElementDescriptor + 'static>: OQueueBase<D> {
     /// Attach a producer to the queue which will be used to observe state, instead of communicate.
     /// OQueues used this way cannot have consumers.
-    fn attach_ref_producer(&self) -> Result<RefProducer<T>, OQueueError>;
+    fn attach_ref_producer(&self) -> Result<GenericRefProducer<D>, OQueueError>;
 
     /// Produce a value for observation. The value can be taken by reference, since only observers
     /// are allowed, meaning that only values extracted from the the value need to be stored.
-    fn produce_ref(&self, v: &T) -> Result<(), OQueueError>;
+    fn produce_ref<'a>(&self, v: &'a D::Element<'a>) -> Result<(), OQueueError>;
 
     /// Try to produce a value for observation without blocking. Returns `Ok(false)` if the
     /// operation would block and was not produced, `Ok(true)` if the value was successfully
     /// produced.
-    fn try_produce_ref(&self, v: &T) -> Result<bool, OQueueError>;
+    fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> Result<bool, OQueueError>;
 }
 
 /// Generate an impl which forwards the OQueueBase trait to a member.
+///
+/// `$generic` is the impl's own generic parameter (bounded by `$generic_bound`), and `$md` is the
+/// [`ElementDescriptor`] type to implement `OQueueBase` for (usually `$generic` itself, except for
+/// wrappers like `ConsumableOQueueRef<T>` whose own parameter `T` is not a `ElementDescriptor`, but
+/// which implement `OQueueBase<LifetimelessElementDescriptor<T>>`).
 macro_rules! impl_oqueue_base_forward {
-    ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
-        impl<T: Send + 'static $($added_bounds)*> OQueueBase<T> for $type_name<T> {
+    ($type_name:ident, $generic:ident : $generic_bound:path, $md:ty, $member:ident) => {
+        impl<$generic: $generic_bound + 'static> OQueueBase<$md> for $type_name<$generic> {
             fn attach_strong_observer<U>(
                 &self,
-                query: ObservationQuery<T, U>,
+                query: ObservationQuery<$md, U>,
             ) -> Result<StrongObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
@@ -258,7 +316,7 @@ macro_rules! impl_oqueue_base_forward {
 
             fn attach_revocable_strong_observer<U>(
                 &self,
-                query: ObservationQuery<T, U>,
+                query: ObservationQuery<$md, U>,
             ) -> Result<StrongObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
@@ -269,7 +327,7 @@ macro_rules! impl_oqueue_base_forward {
             fn attach_weak_observer<U>(
                 &self,
                 history_len: usize,
-                query: ObservationQuery<T, U>,
+                query: ObservationQuery<$md, U>,
             ) -> Result<WeakObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
@@ -279,9 +337,8 @@ macro_rules! impl_oqueue_base_forward {
 
             fn attach_inline_strong_observer(
                 &self,
-                f: impl Fn(&T) + Send + 'static,
-            ) -> Result<InlineStrongObserver, OQueueError>
-            {
+                f: impl for<'a> Fn(&'a <$md as ElementDescriptor>::Element<'a>) + Send + 'static,
+            ) -> Result<InlineStrongObserver, OQueueError> {
                 self.$member.attach_inline_strong_observer(f)
             }
 
@@ -289,7 +346,7 @@ macro_rules! impl_oqueue_base_forward {
                 self.$member.path()
             }
 
-            fn as_any_oqueue(&self) -> AnyOQueueRef<T> {
+            fn as_any_oqueue(&self) -> GenericAnyOQueueRef<$md> {
                 self.$member.as_any_oqueue()
             }
         }
@@ -297,9 +354,13 @@ macro_rules! impl_oqueue_base_forward {
 }
 
 /// Generate an impl which forwards the ConsumableOQueue trait to a member.
+///
+/// `$self_ty` is the full `Self` type of the impl (usually `$type_name<T>`, except for
+/// `AnyOQueueRef`, whose own parameter is a [`ElementDescriptor`], so it implements
+/// `ConsumableOQueue<T>` only for `AnyOQueueRef<LifetimelessElementDescriptor<T>>`).
 macro_rules! impl_consumable_oqueue_forward {
-    ($type_name:ident, $member:ident) => {
-        impl<T: Send + 'static> ConsumableOQueue<T> for $type_name<T> {
+    ($self_ty:ty, $member:ident) => {
+        impl<T: Send + 'static> ConsumableOQueue<T> for $self_ty {
             fn attach_value_producer(&self) -> Result<ValueProducer<T>, OQueueError> {
                 self.$member.attach_value_producer()
             }
@@ -323,19 +384,17 @@ macro_rules! impl_consumable_oqueue_forward {
 
 /// Generate an impl which forwards the OQueue trait to a member.
 macro_rules! impl_oqueue_forward {
-    ($type_name:ident, $member:ident, [$($added_bounds:tt)*]) => {
-        impl<T: Send + 'static $($added_bounds)*> OQueue<T> for $type_name<T> {
-            fn attach_ref_producer(
-                &self,
-            ) -> Result<RefProducer<T>, OQueueError> {
+    ($type_name:ident, $member:ident) => {
+        impl<D: ElementDescriptor + 'static> OQueue<D> for $type_name<D> {
+            fn attach_ref_producer(&self) -> Result<GenericRefProducer<D>, OQueueError> {
                 self.$member.attach_ref_producer()
             }
 
-            fn produce_ref(&self, v: &T) -> Result<(), OQueueError> {
+            fn produce_ref<'a>(&self, v: &'a D::Element<'a>) -> Result<(), OQueueError> {
                 Ok(self.$member.produce_ref(v))
             }
 
-            fn try_produce_ref(&self, v: &T) -> Result<bool, OQueueError> {
+            fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> Result<bool, OQueueError> {
                 Ok(self.$member.try_produce_ref(v))
             }
         }
@@ -362,34 +421,68 @@ macro_rules! clone_without_t {
 
 /// A dynamically typed OQueue that allows attempting any kind of attachment, but dynamically
 /// returns errors for unsupported ones.
-pub struct AnyOQueueRef<T: ?Sized> {
-    inner: Arc<implementation::OQueueImplementation<T>>,
+///
+/// Use [`AnyOQueueRef`] any time you would need to explicitly specify the type parameter.
+pub struct GenericAnyOQueueRef<D: ElementDescriptor> {
+    inner: Arc<implementation::OQueueImplementation<D>>,
 }
 
-clone_without_t!(AnyOQueueRef, : ?Sized);
+/// A short-hand for [`GenericAnyOQueueRef`] using the [`Element::Descriptor`]. Use the underlying type
+/// directly if you are not explicitly specifying the type parameter.
+pub type AnyOQueueRef<T> = GenericAnyOQueueRef<<T as Element>::Descriptor>;
+
+clone_without_t!(GenericAnyOQueueRef, : ElementDescriptor + 'static);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_base_forward!(AnyOQueueRef, inner, [+ ?Sized]);
-impl_consumable_oqueue_forward!(AnyOQueueRef, inner);
-impl_oqueue_forward!(AnyOQueueRef, inner, [+ ?Sized]);
+impl_oqueue_base_forward!(GenericAnyOQueueRef, D: ElementDescriptor, D, inner);
+impl_consumable_oqueue_forward!(GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>, inner);
+impl_oqueue_forward!(GenericAnyOQueueRef, inner);
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
-pub struct OQueueBaseRef<T> {
-    inner: Arc<implementation::OQueueImplementation<T>>,
+///
+/// Use [`OQueueBaseRef`] any time you would need to explicitly specify the type parameter.
+pub struct GenericOQueueBaseRef<D: ElementDescriptor> {
+    inner: Arc<implementation::OQueueImplementation<D>>,
 }
 
-clone_without_t!(OQueueBaseRef,);
+/// A short-hand for [`GenericOQueueBaseRef`] using the [`Element::Descriptor`]. Use the underlying type
+/// directly if you are not explicitly specifying the type parameter.
+pub type OQueueBaseRef<T> = GenericOQueueBaseRef<<T as Element>::Descriptor>;
+
+clone_without_t!(GenericOQueueBaseRef, : ElementDescriptor + 'static);
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_base_forward!(OQueueBaseRef, inner, []);
+impl_oqueue_base_forward!(GenericOQueueBaseRef, D: ElementDescriptor, D, inner);
 
 /// A reference to an OQueue which supports consumers. These OQueues support publication is by value
-/// so that ownership of the message can be transferred to the consumer.
+/// so that ownership of the message can be transferred to the consumer. Because of this, only
+/// `'static` types are supported.
+///
+/// (The [`ElementDescriptor`] will always be [`LifetimelessElementDescriptor<T>`], so this does not
+/// need to take a descriptor.)
 pub struct ConsumableOQueueRef<T: 'static> {
-    inner: Arc<implementation::OQueueImplementation<T>>,
+    inner: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
 }
 
-clone_without_t!(ConsumableOQueueRef, : 'static);
+// Not using `clone_without_t!` because, unlike the other `*Ref` wrappers, `inner`'s type parameter
+// (`LifetimelessElementDescriptor<T>`) is not the same as this type's own parameter (`T`).
+impl<T: 'static> Clone for ConsumableOQueueRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<T: 'static> ConsumableOQueueRef<T> {
+    /// Convert a strong OQueue reference (as in [`alloc::sync::Arc`]) to a weak OQueue reference
+    /// (as in [`alloc::sync::Weak`]).
+    pub fn downgrade(&self) -> WeakAnyOQueueRef<LifetimelessElementDescriptor<T>> {
+        WeakAnyOQueueRef {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
 
 impl<T: Send + 'static> ConsumableOQueueRef<T> {
     /// Create a new OQueue with the specified buffer length and support for produce by value and
@@ -416,18 +509,22 @@ impl<T: Send + 'static> ConsumableOQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_base_forward!(ConsumableOQueueRef, inner, []);
-impl_consumable_oqueue_forward!(ConsumableOQueueRef, inner);
+impl_oqueue_base_forward!(ConsumableOQueueRef, T: Send, LifetimelessElementDescriptor<T>, inner);
+impl_consumable_oqueue_forward!(ConsumableOQueueRef<T>, inner);
 
 /// A reference to an observation OQueue. Observation OQueues do not have consumers and can publish
 /// values by reference.
-pub struct OQueueRef<T: ?Sized + 'static> {
-    inner: Arc<implementation::OQueueImplementation<T>>,
+pub struct GenericOQueueRef<D: ElementDescriptor + 'static> {
+    inner: Arc<implementation::OQueueImplementation<D>>,
 }
 
-clone_without_t!(OQueueRef, : ?Sized + 'static);
+/// A short-hand for [`GenericOQueueRef`] using the [`Element::Descriptor`]. Use the underlying type
+/// directly if you are not explicitly specifying the type parameter.
+pub type OQueueRef<T> = GenericOQueueRef<<T as Element>::Descriptor>;
 
-impl<T: ?Sized + Send + 'static> OQueueRef<T> {
+clone_without_t!(GenericOQueueRef, : ElementDescriptor + 'static);
+
+impl<D: ElementDescriptor + 'static> GenericOQueueRef<D> {
     /// Create a new observation OQueue with the specified buffer length.
     pub fn new(len: usize, path: Path) -> Self {
         let ret = Self {
@@ -451,15 +548,19 @@ impl<T: ?Sized + Send + 'static> OQueueRef<T> {
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
-impl_oqueue_base_forward!(OQueueRef, inner, [+ ?Sized]);
-impl_oqueue_forward!(OQueueRef, inner, [+ ?Sized]);
+impl_oqueue_base_forward!(GenericOQueueRef, D: ElementDescriptor, D, inner);
+impl_oqueue_forward!(GenericOQueueRef, inner);
 
 /// A weak reference to an OQueue. This has the same semantics as [`alloc::sync::Weak`].
-pub struct WeakAnyOQueueRef<T: ?Sized + 'static> {
-    inner: Weak<implementation::OQueueImplementation<T>>,
+pub struct WeakAnyOQueueRef<D: ElementDescriptor + 'static> {
+    inner: Weak<implementation::OQueueImplementation<D>>,
 }
 
-impl<T: ?Sized + 'static> Clone for WeakAnyOQueueRef<T> {
+/// A short-hand for [`WeakAnyOQueueRef`] using the [`Element::Descriptor`]. Use the underlying type
+/// directly if you are not explicitly specifying the type parameter.
+pub type ElementWeakAnyOQueueRef<T> = WeakAnyOQueueRef<<T as Element>::Descriptor>;
+
+impl<D: ElementDescriptor + 'static> Clone for WeakAnyOQueueRef<D> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -467,17 +568,19 @@ impl<T: ?Sized + 'static> Clone for WeakAnyOQueueRef<T> {
     }
 }
 
-impl<T: ?Sized + 'static> WeakAnyOQueueRef<T> {
+impl<D: ElementDescriptor + 'static> WeakAnyOQueueRef<D> {
     /// Get a strong reference to the OQueue if it still exists.
-    pub fn upgrade(&self) -> Option<AnyOQueueRef<T>> {
-        self.inner.upgrade().map(|inner| AnyOQueueRef { inner })
+    pub fn upgrade(&self) -> Option<GenericAnyOQueueRef<D>> {
+        self.inner
+            .upgrade()
+            .map(|inner| GenericAnyOQueueRef { inner })
     }
 }
 
 /// An attachment to an OQueue which allows transferring ownership of messages from the producer to
 /// the consumer without copying or cloning.
-pub struct ValueProducer<T> {
-    oqueue: Arc<implementation::OQueueImplementation<T>>,
+pub struct ValueProducer<T: 'static> {
+    oqueue: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
 }
 
 impl<T: Send + 'static> ValueProducer<T> {
@@ -495,20 +598,22 @@ impl<T: Send + 'static> ValueProducer<T> {
 
 /// An attachment to an OQueue which allows producing values values by reference for observation.
 /// There can be no consumers since the message is not moved into the OQueue.
-pub struct RefProducer<T: ?Sized> {
-    oqueue: Arc<implementation::OQueueImplementation<T>>,
+///
+/// Use [`RefProducer`] any time you would need to explicitly specify the type parameter.
+pub struct GenericRefProducer<D: ElementDescriptor> {
+    oqueue: Arc<implementation::OQueueImplementation<D>>,
 }
 
-impl<T: Send + ?Sized + 'static> RefProducer<T> {
+impl<D: ElementDescriptor + 'static> GenericRefProducer<D> {
     /// Produce a value for observation. The value can be taken by reference, since only observers
     /// are allowed, meaning that only values extracted from the the value need to be stored.
-    pub fn produce_ref(&self, v: &T) {
+    pub fn produce_ref<'a>(&self, v: &'a D::Element<'a>) {
         self.oqueue.produce_ref(v)
     }
 
     /// Try to produce a value for observation without blocking. Returns `false` if the operation
     /// would block, `true` if the value was successfully produced.
-    pub fn try_produce_ref(&self, v: &T) -> bool {
+    pub fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> bool {
         self.oqueue.try_produce_ref(v)
     }
 
@@ -519,10 +624,14 @@ impl<T: Send + ?Sized + 'static> RefProducer<T> {
     }
 }
 
+/// A short-hand for [`GenericRefProducer`] using the [`Element::Descriptor`]. Use the underlying type
+/// directly if you are not explicitly specifying the type parameter.
+pub type RefProducer<T> = GenericRefProducer<<T as Element>::Descriptor>;
+
 /// An attachment to an OQueue which allows consuming values from the OQueue. Consuming the value
 /// takes ownership.
 pub struct Consumer<T: 'static> {
-    oqueue: Arc<implementation::OQueueImplementation<T>>,
+    oqueue: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
     _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
@@ -583,7 +692,7 @@ impl<T: Send + 'static> Consumer<T> {
 /// A handle to an inline consumer. That consumer will be detached and no longer called when this is
 /// dropped.
 pub struct InlineConsumer<T: 'static> {
-    oqueue: Arc<implementation::OQueueImplementation<T>>,
+    oqueue: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
     _phantom: PhantomData<core::cell::Cell<()>>,
 }
 
@@ -829,7 +938,7 @@ mod test {
         trace_structured_data,
     };
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, Element)]
     struct Message {
         id: u32,
         payload: String,
@@ -860,7 +969,7 @@ mod test {
         let queue = OQueueRef::<u32>::new_anonymous(4);
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_revocable_strong_observer(ObservationQuery::<u32, u32>::identity())
+            .attach_revocable_strong_observer(ObservationQuery::identity())
             .unwrap();
 
         // Publish far more than the ring can hold. If a full strong observer blocked the producer,
@@ -909,7 +1018,7 @@ mod test {
 
     #[ktest]
     fn oqueue_strong_observe() {
-        let queue = OQueueRef::new(4, Path::test());
+        let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
@@ -939,7 +1048,7 @@ mod test {
     }
 
     fn setup_for_weak_observation(history: usize) -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::new(4, Path::test());
+        let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(history, ObservationQuery::new(|m: &Message| m.id))
@@ -998,8 +1107,8 @@ mod test {
 
         produce(10);
 
-        let queue =
-            registry::lookup_by_path::<u32>(&path.into()).expect("expected OQueue to exist");
+        let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
+            .expect("expected OQueue to exist");
         let observer = queue
             .attach_weak_observer(2, ObservationQuery::identity())
             .unwrap();
@@ -1023,8 +1132,8 @@ mod test {
 
         produce(20);
 
-        let queue =
-            registry::lookup_by_path::<u32>(&path.into()).expect("expected OQueue to exist");
+        let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
+            .expect("expected OQueue to exist");
         let observer = queue
             .attach_weak_observer(2, ObservationQuery::identity())
             .unwrap();
@@ -1097,7 +1206,7 @@ mod test {
     }
 
     fn setup_for_weak_observation_filtered() -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::new(4, Path::test());
+        let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(
@@ -1222,7 +1331,7 @@ mod test {
 
     #[ktest]
     fn oqueue_inline_strong_observer() {
-        let queue = OQueueRef::new(4, Path::test());
+        let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
