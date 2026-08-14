@@ -134,6 +134,8 @@ run_benchmark() {
         asterinas_cmd_arr+=(INTEL_TDX=1)
     fi
 
+    local linux_append="console=ttyS0 rdinit=/benchmark/common/bench_runner.sh ${benchmark} linux mitigations=off hugepages=0 transparent_hugepage=never quiet"
+
     local linux_cmd_arr=(
         qemu-system-x86_64
         --no-reboot
@@ -146,7 +148,6 @@ run_benchmark() {
         -drive "if=none,format=raw,id=x0,file=${BENCHMARK_ROOT}/../../build/ext2.img"
         -device "virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off"
         -device "virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off,csum=off,guest_csum=off,ctrl_guest_offloads=off,guest_tso4=off,guest_tso6=off,guest_ecn=off,guest_ufo=off,host_tso4=off,host_tso6=off,host_ecn=off,mrg_rxbuf=off,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,ctrl_rx_extra=off,guest_announce=off,ctrl_mac_addr=off,host_ufo=off,guest_uso4=off,guest_uso6=off,host_uso=off"
-        -append "console=ttyS0 rdinit=/benchmark/common/bench_runner.sh ${benchmark} linux mitigations=off hugepages=0 transparent_hugepage=never quiet"
         -netdev "tap,id=net01,script=${BENCHMARK_ROOT}/../../../../tools/net/qemu-ifup.sh,downscript=${BENCHMARK_ROOT}/../../../../tools/net/qemu-ifdown.sh,vhost=on"
         -nographic
     )
@@ -165,16 +166,46 @@ run_benchmark() {
         )
     fi
 
+    # A benchmark that ships a seeds.txt file runs once per seed, rebooting the
+    # VM in between so every run starts from a freshly booted machine state.
+    # The list can be overridden with BENCHMARK_DBBENCH_MIXGRAPH_SEEDS
+    # (comma-separated). The same list is passed to both OSes, one seed per boot.
+    local seeds=""
+    if [[ -f "${BENCHMARK_ROOT}/${benchmark}/seeds.txt" ]]; then
+        if [[ -n "${BENCHMARK_DBBENCH_MIXGRAPH_SEEDS}" ]]; then
+            seeds="${BENCHMARK_DBBENCH_MIXGRAPH_SEEDS//,/ }"
+        else
+            seeds=$(tr '\n' ' ' < "${BENCHMARK_ROOT}/${benchmark}/seeds.txt")
+        fi
+    fi
+
     # Run the benchmark depending on the mode
     case "${run_mode}" in
         "guest_only")
-            echo "Running benchmark ${benchmark} on Asterinas..."
-            # Execute directly from array, redirect stderr to stdout, then tee
-            "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
-            prepare_fs
-            echo "Running benchmark ${benchmark} on Linux..."
-            # Execute directly from array, redirect stderr to stdout, then tee
-            "${linux_cmd_arr[@]}" 2>&1 | tee "${LINUX_OUTPUT}"
+            if [[ -n "${seeds}" ]]; then
+                # Start from empty output files; per-boot runs append to them.
+                : > "${ASTER_OUTPUT}"
+                : > "${LINUX_OUTPUT}"
+                for seed in ${seeds}; do
+                    echo "Running benchmark ${benchmark} (seed ${seed}) on Asterinas..."
+                    # KCMDARGS becomes --kcmd-args and is visible in /proc/cmdline
+                    # inside the guest, where bench_runner.sh picks it up.
+                    "${asterinas_cmd_arr[@]}" "KCMDARGS=BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=${seed}" 2>&1 | tee -a "${ASTER_OUTPUT}"
+                    prepare_fs
+                    echo "Running benchmark ${benchmark} (seed ${seed}) on Linux..."
+                    # The token rides on the kernel command line, visible in
+                    # /proc/cmdline inside the guest.
+                    "${linux_cmd_arr[@]}" -append "${linux_append} BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=${seed}" 2>&1 | tee -a "${LINUX_OUTPUT}"
+                done
+            else
+                echo "Running benchmark ${benchmark} on Asterinas..."
+                # Execute directly from array, redirect stderr to stdout, then tee
+                "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
+                prepare_fs
+                echo "Running benchmark ${benchmark} on Linux..."
+                # Execute directly from array, redirect stderr to stdout, then tee
+                "${linux_cmd_arr[@]}" -append "${linux_append}" 2>&1 | tee "${LINUX_OUTPUT}"
+            fi
             ;;
         "host_guest")
             # Note: host_guest_bench_runner.sh expects commands as single strings.
@@ -183,7 +214,7 @@ run_benchmark() {
             local asterinas_cmd_str
             printf -v asterinas_cmd_str '%q ' "${asterinas_cmd_arr[@]}"
             local linux_cmd_str
-            printf -v linux_cmd_str '%q ' "${linux_cmd_arr[@]}"
+            printf -v linux_cmd_str '%q ' "${linux_cmd_arr[@]}" -append "${linux_append}"
 
             echo "Running benchmark ${benchmark} on host and guest..."
             bash "${BENCHMARK_ROOT}/common/host_guest_bench_runner.sh" \
@@ -212,6 +243,163 @@ parse_results() {
 
     generate_template "$unit" "$legend"
     parse_raw_results "$search_pattern" "$nth_occurrence" "$result_index" "$(extract_result_file "$bench_result")"
+}
+
+# Assemble the per-seed latency histograms of one OS from its SEED_HIST and
+# SEED_HIST_BUCKET lines. Produces a JSON object keyed by seed whose values are
+# nested {phase: {op: {headline stats, buckets: [...]}}} objects.
+histograms_from_lines() {
+    jq -sR '
+        split("\n")[:-1]
+        | map(select(length > 0) | split(" ")
+            | if .[0] == "SEED_HIST"
+              then { type: "head", seed: .[1], phase: .[2], op: .[3],
+                     stats: { count: (.[4] | tonumber), avg: (.[5] | tonumber),
+                              stddev: (.[6] | tonumber), min: (.[7] | tonumber),
+                              median: (.[8] | tonumber), max: (.[9] | tonumber),
+                              p50: (.[10] | tonumber), p75: (.[11] | tonumber),
+                              p99: (.[12] | tonumber), p99_9: (.[13] | tonumber),
+                              p99_99: (.[14] | tonumber) } }
+              else { type: "bucket", seed: .[1], phase: .[2], op: .[3],
+                     bucket: { left: (.[4] | tonumber), right: (.[5] | tonumber),
+                               count: (.[6] | tonumber) } }
+              end)
+        | group_by(.seed)
+        | map({ key: .[0].seed,
+                value: (reduce .[] as $r ({}; . as $acc
+              | if $r.type == "head"
+                then $acc | .[$r.phase][$r.op] = ($r.stats + { buckets: [] })
+                else $acc | .[$r.phase][$r.op].buckets += [$r.bucket]
+                end)) })
+        | from_entries
+    '
+}
+
+# Parse per-seed results from the raw outputs of a multi-seed benchmark run.
+# The benchmark emits one SEED_RESULT / SEED_FILL / SEED_TIME line per seed;
+# Linux and Asterinas must agree on both the seed count and their order.
+parse_multi_results() {
+    local benchmark="$1"
+    local bench_result="$2"
+    local result_file="$(extract_result_file "$bench_result")"
+
+    local linux_runs aster_runs
+    linux_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${LINUX_OUTPUT}" | tr -d '\r')
+    aster_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${ASTER_OUTPUT}" | tr -d '\r')
+
+    if [[ -z "${linux_runs}" || -z "${aster_runs}" ]]; then
+        echo "Error: No SEED_RESULT lines found in the benchmark output" >&2
+        exit 1
+    fi
+
+    local linux_count aster_count
+    linux_count=$(wc -l <<< "${linux_runs}")
+    aster_count=$(wc -l <<< "${aster_runs}")
+    if [[ "${linux_count}" -ne "${aster_count}" ]]; then
+        echo "Error: Mismatched number of seeds (linux=${linux_count}, asterinas=${aster_count})" >&2
+        exit 1
+    fi
+    if [[ -f "${BENCHMARK_ROOT}/${benchmark}/seeds.txt" ]]; then
+        local expected_count
+        expected_count=$(wc -l < "${BENCHMARK_ROOT}/${benchmark}/seeds.txt")
+        if [[ "${linux_count}" -ne "${expected_count}" ]]; then
+            echo "Warning: expected ${expected_count} seeds, got ${linux_count}" >&2
+        fi
+    fi
+
+    local linux_fills aster_fills
+    linux_fills=$(awk '/^SEED_FILL /{print $2, $3}' "${LINUX_OUTPUT}" | tr -d '\r')
+    aster_fills=$(awk '/^SEED_FILL /{print $2, $3}' "${ASTER_OUTPUT}" | tr -d '\r')
+
+    local linux_times aster_times
+    linux_times=$(awk '/^SEED_TIME /{print $2, $3, $4, $5}' "${LINUX_OUTPUT}" | tr -d '\r')
+    aster_times=$(awk '/^SEED_TIME /{print $2, $3, $4, $5}' "${ASTER_OUTPUT}" | tr -d '\r')
+
+    # Per-seed latency histograms. Each seed emits one SEED_HIST headline line
+    # plus SEED_HIST_BUCKET rows per operation type (write for fill; read,
+    # write, seek for mix). Both OSes must agree on the block count.
+    local linux_hist_lines aster_hist_lines
+    linux_hist_lines=$(grep '^SEED_HIST' "${LINUX_OUTPUT}" | tr -d '\r' || true)
+    aster_hist_lines=$(grep '^SEED_HIST' "${ASTER_OUTPUT}" | tr -d '\r' || true)
+
+    if [[ -z "${linux_hist_lines}" || -z "${aster_hist_lines}" ]]; then
+        echo "Error: No SEED_HIST lines found in the benchmark output" >&2
+        exit 1
+    fi
+
+    local linux_hist_head aster_hist_head
+    linux_hist_head=$(awk '/^SEED_HIST /{n++} END{print n+0}' "${LINUX_OUTPUT}")
+    aster_hist_head=$(awk '/^SEED_HIST /{n++} END{print n+0}' "${ASTER_OUTPUT}")
+    if [[ "${linux_hist_head}" -ne "${aster_hist_head}" ]]; then
+        echo "Error: Mismatched number of histogram blocks (linux=${linux_hist_head}, asterinas=${aster_hist_head})" >&2
+        exit 1
+    fi
+    if [[ "${linux_hist_head}" -ne $(( linux_count * 4 )) ]]; then
+        echo "Warning: expected $(( linux_count * 4 )) histogram blocks per OS, got ${linux_hist_head} on linux" >&2
+    fi
+
+    local linux_hists aster_hists
+    linux_hists=$(histograms_from_lines <<< "${linux_hist_lines}")
+    aster_hists=$(histograms_from_lines <<< "${aster_hist_lines}")
+
+    # All per-seed streams follow the same seed order as the results.
+    paste -d ' ' \
+        <(printf '%s\n' "${linux_runs}") \
+        <(printf '%s\n' "${aster_runs}") \
+        <(printf '%s\n' "${linux_fills}") \
+        <(printf '%s\n' "${aster_fills}") \
+        <(printf '%s\n' "${linux_times}") \
+        <(printf '%s\n' "${aster_times}") \
+        | jq -sR \
+            --arg benchmark "${benchmark}" \
+            --argjson linux_hists "${linux_hists}" \
+            --argjson aster_hists "${aster_hists}" '
+            def median:
+                sort as $s
+                | (length / 2) as $mid
+                | if length % 2 == 1 then $s[$mid | floor] else (($s[$mid - 1] + $s[$mid]) / 2) end;
+            def stats: {count: length, median: median, mean: (add / length), min: min, max: max};
+            split("\n")[:-1]
+            | map(split(" ") | {
+                seed: .[0],
+                linux: (.[1] | tonumber),
+                asterinas: (.[3] | tonumber),
+                fill: {
+                    linux: (.[5] | tonumber),
+                    asterinas: (.[7] | tonumber)
+                },
+                timing: {
+                    linux: {fill_s: (.[9] | tonumber), mix_s: (.[10] | tonumber), total_s: (.[11] | tonumber)},
+                    asterinas: {fill_s: (.[13] | tonumber), mix_s: (.[14] | tonumber), total_s: (.[15] | tonumber)}
+                }
+              })
+            | map(. + { histogram: {
+                    linux:     ($linux_hists[.seed] // null),
+                    asterinas: ($aster_hists[.seed] // null)
+                } })
+            | . as $runs
+            | {
+                benchmark: $benchmark,
+                mode: "multi_seed",
+                runs: $runs,
+                summary: {
+                    linux: ($runs | map(.linux) | stats),
+                    asterinas: ($runs | map(.asterinas) | stats)
+                },
+                timing_summary: {
+                    linux: {
+                        fill_s: ($runs | map(.timing.linux.fill_s) | add),
+                        mix_s: ($runs | map(.timing.linux.mix_s) | add),
+                        total_s: ($runs | map(.timing.linux.total_s) | add)
+                    },
+                    asterinas: {
+                        fill_s: ($runs | map(.timing.asterinas.fill_s) | add),
+                        mix_s: ($runs | map(.timing.asterinas.mix_s) | add),
+                        total_s: ($runs | map(.timing.asterinas.total_s) | add)
+                    }
+                }
+              }' > "${result_file}"
+    echo "Results written to ${result_file}"
 }
 
 # Clean up temporary files
@@ -262,7 +450,11 @@ main() {
 
     # Parse results if benchmark configuration exists
     if [[ -f "$bench_result" ]]; then
-        parse_results "$bench_result"
+        if [[ "$(yq -r '.multi_run // false' "$bench_result")" == "true" ]]; then
+            parse_multi_results "$benchmark" "$bench_result"
+        else
+            parse_results "$bench_result"
+        fi
     else
         for job in "${BENCHMARK_ROOT}/${benchmark}"/bench_results/*; do
             [[ -f "$job" ]] && parse_results "$job"
