@@ -49,6 +49,7 @@ keyable-arc.workspace = true
 lending-iterator.workspace = true
 logo-ascii-art.workspace = true
 lru.workspace = true
+mariposa_benchmark.workspace = true
 mariposa_data_capture.workspace = true
 minicbor-serde.workspace = true
 no_std_io2.workspace = true

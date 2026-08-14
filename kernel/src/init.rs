@@ -200,6 +200,11 @@ fn first_kthread() {
             .expect("Failed to run the init process")
     });
 
+    // The OQFS round-trip benchmark blocks until its userspace peer attaches, so it can only start
+    // once the init process exists.
+    #[cfg(not(baseline_asterinas))]
+    benchmarks::oqueue_roundtrip::init_after_init_process();
+
     #[cfg(not(baseline_asterinas))]
     if kcmdline::get_kernel_cmd_line()
         .expect("no kernel command line")

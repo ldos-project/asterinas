@@ -11,6 +11,8 @@ mod fn_call;
 #[cfg(not(baseline_asterinas))]
 mod legacy_oqueue;
 mod oqueue;
+#[cfg(not(baseline_asterinas))]
+pub(super) mod oqueue_roundtrip;
 
 pub trait Benchmark {
     fn init(&mut self, _n_threads: usize, _n_repeat: usize, _iter: usize) {}

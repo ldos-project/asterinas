@@ -227,6 +227,7 @@ dependencies = [
  "logo-ascii-art",
  "loongArch64",
  "lru",
+ "mariposa_benchmark",
  "mariposa_data_capture",
  "minicbor-serde",
  "no_std_io2",
@@ -1280,6 +1281,17 @@ name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "mariposa_benchmark"
+version = "0.1.0"
+dependencies = [
+ "aster-cmdline",
+ "aster-logger",
+ "mariposa_data_capture",
+ "ostd",
+ "serde",
+]
 
 [[package]]
 name = "mariposa_data_capture"

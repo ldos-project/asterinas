@@ -34,31 +34,6 @@ if grep -q 'raid.selection=userspace' /proc/cmdline; then
     raid_policy_server &
 fi
 
-# The OQFS round-trip microbenchmark: when booted with `oqbench.enable`, launch its userspace peer
-# (as root) and any `oqbench.busy_procs` competing busy-loop processes, both configured from
-# `/proc/cmdline`. The peer writes the samples to a results file after the run. With
-# `oqbench.await_fetch` the guest stays up (via the `sleep infinity` below) so the host CLI can scp
-# that file and only then power the guest off; without it the kernel driver powers off itself.
-if grep -q 'oqbench.enable' /proc/cmdline; then
-    # For a host-driven run, start the SSH server so the host can fetch the results. eth0 is already
-    # configured by the kernel (10.0.2.15), so only dropbear is needed; `start_dropbear.sh` has no
-    # shebang, so run it through the shell explicitly.
-    if grep -q 'oqbench.await_fetch' /proc/cmdline; then
-        sh /bin/start_dropbear.sh
-    fi
-    oqbench_peer_compute=$(sed -n 's/.*oqbench\.peer_compute=\([0-9]*\).*/\1/p' /proc/cmdline)
-    oqbench_busy_procs=$(sed -n 's/.*oqbench\.busy_procs=\([0-9]*\).*/\1/p' /proc/cmdline)
-    i=0
-    while [ "$i" -lt "${oqbench_busy_procs:-0}" ]; do
-        sh -c 'while true; do :; done' &
-        i=$((i + 1))
-    done
-    oqbench_server --compute "${oqbench_peer_compute:-0}" &
-    # Block so `init` does not race ahead; the kernel driver (or the host, for a fetched run) powers
-    # the machine off when it is done.
-    sleep infinity
-fi
-
 mount -t ext2 /dev/raid /raid1
 
 # When the init process starts,

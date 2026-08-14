@@ -172,12 +172,13 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
 # `AUTO_TEST=raid` rather than being an always-applied `OSDK.toml` kcmd arg.
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="raid.selection=userspace"
 else ifeq ($(AUTO_TEST), oqbench)
-# Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel driver <->
-# userspace peer pipeline completes a clean round trip. The host CLI in `tools/oqbench` drives real
-# runs. No `--init-args` are needed: `init` blocks itself until the kernel driver powers off.
+# Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel thread <->
+# userspace peer pipeline completes a clean round trip and the samples reach the capture device. The
+# host CLI in `tools/oqbench` drives real runs. Exported so the initramfs build picks up the
+# benchmark tree too; the `BENCHMARK` rule below supplies the `--init-args`.
+export BENCHMARK := oqbench/roundtrip
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.enable"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.iterations=2000"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.warmup=200"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.timeout_ms=2000"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
@@ -366,7 +367,7 @@ else ifeq ($(AUTO_TEST), raid)
 	@tail --lines 100 qemu.log | grep -q "All raid1 test passed" \
 		|| (echo "RAID test failed" && exit 1)
 else ifeq ($(AUTO_TEST), oqbench)
-	@tail --lines 100 qemu.log | grep -q "OQBENCH: run complete" \
+	@tail --lines 100 qemu.log | grep -q "MARIPOSA_BENCH|end oqueue_roundtrip" \
 		|| (echo "oqbench round trip did not complete" && exit 1)
 else ifeq ($(AUTO_TEST), vsock)
 	@tail --lines 100 qemu.log | grep -q "Vsock test passed." \

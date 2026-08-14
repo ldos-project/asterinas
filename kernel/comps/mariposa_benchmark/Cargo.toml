@@ -1,5 +1,5 @@
 [package]
-name = "aster-oqueue-roundtrip-bench"
+name = "mariposa_benchmark"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,8 +8,11 @@ edition = "2024"
 ostd = { workspace = true }
 # `println!` to the console devices that `qemu.log` captures (unlike `ostd::early_print`).
 aster-logger = { workspace = true }
-# Registers the `oqbench.*` kernel-command-line parameters.
+# Registers the benchmarks' kernel-command-line parameters.
 aster-cmdline = { workspace = true }
+# Writes captured samples out in the standard Mariposa capture format.
+mariposa_data_capture = { workspace = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true
