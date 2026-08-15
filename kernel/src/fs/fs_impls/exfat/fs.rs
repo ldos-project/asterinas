@@ -5,23 +5,16 @@
 
 use core::{num::NonZeroUsize, ops::Range, sync::atomic::AtomicU64};
 
-#[cfg(baseline_asterinas)]
-use aster_block::bio::BioWaiter;
 use aster_block::{
     BlockDevice,
-    bio::{BioDirection, BioSegment},
+    bio::{BioDirection, BioSegment, BioWaiter},
     id::BlockId,
 };
 use device_id::DeviceId;
 use hashbrown::HashMap;
 use lru::LruCache;
+use ostd::mm::Segment;
 pub(super) use ostd::mm::VmIo;
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef},
-    orpc_impl,
-};
-use ostd::{mm::Segment, new_server, orpc::orpc_server};
 
 use super::{
     bitmap::ExfatBitmap,
@@ -30,19 +23,13 @@ use super::{
     super_block::{ExfatBootSector, ExfatSuperBlock},
     upcase_table::ExfatUpcaseTable,
 };
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::CachePage;
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::PageCacheBackend;
-#[cfg(not(baseline_asterinas))]
-use crate::fs::vfs::server_traits::{self, PageIOObservable as _, PageStore};
 use crate::{
     fs::{
         exfat::{constants::*, inode::Ino},
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::Inode,
-            page_cache::PageCache,
+            page_cache::{CachePage, PageCache, PageCacheBackend},
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -50,7 +37,6 @@ use crate::{
 };
 
 #[derive(Debug)]
-#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 pub struct ExfatFs {
     block_device: Arc<dyn BlockDevice>,
     super_block: ExfatSuperBlock,
@@ -90,7 +76,7 @@ impl ExfatFs {
         // Load the super_block
         let super_block = Self::read_super_block(block_device.as_ref())?;
         let fs_size = super_block.num_clusters as usize * super_block.cluster_size as usize;
-        let exfat_fs = new_server!(|weak_self| ExfatFs {
+        let exfat_fs = Arc::new_cyclic(|weak_self| ExfatFs {
             block_device,
             super_block,
             bitmap: Arc::new(Mutex::new(ExfatBitmap::default())),
@@ -391,78 +377,6 @@ impl ExfatFs {
     }
 }
 
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl server_traits::PageIOObservable for ExfatFs {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
-}
-
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl PageStore for ExfatFs {
-    fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
-        if self.fs_size() < req.handle.idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid read size")
-        }
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(req.handle.frame.clone()).into(),
-            BioDirection::FromDevice,
-        );
-
-        // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
-
-        self.block_device.read_blocks_async_with_closure(
-            BlockId::new(req.handle.idx as u64),
-            bio_segment,
-            move |b| {
-                // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce_ref(&req.handle.idx);
-                req.reply_handle.produce(req.handle);
-            },
-        )?;
-
-        Ok(())
-    }
-
-    fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
-        if self.fs_size() < req.handle.idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid write size");
-        }
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(req.handle.frame.clone()).into(),
-            BioDirection::ToDevice,
-        );
-
-        // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
-
-        self.block_device.write_blocks_async_with_closure(
-            BlockId::new(req.handle.idx as u64),
-            bio_segment,
-            move |b| {
-                if let Some(reply_handle) = req.reply_handle {
-                    // TODO(arthurp, #120): This can crash if produce blocks.
-                    reply_producer.produce_ref(&req.handle.idx);
-                    reply_handle.produce(req.handle);
-                }
-            },
-        )?;
-
-        Ok(())
-    }
-
-    fn npages(&self) -> Result<usize> {
-        Ok(self.fs_size() / PAGE_SIZE)
-    }
-}
-
-#[cfg(baseline_asterinas)]
 impl PageCacheBackend for ExfatFs {
     fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
         if self.fs_size() < idx * PAGE_SIZE {

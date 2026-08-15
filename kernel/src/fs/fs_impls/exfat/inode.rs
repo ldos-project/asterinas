@@ -7,23 +7,12 @@ use alloc::string::String;
 use core::{cmp::Ordering, time::Duration};
 
 pub(super) use align_ext::AlignExt;
-#[cfg(baseline_asterinas)]
-use aster_block::bio::BioWaiter;
 use aster_block::{
     BLOCK_SIZE, SECTOR_SIZE,
-    bio::{BioDirection, BioSegment},
+    bio::{BioDirection, BioSegment, BioWaiter},
     id::{Bid, BlockId},
 };
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::{
-    oqueue::{OQueue as _, OQueueRef},
-    orpc_impl,
-};
-use ostd::{
-    mm::{Segment, VmIo, io::util::HasVmReaderWriter},
-    new_server,
-    orpc::orpc_server,
-};
+use ostd::mm::{Segment, VmIo, io::util::HasVmReaderWriter};
 
 use super::{
     constants::*,
@@ -35,12 +24,6 @@ use super::{
     fs::{EXFAT_ROOT_INO, ExfatMountOptions},
     utils::{DosTimestamp, make_hash_index},
 };
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::CachePage;
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::PageCacheBackend;
-#[cfg(not(baseline_asterinas))]
-use crate::fs::vfs::server_traits::{self, PageIOObservable as _};
 use crate::{
     fs::{
         exfat::{dentry::ExfatDentryIterator, fat::ExfatChain, fs::ExfatFs},
@@ -49,7 +32,7 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             inode::{Extension, Inode, InodeIo, Metadata, MknodType, SymbolicLink},
-            page_cache::PageCache,
+            page_cache::{CachePage, PageCache, PageCacheBackend},
             path::{is_dot, is_dot_or_dotdot, is_dotdot},
         },
     },
@@ -95,7 +78,6 @@ impl FatAttr {
 }
 
 #[derive(Debug)]
-#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 pub struct ExfatInode {
     inner: RwMutex<ExfatInodeInner>,
     extension: Extension,
@@ -154,80 +136,6 @@ struct ExfatInodeInner {
     page_cache: PageCache,
 }
 
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl server_traits::PageIOObservable for ExfatInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
-}
-
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl server_traits::PageStore for ExfatInode {
-    fn read_page_async(&self, req: server_traits::AsyncReadRequest) -> Result<()> {
-        let inner = self.inner.read();
-        if inner.size < req.handle.idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "Invalid read size");
-        }
-        let sector_id =
-            inner.get_sector_id(req.handle.idx * PAGE_SIZE / inner.fs().sector_size())?;
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(req.handle.frame.clone()).into(),
-            BioDirection::FromDevice,
-        );
-        // Produce the handle to the ORPC queue
-        self.page_reads_oqueue().produce_ref(&req.handle.idx)?;
-        let reply_producer = self.page_reads_reply_oqueue().attach_ref_producer()?;
-
-        inner.fs().block_device().read_blocks_async_with_closure(
-            BlockId::from_offset(sector_id * inner.fs().sector_size()),
-            bio_segment,
-            move |b| {
-                // TODO(arthurp, #120): This can crash if produce blocks.
-                reply_producer.produce_ref(&req.handle.idx);
-                req.reply_handle.produce(req.handle);
-            },
-        )?;
-
-        Ok(())
-    }
-
-    fn write_page_async(&self, req: server_traits::AsyncWriteRequest) -> Result<()> {
-        let inner = self.inner.read();
-        let sector_size = inner.fs().sector_size();
-        let sector_id =
-            inner.get_sector_id(req.handle.idx * PAGE_SIZE / inner.fs().sector_size())?;
-        // FIXME: We may need to truncate the file if write_page fails.
-        // To fix this issue, we need to change the interface of the PageCacheBackend trait.
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(req.handle.frame.clone()).into(),
-            BioDirection::ToDevice,
-        );
-        // Produce the handle to the ORPC queue
-        self.page_writes_oqueue().produce_ref(&req.handle.idx)?;
-        let reply_producer = self.page_writes_reply_oqueue().attach_ref_producer()?;
-        inner.fs().block_device().write_blocks_async_with_closure(
-            BlockId::from_offset(sector_id * inner.fs().sector_size()),
-            bio_segment,
-            move |b| {
-                if let Some(reply_handle) = req.reply_handle {
-                    // TODO(arthurp, #120): This can crash if produce blocks.
-                    reply_producer.produce_ref(&req.handle.idx);
-                    reply_handle.produce(req.handle);
-                }
-            },
-        )?;
-        Ok(())
-    }
-
-    fn npages(&self) -> Result<usize> {
-        Ok(self.inner.read().size.align_up(PAGE_SIZE) / PAGE_SIZE)
-    }
-}
-
-#[cfg(baseline_asterinas)]
 impl PageCacheBackend for ExfatInode {
     fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
         let inner = self.inner.read();
@@ -938,7 +846,7 @@ impl ExfatInode {
 
         let name = ExfatName::new();
 
-        let inode = new_server!(|weak_self| ExfatInode {
+        let inode = Arc::new_cyclic(|weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino: EXFAT_ROOT_INO,
                 dentry_set_position: ExfatChainPosition::default(),
@@ -964,11 +872,6 @@ impl ExfatInode {
         });
 
         let inner = inode.inner.upread();
-
-        #[cfg(not(baseline_asterinas))]
-        {
-            inner.page_cache.start_prefetcher()?;
-        }
 
         let fs = inner.fs();
         let fs_guard = fs.lock();
@@ -1054,7 +957,7 @@ impl ExfatInode {
         )?;
 
         let name = dentry_set.get_name(fs.upcase_table())?;
-        let inode = new_server!(|weak_self| ExfatInode {
+        let inode = Arc::new_cyclic(|weak_self| ExfatInode {
             inner: RwMutex::new(ExfatInodeInner {
                 ino,
                 dentry_set_position,
@@ -1078,12 +981,6 @@ impl ExfatInode {
             }),
             extension: Extension::new(),
         });
-
-        #[cfg(not(baseline_asterinas))]
-        {
-            let inner = inode.inner.upread();
-            inner.page_cache.start_prefetcher()?;
-        }
 
         if matches!(inode_type, InodeType::Dir) {
             let inner = inode.inner.upread();

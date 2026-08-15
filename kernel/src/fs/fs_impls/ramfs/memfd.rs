@@ -6,22 +6,12 @@ use alloc::format;
 use core::time::Duration;
 
 use align_ext::AlignExt;
-#[cfg(baseline_asterinas)]
 use aster_block::bio::BioWaiter;
 use aster_rights::Rights;
 use inherit_methods_macro::inherit_methods;
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::{oqueue::OQueueRef, orpc_impl};
-use ostd::{new_server, orpc::orpc_server};
 use spin::Once;
 
 use super::fs::RamInode;
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::CachePage;
-#[cfg(baseline_asterinas)]
-use crate::fs::vfs::page_cache::PageCacheBackend;
-#[cfg(not(baseline_asterinas))]
-use crate::fs::vfs::server_traits::{AsyncReadRequest, AsyncWriteRequest};
 use crate::{
     fs::{
         file::{AccessMode, InodeHandle, InodeMode, InodeType, StatusFlags, mkmod},
@@ -29,8 +19,8 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             inode::{Extension, FallocMode, Inode, InodeIo, Metadata},
+            page_cache::{CachePage, PageCacheBackend},
             path::{Mount, Path},
-            server_traits::{self, PageIOObservable, PageStore},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
@@ -44,7 +34,6 @@ use crate::{
 /// See <https://man7.org/linux/man-pages/man2/memfd_create.2.html>
 pub const MAX_MEMFD_NAME_LEN: usize = 249;
 
-#[orpc_server(server_traits::PageStore, server_traits::PageIOObservable)]
 pub struct MemfdInode {
     inode: Arc<RamInode>,
     name: String,
@@ -103,25 +92,6 @@ impl MemfdInode {
     }
 }
 
-#[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl PageIOObservable for MemfdInode {
-    fn page_reads_oqueue(&self) -> OQueueRef<usize>;
-    fn page_reads_reply_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_oqueue(&self) -> OQueueRef<usize>;
-    fn page_writes_reply_oqueue(&self) -> OQueueRef<usize>;
-}
-
-#[cfg(not(baseline_asterinas))]
-#[inherit_methods(from = "self.inode")]
-#[orpc_impl]
-impl PageStore for MemfdInode {
-    fn read_page_async(&self, req: AsyncReadRequest) -> Result<()>;
-    fn write_page_async(&self, req: AsyncWriteRequest) -> Result<()>;
-    fn npages(&self) -> Result<usize>;
-}
-
-#[cfg(baseline_asterinas)]
 #[inherit_methods(from = "self.inode")]
 impl PageCacheBackend for MemfdInode {
     fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter>;
@@ -286,7 +256,7 @@ impl MemfdInodeHandle for InodeHandle {
             seals |= FileSeals::F_SEAL_EXEC;
         }
 
-        let memfd_inode = new_server!(|weak_self| MemfdInode {
+        let memfd_inode = Arc::new_cyclic(|weak_self| MemfdInode {
             inode: RamInode::new_file_detached_in_memfd(
                 weak_self,
                 MemfdTmpFs::singleton().sb().container_dev_id,
