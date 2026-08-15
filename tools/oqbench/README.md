@@ -1,8 +1,9 @@
 # `tools/oqbench` — host driver for the OQFS round-trip microbenchmark
 
 `run.sh` boots the kernel with the OQFS round-trip microbenchmark enabled in a chosen scenario, waits
-for the guest to finish and power itself off, and decodes the captured samples off the data capture
-image into a JSON Lines file.
+for the run to finish, and decodes the captured samples off the data capture image into a JSON Lines
+file. Like the other in-kernel microbenchmarks, the run is configured entirely from the kernel
+command line and the kernel stops the machine when it is done.
 
 Run `tools/oqbench/run.sh --help` for the options; that help text is the canonical reference.
 

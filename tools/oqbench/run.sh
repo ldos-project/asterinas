@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
 #
-# Host-side driver for the OQFS round-trip microbenchmark. The benchmark itself is an ordinary
-# benchmark job (test/initramfs/src/benchmark/oqbench/roundtrip), run through the usual
-# `make run_kernel BENCHMARK=...` path; this script only does the two things that path does not:
-# it sets the `oqbench.*` kernel parameters, and it decodes the captured samples off the data
+# Host-side driver for the OQFS round-trip microbenchmark (kernel/comps/mariposa_benchmark). Like
+# the other in-kernel microbenchmarks the run is configured entirely from the kernel command line, so
+# this script only sets those parameters, boots, and decodes the captured samples off the data
 # capture image afterwards.
 
 set -u -o pipefail
@@ -79,9 +78,8 @@ done
 # otherwise a run that died early would decode into the previous run's samples.
 rm -f "$CAPTURE_IMAGE"
 
-# The guest runs the benchmark job and powers itself off, so this blocks until the run is over.
+# The guest powers itself off once the peer sees the run end, so this blocks until it is over.
 make -C "$ROOT" run_kernel \
-    BENCHMARK=oqbench/roundtrip \
     KCMDARGS="oqbench.enable ${PARAMS[*]}" \
     SMP="$VCPUS" \
     ENABLE_KVM="$KVM" </dev/null \

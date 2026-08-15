@@ -37,8 +37,11 @@ Every round trip is measured, however long: a sample is never discarded, capped,
 because it is large. There is no warmup parameter — the early iterations are captured like any other,
 so the analysis can see the warmup and decide how much of it to drop.
 
-Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) stops
-the machine with a failure exit code rather than being smoothed over.
+Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) ends the
+run rather than being smoothed over. The kernel side never stops the machine, not even then: it writes
+the reason to the console and tells the peer the run failed, and the peer's exit status is what `init`
+acts on. Starting and stopping both belong to userspace; only the parameters come from the kernel
+command line.
 
 ### Getting the results
 
@@ -67,7 +70,7 @@ make run_kernel AUTO_TEST=oqbench ENABLE_KVM=1
 |----------------------------|-------------------------------------------------------------|--------------|
 | `oqbench.enable`           | master switch; inert unless present                          | off          |
 | `oqbench.iterations`       | measured iterations                                          | 1000000      |
-| `oqbench.timeout_ms`       | per-reply timeout (ms); a timeout stops the machine           | 10000        |
+| `oqbench.timeout_ms`       | per-reply timeout (ms); a timeout ends the run as failed      | 10000        |
 | `oqbench.request_capacity` | request OQueue capacity                                      | 2            |
 | `oqbench.reply_capacity`   | reply OQueue capacity                                        | 2            |
 | `oqbench.realtime`         | run the kernel thread under real-time scheduling              | off (normal) |

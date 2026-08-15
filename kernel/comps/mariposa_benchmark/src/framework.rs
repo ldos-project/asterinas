@@ -5,14 +5,12 @@
 use core::fmt::Debug;
 
 use aster_logger::println;
-use ostd::{
-    arch::tsc_freq,
-    power::{ExitCode, poweroff},
-};
+use ostd::arch::tsc_freq;
 
-/// Prefix on every line this module prints, so a host tool can pick the block out of a console log
-/// that also carries ordinary kernel output.
-const PREFIX: &str = "MARIPOSA_BENCH";
+/// Prefix on every line a benchmark prints, so a host tool can pick the block out of a console log
+/// that also carries ordinary kernel output. Anomalies are printed at their call site as
+/// `{PREFIX}|error <reason>`.
+pub(crate) const PREFIX: &str = "MARIPOSA_BENCH";
 
 /// Emits the metadata needed to interpret a completed run: the benchmark's name, the TSC frequency
 /// its cycle counts are relative to, the configuration it ran under, and how many samples it
@@ -27,13 +25,4 @@ pub fn report(name: &str, config: &dyn Debug, samples: usize) {
     println!("{PREFIX}|config {config:?}");
     println!("{PREFIX}|samples {samples}");
     println!("{PREFIX}|end {name}");
-}
-
-/// Reports an anomaly and powers the machine off with a failure exit code.
-///
-/// Benchmarks stop the machine rather than panicking: a panic is only a per-thread oops here, which
-/// would leave the guest hanging instead of failing.
-pub fn fatal(message: core::fmt::Arguments<'_>) -> ! {
-    println!("{PREFIX}|error {message}");
-    poweroff(ExitCode::Failure)
 }

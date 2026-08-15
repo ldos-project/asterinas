@@ -15,3 +15,6 @@ path = "src/main.rs"
 [dependencies]
 # Same `minicbor` major version as the kernel side, so both ends share the CBOR wire format.
 minicbor = { version = "2.2.2", features = ["std"] }
+# Same error-handling crate the kernel side uses, so failures are typed rather than loose exit codes.
+snafu = "0.8"
+

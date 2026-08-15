@@ -174,9 +174,8 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="raid.selection=userspace"
 else ifeq ($(AUTO_TEST), oqbench)
 # Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel thread <->
 # userspace peer pipeline completes a clean round trip and the samples reach the capture device. The
-# host CLI in `tools/oqbench` drives real runs. Exported so the initramfs build picks up the
-# benchmark tree too; the `BENCHMARK` rule below supplies the `--init-args`.
-export BENCHMARK := oqbench/roundtrip
+# host CLI in `tools/oqbench` drives real runs. No `--init-args` are needed: `init` starts the
+# userspace peer, and powers the machine off once the peer returns.
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.enable"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.iterations=2000"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqbench.timeout_ms=2000"
