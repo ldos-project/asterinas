@@ -18,6 +18,7 @@ use mariposa_data_capture::DataCaptureFile;
 use ostd::{
     arch::read_tsc,
     orpc::{
+        TupleSerialize,
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
             OQueueRef, RefProducer, registry,
@@ -26,21 +27,18 @@ use ostd::{
     },
     timer::TIMER_FREQ,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::framework::{PREFIX, report};
 
 /// The name this benchmark reports itself under.
 const NAME: &str = "oqueue_roundtrip";
 
-/// Poll interval while waiting for the userspace peer to attach (ms).
-const ATTACH_POLL_MS: u32 = 50;
-
-/// Bounded wait for the userspace peer to attach before giving up (ms).
-const ATTACH_TIMEOUT_MS: u32 = 60_000;
+/// Bounded wait for a signal from the userspace peer before giving up (ms).
+const PEER_SIGNAL_TIMEOUT_MS: u32 = 60_000;
 
 /// Interval between "still waiting for the userspace peer" progress warnings (ms).
-const ATTACH_WARN_MS: u32 = 2_000;
+const PEER_WARN_MS: u32 = 2_000;
 
 /// Master switch (`oqbench.enable`); the benchmark is inert unless set.
 static ENABLE: AtomicBool = AtomicBool::new(false);
@@ -88,18 +86,73 @@ pub enum DriverSchedulingPolicy {
     RealTime { rt_prio: u8 },
 }
 
+/// Which of the three things a [`Request`] is saying.
+///
+/// Serialized as its discriminant rather than its name, so it costs one CBOR byte instead of the
+/// length of the variant's name.
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+enum RequestKind {
+    /// Time the round trip identified by the request's sequence number.
+    Measure = 0,
+    /// Every sample is captured; the peer may shut the machine down.
+    Finished = 1,
+    /// The run failed and the reason is on the console; the peer should shut down and say so.
+    Failed = 2,
+}
+
+impl Serialize for RequestKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
 /// What the kernel asks the peer to do next.
 ///
-/// Exactly one of the two terminal variants ends every run, and the peer's exit status follows it, so
-/// a run that failed can never be mistaken for one that finished.
-#[derive(Clone, Copy, Debug, Serialize)]
-enum Request {
-    /// Time one round trip, carrying its sequence number.
-    Measure(u64),
-    /// Every sample is captured; the peer may shut the machine down.
-    Finished,
-    /// The run failed and the reason is on the console; the peer should shut down and say so.
-    Failed,
+/// Exactly one of the two terminal kinds ends every run, and the peer's exit status follows it, so a
+/// run that failed can never be mistaken for one that finished.
+///
+/// [`TupleSerialize`] puts this on the wire as the flat two-element array `[seq, kind]`, so neither
+/// the field names nor the kind's name are repeated on every request. `seq` is meaningless for the
+/// terminal kinds and is sent as zero.
+#[derive(Clone, Copy, Debug, TupleSerialize)]
+struct Request {
+    seq: u64,
+    kind: RequestKind,
+}
+
+impl Request {
+    /// A request to time the round trip numbered `seq`.
+    fn measure(seq: u64) -> Self {
+        Self {
+            seq,
+            kind: RequestKind::Measure,
+        }
+    }
+
+    /// The request that ends a run, reporting whether it succeeded.
+    fn ending(outcome: Result<(), ()>) -> Self {
+        Self {
+            seq: 0,
+            kind: match outcome {
+                Ok(()) => RequestKind::Finished,
+                Err(()) => RequestKind::Failed,
+            },
+        }
+    }
+}
+
+/// What the peer tells the kernel about its own lifecycle, on the control OQueue.
+///
+/// The kernel cannot ask an OQueue whether somebody is listening and get a useful answer -- an
+/// attached observer is not the same as a peer that is ready to serve, or one that has finished
+/// reading. So the peer says so explicitly, and the kernel waits for the value.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+enum PeerSignal {
+    /// Attached to every stream and ready to serve requests. Nothing is measured before this.
+    Ready,
+    /// The run's result has been read; the queues can be torn down.
+    Done,
 }
 
 /// The four intervals one round trip decomposes into, in TSC cycles. This is the record written to
@@ -180,6 +233,7 @@ pub struct OQueueRoundTrip {
     config_problem: Option<&'static str>,
     producer: RefProducer<Request>,
     consumer: Consumer<[u64; 3]>,
+    signals: Consumer<PeerSignal>,
 }
 
 /// Prepares a benchmark run, or returns `None` if `oqbench.enable` is not set.
@@ -192,22 +246,29 @@ pub fn prepare() -> Option<OQueueRoundTrip> {
     }
 
     let (config, config_problem) = Config::from_params();
-    let (producer, consumer) = setup_queues(config.request_capacity, config.reply_capacity);
+    let (producer, consumer, signals) =
+        setup_queues(config.request_capacity, config.reply_capacity);
     Some(OQueueRoundTrip {
         config,
         config_problem,
         producer,
         consumer,
+        signals,
     })
 }
 
-/// Creates and exports the two OQueues on the `oqbench` OQFS subtree: the request queue
-/// (kernel -> user, exported as `strong_observe`) and the reply queue (user -> kernel, exported as
-/// `produce`). The request queue also carries the terminal [`Request`] that ends the run.
+/// Creates and exports the three OQueues on the `oqbench` OQFS subtree: the request queue
+/// (kernel -> user, exported as `strong_observe`), the reply queue (user -> kernel, exported as
+/// `produce`), and the control queue the peer reports its [`PeerSignal`]s on. The request queue also
+/// carries the terminal [`Request`] that ends the run.
 fn setup_queues(
     request_capacity: u32,
     reply_capacity: u32,
-) -> (RefProducer<Request>, Consumer<[u64; 3]>) {
+) -> (
+    RefProducer<Request>,
+    Consumer<[u64; 3]>,
+    Consumer<PeerSignal>,
+) {
     let request_path = ostd::path!(oqbench.request);
     let request_oqueue = OQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
     registry::register(&request_path, &request_oqueue.as_any_oqueue());
@@ -223,40 +284,49 @@ fn setup_queues(
         .attach_consumer()
         .expect("the oqbench reply OQueue always allows attaching its consumer");
 
-    (request_producer, reply_consumer)
+    // Two is enough for the whole run: the peer sends `Ready` once and `Done` once.
+    let control_path = ostd::path!(oqbench.control);
+    let control_oqueue = ConsumableOQueueRef::<PeerSignal>::new(2, control_path.clone());
+    registry::register_producible(&control_path, &control_oqueue);
+    let control_consumer = control_oqueue
+        .attach_consumer()
+        .expect("the oqbench control OQueue always allows attaching its consumer");
+
+    (request_producer, reply_consumer, control_consumer)
 }
 
-/// Blocks (without spinning) until the peer is attached or not, whichever `want` asks for, or until
-/// the bounded wait elapses. Returns whether the wait was satisfied.
-fn wait_for_peer(producer: &RefProducer<Request>, want: PeerState, waiting_for: &str) -> bool {
-    let satisfied_fn = || producer.has_observers() == matches!(want, PeerState::Attached);
-    let poll = TimeoutBlocker::new();
-    let max_polls = ATTACH_TIMEOUT_MS / ATTACH_POLL_MS;
-    let warn_every = (ATTACH_WARN_MS / ATTACH_POLL_MS).max(1);
-    for poll_count in 0..max_polls {
-        if satisfied_fn() {
-            return true;
+/// Blocks (without spinning) until the peer sends its next signal, warning periodically. Returns
+/// whether the signal arrived and was the `expected` one.
+fn wait_for_signal(
+    signals: &Consumer<PeerSignal>,
+    expected: PeerSignal,
+    waiting_for: &str,
+) -> bool {
+    let timeout = TimeoutBlocker::new();
+    let mut block_on_many = BlockOnMany::new();
+    let mut waited_ms = 0;
+
+    while waited_ms < PEER_SIGNAL_TIMEOUT_MS {
+        // Wait in warn-sized slices so a stuck boot still says what it is stuck on.
+        timeout.arm_after(PEER_WARN_MS as u64 * TIMER_FREQ / 1000);
+        loop {
+            if let Some(signal) = signals.try_consume() {
+                timeout.disarm();
+                return signal == expected;
+            }
+            if timeout.should_try() {
+                break;
+            }
+            let blockers: [&dyn Blocker; 2] = [signals, &*timeout];
+            block_on_many.block_on(blockers.into_iter());
         }
-        if poll_count != 0 && poll_count % warn_every == 0 {
-            let waited_ms = poll_count * ATTACH_POLL_MS;
-            println!(
-                "oqbench: waiting for the userspace peer to {waiting_for} ({waited_ms}ms of {ATTACH_TIMEOUT_MS}ms elapsed)"
-            );
-        }
-        poll.arm_after(ATTACH_POLL_MS as u64 * TIMER_FREQ / 1000);
-        if let Some(task) = ostd::task::Task::current() {
-            let blockers: [&dyn Blocker; 1] = [&*poll];
-            task.block_on(&blockers);
-        }
-        poll.disarm();
+        timeout.disarm();
+        waited_ms += PEER_WARN_MS;
+        println!(
+            "oqbench: waiting for the userspace peer to {waiting_for} ({waited_ms}ms of {PEER_SIGNAL_TIMEOUT_MS}ms elapsed)"
+        );
     }
-    satisfied_fn()
-}
-
-/// Which side of the peer's lifetime [`wait_for_peer`] should wait for.
-enum PeerState {
-    Attached,
-    Detached,
+    false
 }
 
 impl OQueueRoundTrip {
@@ -268,26 +338,37 @@ impl OQueueRoundTrip {
     /// Runs the benchmark and then tells the peer how it went.
     ///
     /// Must run on a dedicated kernel thread, not the boot thread, because it blocks on replies.
-    /// Nothing here stops the machine: every path ends by sending the peer either [`Request::Finished`]
-    /// or [`Request::Failed`], and the peer owns the shutdown.
+    /// Nothing here stops the machine: every path ends by sending the peer a [`Request::ending`],
+    /// and the peer owns the shutdown.
     pub fn run(self, capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>) {
         let Self {
             config,
             config_problem,
             producer,
             consumer,
+            signals,
         } = self;
 
+        // Nothing is measured until the peer says it is ready. Without a peer there is also nobody
+        // to hand a verdict to, so give up rather than run into a timeout for every iteration.
+        if !wait_for_signal(&signals, PeerSignal::Ready, "report ready") {
+            println!(
+                "{PREFIX}|error oqbench: the userspace peer did not report ready within {PEER_SIGNAL_TIMEOUT_MS}ms"
+            );
+            return;
+        }
+
         let outcome = measure(&config, config_problem, &producer, &consumer, capture_file);
-        producer.produce_ref(&match outcome {
-            Ok(()) => Request::Finished,
-            Err(()) => Request::Failed,
-        });
+        producer.produce_ref(&Request::ending(outcome));
 
         // Returning drops the OQueues, which revokes the peer's observer, and a revoked observer
         // reads as end of stream. The peer treats that as a failed run, so hold the queues open until
-        // it has taken the verdict and detached; otherwise a finished run could report as a failure.
-        wait_for_peer(&producer, PeerState::Detached, "take the result");
+        // it reports `Done`; otherwise a finished run could report as a failure.
+        if !wait_for_signal(&signals, PeerSignal::Done, "take the result") {
+            println!(
+                "{PREFIX}|error oqbench: the userspace peer did not report done within {PEER_SIGNAL_TIMEOUT_MS}ms"
+            );
+        }
     }
 }
 
@@ -302,14 +383,6 @@ fn measure(
     consumer: &Consumer<[u64; 3]>,
     capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>,
 ) -> Result<(), ()> {
-    // Wait for the peer before complaining about anything, so there is somebody to hear the verdict.
-    if !wait_for_peer(producer, PeerState::Attached, "attach") {
-        println!(
-            "{PREFIX}|error oqbench: the userspace peer did not attach within {ATTACH_TIMEOUT_MS}ms"
-        );
-        return Err(());
-    }
-
     if let Some(problem) = config_problem {
         println!("{PREFIX}|error oqbench: {problem}");
         return Err(());
@@ -338,7 +411,7 @@ fn measure(
         }
 
         let t0 = read_tsc();
-        producer.produce_ref(&Request::Measure(seq));
+        producer.produce_ref(&Request::measure(seq));
         timeout.arm_after(timeout_jiffies);
 
         let (t3, reply) = loop {

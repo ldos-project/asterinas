@@ -30,6 +30,14 @@ use snafu::Snafu;
 const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/strong_observe";
 /// Reply produce file path (user -> kernel); overridable with `--reply-path`.
 const DEFAULT_REPLY_PATH: &str = "/oqueues/oqbench/reply/produce";
+/// Control produce file path (user -> kernel), carrying this peer's lifecycle signals; overridable
+/// with `--control-path`.
+const DEFAULT_CONTROL_PATH: &str = "/oqueues/oqbench/control/produce";
+
+/// Signals the kernel waits for. It cannot tell from the OQueue alone whether this peer is ready to
+/// serve or has finished reading, so it is told.
+const SIGNAL_READY: &str = "Ready";
+const SIGNAL_DONE: &str = "Done";
 
 /// Read buffer size when draining a stream file.
 const READ_CHUNK_SIZE: usize = 4096;
@@ -91,7 +99,8 @@ fn io_error(action: &str) -> impl FnOnce(io::Error) -> Error + '_ {
     }
 }
 
-/// What the kernel is asking for. Mirrors `Request` in the kernel component.
+/// What the kernel is asking for. Mirrors `RequestKind` in the kernel component; the sequence number
+/// only accompanies a measurement.
 enum Request {
     /// Time this round trip.
     Measure(u64),
@@ -113,6 +122,7 @@ struct Config {
     verbose: bool,
     request_path: String,
     reply_path: String,
+    control_path: String,
 }
 
 const USAGE: &str = "\
@@ -125,6 +135,8 @@ OPTIONS:
     --compute <CYCLES>     TSC cycles to spin for per request before replying (default: 0).
     --request-path <PATH>  Request stream to read (default: /oqueues/oqbench/request/strong_observe).
     --reply-path <PATH>    Reply produce file to write (default: /oqueues/oqbench/reply/produce).
+    --control-path <PATH>  Control produce file for readiness signals
+                           (default: /oqueues/oqbench/control/produce).
     --verbose              Log each request/reply to stderr (do not use for a real timing run).
     -h, --help             Print this help and exit.
 ";
@@ -136,6 +148,7 @@ fn parse_args() -> Result<Config, Error> {
         verbose: false,
         request_path: DEFAULT_REQUEST_PATH.to_string(),
         reply_path: DEFAULT_REPLY_PATH.to_string(),
+        control_path: DEFAULT_CONTROL_PATH.to_string(),
     };
     let usage_error = |message: &str| Error::Usage {
         message: message.to_string(),
@@ -167,6 +180,11 @@ fn parse_args() -> Result<Config, Error> {
                     .next()
                     .ok_or_else(|| usage_error("--reply-path requires a value"))?;
             }
+            "--control-path" => {
+                config.control_path = args
+                    .next()
+                    .ok_or_else(|| usage_error("--control-path requires a value"))?;
+            }
             other => return Err(usage_error(&format!("unknown argument '{other}'"))),
         }
     }
@@ -190,46 +208,30 @@ fn spin_for_cycles(cycles: u64) {
 /// Decodes one request from the front of `bytes`, returning `(request, consumed)`, or `Ok(None)` if
 /// `bytes` does not yet hold a complete one.
 ///
-/// The kernel serializes `Request` with serde, which gives the tuple variant a single-entry map
-/// (`{"Measure": 7}`) and the unit variants a plain string (`"Finished"`).
+/// The kernel sends each request as the flat two-element array `[seq, kind]`, where `kind` is 0 for a
+/// measurement, 1 for a finished run and 2 for a failed one. `seq` is only meaningful for kind 0.
 fn decode_request(bytes: &[u8]) -> Result<Option<(Request, usize)>, Error> {
     let malformed = |reason: &str| Error::MalformedRequest {
         reason: reason.to_string(),
     };
     let mut decoder = minicbor::decode::Decoder::new(bytes);
-    let Ok(datatype) = decoder.datatype() else {
+    let Ok(fields) = decoder.array() else {
         return Ok(None);
     };
-    let request = match datatype {
-        minicbor::data::Type::Map => {
-            let Ok(entries) = decoder.map() else {
-                return Ok(None);
-            };
-            if entries != Some(1) {
-                return Err(malformed("expected a single-entry map"));
-            }
-            let Ok(variant) = decoder.str() else {
-                return Ok(None);
-            };
-            if variant != "Measure" {
-                return Err(malformed(&format!("unknown variant '{variant}'")));
-            }
-            let Ok(seq) = decoder.u64() else {
-                return Ok(None);
-            };
-            Request::Measure(seq)
-        }
-        minicbor::data::Type::String => {
-            let Ok(variant) = decoder.str() else {
-                return Ok(None);
-            };
-            match variant {
-                "Finished" => Request::Finished,
-                "Failed" => Request::Failed,
-                other => return Err(malformed(&format!("unknown request '{other}'"))),
-            }
-        }
-        other => return Err(malformed(&format!("unexpected CBOR type {other:?}"))),
+    if fields != Some(2) {
+        return Err(malformed("expected a two-element array"));
+    }
+    let Ok(seq) = decoder.u64() else {
+        return Ok(None);
+    };
+    let Ok(kind) = decoder.u8() else {
+        return Ok(None);
+    };
+    let request = match kind {
+        0 => Request::Measure(seq),
+        1 => Request::Finished,
+        2 => Request::Failed,
+        other => return Err(malformed(&format!("unknown request kind {other}"))),
     };
     Ok(Some((request, decoder.position())))
 }
@@ -239,6 +241,14 @@ fn encode_reply(out: &mut Vec<u8>, seq: u64, t1: u64, t2: u64) {
     out.clear();
     minicbor::encode([seq, t1, t2], &mut *out)
         .expect("encoding a 3-element array of u64 into a Vec cannot fail");
+}
+
+/// Tells the kernel where this peer is in its lifecycle.
+fn signal(control_file: &mut File, signal: &str) -> Result<(), Error> {
+    let encoded = minicbor::to_vec(signal).expect("encoding a short string cannot fail");
+    control_file
+        .write_all(&encoded)
+        .map_err(io_error(&format!("send the {signal} signal")))
 }
 
 /// Opens `path`, retrying briefly while the OQueue registry is still being populated at boot.
@@ -299,10 +309,14 @@ fn run() -> Result<(), Error> {
 
     let mut request_file = open_with_retry(&config.request_path, false)?;
     let mut reply_file = open_with_retry(&config.reply_path, true)?;
-    eprintln!("oqbench_server: attached to the request and reply streams");
+    let mut control_file = open_with_retry(&config.control_path, true)?;
+    eprintln!("oqbench_server: attached to the request, reply and control streams");
 
-    // Attaching is what starts the run on the kernel side, so only arm the watchdog once we are
-    // attached; before that, slow boots are expected rather than a fault.
+    // Only now, with every stream open, is this peer able to serve. Saying so is what starts the run.
+    signal(&mut control_file, SIGNAL_READY)?;
+
+    // The run starts here, so only arm the watchdog now; before this, slow boots are expected rather
+    // than a fault.
     let got_request = Arc::new(AtomicBool::new(false));
     spawn_first_request_watchdog(got_request.clone());
 
@@ -335,9 +349,14 @@ fn run() -> Result<(), Error> {
             Request::Measure(seq) => seq,
             Request::Finished => {
                 eprintln!("oqbench_server: the run finished; exiting");
+                signal(&mut control_file, SIGNAL_DONE)?;
                 return Ok(());
             }
-            Request::Failed => return Err(Error::RunFailed),
+            Request::Failed => {
+                // Report done even on a failure, so the kernel stops holding the queues open for us.
+                signal(&mut control_file, SIGNAL_DONE)?;
+                return Err(Error::RunFailed);
+            }
         };
 
         spin_for_cycles(config.compute_cycles);

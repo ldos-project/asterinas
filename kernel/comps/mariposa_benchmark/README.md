@@ -43,6 +43,11 @@ the reason to the console and tells the peer the run failed, and the peer's exit
 acts on. Starting and stopping both belong to userspace; only the parameters come from the kernel
 command line.
 
+The peer says when it is ready over a third, control OQueue, and says so again once it has read the
+run's result. The kernel waits for those values rather than asking whether an observer happens to be
+attached, which would answer a different question: a stream can be open before its reader is ready to
+serve, and can still be open after the reader has stopped caring.
+
 ### Getting the results
 
 Samples are buffered in memory during the run and written to the data capture device once it is over,
