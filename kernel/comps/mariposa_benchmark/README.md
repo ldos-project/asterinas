@@ -1,8 +1,9 @@
 # `mariposa_benchmark`
 
 Benchmarks for Mariposa. Each benchmark lives in its own module; `framework.rs` holds what they
-share. Every benchmark is compiled into every kernel build and does nothing unless enabled on the
-kernel command line.
+share — collecting a sample per iteration, capturing the samples, reporting the run, and giving up on
+it — so that a benchmark module contains only what distinguishes it. Every benchmark is compiled into
+every kernel build and does nothing unless enabled on the kernel command line.
 
 ## `oqueue_roundtrip` — the OQFS kernel ↔ user round trip
 

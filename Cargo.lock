@@ -1291,6 +1291,7 @@ dependencies = [
  "mariposa_data_capture",
  "ostd",
  "serde",
+ "snafu",
 ]
 
 [[package]]

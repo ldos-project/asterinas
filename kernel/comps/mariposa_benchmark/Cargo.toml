@@ -13,6 +13,8 @@ aster-cmdline = { workspace = true }
 # Writes captured samples out in the standard Mariposa capture format.
 mariposa_data_capture = { workspace = true }
 serde = { workspace = true }
+# The kernel's error-handling crate, paired with `#[ostd_error]` as elsewhere in Mariposa.
+snafu = { workspace = true }
 
 [lints]
 workspace = true
