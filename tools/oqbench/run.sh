@@ -36,8 +36,8 @@ OPTIONS:
                             run as failed.
     --request-capacity <N>  Request OQueue capacity (default: 2).
     --reply-capacity <N>    Reply OQueue capacity (default: 2).
-    --realtime              Run the kernel thread under real-time scheduling (default: normal).
-    --rt-prio <N>           Real-time priority for --realtime, in 1..=99 (default: 50).
+    --rt-prio <N>           Run the kernel thread under real-time scheduling at this priority,
+                            in 1..=99 (default: the fair policy).
     --busy-procs <N>        Competing busy-loop processes as scheduler contention (default: 0).
     --vcpus <N>             Guest vCPU count / SMP (default: 1).
     --kvm <on|off>          Use KVM acceleration (default: on).
@@ -61,7 +61,6 @@ while [[ $# -gt 0 ]]; do
         --iterations|--peer-compute|--timeout-ms|--request-capacity|--reply-capacity|--rt-prio|--busy-procs)
             name="${1#--}"
             PARAMS+=("oqbench.${name//-/_}=${2:?$1 requires a value}"); shift 2;;
-        --realtime)  PARAMS+=("oqbench.realtime"); shift;;
         --vcpus)     VCPUS="${2:?--vcpus requires a value}"; shift 2;;
         --kvm)       case "${2:?--kvm requires a value}" in
                          on|1|true)   KVM=1;;

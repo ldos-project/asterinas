@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The parts of a benchmark run that are not specific to any one benchmark.
+//! A common framework for minibenchmarks in Mariposa.
 //!
 //! A benchmark supplies a closure that measures one iteration; [`run`] collects a sample from it per
 //! iteration and captures them, and [`report`] emits the metadata needed to interpret the result.
-//! What is left in the benchmark is only what actually distinguishes it.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::fmt::Debug;
@@ -17,15 +16,10 @@ use ostd::{arch::tsc_freq, orpc::errors::RPCError, ostd_error};
 use serde::Serialize;
 use snafu::{ResultExt as _, Snafu};
 
-/// Prefix on every line a benchmark prints, so a host tool can pick the block out of a console log
-/// that also carries ordinary kernel output. A benchmark reporting why it gave up prints
-/// `{PREFIX}|error <name>: <reason>`.
+/// Prefix on every line a benchmark prints, so a host tool can pick the block out of a console log.
+/// A benchmark reporting why it gave up prints `{PREFIX}|error <name>: <reason>`.
 pub(crate) const PREFIX: &str = "MARIPOSA_BENCH";
 
-/// The ways a run can end early that are the framework's own doing rather than the benchmark's.
-///
-/// A benchmark's error type absorbs these through a transparent variant, so that one type describes
-/// every way its run can end.
 #[ostd_error]
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -37,18 +31,10 @@ pub enum Error {
     CaptureSync { source: RPCError },
 }
 
-/// Collects one sample per iteration for `iterations` iterations and captures them, returning how
-/// many were captured.
+/// Collects one sample per iteration for `iterations` iterations and write the results to a [`DataCaptureFile`]
+/// when the benchmarking is finished, returning how many were captured.
 ///
-/// `benchmark_fn` is given the iteration's sequence number and returns that iteration's sample. Its
-/// error type is the benchmark's own, and has to be able to absorb an [`Error`] so that both kinds
-/// of failure reach the caller as one type.
-///
-/// Samples are held in memory until measurement is over, so writing them is never part of what is
-/// being timed. That bounds a run by memory: `iterations` samples must fit.
-///
-/// This returns only once the samples are on the device, so its `Ok` is what a benchmark should wait
-/// for before calling [`report`].
+/// `benchmark_fn` is given the iteration's sequence number and returns that iteration's sample.
 #[cfg(not(baseline_asterinas))]
 pub fn run<S, E>(
     iterations: u32,
@@ -69,6 +55,7 @@ where
         .into());
     }
 
+    // The benchmarking loop.
     for seq in 0..iterations as u64 {
         samples.push(benchmark_fn(seq)?);
     }
@@ -87,14 +74,6 @@ where
 /// Emits the metadata needed to interpret a completed run: the benchmark's name, the TSC frequency
 /// its cycle counts are relative to, the configuration it ran under, and how many samples it
 /// captured.
-///
-/// The configuration is only printed, so it is taken as something printable rather than at a type:
-/// what a benchmark is configured with is its own business, and echoing it verbatim through `Debug`
-/// is what lets a results file be matched back to the run that produced it -- and keeps it complete
-/// as a benchmark gains parameters.
-///
-/// Call this only once the samples are safely written, since the `end` line is what a harness waits
-/// for.
 pub fn report(name: &str, config: &dyn Debug, samples: usize) {
     println!("{PREFIX}|begin {name}");
     println!("{PREFIX}|tsc_freq_hz {}", tsc_freq());

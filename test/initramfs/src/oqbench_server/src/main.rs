@@ -7,8 +7,7 @@
 //! `Finished` or `Failed`, which this peer turns into its own exit status.
 //!
 //! The kernel never stops the machine, so this process ending is what lets `init` power the guest
-//! off. That also means every wait here needs a bound: a kernel side that never starts must not leave
-//! the guest hanging with no diagnostic.
+//! off.
 //!
 //! Runs as root because the OQueue stream files are root-only.
 
@@ -16,16 +15,12 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     process::ExitCode,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
     thread,
     time::Duration,
 };
 
 use clap::Parser;
-use snafu::Snafu;
+use snafu::{ResultExt as _, Snafu};
 
 /// Request stream path (kernel -> user); overridable with `--request-path`.
 const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/strong_observe";
@@ -35,11 +30,6 @@ const DEFAULT_REPLY_PATH: &str = "/oqueues/oqbench/reply/produce";
 /// with `--control-path`.
 const DEFAULT_CONTROL_PATH: &str = "/oqueues/oqbench/control/produce";
 
-/// Signals the kernel waits for. It cannot tell from the OQueue alone whether this peer is ready to
-/// serve or has finished reading, so it is told.
-const SIGNAL_READY: &str = "Ready";
-const SIGNAL_DONE: &str = "Done";
-
 /// Read buffer size when draining a stream file.
 const READ_CHUNK_SIZE: usize = 4096;
 
@@ -47,54 +37,51 @@ const READ_CHUNK_SIZE: usize = 4096;
 const MAX_RETRY_ATTEMPTS: u32 = 100;
 /// Delay between retries when waiting for an OQueue path to appear.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
-/// How long to wait for the kernel's first request before giving up. The kernel side can decline to
-/// start at all (no data capture device, for instance) and it can no longer stop the machine to say
-/// so, so this bound is what keeps such a boot from hanging.
-const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Why the peer stopped early.
-///
-/// The variant chooses the process's exit status, so a run that failed can never leave the same trace
-/// as one that finished.
+/// What this peer tells the kernel about its own lifecycle, on the control OQueue. The kernel cannot
+/// tell from the OQueue alone whether this peer is ready to serve or has finished reading, so it is
+/// told. Mirrors `PeerSignal` in the kernel component, which decodes it by variant name.
+#[derive(Clone, Copy, Debug)]
+enum Signal {
+    Ready,
+    Done,
+}
+
+impl Signal {
+    fn name(self) -> &'static str {
+        match self {
+            Signal::Ready => "Ready",
+            Signal::Done => "Done",
+        }
+    }
+}
+
+/// Every way this peer can stop other than by the run finishing.
 #[derive(Debug, Snafu)]
 enum Error {
-    #[snafu(display("the run failed; the kernel console has the reason"))]
+    #[snafu(display("the run failed; refer the error trace from the kernel console"))]
     RunFailed,
 
     #[snafu(display("the request stream ended before the run reported a result"))]
     StreamEnded,
 
-    #[snafu(display(
-        "no request within {}s; the kernel side never started",
-        timeout.as_secs()
-    ))]
-    NoRequest { timeout: Duration },
+    #[snafu(display("expected a two-element request array, got {fields:?}"))]
+    NotARequest { fields: Option<u64> },
 
-    #[snafu(display("malformed request: {reason}"))]
-    MalformedRequest { reason: String },
+    #[snafu(display("unknown request kind {kind}"))]
+    UnknownRequestKind { kind: u8 },
 
-    #[snafu(display("could not {action}: {source}"))]
-    Io { action: String, source: io::Error },
-}
+    #[snafu(display("could not open {path}: {source}"))]
+    OpenStream { path: String, source: io::Error },
 
-impl Error {
-    /// The process exit status that reports this failure. Status 2 is left to `clap`, which uses it
-    /// for a bad command line and exits on its own.
-    fn code(&self) -> u8 {
-        match self {
-            Error::RunFailed | Error::StreamEnded => 1,
-            Error::NoRequest { .. } => 3,
-            Error::MalformedRequest { .. } | Error::Io { .. } => 4,
-        }
-    }
-}
+    #[snafu(display("could not send the {} signal: {source}", signal.name()))]
+    SendSignal { signal: Signal, source: io::Error },
 
-/// Builds an [`Error::Io`] for the operation that failed.
-fn io_error(action: &str) -> impl FnOnce(io::Error) -> Error + '_ {
-    move |source| Error::Io {
-        action: action.to_string(),
-        source,
-    }
+    #[snafu(display("could not read a request: {source}"))]
+    ReadRequest { source: io::Error },
+
+    #[snafu(display("could not write a reply: {source}"))]
+    WriteReply { source: io::Error },
 }
 
 /// What the kernel is asking for. Mirrors `RequestKind` in the kernel component; the sequence number
@@ -159,15 +146,12 @@ fn spin_for_cycles(cycles: u64) {
 /// The kernel sends each request as the flat two-element array `[seq, kind]`, where `kind` is 0 for a
 /// measurement, 1 for a finished run and 2 for a failed one. `seq` is only meaningful for kind 0.
 fn decode_request(bytes: &[u8]) -> Result<Option<(Request, usize)>, Error> {
-    let malformed = |reason: &str| Error::MalformedRequest {
-        reason: reason.to_string(),
-    };
     let mut decoder = minicbor::decode::Decoder::new(bytes);
     let Ok(fields) = decoder.array() else {
         return Ok(None);
     };
     if fields != Some(2) {
-        return Err(malformed("expected a two-element array"));
+        return NotARequestSnafu { fields }.fail();
     }
     let Ok(seq) = decoder.u64() else {
         return Ok(None);
@@ -179,7 +163,7 @@ fn decode_request(bytes: &[u8]) -> Result<Option<(Request, usize)>, Error> {
         0 => Request::Measure(seq),
         1 => Request::Finished,
         2 => Request::Failed,
-        other => return Err(malformed(&format!("unknown request kind {other}"))),
+        kind => return UnknownRequestKindSnafu { kind }.fail(),
     };
     Ok(Some((request, decoder.position())))
 }
@@ -192,11 +176,11 @@ fn encode_reply(out: &mut Vec<u8>, seq: u64, t1: u64, t2: u64) {
 }
 
 /// Tells the kernel where this peer is in its lifecycle.
-fn signal(control_file: &mut File, signal: &str) -> Result<(), Error> {
-    let encoded = minicbor::to_vec(signal).expect("encoding a short string cannot fail");
+fn signal(control_file: &mut File, signal: Signal) -> Result<(), Error> {
+    let encoded = minicbor::to_vec(signal.name()).expect("encoding a short string cannot fail");
     control_file
         .write_all(&encoded)
-        .map_err(io_error(&format!("send the {signal} signal")))
+        .context(SendSignalSnafu { signal })
 }
 
 /// Opens `path`, retrying briefly while the OQueue registry is still being populated at boot.
@@ -215,26 +199,9 @@ fn open_with_retry(path: &str, write: bool) -> Result<File, Error> {
                 eprintln!("oqbench_server: waiting for {path} ({err}), retrying...");
                 thread::sleep(RETRY_INTERVAL);
             }
-            Err(err) => return Err(io_error(&format!("open {path}"))(err)),
+            Err(source) => return Err(source).context(OpenStreamSnafu { path }),
         }
     }
-}
-
-/// Exits the process if the kernel has not asked for anything within [`FIRST_REQUEST_TIMEOUT`].
-///
-/// This runs on its own thread because the main thread sits in a blocking read that nothing else can
-/// interrupt, so it reports and exits directly rather than returning an error.
-fn spawn_first_request_watchdog(got_request: Arc<AtomicBool>) {
-    thread::spawn(move || {
-        thread::sleep(FIRST_REQUEST_TIMEOUT);
-        if !got_request.load(Ordering::Relaxed) {
-            let error = Error::NoRequest {
-                timeout: FIRST_REQUEST_TIMEOUT,
-            };
-            eprintln!("oqbench_server: {error}");
-            std::process::exit(error.code().into());
-        }
-    });
 }
 
 fn main() -> ExitCode {
@@ -242,7 +209,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("oqbench_server: {error}");
-            ExitCode::from(error.code())
+            // The message is what says what went wrong; the status only has to say that something
+            // did. `clap` uses 2 for a bad command line and exits on its own.
+            ExitCode::FAILURE
         }
     }
 }
@@ -261,12 +230,7 @@ fn run() -> Result<(), Error> {
     eprintln!("oqbench_server: attached to the request, reply and control streams");
 
     // Only now, with every stream open, is this peer able to serve. Saying so is what starts the run.
-    signal(&mut control_file, SIGNAL_READY)?;
-
-    // The run starts here, so only arm the watchdog now; before this, slow boots are expected rather
-    // than a fault.
-    let got_request = Arc::new(AtomicBool::new(false));
-    spawn_first_request_watchdog(got_request.clone());
+    signal(&mut control_file, Signal::Ready)?;
 
     let mut pending: Vec<u8> = Vec::new();
     let mut chunk = [0u8; READ_CHUNK_SIZE];
@@ -279,12 +243,9 @@ fn run() -> Result<(), Error> {
             if let Some((request, consumed)) = decode_request(&pending)? {
                 let t1 = rdtsc();
                 pending.drain(..consumed);
-                got_request.store(true, Ordering::Relaxed);
                 break (request, t1);
             }
-            let read = request_file
-                .read(&mut chunk)
-                .map_err(io_error("read a request"))?;
+            let read = request_file.read(&mut chunk).context(ReadRequestSnafu)?;
             // The stream ending without a verdict means the kernel side went away mid-run, which is
             // a failed run rather than a finished one.
             if read == 0 {
@@ -297,12 +258,12 @@ fn run() -> Result<(), Error> {
             Request::Measure(seq) => seq,
             Request::Finished => {
                 eprintln!("oqbench_server: the run finished; exiting");
-                signal(&mut control_file, SIGNAL_DONE)?;
+                signal(&mut control_file, Signal::Done)?;
                 return Ok(());
             }
             Request::Failed => {
                 // Report done even on a failure, so the kernel stops holding the queues open for us.
-                signal(&mut control_file, SIGNAL_DONE)?;
+                signal(&mut control_file, Signal::Done)?;
                 return Err(Error::RunFailed);
             }
         };
@@ -312,9 +273,7 @@ fn run() -> Result<(), Error> {
         // `t2` is stamped the instant before the reply is written.
         let t2 = rdtsc();
         encode_reply(&mut reply, seq, t1, t2);
-        reply_file
-            .write_all(&reply)
-            .map_err(io_error("write a reply"))?;
+        reply_file.write_all(&reply).context(WriteReplySnafu)?;
 
         if config.verbose {
             eprintln!("oqbench_server: seq={seq} t1={t1} t2={t2}");

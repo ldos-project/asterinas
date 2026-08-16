@@ -79,8 +79,7 @@ make run_kernel AUTO_TEST=oqbench ENABLE_KVM=1
 | `oqbench.timeout_ms`       | per-reply timeout (ms); a timeout ends the run as failed      | 10000        |
 | `oqbench.request_capacity` | request OQueue capacity                                      | 2            |
 | `oqbench.reply_capacity`   | reply OQueue capacity                                        | 2            |
-| `oqbench.realtime`         | run the kernel thread under real-time scheduling              | off (normal) |
-| `oqbench.rt_prio`          | real-time priority (`1..=99`) when `oqbench.realtime` is set  | 50           |
+| `oqbench.rt_prio`          | real-time priority (`1..=99`) for the kernel thread           | unset (fair) |
 | `oqbench.peer_compute`     | the peer's synthetic work per request, in TSC cycles          | 0            |
 | `oqbench.busy_procs`       | competing busy-loop processes, as scheduler contention        | 0            |
 
@@ -94,9 +93,18 @@ configuration.
 - **`oqbench.busy_procs`** adds competing processes for the duration of the run. The default of `0`
   measures the idle best case; raise it to see how much of the wakeup latency is contention rather
   than fixed cost.
-- **`oqbench.realtime` / `oqbench.rt_prio`** run the kernel thread under real-time scheduling,
+- **`oqbench.rt_prio`** runs the kernel thread under real-time scheduling at that priority,
   matching the RAID worker this hot path mirrors. The userspace peer's scheduling cannot be set from
   userspace on this kernel, so there is no knob for it.
+
+  **Known problem: leave this unset.** A run under real-time scheduling completes every round trip
+  and then hangs while writing the samples out, with no diagnostic -- the reply timeout cannot fire
+  because measurement is already over. The cause is outside this benchmark: the virtio-block worker
+  that submits the write is spawned at fair priority
+  (`kernel/src/device/registry/block.rs`, `ThreadOptions::new(task_fn).spawn()`), unlike the ORPC
+  server threads, which `kernel/src/orpc_utils.rs` gives real-time priority 50. Giving that worker
+  the same priority makes a real-time run complete, but that is a scheduling decision for the kernel
+  to make, not this benchmark. It reproduces on every 1-vCPU boot and intermittently with more.
 
 ### Caveats
 

@@ -200,8 +200,10 @@ fn first_kthread() {
             .expect("Failed to run the init process")
     });
 
-    // The OQFS round-trip benchmark blocks until its userspace peer attaches, so it can only start
-    // once the init process exists.
+    // Inert unless `oqbench.enable` is on the command line: unlike its neighbours here, the
+    // benchmark's parameters are registered with `aster_cmdline`, so the switch has already been
+    // parsed into a static and the check lives inside `prepare`. It is called after the init process
+    // because it blocks until its userspace peer reports ready.
     #[cfg(not(baseline_asterinas))]
     benchmarks::oqueue_roundtrip::init_after_init_process();
 

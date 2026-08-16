@@ -20,7 +20,7 @@ tools/oqbench/run.sh --iterations 50000 --output quick.jsonl
 tools/oqbench/run.sh --iterations 1000000 --peer-compute 5000 --output compute.jsonl
 
 # Real-time kernel thread (mirroring the RAID worker) under scheduler contention:
-tools/oqbench/run.sh --realtime --rt-prio 50 --busy-procs 16 --vcpus 4 --output loaded.jsonl
+tools/oqbench/run.sh --rt-prio 50 --busy-procs 16 --vcpus 4 --output loaded.jsonl
 ```
 
 ## Output

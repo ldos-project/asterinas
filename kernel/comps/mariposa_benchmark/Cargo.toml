@@ -4,17 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# OQueue/ORPC transport and the TSC time base.
 ostd = { workspace = true }
-# `println!` to the console devices that `qemu.log` captures (unlike `ostd::early_print`).
 aster-logger = { workspace = true }
-# Registers the benchmarks' kernel-command-line parameters.
 aster-cmdline = { workspace = true }
-# Writes captured samples out in the standard Mariposa capture format.
 mariposa_data_capture = { workspace = true }
 serde = { workspace = true }
-# The kernel's error-handling crate, paired with `#[ostd_error]` as elsewhere in Mariposa.
 snafu = { workspace = true }
+# `Once` gives `oqbench.rt_prio` real `Option` semantics: unset means "not real-time".
+spin = { workspace = true }
 
 [lints]
 workspace = true

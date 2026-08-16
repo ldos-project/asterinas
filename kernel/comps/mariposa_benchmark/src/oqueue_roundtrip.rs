@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Round-trip latency of the kernel -> user -> kernel path over OQFS.
+//! Benchmark for the round-trip latency of the kernel -> user -> kernel path over OQFS.
 //!
 //! A kernel thread produces a request into one OQueue and blocks; the userspace peer
 //! (`oqbench_server`) replies into a second OQueue; the kernel thread wakes on the reply. Four
 //! timestamps per iteration split each round trip into its transport and scheduler parts. The
 //! samples are buffered in memory during the run and written to the data capture device once it is
 //! over, so nothing but the round trip itself is measured.
-//!
-//! Inert unless enabled with `oqbench.enable` on the kernel command line.
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -30,6 +28,7 @@ use ostd::{
 };
 use serde::{Deserialize, Serialize, Serializer};
 use snafu::Snafu;
+use spin::once::Once;
 
 use crate::framework::{self, PREFIX};
 
@@ -38,6 +37,18 @@ const NAME: &str = "oqueue_roundtrip";
 
 /// Bounded wait for a signal from the userspace peer before giving up (ms).
 const PEER_SIGNAL_TIMEOUT_MS: u32 = 60_000;
+
+/// Upper bound on one [`RoundTripSample`]'s CBOR encoding, used to size the capture file.
+///
+/// serde encodes the sample as a map keyed by field name: one map header byte, then for each of the
+/// four fields a text key (its length byte plus 7 to 14 characters, 48 bytes in total) and a `u64`
+/// (at worst a header byte plus 8 payload bytes). That is 85 bytes; the rest is slack, since
+/// over-reserving only claims sparse image space that is never touched.
+const MAX_SAMPLE_BYTES: usize = 96;
+
+/// Room to add on top of the samples for the file's header, which names the capture and the sample
+/// type, and for the block the terminator is written into.
+const CAPTURE_OVERHEAD_BYTES: usize = 8 * 1024;
 
 /// Master switch (`oqbench.enable`); the benchmark is inert unless set.
 static ENABLE: AtomicBool = AtomicBool::new(false);
@@ -59,13 +70,12 @@ aster_cmdline::define_kv_param!("oqbench.request_capacity", REQUEST_CAPACITY);
 static REPLY_CAPACITY: AtomicU32 = AtomicU32::new(2);
 aster_cmdline::define_kv_param!("oqbench.reply_capacity", REPLY_CAPACITY);
 
-/// Run the kernel thread under real-time scheduling (`oqbench.realtime`) instead of the fair policy.
-static REALTIME: AtomicBool = AtomicBool::new(false);
-aster_cmdline::define_flag_param!("oqbench.realtime", REALTIME);
-
-/// Real-time priority for the kernel thread when `oqbench.realtime` is set (`oqbench.rt_prio`,
-/// `1..=99`).
-static RT_PRIO: AtomicU32 = AtomicU32::new(50);
+/// Real-time priority for the kernel thread (`oqbench.rt_prio`, `1..=99`).
+///
+/// Its presence is what selects real-time scheduling: unset means the fair policy. A separate
+/// on/off flag would have made `oqbench.realtime oqbench.rt_prio=…` two ways to say one thing, and
+/// left `oqbench.rt_prio=50` on its own meaning nothing.
+static RT_PRIO: Once<u32> = Once::new();
 aster_cmdline::define_kv_param!("oqbench.rt_prio", RT_PRIO);
 
 /// The userspace peer's synthetic work per request, in TSC cycles (`oqbench.peer_compute`). Consumed
@@ -244,12 +254,12 @@ impl Config {
     fn from_params() -> (Self, Option<Error>) {
         let mut problem = None;
 
-        let scheduling_policy = match RT_PRIO.load(Ordering::Relaxed) {
-            _ if !REALTIME.load(Ordering::Relaxed) => DriverSchedulingPolicy::Normal,
-            rt_prio if (1..=99).contains(&rt_prio) => DriverSchedulingPolicy::RealTime {
+        let scheduling_policy = match RT_PRIO.get().copied() {
+            None => DriverSchedulingPolicy::Normal,
+            Some(rt_prio) if (1..=99).contains(&rt_prio) => DriverSchedulingPolicy::RealTime {
                 rt_prio: rt_prio as u8,
             },
-            rt_prio => {
+            Some(rt_prio) => {
                 problem = Some(BadRealTimePrioritySnafu { rt_prio }.build());
                 DriverSchedulingPolicy::Normal
             }
@@ -373,6 +383,17 @@ impl OQueueRoundTrip {
     /// The scheduling policy the kernel thread should run under.
     pub fn scheduling_policy(&self) -> DriverSchedulingPolicy {
         self.config.scheduling_policy
+    }
+
+    /// Room to reserve on the capture device for this run's samples.
+    ///
+    /// Sized from the iteration count rather than fixed, so that raising `oqbench.iterations` cannot
+    /// quietly outgrow the file. Reserving too much costs nothing: the capture image is sparse and
+    /// only the blocks actually written are ever allocated.
+    pub fn capture_length(&self) -> usize {
+        (self.config.iterations as usize)
+            .saturating_mul(MAX_SAMPLE_BYTES)
+            .saturating_add(CAPTURE_OVERHEAD_BYTES)
     }
 
     /// Runs the benchmark and then tells the peer how it went.

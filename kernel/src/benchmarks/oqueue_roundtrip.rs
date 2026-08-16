@@ -16,11 +16,7 @@ use crate::{
     thread::kernel_thread::ThreadOptions,
 };
 
-/// Room reserved on the capture device for the samples. One sample serializes to well under 100
-/// bytes, so this covers a few million iterations; the image itself is sparse.
-const CAPTURE_LENGTH: usize = 256 * 1024 * 1024;
-
-/// Starts the benchmark on its own kernel thread. Inert unless enabled with `oqbench.enable`.
+/// Starts the benchmark on its own kernel thread.
 ///
 /// Must be called after the init process has been spawned: the benchmark blocks until its userspace
 /// peer attaches to the request OQueue.
@@ -29,10 +25,11 @@ pub(crate) fn init_after_init_process() {
         return;
     };
 
+    // Declare output data capture file and allocate space.
     let Some(capture_file) =
         new_data_capture_file::<RoundTripSample>(mariposa_data_capture::FileDescriptor {
             path: ostd::path!(oqbench.samples),
-            length: CAPTURE_LENGTH,
+            length: benchmark.capture_length(),
         })
     else {
         error!("[oqbench] no data capture device; set `data_capture.device` to run the benchmark");
