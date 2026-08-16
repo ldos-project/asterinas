@@ -24,6 +24,7 @@ use std::{
     time::Duration,
 };
 
+use clap::Parser;
 use snafu::Snafu;
 
 /// Request stream path (kernel -> user); overridable with `--request-path`.
@@ -69,9 +70,6 @@ enum Error {
     ))]
     NoRequest { timeout: Duration },
 
-    #[snafu(display("{message} (try --help)"))]
-    Usage { message: String },
-
     #[snafu(display("malformed request: {reason}"))]
     MalformedRequest { reason: String },
 
@@ -80,11 +78,11 @@ enum Error {
 }
 
 impl Error {
-    /// The process exit status that reports this failure.
+    /// The process exit status that reports this failure. Status 2 is left to `clap`, which uses it
+    /// for a bad command line and exits on its own.
     fn code(&self) -> u8 {
         match self {
             Error::RunFailed | Error::StreamEnded => 1,
-            Error::Usage { .. } => 2,
             Error::NoRequest { .. } => 3,
             Error::MalformedRequest { .. } | Error::Io { .. } => 4,
         }
@@ -117,78 +115,28 @@ fn rdtsc() -> u64 {
 }
 
 /// Effective configuration parsed from argv.
+#[derive(Parser)]
+#[command(about = "Userspace peer for the OQFS round-trip microbenchmark")]
 struct Config {
+    /// TSC cycles to spin for per request before replying.
+    #[arg(long = "compute", value_name = "CYCLES", default_value_t = 0)]
     compute_cycles: u64,
+
+    /// Log each request and reply to stderr. Do not use for a real timing run.
+    #[arg(long)]
     verbose: bool,
+
+    /// Request stream to read, kernel to user.
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_REQUEST_PATH)]
     request_path: String,
+
+    /// Reply produce file to write, user to kernel.
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_REPLY_PATH)]
     reply_path: String,
+
+    /// Control produce file carrying this peer's lifecycle signals.
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_CONTROL_PATH)]
     control_path: String,
-}
-
-const USAGE: &str = "\
-oqbench_server -- userspace peer for the OQFS round-trip microbenchmark
-
-USAGE:
-    oqbench_server [OPTIONS]
-
-OPTIONS:
-    --compute <CYCLES>     TSC cycles to spin for per request before replying (default: 0).
-    --request-path <PATH>  Request stream to read (default: /oqueues/oqbench/request/strong_observe).
-    --reply-path <PATH>    Reply produce file to write (default: /oqueues/oqbench/reply/produce).
-    --control-path <PATH>  Control produce file for readiness signals
-                           (default: /oqueues/oqbench/control/produce).
-    --verbose              Log each request/reply to stderr (do not use for a real timing run).
-    -h, --help             Print this help and exit.
-";
-
-/// Parses argv. `--help` prints the usage and exits before returning.
-fn parse_args() -> Result<Config, Error> {
-    let mut config = Config {
-        compute_cycles: 0,
-        verbose: false,
-        request_path: DEFAULT_REQUEST_PATH.to_string(),
-        reply_path: DEFAULT_REPLY_PATH.to_string(),
-        control_path: DEFAULT_CONTROL_PATH.to_string(),
-    };
-    let usage_error = |message: &str| Error::Usage {
-        message: message.to_string(),
-    };
-
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                std::process::exit(0);
-            }
-            "--verbose" => config.verbose = true,
-            "--compute" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| usage_error("--compute requires a value"))?;
-                config.compute_cycles = value
-                    .parse()
-                    .map_err(|_| usage_error("--compute value must be a non-negative integer"))?;
-            }
-            "--request-path" => {
-                config.request_path = args
-                    .next()
-                    .ok_or_else(|| usage_error("--request-path requires a value"))?;
-            }
-            "--reply-path" => {
-                config.reply_path = args
-                    .next()
-                    .ok_or_else(|| usage_error("--reply-path requires a value"))?;
-            }
-            "--control-path" => {
-                config.control_path = args
-                    .next()
-                    .ok_or_else(|| usage_error("--control-path requires a value"))?;
-            }
-            other => return Err(usage_error(&format!("unknown argument '{other}'"))),
-        }
-    }
-    Ok(config)
 }
 
 /// Spins until the timestamp counter has advanced by `cycles`.
@@ -301,7 +249,7 @@ fn main() -> ExitCode {
 
 /// Serves requests until the kernel ends the run, returning `Ok` only for a run that finished.
 fn run() -> Result<(), Error> {
-    let config = parse_args()?;
+    let config = Config::parse();
     eprintln!(
         "oqbench_server: starting (compute={} cycles, request={}, reply={})",
         config.compute_cycles, config.request_path, config.reply_path

@@ -13,6 +13,8 @@ name = "oqbench_server"
 path = "src/main.rs"
 
 [dependencies]
+# Same argument parser, at the same major version, as `cargo-osdk`.
+clap = { version = "4.4.17", features = ["derive"] }
 # Same `minicbor` major version as the kernel side, so both ends share the CBOR wire format.
 minicbor = { version = "2.2.2", features = ["std"] }
 # Same error-handling crate the kernel side uses, so failures are typed rather than loose exit codes.
