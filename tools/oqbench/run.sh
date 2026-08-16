@@ -32,8 +32,8 @@ USAGE:
 OPTIONS:
     --iterations <N>        Measured iterations (default: 1000000).
     --peer-compute <N>      TSC cycles the userspace peer spins for per request (default: 0).
-    --timeout-ms <N>        Per-reply timeout in milliseconds (default: 10000). A timeout is fatal:
-                            the kernel reports it and stops the machine.
+    --timeout-ms <N>        Per-reply timeout in milliseconds (default: 10000). A timeout ends the
+                            run as failed.
     --request-capacity <N>  Request OQueue capacity (default: 2).
     --reply-capacity <N>    Reply OQueue capacity (default: 2).
     --realtime              Run the kernel thread under real-time scheduling (default: normal).
