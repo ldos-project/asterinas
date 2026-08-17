@@ -1,0 +1,29 @@
+name: "Test RocksDB MixGraph"
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  rocksdb-mixgraph:
+    runs-on: ubuntu-latest
+    container:
+      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      options: -v /dev:/dev --privileged
+    env:
+      BENCHMARK_DBBENCH_MIXGRAPH_SEEDS: "3130359104,627452665"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run RocksDB MixGraph benchmark
+        run: |
+          make install_osdk
+          bash test/initramfs/src/benchmark/bench_linux_and_aster.sh rocksdb/mixgraph x86-64
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: rocksdb-mixgraph-result
+          path: result_*.json
+          if-no-files-found: warn

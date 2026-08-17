@@ -1,0 +1,18 @@
+# Workload modeled on Cao et al., "Characterizing, Modeling, and Benchmarking
+# RocksDB Key-Value Workloads at Facebook", USENIX FAST 2020.
+# https://www.usenix.org/conference/fast20/presentation/cao
+alert:
+  bigger_is_better: true
+  threshold: 125%
+chart:
+  description: db_bench fillrandom (1M keys) + mixgraph (get 0.83 / put 0.14 / seek 0.03, 30s, 4 threads)
+  legend: Mixed social-graph workload throughput (ops/sec) on {system}
+  title: RocksDB mixgraph throughput (FAST'20 workload model, 4 threads)
+  unit: operations per second
+# When true, bench_linux_and_aster.sh uses the multi-seed collector instead of
+# the single-result template: run.sh emits one SEED_RESULT/SEED_FILL/SEED_TIME
+# line per seed, and parse_multi_results produces per-seed JSON.
+multi_run: true
+result_extraction:
+  result_index: 5
+  search_pattern: 'mixgraph.*ops/sec'

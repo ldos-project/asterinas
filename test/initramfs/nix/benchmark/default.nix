@@ -10,6 +10,27 @@
     (pkgsHostTarget.redis.overrideAttrs (_: { doCheck = false; })).override {
       withSystemd = false;
     };
+  rocksdb = (pkgsHostTarget.rocksdb.overrideAttrs (old: {
+    # Rewrites db_bench/ldb/sst_dump rpaths from their actual NEEDED entries across
+    # all buildInputs (snappy, lz4, zstd, zlib, bzip2, liburing, gflags, gcc libs),
+    # and pulls those libs into the runtime closure so they reach the guest's /nix/store.
+    nativeBuildInputs =
+      old.nativeBuildInputs ++ [ pkgsHostTarget.autoPatchelfHook ];
+    buildInputs = old.buildInputs ++ [ pkgsHostTarget.gflags ];
+    # Needed to build db_bench: https://github.com/facebook/rocksdb/blob/5fbc1cd5bcf63782675168b98e114151490de6d9/tools/db_bench.cc#L10-L15
+    cmakeFlags = old.cmakeFlags
+      ++ [ "-DWITH_BENCHMARK_TOOLS=1" "-DWITH_GFLAGS=1" ];
+    # Needed to make the db_bench binary exist (autoPatchelfHook in postFixup
+    # replaces the base package's short rpath with one covering every NEEDED lib)
+    preInstall = old.preInstall + ''
+      cp db_bench${hostPlatform.extensions.executable} $tools/bin/
+      # CMake embeds the build-tree path (/build/...) in db_bench's rpath, which
+      # fixupPhase's forbidden-reference check rejects. Clear it here; autoPatchelfHook
+      # writes the real rpath from db_bench's NEEDED entries during postFixup.
+      patchelf --remove-rpath $tools/bin/db_bench${hostPlatform.extensions.executable}
+    '';
+  }));
+
   schbench = callPackage ./schbench.nix { };
   sqlite-speedtest1 = callPackage ./sqlite-speedtest1.nix { };
   sysbench = if hostPlatform.isx86_64 then pkgsHostTarget.sysbench else null;
@@ -30,6 +51,7 @@
       cp -r ${memcached}/bin/memcached $out/bin/
       cp -r ${nginx}/bin/nginx $out/bin/
       cp -r ${redis}/bin/redis-server $out/bin/
+      cp -r ${rocksdb.tools}/bin/db_bench $out/bin/
       cp -r ${schbench}/bin/schbench $out/bin/
       cp -r ${sqlite-speedtest1}/bin/sqlite-speedtest1 $out/bin/
 

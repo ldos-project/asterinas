@@ -44,6 +44,8 @@ prepare_system() {
     if [ "$SYSTEM" = "linux" ]; then
         # Mount necessary fs
         mount -t devtmpfs devtmpfs /dev
+        # Expose the kernel command line for environment extraction
+        mount -t proc proc /proc
         # Enable network
         ip link set lo up
         ip link set eth0 up
@@ -59,12 +61,32 @@ prepare_system() {
     fi
 }
 
+# Export benchmark tuning variables passed as kernel command line key=value
+# pairs (e.g. BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=1,2,3). This is the same
+# mechanism the initramfs init uses for raid.selection. Linux-only: Asterinas
+# forwards unrecognized KEY=value command line args to init as environment
+# variables natively (kernel/src/kcmdline.rs), so no extraction is needed there.
+prepare_linux_env_vars() {
+    for kv in $(cat /proc/cmdline); do
+        case "${kv}" in
+            BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=*) export BENCHMARK_DBBENCH_MIXGRAPH_SEEDS="${kv#BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=}" ;;
+        esac
+    done
+}
+
 main() {
     # Check if the benchmark name is valid  
     check_benchmark_name
 
     # Prepare the system
     prepare_system
+
+    # Pick up tuning variables from the kernel command line. Linux ignores
+    # unknown key=value params, so they must be recovered from /proc/cmdline.
+    # Asterinas gets them as init environment variables natively.
+    if [ "$SYSTEM" = "linux" ]; then
+        prepare_linux_env_vars
+    fi
     
     # Message to notify the host script. It must align with the READY_MESSAGE in host_guest_bench_runner.sh.
     # DO NOT REMOVE THIS LINE!!!
