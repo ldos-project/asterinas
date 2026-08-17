@@ -126,8 +126,14 @@ impl<M: AnyFrameMeta> Segment<M> {
 
 impl<M: AnyFrameMeta + ?Sized> Split for Segment<M> {
     fn split(self, offset: usize) -> (Self, Self) {
-        assert!(offset.is_multiple_of(PAGE_SIZE));
-        assert!(0 < offset && offset < self.size());
+        assert!(
+            offset.is_multiple_of(PAGE_SIZE),
+            "segment virtual address not aligned for splitting"
+        );
+        assert!(
+            0 < offset && offset < self.size(),
+            "segment virtual address out-of-bound for splitting"
+        );
 
         let old = ManuallyDrop::new(self);
         let at = old.range.start + offset;
@@ -156,10 +162,17 @@ impl<M: AnyFrameMeta + ?Sized> Segment<M> {
     /// The function panics if the byte offset range is out of bounds, or if
     /// any of the ends of the byte offset range is not base-page aligned.
     pub fn slice(&self, range: &Range<usize>) -> Self {
-        assert!(range.start.is_multiple_of(PAGE_SIZE) && range.end.is_multiple_of(PAGE_SIZE));
+        assert!(
+            range.start.is_multiple_of(PAGE_SIZE) && range.end.is_multiple_of(PAGE_SIZE),
+            "segment virtual address not aligned for slicing"
+        );
+        assert!(
+            range.start <= range.end && range.end <= self.size(),
+            "segment virtual address out-of-bound for slicing"
+        );
+
         let start = self.range.start + range.start;
         let end = self.range.start + range.end;
-        assert!(start <= end && end <= self.range.end);
 
         for paddr in (start..end).step_by(PAGE_SIZE) {
             // SAFETY: We already have reference counts for the frames since
@@ -256,7 +269,7 @@ impl<M: AnyFrameMeta> From<Segment<M>> for Segment<dyn AnyFrameMeta> {
 impl<M: AnyFrameMeta> TryFrom<Segment<dyn AnyFrameMeta>> for Segment<M> {
     type Error = Segment<dyn AnyFrameMeta>;
 
-    fn try_from(seg: Segment<dyn AnyFrameMeta>) -> core::result::Result<Self, Self::Error> {
+    fn try_from(seg: Segment<dyn AnyFrameMeta>) -> Result<Self, Self::Error> {
         // SAFETY: for each page there would be a forgotten handle
         // when creating the `Segment` object.
         let first_frame = unsafe { Frame::<dyn AnyFrameMeta>::from_raw(seg.range.start) };
@@ -293,7 +306,7 @@ impl TryFrom<Segment<dyn AnyFrameMeta>> for USegment {
     ///
     /// If the usage of the page is not the same as the expected usage, it will
     /// return the dynamic page itself as is.
-    fn try_from(seg: Segment<dyn AnyFrameMeta>) -> core::result::Result<Self, Self::Error> {
+    fn try_from(seg: Segment<dyn AnyFrameMeta>) -> Result<Self, Self::Error> {
         // SAFETY: for each page there would be a forgotten handle
         // when creating the `Segment` object.
         let first_frame = unsafe { Frame::<dyn AnyFrameMeta>::from_raw(seg.range.start) };

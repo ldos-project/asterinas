@@ -18,12 +18,10 @@
 //! // Creates a bio request.
 //! let bio = Bio::new(BioType::Write, sid, segments, None);
 //! // Submits to the block device.
-//! let bio_waiter = bio.submit(block_device)?;
+//! let mut io_batch = IoBatch::new();
+//! bio.submit(block_device, &mut io_batch)?;
 //! // Waits for the the completion.
-//! let Some(status) = bio_waiter.wait() else {
-//!     return Err(IoError);
-//! };
-//! assert!(status == BioStatus::Complete);
+//! io_batch.wait_all()?;
 //! ```
 //!
 #![no_std]
@@ -53,6 +51,7 @@ pub mod test_utils;
 pub use ::device_id::DeviceId;
 use component::{ComponentInitError, init_component};
 pub use device_id::{EXTENDED_DEVICE_ID_ALLOCATOR, MajorIdOwner, acquire_major, allocate_major};
+use io_util::batch::IoBatch;
 use ostd::sync::Mutex;
 pub use partition::{PartitionInfo, PartitionNode};
 
@@ -60,7 +59,7 @@ use self::{
     bio::{BioEnqueueError, SubmittedBio},
     prelude::*,
 };
-use crate::bio::{Bio, BioWaiter};
+use crate::bio::Bio;
 
 pub const BLOCK_SIZE: usize = ostd::mm::PAGE_SIZE;
 pub const SECTOR_SIZE: usize = 512;
@@ -131,8 +130,8 @@ impl dyn BlockDevice {
     ///
     /// This allows callers holding a `&dyn BlockDevice` (including trait objects) to
     /// submit a freshly constructed [`Bio`] without importing helper traits.
-    pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
-        bio.submit(self)
+    pub fn submit(&self, bio: Bio, io_batch: &mut IoBatch) -> Result<(), BioEnqueueError> {
+        bio.submit(self, io_batch)
     }
 
     pub fn downcast_ref<T: BlockDevice>(&self) -> Option<&T> {
@@ -203,7 +202,7 @@ fn init() -> Result<(), ComponentInitError> {
 }
 
 #[init_component(process)]
-fn init_in_first_process() -> Result<(), component::ComponentInitError> {
+fn init_in_first_process() -> Result<(), ComponentInitError> {
     let devices = collect_all();
     for device in devices {
         let Some(partition_info) = partition::parse(&device) else {

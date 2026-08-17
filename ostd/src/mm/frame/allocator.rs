@@ -13,7 +13,7 @@ use crate::{
     boot::memory_region::MemoryRegionType,
     error::{InvalidArgsSnafu, NoMemorySnafu},
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, Paddr, PagingLevel, paddr_to_vaddr, page_size},
+    mm::{PAGE_SIZE, PagingLevel, paddr_to_vaddr, page_size},
     prelude::*,
     util::ops::range_difference,
 };

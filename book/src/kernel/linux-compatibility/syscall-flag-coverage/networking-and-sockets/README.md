@@ -3,8 +3,8 @@
 <!--
 Put system calls such as
 
-socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, 
-sendto, recvfrom, sendmsg, recvmsg, shutdown, setsockopt, getsockopt, 
+socket, socketpair, bind, listen, accept, connect, getsockname, getpeername,
+sendto, recvfrom, sendmsg, recvmsg, shutdown, setsockopt, getsockopt,
 sendmmsg, recvmmsg, accept4, recvmsg, and socketcall
 under this category.
 -->
@@ -99,9 +99,6 @@ Supported functionality in SCML:
 ```c
 {{#include recvfrom_and_recvmsg.scml}}
 ```
-
-Partially-supported flags:
-* `MSG_PEEK` because it is only supported in netlink socket
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/recvfrom.2.html).

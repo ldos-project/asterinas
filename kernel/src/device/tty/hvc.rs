@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{boxed::Box, format, sync::Arc};
+use alloc::format;
 
 use aster_console::AnyConsoleDevice;
-use ostd::mm::{Infallible, VmReader, VmWriter};
+use ostd::mm::Infallible;
 use spin::Once;
 
 use super::{Tty, TtyDriver};
@@ -13,7 +13,7 @@ use crate::{
         registry::char,
         tty::{file::TtyFile, termio::CTermios},
     },
-    fs::file::FileIo,
+    fs::file::PerOpenFileOps,
     prelude::*,
 };
 
@@ -31,7 +31,7 @@ impl TtyDriver for HvcDriver {
         Some(DevtmpfsInodeMeta::new(format!("hvc{}", index)))
     }
 
-    fn open(tty: Arc<Tty<Self>>) -> Result<Box<dyn FileIo>> {
+    fn open(tty: Arc<Tty<Self>>) -> Result<Box<dyn PerOpenFileOps>> {
         Ok(Box::new(TtyFile::new(tty)))
     }
 

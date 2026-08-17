@@ -35,6 +35,9 @@ macro_rules! import_generic_syscall_entries {
             fallocate::sys_fallocate,
             fcntl::sys_fcntl,
             flock::sys_flock,
+            fsconfig::sys_fsconfig,
+            fsmount::sys_fsmount,
+            fsopen::sys_fsopen,
             fsync::{sys_fdatasync, sys_fsync},
             futex::sys_futex,
             get_ioprio::sys_ioprio_get,
@@ -66,6 +69,7 @@ macro_rules! import_generic_syscall_entries {
             kill::sys_kill,
             link::sys_linkat,
             listen::sys_listen,
+            listmount::sys_listmount,
             listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
             lseek::sys_lseek,
             madvise::sys_madvise,
@@ -74,12 +78,14 @@ macro_rules! import_generic_syscall_entries {
             mknod::sys_mknodat,
             mmap::sys_mmap,
             mount::sys_mount,
+            move_mount::sys_move_mount,
             mprotect::sys_mprotect,
             mremap::sys_mremap,
             msync::sys_msync,
             munmap::sys_munmap,
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
+            personality::sys_personality,
             pidfd_getfd::sys_pidfd_getfd,
             pidfd_open::sys_pidfd_open,
             pidfd_send_signal::sys_pidfd_send_signal,
@@ -279,8 +285,9 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_UTIMENSAT = 88               => sys_utimensat(args[..4]);
             SYS_CAPGET = 90                  => sys_capget(args[..2]);
             SYS_CAPSET = 91                  => sys_capset(args[..2]);
-            SYS_EXIT = 93                    => sys_exit(args[..1]);
-            SYS_EXIT_GROUP = 94              => sys_exit_group(args[..1]);
+            SYS_EXIT = 93                    => sys_exit(args[..1], &mut user_ctx);
+            SYS_PERSONALITY = 92             => sys_personality(args[..1]);
+            SYS_EXIT_GROUP = 94              => sys_exit_group(args[..1], &mut user_ctx);
             SYS_WAITID = 95                  => sys_waitid(args[..5]);
             SYS_SET_TID_ADDRESS = 96         => sys_set_tid_address(args[..1]);
             SYS_UNSHARE = 97                 => sys_unshare(args[..1]);
@@ -343,7 +350,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_UMASK = 166                  => sys_umask(args[..1]);
             SYS_PRCTL = 167                  => sys_prctl(args[..5]);
             SYS_GETCPU = 168                 => sys_getcpu(args[..3]);
-            SYS_GETTIMEOFDAY = 169           => sys_gettimeofday(args[..1]);
+            SYS_GETTIMEOFDAY = 169           => sys_gettimeofday(args[..2]);
             SYS_GETPID = 172                 => sys_getpid(args[..0]);
             SYS_GETPPID = 173                => sys_getppid(args[..0]);
             SYS_GETUID = 174                 => sys_getuid(args[..0]);
@@ -397,13 +404,18 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
+            SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
+            SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);
+            SYS_FSCONFIG = 431               => sys_fsconfig(args[..5]);
+            SYS_FSMOUNT = 432                => sys_fsmount(args[..3]);
             SYS_PIDFD_OPEN = 434             => sys_pidfd_open(args[..2]);
             SYS_CLONE3 = 435                 => sys_clone3(args[..2], &user_ctx);
             SYS_CLOSE_RANGE = 436            => sys_close_range(args[..3]);
             SYS_PIDFD_GETFD = 438            => sys_pidfd_getfd(args[..3]);
             SYS_FACCESSAT2 = 439             => sys_faccessat2(args[..4]);
-            SYS_EPOLL_PWAIT2 = 441           => sys_epoll_pwait2(args[..5]);
+            SYS_EPOLL_PWAIT2 = 441           => sys_epoll_pwait2(args[..6]);
             SYS_FCHMODAT2 = 452              => sys_fchmodat2(args[..4]);
+            SYS_LISTMOUNT = 458              => sys_listmount(args[..4]);
             // Architecture-specific syscalls
             $( $name = $num => $handler $args );*
         }

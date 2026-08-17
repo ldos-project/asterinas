@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use align_ext::AlignExt;
+use io_util::batch::IoBatch;
 use ostd::{
-    error::{InvalidArgsSnafu, IoSnafu},
+    error::{InvalidArgsSnafu, IoSnafu, OverflowSnafu},
     mm::{VmIo, VmReader, VmWriter},
 };
+use snafu::OptionExt as _;
 
 use super::{
-    BLOCK_SIZE, BlockDevice,
-    bio::{Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, SubmittedBio},
+    BLOCK_SIZE, BlockDevice, SECTOR_SIZE,
+    bio::{Bio, BioCompleteFn, BioEnqueueError, BioSegment, BioStatus, BioType},
     id::{Bid, Sid},
 };
 use crate::{
@@ -25,12 +28,7 @@ impl dyn BlockDevice {
         bid: Bid,
         bio_segment: BioSegment,
     ) -> Result<BioStatus, BioEnqueueError> {
-        let bio = Bio::new(
-            BioType::Read,
-            Sid::from(bid),
-            vec![bio_segment],
-            Some(general_complete_fn),
-        );
+        let bio = Bio::new(BioType::Read, Sid::from(bid), vec![bio_segment], None);
         let status = bio.submit_and_wait(self)?;
         Ok(status)
     }
@@ -40,46 +38,16 @@ impl dyn BlockDevice {
         &self,
         bid: Bid,
         bio_segment: BioSegment,
-    ) -> Result<BioWaiter, BioEnqueueError> {
-        let bio = Bio::new(
-            BioType::Read,
-            Sid::from(bid),
-            vec![bio_segment],
-            Some(general_complete_fn),
-        );
-        bio.submit(self)
-    }
-
-    /// Asynchronously reads contiguous blocks starting from the `bid`. When complete call
-    /// `complete_fn`.
-    pub fn read_blocks_async_with_closure(
-        &self,
-        bid: Bid,
-        bio_segment: BioSegment,
-        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+        complete_fn: Option<BioCompleteFn>,
+        io_batch: &mut IoBatch,
     ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(
+        let bio = Bio::new(
             BioType::Read,
             Sid::from(bid),
             vec![bio_segment],
             complete_fn,
         );
-        // The result of the operation in handled by the callback, so we can drop the waiter.
-        let _ = bio.submit(self)?;
-        Ok(())
-    }
-
-    /// Asynchronously reads contiguous segments starting from the `sid`. When complete call
-    /// `complete_fn`.
-    pub fn read_segments_async_with_closure(
-        &self,
-        sid: Sid,
-        segments: Vec<BioSegment>,
-        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
-    ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(BioType::Read, sid, segments, complete_fn);
-        let _ = bio.submit(self)?;
-        Ok(())
+        bio.submit(self, io_batch)
     }
 
     /// Synchronously writes contiguous blocks starting from the `bid`.
@@ -88,12 +56,7 @@ impl dyn BlockDevice {
         bid: Bid,
         bio_segment: BioSegment,
     ) -> Result<BioStatus, BioEnqueueError> {
-        let bio = Bio::new(
-            BioType::Write,
-            Sid::from(bid),
-            vec![bio_segment],
-            Some(general_complete_fn),
-        );
+        let bio = Bio::new(BioType::Write, Sid::from(bid), vec![bio_segment], None);
         let status = bio.submit_and_wait(self)?;
         Ok(status)
     }
@@ -103,56 +66,21 @@ impl dyn BlockDevice {
         &self,
         bid: Bid,
         bio_segment: BioSegment,
-    ) -> Result<BioWaiter, BioEnqueueError> {
-        let bio = Bio::new(
-            BioType::Write,
-            Sid::from(bid),
-            vec![bio_segment],
-            Some(general_complete_fn),
-        );
-        bio.submit(self)
-    }
-
-    /// Asynchronously writes contiguous blocks starting from the `bid`. When complete call
-    /// `complete_fn`.
-    pub fn write_blocks_async_with_closure(
-        &self,
-        bid: Bid,
-        bio_segment: BioSegment,
-        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
+        complete_fn: Option<BioCompleteFn>,
+        io_batch: &mut IoBatch,
     ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(
+        let bio = Bio::new(
             BioType::Write,
             Sid::from(bid),
             vec![bio_segment],
             complete_fn,
         );
-        // The result of the operation in handled by the callback, so we can drop the waiter.
-        let _ = bio.submit(self)?;
-        Ok(())
-    }
-
-    /// Asynchronously writes contiguous segments starting from the `sid`. When complete call
-    /// `complete_fn`.
-    pub fn write_segments_async_with_closure(
-        &self,
-        sid: Sid,
-        segments: Vec<BioSegment>,
-        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
-    ) -> Result<(), BioEnqueueError> {
-        let bio = Bio::new_with_closure(BioType::Write, sid, segments, complete_fn);
-        let _ = bio.submit(self)?;
-        Ok(())
+        bio.submit(self, io_batch)
     }
 
     /// Issues a sync request
     pub fn sync(&self) -> Result<BioStatus, BioEnqueueError> {
-        let bio = Bio::new(
-            BioType::Flush,
-            Sid::from(Bid::from_offset(0)),
-            vec![],
-            Some(general_complete_fn),
-        );
+        let bio = Bio::new(BioType::Flush, Sid::from(Bid::from_offset(0)), vec![], None);
         let status = bio.submit_and_wait(self)?;
         Ok(status)
     }
@@ -162,32 +90,39 @@ impl VmIo for dyn BlockDevice {
     /// Reads consecutive bytes of several sectors in size.
     fn read(&self, offset: usize, writer: &mut VmWriter) -> ostd::Result<()> {
         let read_len = writer.avail();
-        if !is_sector_aligned(offset) || !is_sector_aligned(read_len) {
-            return InvalidArgsSnafu.fail();
-        }
         if read_len == 0 {
             return Ok(());
         }
 
+        let request_end = offset.checked_add(read_len).context(OverflowSnafu)?;
+        let device_size = self.metadata().nr_sectors * SECTOR_SIZE;
+        if request_end > device_size {
+            return InvalidArgsSnafu.fail();
+        }
+
+        let aligned_offset = offset.align_down(SECTOR_SIZE);
+        let aligned_end = request_end.align_up(SECTOR_SIZE);
+        let aligned_len = aligned_end - aligned_offset;
+
         let (bio, bio_segment) = {
             let num_blocks = {
-                let first = Bid::from_offset(offset).to_raw();
-                let last = Bid::from_offset(offset + read_len - 1).to_raw();
+                let first = Bid::from_offset(aligned_offset).to_raw();
+                let last = Bid::from_offset(aligned_end - 1).to_raw();
                 (last - first + 1) as usize
             };
             let bio_segment = BioSegment::alloc_inner(
                 num_blocks,
-                offset % BLOCK_SIZE,
-                read_len,
+                aligned_offset % BLOCK_SIZE,
+                aligned_len,
                 BioDirection::FromDevice,
             );
 
             (
                 Bio::new(
                     BioType::Read,
-                    Sid::from_offset(offset),
+                    Sid::from_offset(aligned_offset),
                     vec![bio_segment.clone()],
-                    Some(general_complete_fn),
+                    None,
                 ),
                 bio_segment,
             )
@@ -195,7 +130,12 @@ impl VmIo for dyn BlockDevice {
 
         let status = bio.submit_and_wait(self)?;
         match status {
-            BioStatus::Complete => bio_segment.read(0, writer),
+            BioStatus::Complete => {
+                let segment_offset = offset - aligned_offset;
+                bio_segment.read(segment_offset, writer)?;
+
+                Ok(())
+            }
             _ => IoSnafu.fail(),
         }
     }
@@ -203,35 +143,76 @@ impl VmIo for dyn BlockDevice {
     /// Writes consecutive bytes of several sectors in size.
     fn write(&self, offset: usize, reader: &mut VmReader) -> ostd::Result<()> {
         let write_len = reader.remain();
-        if !is_sector_aligned(offset) || !is_sector_aligned(write_len) {
-            return InvalidArgsSnafu.fail();
-        }
         if write_len == 0 {
             return Ok(());
         }
 
-        let bio = {
-            let num_blocks = {
-                let first = Bid::from_offset(offset).to_raw();
-                let last = Bid::from_offset(offset + write_len - 1).to_raw();
-                (last - first + 1) as usize
-            };
-            let bio_segment = BioSegment::alloc_inner(
-                num_blocks,
-                offset % BLOCK_SIZE,
-                write_len,
-                BioDirection::ToDevice,
-            );
-            bio_segment.write(0, reader)?;
+        let request_end = offset.checked_add(write_len).context(OverflowSnafu)?;
+        let device_size = self.metadata().nr_sectors * SECTOR_SIZE;
+        if request_end > device_size {
+            return InvalidArgsSnafu.fail();
+        }
 
-            Bio::new(
-                BioType::Write,
-                Sid::from_offset(offset),
-                vec![bio_segment],
-                Some(general_complete_fn),
-            )
+        let aligned_offset = offset.align_down(SECTOR_SIZE);
+        let aligned_end = request_end.align_up(SECTOR_SIZE);
+
+        // If the write range is not sector-aligned, preserve the bytes in the
+        // surrounding sectors that are outside the user-requested range.
+        // The request is split into at most three segments: a read-modify-write
+        // first sector, sector-aligned middle sectors written directly from the
+        // reader, and a read-modify-write last sector. Each segment consumes
+        // only the bytes that belong to it so later segments see the remaining
+        // input bytes.
+
+        let need_read_first_sector = !is_sector_aligned(offset);
+        let mut middle_sector_offset = aligned_offset;
+        let last_sector_offset = (request_end - 1).align_down(SECTOR_SIZE);
+        let need_read_last_sector = {
+            let is_last_sector_aligned = is_sector_aligned(request_end);
+            let is_the_same_sector = last_sector_offset == aligned_offset;
+            !(is_last_sector_aligned || need_read_first_sector && is_the_same_sector)
+        };
+        let middle_end = if need_read_last_sector {
+            last_sector_offset
+        } else {
+            aligned_end
         };
 
+        let mut bio_segments = Vec::new();
+
+        if need_read_first_sector {
+            let first_segment = self.read_sector_for_write(aligned_offset)?;
+            let first_segment_offset = offset - aligned_offset;
+            let first_write_len = (SECTOR_SIZE - first_segment_offset).min(write_len);
+            let mut first_reader = reader.clone();
+            first_reader.limit(first_write_len);
+            first_segment.write(first_segment_offset, &mut first_reader)?;
+            reader.skip(first_write_len);
+            bio_segments.push(first_segment);
+            middle_sector_offset += SECTOR_SIZE;
+        }
+        if middle_sector_offset < middle_end {
+            let middle_len = middle_end - middle_sector_offset;
+            let middle_segment = alloc_write_segment(middle_sector_offset, middle_len);
+            let mut middle_reader = reader.clone();
+            middle_reader.limit(middle_len);
+            middle_segment.write(0, &mut middle_reader)?;
+            reader.skip(middle_len);
+            bio_segments.push(middle_segment);
+        }
+        if need_read_last_sector {
+            let last_segment = self.read_sector_for_write(last_sector_offset)?;
+            last_segment.write(0, reader)?;
+            bio_segments.push(last_segment);
+        }
+        debug_assert!(!reader.has_remain());
+
+        let bio = Bio::new(
+            BioType::Write,
+            Sid::from_offset(aligned_offset),
+            bio_segments,
+            None,
+        );
         let status = bio.submit_and_wait(self)?;
         match status {
             BioStatus::Complete => Ok(()),
@@ -242,13 +223,18 @@ impl VmIo for dyn BlockDevice {
 
 impl dyn BlockDevice {
     /// Asynchronously writes consecutive bytes of several sectors in size.
-    pub fn write_bytes_async(&self, offset: usize, buf: &[u8]) -> ostd::Result<BioWaiter> {
+    pub fn write_bytes_async(
+        &self,
+        offset: usize,
+        buf: &[u8],
+        io_batch: &mut IoBatch,
+    ) -> ostd::Result<()> {
         let write_len = buf.len();
         if !is_sector_aligned(offset) || !is_sector_aligned(write_len) {
             return InvalidArgsSnafu.fail();
         }
         if write_len == 0 {
-            return Ok(BioWaiter::new());
+            return Ok(());
         }
 
         let bio = {
@@ -268,28 +254,62 @@ impl dyn BlockDevice {
                 BioType::Write,
                 Sid::from_offset(offset),
                 vec![bio_segment],
-                Some(general_complete_fn),
+                None,
             )
         };
 
-        let complete = bio.submit(self)?;
-        Ok(complete)
+        bio.submit(self, io_batch)?;
+        Ok(())
+    }
+
+    fn read_sector_for_write(&self, sector_offset: usize) -> ostd::Result<BioSegment> {
+        // The segment will be submitted by the later write bio, so keep it writable
+        // from the CPU side and read the preserved sector directly into it.
+        let write_segment = alloc_write_segment(sector_offset, SECTOR_SIZE);
+        let read_bio = Bio::new(
+            BioType::Read,
+            Sid::from_offset(sector_offset),
+            vec![write_segment.clone()],
+            None,
+        );
+        if read_bio.submit_and_wait(self)? != BioStatus::Complete {
+            return IoSnafu.fail();
+        }
+
+        Ok(write_segment)
     }
 }
 
-fn general_complete_fn(bio: &SubmittedBio) {
-    match bio.status() {
-        BioStatus::Complete => (),
-        err_status => ostd::error!(
+fn alloc_write_segment(offset: usize, len: usize) -> BioSegment {
+    let num_blocks = {
+        let first = Bid::from_offset(offset).to_raw();
+        let last = Bid::from_offset(offset + len - 1).to_raw();
+        (last - first + 1) as usize
+    };
+
+    BioSegment::alloc_inner(num_blocks, offset % BLOCK_SIZE, len, BioDirection::ToDevice)
+}
+
+pub(super) fn general_complete_fn(
+    bio_type: BioType,
+    bio_status: BioStatus,
+    complete_fn: Option<BioCompleteFn>,
+) {
+    if bio_status != BioStatus::Complete {
+        ostd::error!(
             "failed to do {:?} on the device with error status: {:?}",
-            bio.type_(),
-            err_status
-        ),
+            bio_type,
+            bio_status
+        );
+    }
+    if let Some(complete_fn) = complete_fn {
+        complete_fn(bio_status);
     }
 }
 
 #[cfg(ktest)]
 mod test {
+    use alloc::boxed::Box;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use ostd::prelude::*;
@@ -308,15 +328,18 @@ mod test {
         let bio_segment = BioSegment::alloc(1, BioDirection::FromDevice);
         let block_device: &dyn BlockDevice = &FakeBlockDevice;
 
-        let complete_fn = |bio: &SubmittedBio| {
-            assert_eq!(bio.type_(), BioType::Read);
-            assert_eq!(bio.status(), BioStatus::Complete);
+        let complete_fn = |_| {
             CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
         };
 
         CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
         block_device
-            .read_blocks_async_with_closure(bid, bio_segment, complete_fn)
+            .read_blocks_async(
+                bid,
+                bio_segment,
+                Some(Box::new(complete_fn)),
+                &mut IoBatch::new(),
+            )
             .unwrap();
         assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }
@@ -328,15 +351,18 @@ mod test {
         let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         let block_device: &dyn BlockDevice = &FakeBlockDevice;
 
-        let complete_fn = |bio: &SubmittedBio| {
-            assert_eq!(bio.type_(), BioType::Write);
-            assert_eq!(bio.status(), BioStatus::Complete);
+        let complete_fn = |_| {
             CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
         };
 
         CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
         block_device
-            .write_blocks_async_with_closure(bid, bio_segment, complete_fn)
+            .write_blocks_async(
+                bid,
+                bio_segment,
+                Some(Box::new(complete_fn)),
+                &mut IoBatch::new(),
+            )
             .unwrap();
         assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }

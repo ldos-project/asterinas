@@ -4,17 +4,18 @@ use super::TidDirOps;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{ProcSym, SymOps},
+        procfs::template::{ProcSym, ProcSymOps},
         vfs::inode::{Inode, SymbolicLink},
     },
     prelude::*,
+    thread::Thread,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/exe` (and also `/proc/[pid]/exe`).
-pub struct ExeSymOps(TidDirOps);
+pub(super) struct ExeSymOps(TidDirOps);
 
 impl ExeSymOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3350>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L174-L175>
@@ -22,7 +23,11 @@ impl ExeSymOps {
     }
 }
 
-impl SymOps for ExeSymOps {
+impl ProcSymOps for ExeSymOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_link(&self) -> Result<SymbolicLink> {
         let Some(process) = self.0.process() else {
             return_errno_with_message!(Errno::ESRCH, "the process does not exist");

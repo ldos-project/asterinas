@@ -18,6 +18,7 @@ use smoltcp::{
 };
 
 use super::{
+    ReceiveBehavior,
     common::{Inner, NeedIfacePoll, Socket, SocketBg},
     tcp_listen::TcpListenerBg,
 };
@@ -25,7 +26,7 @@ use crate::{
     define_boolean_value,
     errors::tcp::{ConnectError, IoError, RecvError, SendError},
     ext::Ext,
-    iface::{BoundPort, PollKey, PollableIfaceMut},
+    iface::{BoundTcpPort, PollKey, PollableIfaceMut},
     socket::{
         event::SocketEvents,
         option::{RawTcpOption, RawTcpSetOption},
@@ -253,6 +254,7 @@ impl<E: Ext> TcpConnectionInner<E> {
 }
 
 impl<E: Ext> Inner<E> for TcpConnectionInner<E> {
+    type BoundPort = BoundTcpPort<E>;
     type Observer = E::TcpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
@@ -292,14 +294,12 @@ impl<E: Ext> TcpConnection<E> {
     ///
     /// Polling the iface is _always_ required after this method succeeds.
     pub fn new_connect(
-        bound: BoundPort<E>,
+        bound: BoundTcpPort<E>,
         remote_endpoint: IpEndpoint,
         option: &RawTcpOption,
         observer: E::TcpEventObserver,
-    ) -> Result<Self, (BoundPort<E>, ConnectError)> {
-        let Some(local_endpoint) = bound.endpoint() else {
-            return Err((bound, ConnectError::Unaddressable));
-        };
+    ) -> Result<Self, (BoundTcpPort<E>, ConnectError)> {
+        let local_endpoint = bound.endpoint();
 
         let iface = bound.iface().clone();
         // We have to lock `interface` before locking `sockets`
@@ -360,12 +360,12 @@ impl<E: Ext> TcpConnection<E> {
         }
     }
 
-    /// Converts back to the [`BoundPort`].
+    /// Converts back to the [`BoundTcpPort`].
     ///
     /// This method will succeed if the connection is fully closed and no network events can reach
     /// this connection. We guarantee that this method will always succeed if
     /// [`Self::connect_state`] returns [`ConnectState::Refused`].
-    pub fn into_bound_port(mut self) -> Option<BoundPort<E>> {
+    pub fn into_bound_port(mut self) -> Option<BoundTcpPort<E>> {
         let this: TcpConnectionBg<E> = Arc::into_inner(self.0.take())?;
         Some(this.bound)
     }
@@ -446,12 +446,13 @@ impl<E: Ext> TcpConnection<E> {
     /// Receives some data.
     ///
     /// Polling the iface _may_ be required after this method succeeds.
-    pub fn recv<F, CopyErr>(
+    pub fn recv<CopyFn, CopyErr>(
         &self,
-        mut f: F,
+        behavior: ReceiveBehavior,
+        mut copy_fn: CopyFn,
     ) -> Result<(NonZeroUsize, NeedIfacePoll), IoError<RecvError, CopyErr>>
     where
-        F: FnMut(&mut [u8]) -> Result<usize, (CopyErr, usize)>,
+        CopyFn: FnMut(&[u8]) -> Result<usize, (CopyErr, usize)>,
     {
         let common = self.iface().common();
         let mut iface = common.interface();
@@ -463,7 +464,7 @@ impl<E: Ext> TcpConnection<E> {
         }
 
         let mut total_recv_bytes = 0;
-        let mut need_wrap_continuation = true;
+        let mut need_wrap_continuation = behavior.will_consume_data();
 
         let result = loop {
             let mut recv_bytes = 0;
@@ -472,9 +473,9 @@ impl<E: Ext> TcpConnection<E> {
             // `socket.recv` exposes the largest contiguous readable range. If the receive ring
             // buffer wraps, one logical stream read may span two such ranges, so continue at most
             // once while holding the same socket lock to avoid an avoidable short read.
-            let recv_result = socket.recv(|socket_buffer| {
+            let mut copy_socket_buffer = |socket_buffer: &[u8]| {
                 socket_buffer_len = socket_buffer.len();
-                match f(socket_buffer) {
+                match copy_fn(socket_buffer) {
                     Ok(current_recv_bytes) => {
                         recv_bytes = current_recv_bytes;
                         (current_recv_bytes, Ok(()))
@@ -484,7 +485,23 @@ impl<E: Ext> TcpConnection<E> {
                         (current_recv_bytes, Err(err))
                     }
                 }
-            });
+            };
+
+            let recv_result = match behavior {
+                ReceiveBehavior::Recv => {
+                    socket.recv(|socket_buffer| copy_socket_buffer(socket_buffer))
+                }
+                ReceiveBehavior::Peek => {
+                    // FIXME: This implementation relies on `socket.peek()`, which only returns the
+                    // first contiguous readable range. We need more powerful smoltcp APIs to peek the
+                    // wrapped receive buffer without extra caching and copying.
+                    let recv_queue = socket.recv_queue();
+                    socket.peek(recv_queue).map(|socket_buffer| {
+                        let (_, copy_result) = copy_socket_buffer(socket_buffer);
+                        copy_result
+                    })
+                }
+            };
 
             let copy_result = match recv_result {
                 Err(_) if socket.is_rst_closed && total_recv_bytes == 0 => {

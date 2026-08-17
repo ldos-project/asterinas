@@ -42,7 +42,10 @@ fn parse_initramfs(mb2_info: &BootInformation) -> Option<&'static [u8]> {
 
     let initramfs_ptr = paddr_to_vaddr(module_tag.start_address() as usize);
     let initramfs_len = module_tag.module_size() as usize;
-    // SAFETY: The initramfs is safe to read because of the contract with the loader.
+    // SAFETY:
+    // 1. The initramfs is safe to read because of the contract with the loader.
+    // 2. We reserve the initramfs region in `parse_memory_regions`, so it will live as an immutable
+    //    reference for `'static`.
     let initramfs =
         unsafe { core::slice::from_raw_parts(initramfs_ptr as *const u8, initramfs_len) };
 
@@ -56,9 +59,20 @@ fn parse_acpi_arg(mb2_info: &BootInformation) -> BootloaderAcpiArg {
     } else if let Some(v1_tag) = mb2_info.rsdp_v1_tag() {
         // Fall back to RSDP v1
         BootloaderAcpiArg::Rsdt(v1_tag.rsdt_address())
-    } else {
+    } else if is_efi_boot(mb2_info) {
         BootloaderAcpiArg::NotProvided
+    } else {
+        BootloaderAcpiArg::ScanBios
     }
+}
+
+fn is_efi_boot(mb2_info: &BootInformation) -> bool {
+    mb2_info.efi_sdt32_tag().is_some()
+        || mb2_info.efi_sdt64_tag().is_some()
+        || mb2_info.efi_memory_map_tag().is_some()
+        || mb2_info.efi_bs_not_exited_tag().is_some()
+        || mb2_info.efi_ih32_tag().is_some()
+        || mb2_info.efi_ih64_tag().is_some()
 }
 
 fn parse_framebuffer_info(mb2_info: &BootInformation) -> Option<BootloaderFramebufferArg> {

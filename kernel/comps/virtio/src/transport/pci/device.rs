@@ -193,7 +193,7 @@ impl VirtioTransport for VirtioPciModernTransport {
         Ok(())
     }
 
-    fn max_queue_size(&self, idx: u16) -> Result<u16, crate::transport::VirtioTransportError> {
+    fn max_queue_size(&self, idx: u16) -> Result<u16, VirtioTransportError> {
         field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
             .write_once(&idx)
             .unwrap();
@@ -317,12 +317,12 @@ impl VirtioPciModernTransport {
         let msix_manager = VirtioMsixManager::new(msix);
 
         Ok(Self {
+            device_type,
             common_device,
             common_cfg,
             device_cfg,
             notify,
             msix_manager,
-            device_type,
         })
     }
 }

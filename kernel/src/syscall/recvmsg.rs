@@ -5,7 +5,7 @@ use ostd::mm::VmIo;
 use super::SyscallReturn;
 use crate::{
     fs::file::file_table::{RawFileDesc, get_file_fast},
-    net::socket::util::SendRecvFlags,
+    net::socket::util::RecvFlags,
     prelude::*,
     util::net::CUserMsgHdr,
 };
@@ -18,7 +18,7 @@ pub fn sys_recvmsg(
 ) -> Result<SyscallReturn> {
     let user_space = ctx.user_space();
     let mut c_user_msghdr: CUserMsgHdr = user_space.read_val(user_msghdr_ptr)?;
-    let flags = SendRecvFlags::from_bits_truncate(flags);
+    let flags = RecvFlags::from_bits_truncate(flags);
 
     debug!(
         "sockfd = {}, user_msghdr = {:x?}, flags = {:?}",
@@ -29,7 +29,7 @@ pub fn sys_recvmsg(
     let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;
 
-    let (total_bytes, message_header) = {
+    let (output, message_header) = {
         let mut io_vec_writer = c_user_msghdr.copy_writer_array_from_user(&user_space)?;
         socket
             .recvmsg(&mut io_vec_writer, flags)
@@ -48,10 +48,12 @@ pub fn sys_recvmsg(
     c_user_msghdr.msg_namelen = c_user_msghdr.write_socket_addr_to_user(addr)?;
 
     let control_messages = message_header.control_messages();
-    c_user_msghdr.msg_controllen =
-        c_user_msghdr.write_control_messages_to_user(control_messages, &user_space)? as _;
+    let (control_len, control_flags) =
+        c_user_msghdr.write_control_messages_to_user(control_messages, &user_space)?;
+    c_user_msghdr.msg_controllen = control_len as _;
+    c_user_msghdr.msg_flags = (output.flags() | control_flags).bits().cast_unsigned();
 
     user_space.write_val(user_msghdr_ptr, &c_user_msghdr)?;
 
-    Ok(SyscallReturn::Return(total_bytes as _))
+    Ok(SyscallReturn::Return(output.len() as _))
 }

@@ -5,8 +5,6 @@ mod connecting;
 mod init;
 mod listen;
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use connected::ConnectedStream;
 use connecting::{ConnResult, ConnectingStream};
 use init::InitStream;
@@ -15,12 +13,15 @@ use takeable::Takeable;
 
 use crate::{
     events::IoEvents,
-    fs::{file::FileLike, pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, FileLike, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::socket::{
         Socket,
         options::{Error as SocketError, SocketOption, macros::sock_option_mut},
         private::SocketPrivate,
-        util::{MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr},
+        util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr},
         vsock::addr::{UNSPECIFIED_VSOCK_ADDR, VsockSocketAddr},
     },
     prelude::*,
@@ -30,11 +31,10 @@ use crate::{
 
 pub struct VsockStreamSocket {
     state: Mutex<Takeable<State>>,
-    is_nonblocking: AtomicBool,
     // Note that for vsock, all pollee notifications and invalidations live in the transport module
     // (e.g., `super::transport`) rather than in this module.
     pollee: Pollee,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 enum State {
@@ -46,11 +46,15 @@ enum State {
 
 impl VsockStreamSocket {
     pub fn new(is_nonblocking: bool) -> Result<Arc<Self>> {
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Ok(Arc::new(Self {
             state: Mutex::new(Takeable::new(State::Init(InitStream::new()))),
-            is_nonblocking: AtomicBool::new(is_nonblocking),
             pollee: Pollee::new(),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         }))
     }
 
@@ -136,7 +140,7 @@ impl VsockStreamSocket {
         }
     }
 
-    fn try_accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn try_accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         let state = self.lock_updated_state();
         let State::Listen(listen_stream) = state.as_ref() else {
             return_errno_with_message!(Errno::EINVAL, "the socket is not listening");
@@ -146,18 +150,22 @@ impl VsockStreamSocket {
 
         let peer_addr = connected.remote_addr().into();
         let pollee = connected.pollee().clone();
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
 
         let accepted = Arc::new(Self {
             state: Mutex::new(Takeable::new(State::Connected(connected))),
-            is_nonblocking: AtomicBool::new(false),
             pollee,
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         });
 
         Ok((accepted, peer_addr))
     }
 
-    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendRecvFlags) -> Result<usize> {
+    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendFlags) -> Result<usize> {
         let mut state = self.lock_updated_state();
         let State::Connected(connected_stream) = state.as_mut() else {
             return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected");
@@ -166,7 +174,7 @@ impl VsockStreamSocket {
         connected_stream.try_send(reader, flags)
     }
 
-    fn try_recv(&self, writer: &mut dyn MultiWrite, flags: SendRecvFlags) -> Result<usize> {
+    fn try_recv(&self, writer: &mut dyn MultiWrite, flags: RecvFlags) -> Result<usize> {
         let mut state = self.lock_updated_state();
         let State::Connected(connected_stream) = state.as_mut() else {
             return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected");
@@ -237,11 +245,7 @@ impl Pollable for VsockStreamSocket {
 
 impl SocketPrivate for VsockStreamSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
-    }
-
-    fn set_nonblocking(&self, nonblocking: bool) {
-        self.is_nonblocking.store(nonblocking, Ordering::Relaxed);
+        self.common.is_nonblocking()
     }
 }
 
@@ -300,8 +304,8 @@ impl Socket for VsockStreamSocket {
         // The pollee should have already been invalidated in the transport module.
     }
 
-    fn accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
-        self.block_on(IoEvents::IN, || self.try_accept())
+    fn accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+        self.block_on(IoEvents::IN, None, || self.try_accept(is_nonblocking))
     }
 
     fn shutdown(&self, cmd: SockShutdownCmd) -> Result<()> {
@@ -360,7 +364,7 @@ impl Socket for VsockStreamSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -399,7 +403,7 @@ impl Socket for VsockStreamSocket {
             warn!("sending control message is not supported");
         }
 
-        self.block_on(IoEvents::OUT, || self.try_send(reader, flags))
+        self.block_on(IoEvents::OUT, None, || self.try_send(reader, flags))
 
         // TODO: Trigger `SIGPIPE` if the error code is `EPIPE` and `MSG_NOSIGNAL` is not specified
     }
@@ -407,22 +411,22 @@ impl Socket for VsockStreamSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let received_bytes = self.block_on(IoEvents::IN, || self.try_recv(writer, flags))?;
+        let received_bytes = self.block_on(IoEvents::IN, None, || self.try_recv(writer, flags))?;
 
         // TODO: Receive control message
         let message_header = MessageHeader::new(None, Vec::new());
 
-        Ok((received_bytes, message_header))
+        Ok((RecvOutput::new_for_stream(received_bytes), message_header))
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }

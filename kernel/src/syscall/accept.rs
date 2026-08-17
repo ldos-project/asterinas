@@ -33,7 +33,8 @@ pub fn sys_accept4(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     debug!("raw flags = 0x{:x}", flags);
-    let flags = Flags::from_bits_truncate(flags);
+    let flags = Flags::from_bits(flags)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid accept4 flags"))?;
     debug!(
         "sockfd = {}, sockaddr_ptr = 0x{:x}, addrlen_ptr = 0x{:x}, flags = {:?}",
         sockfd, sockaddr_ptr, addrlen_ptr, flags
@@ -53,17 +54,17 @@ fn do_accept(
     let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;
 
-    let (connected_socket, socket_addr) = {
-        socket.accept().map_err(|err| match err.error() {
-            // FIXME: `accept` should not be restarted if a timeout has been set on the socket using `setsockopt`.
-            Errno::EINTR => Error::new(Errno::ERESTARTSYS),
-            _ => err,
-        })?
-    };
+    let is_nonblocking = flags.contains(Flags::SOCK_NONBLOCK);
 
-    if flags.contains(Flags::SOCK_NONBLOCK) {
-        connected_socket.set_status_flags(StatusFlags::O_NONBLOCK)?;
-    }
+    let (connected_socket, socket_addr) = {
+        socket
+            .accept(is_nonblocking)
+            .map_err(|err| match err.error() {
+                // FIXME: `accept` should not be restarted if a timeout has been set on the socket using `setsockopt`.
+                Errno::EINTR => Error::new(Errno::ERESTARTSYS),
+                _ => err,
+            })?
+    };
 
     let fd_flags = if flags.contains(Flags::SOCK_CLOEXEC) {
         FdFlags::CLOEXEC

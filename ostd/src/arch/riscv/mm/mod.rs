@@ -49,9 +49,9 @@ impl PagingConstsTrait for PagingConsts {
 }
 
 bitflags::bitflags! {
+    /// Possible flags for a page table entry.
     #[repr(C)]
     #[derive(Pod)]
-    /// Possible flags for a page table entry.
     pub(crate) struct PteFlags: usize {
         /// Specifies whether the mapped frame or page table is valid.
         const VALID =           1 << 0;
@@ -71,22 +71,27 @@ bitflags::bitflags! {
         /// Whether the memory area represented by this entry is modified.
         const DIRTY =           1 << 7;
 
-        // First bit ignored by MMU.
+        /// First bit ignored by MMU.
         const RSV1 =            1 << 8;
-        // Second bit ignored by MMU.
+        /// Second bit ignored by MMU.
         const RSV2 =            1 << 9;
 
-        // PBMT: Non-cacheable, idempotent, weakly-ordered (RVWMO), main memory
+        /// PBMT: Non-cacheable, idempotent, weakly-ordered (RVWMO), main memory.
         const PBMT_NC =         1 << 61;
-        // PBMT: Non-cacheable, non-idempotent, strongly-ordered (I/O ordering), I/O
+        /// PBMT: Non-cacheable, non-idempotent, strongly-ordered (I/O ordering), I/O.
         const PBMT_IO =         1 << 62;
-        /// Naturally aligned power-of-2
+        /// Naturally aligned power-of-2.
         const NAPOT =           1 << 63;
     }
 }
 
+const SHARED_ASID: usize = 0;
+
 pub(crate) fn tlb_flush_addr(vaddr: Vaddr) {
-    riscv::asm::sfence_vma(0, vaddr);
+    // Don't specify an ASID here. `vaddr` may be associated with a global entry.
+    //
+    // SAFETY: This invalidates the TLB, which doesn't affect the memory safety.
+    unsafe { core::arch::riscv64::sfence_vma_vaddr(vaddr) };
 }
 
 pub(crate) fn tlb_flush_addr_range(range: &Range<Vaddr>) {
@@ -96,12 +101,15 @@ pub(crate) fn tlb_flush_addr_range(range: &Range<Vaddr>) {
 }
 
 pub(crate) fn tlb_flush_all_excluding_global() {
-    // TODO: excluding global?
-    riscv::asm::sfence_vma_all()
+    // We use `SHARED_ASID` all the time, so all non-global pages are associated with it.
+    //
+    // SAFETY: This invalidates the TLB, which doesn't affect the memory safety.
+    unsafe { core::arch::riscv64::sfence_vma_asid(SHARED_ASID) };
 }
 
 pub(crate) fn tlb_flush_all_including_global() {
-    riscv::asm::sfence_vma_all()
+    // SAFETY: This invalidates the TLB, which doesn't affect the memory safety.
+    unsafe { core::arch::riscv64::sfence_vma_all() };
 }
 
 pub(crate) fn can_sync_dma() -> bool {
@@ -154,14 +162,11 @@ pub(crate) unsafe fn sync_dma_range<D: DmaDirection>(range: Range<Vaddr>) {
 
 /// Activates the given root-level page table.
 ///
-/// "satp" register doesn't have a field that encodes the cache policy,
-/// so `_root_pt_cache` is ignored.
-///
 /// # Safety
 ///
 /// Changing the root-level page table is unsafe, because it's possible to violate memory safety by
 /// changing the page mapping.
-pub(crate) unsafe fn activate_page_table(root_paddr: Paddr, _root_pt_cache: CachePolicy) {
+pub(crate) unsafe fn activate_page_table(root_paddr: Paddr) {
     assert!(root_paddr.is_multiple_of(PagingConsts::BASE_PAGE_SIZE));
     let ppn = root_paddr >> 12;
 
@@ -170,9 +175,13 @@ pub(crate) unsafe fn activate_page_table(root_paddr: Paddr, _root_pt_cache: Cach
     #[cfg(feature = "riscv_sv39_mode")]
     let mode = riscv::register::satp::Mode::Sv39;
 
-    unsafe {
-        riscv::register::satp::set(mode, 0, ppn);
-    }
+    // SAFETY: The safety is upheld by the caller.
+    unsafe { riscv::register::satp::set(mode, SHARED_ASID, ppn) };
+
+    // We reuse `SHARED_ASID`, so we need to flush the TLB entries.
+    // "[..] if an ASID is reused, it may be necessary to execute an SFENCE.VMA instruction."
+    // Reference: <https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html#satp>.
+    tlb_flush_all_excluding_global();
 }
 
 pub(crate) fn current_page_table_paddr() -> Paddr {
@@ -282,10 +291,10 @@ impl PageTableEntry {
 
 impl PodOnce for PageTableEntry {}
 
-/// SAFETY: The implementation is safe because:
-///  - `from_usize` and `into_usize` are not overridden;
-///  - `from_repr` and `repr` are correctly implemented;
-///  - a zeroed PTE represents an absent entry.
+// SAFETY: The implementation is safe because:
+//  - `from_usize` and `into_usize` are not overridden;
+//  - `from_repr` and `repr` are correctly implemented;
+//  - a zeroed PTE represents an absent entry.
 unsafe impl PteTrait for PageTableEntry {
     fn from_repr(repr: &PteScalar, level: PagingLevel) -> Self {
         match repr {

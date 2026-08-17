@@ -6,14 +6,12 @@ use super::TidDirOps;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
-    process::{
-        credentials::AMBIENT_CAPSET,
-        posix_thread::{AsPosixThread, SleepingState},
-    },
+    process::posix_thread::{AsPosixThread, SleepingState},
+    thread::Thread,
     vm::vmar::RssType,
 };
 
@@ -63,16 +61,20 @@ use crate::{
 /// - Mems_allowed_list: List of memory nodes allowed for this process.
 /// - voluntary_ctxt_switches: Number of voluntary context switches.
 /// - nonvoluntary_ctxt_switches: Number of nonvoluntary context switches.
-pub struct StatusFileOps(TidDirOps);
+pub(super) struct StatusFileOps(TidDirOps);
 
 impl StatusFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3326>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
 }
 
-impl FileOps for StatusFileOps {
+impl ProcFileOps for StatusFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 
@@ -92,7 +94,11 @@ impl FileOps for StatusFileOps {
         writeln!(
             printer,
             "Name:\t{}",
-            posix_thread.thread_name().lock().name().to_string_lossy()
+            posix_thread
+                .thread_name()
+                .lock()
+                .as_cstr()
+                .to_string_lossy()
         )?;
 
         let state = if thread.is_exited() {
@@ -189,7 +195,11 @@ impl FileOps for StatusFileOps {
             "CapBnd:\t{:016x}",
             credentials.bounding_capset().bits()
         )?;
-        writeln!(printer, "CapAmb:\t{:016x}", AMBIENT_CAPSET.bits())?;
+        writeln!(
+            printer,
+            "CapAmb:\t{:016x}",
+            credentials.ambient_capset().bits()
+        )?;
 
         Ok(printer.bytes_written())
     }

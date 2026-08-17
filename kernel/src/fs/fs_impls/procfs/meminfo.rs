@@ -12,7 +12,7 @@ use ostd::mm::{PagingConsts, page_size};
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
@@ -20,10 +20,10 @@ use crate::{
 };
 
 /// Represents the inode at `/proc/meminfo`.
-pub struct MemInfoFileOps;
+pub(super) struct MemInfoFileOps;
 
 impl MemInfoFileOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/meminfo.c#L178>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L549-L550>
@@ -31,7 +31,7 @@ impl MemInfoFileOps {
     }
 }
 
-impl FileOps for MemInfoFileOps {
+impl ProcFileOps for MemInfoFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 
@@ -51,6 +51,8 @@ impl FileOps for MemInfoFileOps {
         writeln!(printer, "MemTotal:\t{} kB", total)?;
         writeln!(printer, "MemFree:\t{} kB", available)?;
         writeln!(printer, "MemAvailable:\t{} kB", available)?;
+        writeln!(printer, "SwapTotal:\t0 kB")?;
+        writeln!(printer, "SwapFree:\t0 kB")?;
 
         // Additional memory information
         let hugepage_size = page_size::<PagingConsts>(2) / 1024;

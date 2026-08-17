@@ -14,7 +14,7 @@ More components mount the same way.
 ## Install
 
 The CLI must be installed before use. It runs from any Python ≥3.11
-environment; the block below is *one example* setup using a virtualenv. 
+environment; the block below is *one example* setup using a virtualenv.
 
 ```bash
 cd mariposa-cli

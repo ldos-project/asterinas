@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     layers::{
-        bio::{BlockId, BlockSet, Buf, BufMut, BufRef},
+        bio::{BlockSet, Buf, BufMut, BufRef},
         log::TxLogStore,
         lsm::{
             AsKV, LsmLevel, RangeQueryCtx, RecordKey as RecordK, RecordValue as RecordV,
@@ -74,7 +74,7 @@ impl<D: BlockSet + 'static> aster_block::BlockDevice for MlsDisk<D> {
     fn enqueue(
         &self,
         bio: aster_block::bio::SubmittedBio,
-    ) -> core::result::Result<(), aster_block::bio::BioEnqueueError> {
+    ) -> Result<(), aster_block::bio::BioEnqueueError> {
         use aster_block::bio::{BioStatus, BioType, SubmittedBio};
 
         if bio.type_() == BioType::Flush {
@@ -304,8 +304,8 @@ impl<D: BlockSet + 'static> MlsDisk<D> {
                 logical_block_table,
                 user_data_disk: data_disk,
                 block_validity_table,
-                data_buf: DataBuf::new(DATA_BUF_CAP),
                 tx_log_store,
+                data_buf: DataBuf::new(DATA_BUF_CAP),
                 root_key,
                 is_dropped: AtomicBool::new(false),
                 write_sync_region: RwLock::new(()),

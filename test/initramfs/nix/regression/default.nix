@@ -18,6 +18,7 @@ let
     "memory"
     "process"
     "security"
+    "time"
     "raid1"
   ];
 

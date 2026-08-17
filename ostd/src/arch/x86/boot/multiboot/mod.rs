@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::arch::global_asm;
+use core::{arch::global_asm, num::NonZeroUsize};
+
+use acpi::rsdp::Rsdp;
 
 use crate::{
+    arch::kernel::acpi::AcpiMemoryHandler,
     boot::{
         BootloaderAcpiArg, BootloaderFramebufferArg,
         memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
@@ -52,14 +55,17 @@ fn parse_initramfs(mb1_info: &MultibootLegacyInfo) -> Option<&[u8]> {
     let ptr = paddr_to_vaddr(start as usize) as *const u8;
     let len = (end - start) as usize;
 
-    // SAFETY: The initramfs is safe to read because of the contract with the loader.
+    // SAFETY:
+    // 1. The initramfs is safe to read because of the contract with the loader.
+    // 2. We reserve the initramfs region in `parse_memory_regions`, so it will live as an immutable
+    //    reference for `'static`.
     Some(unsafe { core::slice::from_raw_parts(ptr, len) })
 }
 
 fn parse_acpi_arg(_mb1_info: &MultibootLegacyInfo) -> BootloaderAcpiArg {
-    // The multiboot protocol does not contain RSDP address.
-    // TODO: What about UEFI?
-    BootloaderAcpiArg::NotProvided
+    // Multiboot v1 is BIOS-oriented and does not define a standard field for
+    // the RSDP or the EFI System Table.
+    BootloaderAcpiArg::ScanBios
 }
 
 fn parse_framebuffer_info(mb1_info: &MultibootLegacyInfo) -> Option<BootloaderFramebufferArg> {
@@ -78,13 +84,30 @@ fn parse_framebuffer_info(mb1_info: &MultibootLegacyInfo) -> Option<BootloaderFr
 fn parse_memory_regions(mb1_info: &MultibootLegacyInfo) -> MemoryRegionArray {
     let mut regions = MemoryRegionArray::new();
 
+    // The Multiboot protocol does not report ACPI regions explicitly. An ACPI
+    // region may live above the highest usable physical memory region when the
+    // total memory size is below 2G. We therefore mark it as reclaimable to
+    // include it in the linear mappings and allow access.
+    //
+    // FIXME: The ACPI specification does not guarantee that all ACPI tables
+    // are contiguous and do not cross region boundaries. See ACPI 6.4, Section
+    // 5.1, "Overview of the System Description Table Architecture".
+    // A full ACPI table graph scan may eventually be unavoidable.
+    let acpi_root_table_address = find_acpi_root_table_address();
+
     // Add the regions in the multiboot protocol.
     for entry in mb1_info.get_memory_map() {
-        let region = MemoryRegion::new(
-            entry.base_addr().try_into().unwrap(),
-            entry.length().try_into().unwrap(),
-            entry.memory_type(),
-        );
+        let base = entry.base_addr().try_into().unwrap();
+        let len = entry.length().try_into().unwrap();
+        let mut typ = entry.memory_type();
+        if typ == MemoryRegionType::Reserved
+            && acpi_root_table_address
+                .is_some_and(|address| (base..(base + len)).contains(&address.get()))
+        {
+            typ = MemoryRegionType::Reclaimable;
+        }
+
+        let region = MemoryRegion::new(base, len, typ);
         regions.push(region).unwrap();
     }
 
@@ -119,6 +142,23 @@ fn parse_memory_regions(mb1_info: &MultibootLegacyInfo) -> MemoryRegionArray {
     }
 
     regions.into_non_overlapping()
+}
+
+fn find_acpi_root_table_address() -> Option<NonZeroUsize> {
+    // Multiboot v1 is BIOS-oriented: its entry state and boot information are
+    // based on the legacy PC BIOS model, and it has no standard EFI System
+    // Table field. So we use the BIOS RSDP scan as the legacy fallback.
+    //
+    // SAFETY: The Multiboot v1 entry path is treated as BIOS-compatible.
+    let Ok(rsdp) = (unsafe { Rsdp::search_for_on_bios(AcpiMemoryHandler {}) }) else {
+        return None;
+    };
+
+    if rsdp.revision() == 0 {
+        NonZeroUsize::new(rsdp.rsdt_address() as usize)
+    } else {
+        NonZeroUsize::new(rsdp.xsdt_address() as usize)
+    }
 }
 
 /// Representation of Multiboot Information according to specification.

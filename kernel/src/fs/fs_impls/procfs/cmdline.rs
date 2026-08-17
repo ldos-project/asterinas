@@ -11,17 +11,17 @@ use ostd::boot::boot_info;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
 };
 
 /// Represents the inode at `/proc/cmdline`.
-pub struct CmdLineFileOps;
+pub(super) struct CmdLineFileOps;
 
 impl CmdLineFileOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/cmdline.c#L19>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L549-L550>
@@ -29,7 +29,7 @@ impl CmdLineFileOps {
     }
 }
 
-impl FileOps for CmdLineFileOps {
+impl ProcFileOps for CmdLineFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 

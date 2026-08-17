@@ -304,7 +304,7 @@ impl Raid1Device {
     ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.    
+    /// I/O. Completion of the parent is reported after the child finishes.
     fn process_read_async(&self, request: BioRequest) {
         for parent in request.into_bios() {
             // `select_member` needs `&mut parent` (to compute `num_pages`); the

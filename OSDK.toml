@@ -1,4 +1,4 @@
-# The OSDK manifest at the Asterinas root virtual workspace 
+# The OSDK manifest at the Asterinas root virtual workspace
 # provides default OSDK settings for all packages.
 
 # The common options for build, run and test
@@ -10,6 +10,7 @@ boot_protocol = "multiboot2"
 
 [qemu]
 args = "$(./tools/qemu_args.sh normal)"
+log_file = "qemu-serial.log"
 
 # Special options for running
 [run.boot]

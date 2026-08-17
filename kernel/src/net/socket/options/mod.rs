@@ -2,8 +2,8 @@
 
 use macros::impl_socket_options;
 
-use super::util::LingerOption;
-use crate::{net::socket::unix::CUserCred, prelude::*, process::Gid};
+use super::util::{LingerOption, SocketTimeout};
+use crate::{net::socket::unix::CUserCred, prelude::*, process::Gid, util::net::SockType};
 
 pub(in crate::net) mod macros;
 
@@ -16,6 +16,7 @@ pub trait SocketOption: Any + Send + Sync + Debug {
 
 impl_socket_options!(
     pub struct ReuseAddr(bool);
+    pub struct SocketType(SockType);
     pub struct Error(Option<crate::error::Error>);
     pub struct Broadcast(bool);
     pub struct SendBuf(u32);
@@ -23,6 +24,8 @@ impl_socket_options!(
     pub struct KeepAlive(bool);
     pub struct Priority(i32);
     pub struct Linger(LingerOption);
+    pub struct RecvTimeout(SocketTimeout);
+    pub struct SendTimeout(SocketTimeout);
     pub struct ReusePort(bool);
     pub struct PassCred(bool);
     pub struct PeerCred(CUserCred);

@@ -8,24 +8,63 @@ use core::fmt::Display;
 
 use ostd::io::IoMem;
 
-use super::{AccessMode, InodeHandle, StatusFlags, file_table::FdFlags, inode_handle::SeekFrom};
+use super::{
+    AccessMode, FileCommon, InodeHandle, SettableStatusFlags, StatusFlags, file_table::FdFlags,
+    inode_handle::SeekFrom,
+};
 use crate::{
     fs::vfs::{inode::FallocMode, path::Path},
     net::socket::Socket,
     prelude::*,
-    process::signal::Pollable,
+    process::{Process, signal::Pollable},
     util::ioctl::RawIoctl,
-    vm::vmo::Vmo,
+    vm::page_cache::Vmo,
 };
 
 /// The basic operations defined on a file
 pub trait FileLike: Pollable + Send + Sync + Any {
+    /// Reads data from this file.
+    ///
+    /// By default, this method returns `EBADF`
+    /// if the file is not readable,
+    /// or `EINVAL` if the file type does not support `read`.
+    /// These are distinct conditions:
+    /// [`access_mode`] may say that a file is readable,
+    /// while the file type still does not support `read`,
+    /// as with epoll files and pid files.
+    ///
+    /// Implementors should override this method if the file type supports reads.
+    /// An overriding implementation must check whether [`access_mode`] is readable
+    /// before performing the operation.
+    ///
+    /// [`access_mode`]: FileLike::access_mode
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        return_errno_with_message!(Errno::EBADF, "the file is not valid for reading");
+        if !self.access_mode().is_readable() {
+            return_errno_with_message!(Errno::EBADF, "the file is not opened for reading");
+        }
+        return_errno_with_message!(Errno::EINVAL, "read is not supported for this file type");
     }
 
+    /// Writes data to this file.
+    ///
+    /// By default, this method returns `EBADF`
+    /// if the file is not writable,
+    /// or `EINVAL` if the file type does not support `write`.
+    /// These are distinct conditions:
+    /// [`access_mode`] may say that a file is writable,
+    /// while the file type still does not support `write`,
+    /// as with epoll files and pid files.
+    ///
+    /// Implementors should override this method if the file type supports writes.
+    /// An overriding implementation must check whether [`access_mode`] is writable
+    /// before performing the operation.
+    ///
+    /// [`access_mode`]: FileLike::access_mode
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
-        return_errno_with_message!(Errno::EBADF, "the file is not valid for writing");
+        if !self.access_mode().is_writable() {
+            return_errno_with_message!(Errno::EBADF, "the file is not opened for writing");
+        }
+        return_errno_with_message!(Errno::EINVAL, "write is not supported for this file type");
     }
 
     /// Read at the given file offset.
@@ -71,31 +110,52 @@ pub trait FileLike: Pollable + Send + Sync + Any {
         return_errno_with_message!(Errno::EINVAL, "resize is not supported");
     }
 
-    fn status_flags(&self) -> StatusFlags {
-        StatusFlags::empty()
+    /// Returns the status flags that can be set for this file.
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        // `O_ASYNC` and `O_DIRECT` can only be set on file descriptions that explicitly
+        // support them.
+        SettableStatusFlags::minimal()
     }
 
-    fn set_status_flags(&self, _new_flags: StatusFlags) -> Result<()> {
-        return_errno_with_message!(Errno::EINVAL, "set_status_flags is not supported");
-    }
-
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDWR
-    }
+    /// Returns the access mode of this file.
+    ///
+    /// The access mode indicates whether the file descriptor is readable or writable.
+    /// Readability is required for operations
+    /// such as [`read`], [`read_at`], and read-only memory mappings.
+    /// Writability is required for operations
+    /// such as [`write`], [`write_at`], [`resize`], [`fallocate`],
+    /// and writable memory mappings.
+    ///
+    /// For inode-backed files,
+    /// their access modes are determined dynamically for each opened file.
+    /// For special files such as epoll files, eventfd files, and pid files,
+    /// they are determined statically by the file types.
+    ///
+    /// [`read`]: FileLike::read
+    /// [`read_at`]: FileLike::read_at
+    /// [`write`]: FileLike::write
+    /// [`write_at`]: FileLike::write_at
+    /// [`resize`]: FileLike::resize
+    /// [`fallocate`]: FileLike::fallocate
+    fn access_mode(&self) -> AccessMode;
 
     fn seek(&self, seek_from: SeekFrom) -> Result<usize> {
         return_errno_with_message!(Errno::ESPIPE, "seek is not supported");
     }
 
-    fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
-        return_errno_with_message!(Errno::EOPNOTSUPP, "fallocate is not supported");
+    fn fallocate(&self, _mode: FallocMode, _offset: usize, _len: usize) -> Result<()> {
+        return_errno_with_message!(
+            Errno::ENODEV,
+            "fallocate is not supported for this file type"
+        );
     }
 
     fn as_socket(&self) -> Option<&dyn Socket> {
         None
     }
 
-    fn path(&self) -> &Path;
+    /// Returns the common state shared by file-like objects.
+    fn common(&self) -> &FileCommon;
 
     /// Dumps information to appear in the `fdinfo` file under procfs.
     ///
@@ -112,6 +172,75 @@ pub trait FileLike: Pollable + Send + Sync + Any {
 }
 
 impl dyn FileLike {
+    /// Returns the path associated with the file description.
+    pub fn path(&self) -> &Path {
+        self.common().path()
+    }
+
+    /// Returns the status flags of the file description.
+    pub fn status_flags(&self) -> StatusFlags {
+        self.common().status_flags()
+    }
+
+    /// Updates file status flags atomically.
+    ///
+    /// `O_ASYNC` is ignored if it is not supported. An attempt to enable
+    /// unsupported `O_DIRECT` returns `EINVAL`.
+    pub fn update_status_flags(&self, mut update: StatusFlagsUpdate) -> Result<()> {
+        let settable_flags = self.settable_status_flags();
+        if update.flags().contains(StatusFlags::O_DIRECT)
+            && !settable_flags.contains(StatusFlags::O_DIRECT)
+        {
+            return_errno_with_message!(Errno::EINVAL, "the `O_DIRECT` flag is not supported");
+        }
+        if !settable_flags.contains(StatusFlags::O_ASYNC) {
+            update.ignore(StatusFlags::O_ASYNC);
+        }
+
+        self.common().update_status_flags(self, update);
+        Ok(())
+    }
+
+    /// Updates the `O_NONBLOCK` status flag.
+    pub fn update_status_nonblock(&self, is_nonblocking: bool) {
+        let update = if is_nonblocking {
+            StatusFlagsUpdate::set(StatusFlags::O_NONBLOCK)
+        } else {
+            StatusFlagsUpdate::unset(StatusFlags::O_NONBLOCK)
+        };
+
+        self.common().update_status_flags(self, update);
+    }
+
+    /// Updates the `O_ASYNC` status flag.
+    ///
+    /// An attempt to enable `O_ASYNC` on a file that does not support it returns
+    /// `ENOTTY`.
+    pub fn update_status_async(&self, is_async: bool) -> Result<()> {
+        let settable_flags = self.settable_status_flags();
+        if is_async && !settable_flags.contains(StatusFlags::O_ASYNC) {
+            return_errno_with_message!(Errno::ENOTTY, "signal-driven I/O is not supported");
+        }
+
+        let update = if is_async {
+            StatusFlagsUpdate::set(StatusFlags::O_ASYNC)
+        } else {
+            StatusFlagsUpdate::unset(StatusFlags::O_ASYNC)
+        };
+
+        self.common().update_status_flags(self, update);
+        Ok(())
+    }
+
+    /// Sets a process as the owner of the file description.
+    ///
+    /// Passing `None` clears the current owner.
+    ///
+    /// The owner receives `SIGIO` for I/O events on the file description when `O_ASYNC` is set.
+    pub fn set_owner(&self, owner: Option<&Arc<Process>>) {
+        self.common().owner().set(self, owner);
+    }
+
     pub fn downcast_ref<T: FileLike>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref::<T>()
     }
@@ -146,6 +275,64 @@ impl dyn FileLike {
         self.downcast_ref().ok_or_else(|| {
             Error::with_message(Errno::EINVAL, "the file is not related to an inode")
         })
+    }
+}
+
+/// An atomic update to a subset of file status flags.
+#[derive(Clone, Copy, Debug)]
+pub struct StatusFlagsUpdate {
+    mask: StatusFlags,
+    flags: StatusFlags,
+}
+
+impl StatusFlagsUpdate {
+    /// Creates an update that replaces all updatable flags with `flags`.
+    ///
+    /// Replacing flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
+    pub fn replace(mut flags: StatusFlags) -> Self {
+        flags &= StatusFlags::SETFL_MASK;
+        Self::new(StatusFlags::SETFL_MASK, flags)
+    }
+
+    /// Creates an update that sets `flags`.
+    ///
+    /// Setting flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
+    pub fn set(mut flags: StatusFlags) -> Self {
+        flags &= StatusFlags::SETFL_MASK;
+        Self::new(flags, flags)
+    }
+
+    /// Creates an update that unsets `flags`.
+    ///
+    /// Unsetting flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
+    pub fn unset(mut flags: StatusFlags) -> Self {
+        flags &= StatusFlags::SETFL_MASK;
+        Self::new(flags, StatusFlags::empty())
+    }
+
+    /// Makes this update leave `flags` unchanged.
+    fn ignore(&mut self, flags: StatusFlags) {
+        self.mask.remove(flags);
+        self.flags &= self.mask;
+    }
+
+    fn new(mask: StatusFlags, flags: StatusFlags) -> Self {
+        Self { mask, flags }
+    }
+
+    /// Returns the flags that this update will set.
+    pub(super) fn flags(self) -> StatusFlags {
+        self.flags
+    }
+
+    /// Returns whether this update affects any of the specified flags.
+    pub(super) fn affects(self, flags: StatusFlags) -> bool {
+        self.mask.intersects(flags)
+    }
+
+    /// Applies this update to the current file status flags.
+    pub(super) fn apply(self, current: StatusFlags) -> StatusFlags {
+        (current - self.mask) | self.flags
     }
 }
 

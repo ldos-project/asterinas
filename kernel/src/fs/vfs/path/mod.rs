@@ -5,13 +5,13 @@
 use core::time::Duration;
 
 pub(in crate::fs) use dentry::Dentry;
-use dentry::DirDentry;
 use inherit_methods_macro::inherit_methods;
-use mount::MountNsFileCopying;
-pub use mount::{Mount, MountPropType, PerMountFlags};
+pub use mount::{MNT_UNIQUE_ID_MIN, Mount, MountPropType, PerMountFlags};
+use mount::{MountNsFileCopying, MountTopology};
 pub use mount_namespace::MountNamespace;
 pub use resolver::{
     AT_FDCWD, AbsPathResult, EmptyPathStr, FsPath, LookupResult, PathResolver, SplitPath,
+    SplitPathError,
 };
 
 use crate::{
@@ -22,12 +22,16 @@ use crate::{
         pseudofs::NsInode,
         vfs::{
             file_system::{FileSystem, FsFlags},
-            inode::{Inode, Metadata, MknodType},
+            inode::{HardLinkability, Inode, Metadata, MknodType, RenameMode},
+            registry::FsAndRoot,
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
     prelude::*,
-    process::{Gid, Uid},
+    process::{
+        Gid, Uid, UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread,
+    },
+    security::lsm::hooks as lsm_hooks,
 };
 
 mod dentry;
@@ -62,18 +66,36 @@ impl Path {
 
     /// Creates a new `Path` to represent the child directory of a file system.
     pub fn new_fs_child(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Self> {
-        if self
-            .inode()
-            .check_permission(Permission::MAY_WRITE)
-            .is_err()
-        {
-            return_errno!(Errno::EACCES);
-        }
-        let new_child_dentry = self
-            .dentry
-            .as_dir_dentry_or_err()?
-            .create(name, type_, mode)?;
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        let new_child_dentry = dir_dentry.create(name, type_, mode)?;
         Ok(Self::new(self.mount.clone(), new_child_dentry))
+    }
+
+    /// Looks up a direct child within the current mount.
+    ///
+    /// This does not interpret special names, check search permissions, or traverse mount points.
+    pub fn lookup_child(&self, name: &str) -> Result<Self> {
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        let child_dentry = dir_dentry.lookup_child(name)?;
+        Ok(Self::new(self.mount.clone(), child_dentry))
+    }
+
+    /// Creates a new `Path` to represent an unnamed temporary file.
+    ///
+    /// The returned inode has no directory entry and is invisible to `readdir`.
+    /// If created hard-linkable, it may later be given a name via a link
+    /// operation; otherwise it can never be linked.
+    pub fn create_tmpfile(
+        &self,
+        mode: InodeMode,
+        hard_linkability: HardLinkability,
+    ) -> Result<Self> {
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        let tmp_inode = self.inode().create_tmpfile(mode, hard_linkability)?;
+        let tmp_dentry = Dentry::new_anonymous(tmp_inode, &dir_dentry);
+        Ok(Self::new(self.mount.clone(), tmp_dentry))
     }
 
     /// Creates a new pseudo `Path`.
@@ -149,11 +171,6 @@ impl Path {
         InodeHandle::new(self.clone(), open_args.access_mode, *status_flags)
     }
 
-    /// Gets the real name of the `Path` from its dentry.
-    pub fn name(&self) -> String {
-        self.dentry.name()
-    }
-
     /// Gets the parent `Path` within the same mount.
     ///
     /// This method returns the parent path within the same filesystem/mount.
@@ -186,16 +203,13 @@ impl Path {
         self
     }
 
-    /// Returns whether this path is the same as or a descendant of `ancestor`
-    /// within the same mount.
-    pub fn is_equal_or_descendant_of(&self, ancestor: &Path) -> bool {
-        self.mount.id() == ancestor.mount.id()
-            && self.dentry.is_equal_or_descendant_of(&ancestor.dentry)
-    }
-
     /// Finds the corresponding `Path` in the given mount namespace.
-    fn find_corresponding_mount(&self, mnt_ns: &Arc<MountNamespace>) -> Option<Self> {
-        let corresponding_mount = self.mount.find_corresponding_mount(mnt_ns)?;
+    fn find_corresponding_mount(
+        &self,
+        mnt_ns: &Arc<MountNamespace>,
+        topology: &MountTopology,
+    ) -> Option<Self> {
+        let corresponding_mount = self.mount.find_corresponding_mount(mnt_ns, topology)?;
         let corresponding_path = Self::new(corresponding_mount, self.dentry.clone());
 
         Some(corresponding_path)
@@ -207,7 +221,7 @@ impl Path {
     /// of the `root` path. The check traverses upwards from the current path,
     /// crossing mount point boundaries as necessary, until it either finds
     /// the `root` path or reaches the global root.
-    fn is_reachable_from(&self, root: &Path) -> bool {
+    fn is_reachable_from(&self, root: &Path, _topology: &MountTopology) -> bool {
         let mut owned;
         let mut current = self;
 
@@ -244,6 +258,78 @@ impl Path {
     fn this(&self) -> Self {
         self.clone()
     }
+
+    /// Checks whether the path is on a writable mount and filesystem.
+    fn check_mount_writable(&self) -> Result<()> {
+        if self.mount.flags().contains(PerMountFlags::RDONLY)
+            || self.fs().flags().contains(FsFlags::RDONLY)
+        {
+            return_errno_with_message!(Errno::EROFS, "the mount or filesystem is read-only");
+        }
+
+        Ok(())
+    }
+
+    /// Checks whether a directory entry may be modified in this directory.
+    fn check_dir_entry_mutation(&self) -> Result<()> {
+        self.check_mount_writable()?;
+        self.inode()
+            .check_permission(Permission::MAY_WRITE | Permission::MAY_EXEC)
+    }
+
+    /// Checks whether an inode may be used as the source of a hard link.
+    fn check_hardlink_source(&self) -> Result<()> {
+        let current_thread = current_thread!();
+        let Some(posix_thread) = current_thread.as_posix_thread() else {
+            return Ok(());
+        };
+
+        let metadata = self.metadata()?;
+        let fsuid = posix_thread.credentials().fsuid();
+
+        // The source inode owner can hardlink all they like.
+        if fsuid == metadata.uid {
+            return Ok(());
+        }
+
+        // Hardlinking to unreadable or unwritable sources is dangerous.
+        if self
+            .inode()
+            .check_permission(Permission::MAY_READ | Permission::MAY_WRITE)
+            .is_err()
+        {
+            return_errno_with_message!(
+                Errno::EPERM,
+                "the source is not permitted to be hard-linked"
+            );
+        }
+
+        // Non-owners may only hard-link regular files.
+        if self.type_() != InodeType::File {
+            return_errno_with_message!(
+                Errno::EPERM,
+                "the source is not permitted to be hard-linked"
+            );
+        }
+
+        // Hardlinking to setuid or executable setgid files requires CAP_FOWNER.
+        if (metadata.mode.has_set_uid()
+            || (metadata.mode.has_set_gid() && metadata.mode.is_group_executable()))
+            && lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                UserNamespace::get_init_singleton().as_ref(),
+                posix_thread,
+                CapSet::FOWNER,
+            ))
+            .is_err()
+        {
+            return_errno_with_message!(
+                Errno::EPERM,
+                "the source is not permitted to be hard-linked"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 fn try_get_mnt_ns_inode(dentry: &Dentry) -> Option<&NsInode<MountNamespace>> {
@@ -269,7 +355,7 @@ impl Path {
     /// in the current mount namespace.
     pub fn mount(
         &self,
-        fs: Arc<dyn FileSystem>,
+        fs_and_root: FsAndRoot,
         flags: PerMountFlags,
         source: Option<String>,
         ctx: &Context,
@@ -291,7 +377,14 @@ impl Path {
             return_errno_with_message!(Errno::EINVAL, "the path is not in this mount namespace");
         }
 
-        let child_mount = self.mount.do_mount(fs, flags, &self.dentry, source)?;
+        let mut topology_guard = MountTopology::write_lock();
+        let child_mount = self.mount.do_mount(
+            fs_and_root,
+            flags,
+            &self.dentry,
+            source,
+            &mut topology_guard,
+        )?;
 
         Ok(child_mount)
     }
@@ -311,7 +404,7 @@ impl Path {
             return_errno_with_message!(Errno::EINVAL, "the path is not a mount root");
         }
 
-        let Some(mountpoint) = self.mount.mountpoint() else {
+        let Some(_mountpoint) = self.mount.mountpoint() else {
             return_errno_with_message!(Errno::EINVAL, "the root mount cannot be unmounted");
         };
 
@@ -321,8 +414,14 @@ impl Path {
             return_errno_with_message!(Errno::EINVAL, "the path is not in this mount namespace");
         }
 
+        self.mount.sync()?;
+
+        let mut topology_guard = MountTopology::write_lock();
+        let Some(mountpoint) = self.mount.mountpoint() else {
+            return_errno_with_message!(Errno::EINVAL, "the mount has been detached");
+        };
         let parent_mount = self.mount.parent().unwrap().upgrade().unwrap();
-        let child_mount = parent_mount.do_unmount(&mountpoint)?;
+        let child_mount = parent_mount.do_unmount(&mountpoint, &mut topology_guard)?;
 
         Ok(child_mount)
     }
@@ -341,7 +440,7 @@ impl Path {
         &self,
         mount_flags: PerMountFlags,
         fs_flags: Option<FsFlags>,
-        data: Option<CString>,
+        data: Option<&str>,
         ctx: &Context,
     ) -> Result<()> {
         if !self.is_mount_root() {
@@ -354,7 +453,9 @@ impl Path {
             return_errno_with_message!(Errno::EINVAL, "the path is not in this mount namespace");
         }
 
-        self.mount.remount(mount_flags, fs_flags, data, ctx)
+        let mut topology_guard = MountTopology::write_lock();
+        self.mount
+            .remount(mount_flags, fs_flags, data, ctx, &mut topology_guard)
     }
 
     /// Creates a bind mount from the current path to the destination path.
@@ -402,14 +503,16 @@ impl Path {
             );
         }
 
+        let mut topology_guard = MountTopology::write_lock();
         let current_mnt_ns_weak = Arc::downgrade(current_mnt_ns);
         let new_mount = self.mount.clone_mount_tree(
             &self.dentry,
             &current_mnt_ns_weak,
             recursive,
             MountNsFileCopying::Copy,
-        );
-        new_mount.graft_mount_tree(dst_path);
+            &topology_guard,
+        )?;
+        new_mount.graft_mount_tree(dst_path, &mut topology_guard);
         Ok(())
     }
 
@@ -417,12 +520,13 @@ impl Path {
     ///
     /// # Errors
     ///
-    /// Returns `ENOTDIR` if the `dst_path` is not a directory.
-    ///
     /// Returns `EINVAL` in the following cases:
     /// - The current path is not a mount root.
     /// - The mount of the current path is the root mount.
-    /// - Either source or destination path is not in the current mount namespace.
+    /// - The source is a non-root mount in a detached mount tree.
+    /// - The destination is in a detached mount tree while the source is not.
+    /// - The source and destination are in the same detached mount tree.
+    /// - One of the source and destination is a directory and the other is not.
     ///
     /// Returns `ELOOP` in the following cases:
     /// - The destination path is inside the subtree being moved.
@@ -431,12 +535,12 @@ impl Path {
         if !self.is_mount_root() {
             return_errno_with_message!(Errno::EINVAL, "the path is not a mount root");
         };
-        if self.mount_node().parent().is_none() {
-            return_errno_with_message!(Errno::EINVAL, "the root mount can not be moved");
-        }
 
         let current_ns_proxy = ctx.thread_local.borrow_ns_proxy();
         let current_mnt_ns = current_ns_proxy.unwrap().mnt_ns();
+        if self.mount.id() == current_mnt_ns.root().id() {
+            return_errno_with_message!(Errno::EINVAL, "the root mount can not be moved");
+        }
         if !current_mnt_ns.owns(&self.mount) {
             return_errno_with_message!(
                 Errno::EINVAL,
@@ -449,10 +553,52 @@ impl Path {
                 "the destination path is not in this mount namespace"
             );
         }
-        current_mnt_ns.check_no_mnt_ns_loop_in_tree(self.mount_node())?;
+
+        let mut topology_guard = MountTopology::write_lock();
+        let source_tree_root = mount_tree_root(self.mount_node());
+        let target_tree_root = mount_tree_root(dst_path.mount_node());
+        let current_tree_root = current_mnt_ns.root();
+        let source_is_detached = source_tree_root.id() != current_tree_root.id();
+        let target_is_detached = target_tree_root.id() != current_tree_root.id();
+
+        // Since Linux v6.15, a detached anonymous-namespace root can be
+        // moved onto either the current mount namespace or an acceptable
+        // anonymous namespace. Asterinas does not model anonymous mount
+        // namespaces yet, so compare detached mount tree roots instead.
+        // TODO: Once anonymous mount namespaces are modeled, determine
+        // detachedness from the mount namespace directly instead of inferring it
+        // from whether the mount tree root is the current namespace root.
+        if source_is_detached && self.mount.id() != source_tree_root.id() {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "only a detached mount tree root can be moved out of the detached tree"
+            );
+        }
+        if !source_is_detached && target_is_detached {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the destination path is in a detached mount tree"
+            );
+        }
+        if source_is_detached && source_tree_root.id() == target_tree_root.id() {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the source and destination are in the same detached mount tree"
+            );
+        }
+        let source_is_dir = self.type_() == InodeType::Dir;
+        let target_is_dir = dst_path.type_() == InodeType::Dir;
+        if source_is_dir != target_is_dir {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the source and destination must both be directories or both be non-directories"
+            );
+        }
+
+        current_mnt_ns.check_no_mnt_ns_loop_in_tree(self.mount_node(), &topology_guard)?;
         if dst_path
             .mount_node()
-            .is_equal_or_descendant_of(self.mount_node())
+            .is_equal_or_descendant_of(self.mount_node(), &topology_guard)
         {
             // Reject moves that would place a mount beneath itself, because the mount tree
             // must remain acyclic.
@@ -462,7 +608,7 @@ impl Path {
             );
         }
 
-        self.mount.graft_mount_tree(dst_path);
+        self.mount.graft_mount_tree(dst_path, &mut topology_guard);
 
         Ok(())
     }
@@ -484,10 +630,21 @@ impl Path {
             return_errno_with_message!(Errno::EINVAL, "the path is not in this mount namespace");
         }
 
-        self.mount.set_propagation(prop, recursive);
+        let mut topology_guard = MountTopology::write_lock();
+        self.mount
+            .set_propagation(prop, recursive, &mut topology_guard);
 
         Ok(())
     }
+}
+
+fn mount_tree_root(mount: &Arc<Mount>) -> Arc<Mount> {
+    let mut root = mount.clone();
+    while let Some(parent) = root.parent().and_then(|parent| parent.upgrade()) {
+        root = parent;
+    }
+
+    root
 }
 
 // Methods inherited from `Dentry`.
@@ -495,13 +652,13 @@ impl Path {
 impl Path {
     pub fn inode(&self) -> &Arc<dyn Inode>;
     pub fn type_(&self) -> InodeType;
+    pub fn name(&self) -> String;
 
     /// Creates a `Path` by making an inode of the `type_` with the `mode`.
     pub fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Self> {
-        let inner = self
-            .dentry
-            .as_dir_dentry_or_err()?
-            .mknod(name, mode, type_)?;
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        let inner = dir_dentry.mknod(name, mode, type_)?;
         Ok(Self::new(self.mount.clone(), inner))
     }
 
@@ -511,26 +668,47 @@ impl Path {
             return_errno_with_message!(Errno::EXDEV, "the operation cannot cross mounts");
         }
 
-        self.dentry.as_dir_dentry_or_err()?.link(old.inode(), name)
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        old.check_hardlink_source()?;
+        self.check_dir_entry_mutation()?;
+        dir_dentry.link(old.inode(), name)
     }
 
     /// Unlinks a name from the `Path`.
     pub fn unlink(&self, name: &str) -> Result<()> {
-        self.dentry.as_dir_dentry_or_err()?.unlink(name)
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        dir_dentry.unlink(name)
     }
 
     /// Removes a directory by `rmdir()` the inner inode.
     pub fn rmdir(&self, name: &str) -> Result<()> {
-        self.dentry.as_dir_dentry_or_err()?.rmdir(name)
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        dir_dentry.rmdir(name)
     }
 
     /// Renames a `Path` to the new `Path` by `rename()` the inner inode.
-    pub fn rename(&self, old_name: &str, new_dir: &Self, new_name: &str) -> Result<()> {
+    pub fn rename(
+        &self,
+        old_name: &str,
+        new_dir: &Self,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> Result<()> {
         if !Arc::ptr_eq(&self.mount, &new_dir.mount) {
             return_errno_with_message!(Errno::EXDEV, "the operation cannot cross mounts");
         }
 
-        DirDentry::rename(&self.dentry, old_name, &new_dir.dentry, new_name)
+        let old_dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        let new_dir_dentry = new_dir.dentry.as_dir_dentry_or_err()?;
+
+        self.check_dir_entry_mutation()?;
+        if !Arc::ptr_eq(&self.dentry, &new_dir.dentry) {
+            new_dir.check_dir_entry_mutation()?;
+        }
+
+        old_dir_dentry.rename(old_name, &new_dir_dentry, new_name, mode)
     }
 }
 
@@ -540,11 +718,10 @@ impl Path {
     pub fn fs(&self) -> Arc<dyn FileSystem>;
     pub fn sync_all(&self) -> Result<()>;
     pub fn sync_data(&self) -> Result<()>;
-    pub fn metadata(&self) -> Metadata;
+    pub fn metadata(&self) -> Result<Metadata>;
     pub fn mode(&self) -> Result<InodeMode>;
     pub fn set_mode(&self, mode: InodeMode) -> Result<()>;
     pub fn size(&self) -> usize;
-    pub fn resize(&self, size: usize) -> Result<()>;
     pub fn owner(&self) -> Result<Uid>;
     pub fn set_owner(&self, uid: Uid) -> Result<()>;
     pub fn group(&self) -> Result<Gid>;
@@ -568,6 +745,13 @@ impl Path {
         list_writer: &mut VmWriter,
     ) -> Result<usize>;
     pub fn remove_xattr(&self, name: XattrName) -> Result<()>;
+
+    /// Resizes the file.
+    pub fn resize(&self, size: usize) -> Result<()> {
+        let inode = self.inode();
+        inode.check_permission(Permission::MAY_WRITE)?;
+        inode.resize(size)
+    }
 }
 
 /// Checks if the file name is ".", indicating it's the current directory.

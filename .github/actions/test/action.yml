@@ -4,24 +4,31 @@ branding:
   icon: 'check-circle'
   color: 'green'
 inputs:
-  # Test Configuration
+  # General Configurations
   auto_test:
     description: 'Test type (general, osdk, boot, conformance, regression)'
     required: true
+  arch:
+    description: 'Architecture (x86_64/riscv64/loongarch64)'
+    required: false
   release:
     description: 'Whether to run in release mode'
+    required: false
+  scheme:
+    description: 'Test scheme (default/microvm/iommu)'
     required: false
 
   baseline_asterinas:
     description: 'Whether to build the baseline configuration using `BASELINE_ASTERINAS=1`'
     required: false
 
-  # Virtualization Settings
+  # VM Setup
+  boot_protocol:
+    description: 'Boot protocol (linux-efi-handover64/linux-efi-pe64/linux-legacy32/multiboot/multiboot2)'
+    required: false
+
   enable_kvm:
     description: 'Enable KVM acceleration'
-    required: false
-  intel_tdx:
-    description: 'Enable Intel TDX support'
     required: false
   smp:
     description: 'Number of CPUs'
@@ -29,25 +36,30 @@ inputs:
   netdev:
     description: 'Network device type (user/tap)'
     required: false
-  scheme:
-    description: 'Test scheme (default/microvm/iommu)'
+  intel_tdx:
+    description: 'Enable Intel TDX support'
+    required: false
+  mem:
+    description: 'Guest memory size'
     required: false
 
-  # Test Parameters
-  arch:
-    description: 'Architecture (x86_64/riscv64/loongarch64)'
-    required: false
-  extra_blocklists:
-    description: 'Extra blocklists directories or files'
-    required: false
+  # Conformance Test
   conformance_test_suite:
     description: 'Selected conformance test suite'
     required: false
   conformance_test_workdir:
     description: 'Conformance test working directory'
     required: false
-  boot_protocol:
-    description: 'Boot protocol (linux-efi-handover64/linux-efi-pe64/linux-legacy32/multiboot/multiboot2)'
+  extra_blocklists:
+    description: 'Extra blocklists directories or files'
+    required: false
+
+  # Xfstest-specific parameters
+  xfstests_disk_size:
+    description: 'The disk size for xfstests'
+    required: false
+  xfstests_runlist:
+    description: 'Run list file for xfstests'
     required: false
 
 runs:
@@ -96,11 +108,14 @@ runs:
         [[ -n "${{ inputs.smp }}" ]] && CMD+=" SMP=${{ inputs.smp }}"
         [[ -n "${{ inputs.netdev }}" ]] && CMD+=" NETDEV=${{ inputs.netdev }}"
         [[ -n "${{ inputs.scheme }}" ]] && CMD+=" SCHEME=${{ inputs.scheme }}"
-        [[ -n "${{ inputs.arch }}" ]] && CMD+=" OSDK_TARGET_ARCH=${{ inputs.arch }}"
+        [[ -n "${{ inputs.arch }}" ]] && CMD+=" TARGET_ARCH=${{ inputs.arch }}"
         [[ -n "${{ inputs.extra_blocklists }}" ]] && CMD+=" EXTRA_BLOCKLISTS=${{ inputs.extra_blocklists }}"
         [[ -n "${{ inputs.conformance_test_suite }}" ]] && CMD+=" CONFORMANCE_TEST_SUITE=${{ inputs.conformance_test_suite }}"
         [[ -n "${{ inputs.conformance_test_workdir }}" ]] && CMD+=" CONFORMANCE_TEST_WORKDIR=${{ inputs.conformance_test_workdir }}"
         [[ -n "${{ inputs.boot_protocol }}" ]] && CMD+=" BOOT_PROTOCOL=${{ inputs.boot_protocol }}"
+        [[ -n "${{ inputs.mem }}" ]] && CMD+=" MEM=${{ inputs.mem }}"
+        [[ -n "${{ inputs.xfstests_disk_size }}" ]] && CMD+=" XFSTESTS_DISK_SIZE=${{ inputs.xfstests_disk_size }}"
+        [[ -n "${{ inputs.xfstests_runlist }}" ]] && CMD+=" XFSTESTS_RUNLIST=${{ inputs.xfstests_runlist }}"
 
         echo "Executing: $CMD"
         eval $CMD

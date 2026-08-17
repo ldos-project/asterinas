@@ -26,12 +26,12 @@ Below, you will find a comprehensive version of
 the available configurations in the manifest.
 
 ```toml
-project_type = "kernel"                     # <1> 
+project_type = "kernel"                     # <1>
 
 # --------------------------- the default scheme settings -------------------------------
 supported_archs = ["x86_64", "riscv64"]     # <2>
 
-# The common options for all build, run and test subcommands 
+# The common options for all build, run and test subcommands
 [build]                                     # <3>
 features = ["no_std", "alloc"]              # <4>
 profile = "dev"                             # <5>
@@ -42,23 +42,24 @@ method = "qemu-direct"                      # <9>
 kcmd_args = ["SHELL=/bin/sh", "HOME=/"]     # <10>
 init_args = ["sh", "-l"]                    # <11>
 initramfs = "path/to/it"                    # <12>
-[grub]                                      # <13>  
+[grub]                                      # <13>
 mkrescue_path = "path/to/it"                # <14>
-boot_protocol = "multiboot2"                # <15> 
+boot_protocol = "multiboot2"                # <15>
 display_grub_menu = false                   # <16>
 [qemu]                                      # <17>
 path = "path/to/it"                         # <18>
 args = "-machine q35 -m 2G"                 # <19>
+log_file = "qemu.log"                       # <20>
 
 # Special options for run subcommand
-[run]                                       # <20>
+[run]                                       # <21>
 [run.build]                                 # <3>
 [run.boot]                                  # <8>
 [run.grub]                                  # <13>
 [run.qemu]                                  # <17>
 
 # Special options for test subcommand
-[test]                                      # <21>
+[test]                                      # <22>
 [test.build]                                # <3>
 [test.boot]                                 # <8>
 [test.grub]                                 # <13>
@@ -66,10 +67,10 @@ args = "-machine q35 -m 2G"                 # <19>
 # ----------------------- end of the default scheme settings ----------------------------
 
 # A customized scheme settings
-[scheme."custom"]                           # <22>
+[scheme."custom"]                           # <23>
 [scheme."custom".build]                     # <3>
-[scheme."custom".run]                       # <20>
-[scheme."custom".test]                      # <21>
+[scheme."custom".run]                       # <21>
+[scheme."custom".test]                      # <22>
 ```
 
 Here are some additional notes for the fields:
@@ -80,7 +81,7 @@ Here are some additional notes for the fields:
     the default value is inferred from the usage of the macro `#[ostd::main]`.
     if the macro is used, the default value is `kernel`.
     Otherwise, the default value is `library`.
-    
+
     Possible values are `library` or `kernel`.
 
 2. The architectures that can be supported.
@@ -104,7 +105,7 @@ Here are some additional notes for the fields:
 
     Optional. The default value is `dev`.
 
-    Possible values are `dev`, `release`, `test`, and `bench` 
+    Possible values are `dev`, `release`, `test`, and `bench`
     and other profiles defined in `Cargo.toml`.
 
 6. Whether to strip the built kernel ELF using `rust-strip`.
@@ -191,25 +192,45 @@ can include any POSIX shell compliant separators.
     even use this mechanism to read from files by using command replacement
     `$(cat path/to/your/custom/args/file)`.
 
-20. Special settings for running. Only take effect when running `cargo osdk run`.
+20. The path to the file where QEMU writes the guest output.
 
-    By default, it inherits common options. 
-    
+    Optional.
+    If this field is absent,
+    OSDK does not inspect QEMU output for kernel panics or coverage data.
+
+    This field only tells OSDK where to read the log;
+    it does not cause QEMU to create the file.
+    QEMU must be configured through `args` to write guest output to the same path.
+    For example:
+
+    ```toml
+    [qemu]
+    args = "-serial file:qemu-serial.log"
+    log_file = "qemu-serial.log"
+    ```
+
+    If the path is relative,
+    it is relative to the manifest's enclosing directory.
+
+21. Special settings for running. Only take effect when running `cargo osdk run`.
+
+    By default, it inherits common options.
+
     Values set here are used to override common options.
 
-21. Special settings for testing. 
+22. Special settings for testing.
 
-    Similar to `20`, but only take effect when running `cargo osdk test`.
+    Similar to `21`, but only take effect when running `cargo osdk test`.
 
-22. The definition of customized scheme. 
+23. The definition of customized scheme.
 
-    A customized scheme has the same fields as the default scheme. 
+    A customized scheme has the same fields as the default scheme.
     By default, a customized scheme will inherit all options from the default scheme,
     unless overridden by new options.
 
 ### Example
 
-Here is a sound, self-explanatory example which is used by OSDK 
+Here is a sound, self-explanatory example which is used by OSDK
 in the Asterinas project.
 
 In the script `./tools/qemu_args.sh`, the environment variables will be

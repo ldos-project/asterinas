@@ -7,7 +7,7 @@ use crate::{
     fs,
     fs::{
         file::{
-            FileLike,
+            FileLike, StatusFlags,
             file_table::{RawFileDesc, get_file_fast},
         },
         vfs::{
@@ -18,7 +18,8 @@ use crate::{
         },
     },
     prelude::*,
-    process::credentials::capabilities::CapSet,
+    process::{UserNamespace, credentials::capabilities::CapSet},
+    security::lsm::hooks as lsm_hooks,
     syscall::constants::MAX_FILENAME_LEN,
 };
 
@@ -105,7 +106,7 @@ fn setxattr(
     ctx: &Context,
 ) -> Result<()> {
     let flags = XattrSetFlags::from_bits(flags as _)
-        .ok_or(Error::with_message(Errno::EINVAL, "invalid xattr flags"))?;
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid xattr flags"))?;
 
     let name_cstr = read_xattr_name_cstr_from_user(name_ptr, user_space)?;
     let name_str = name_cstr.to_string_lossy();
@@ -152,7 +153,11 @@ pub(super) fn lookup_path_for_xattr<'a>(
         XattrFileCtx::Path(path) => lookup_path_from_fs(path, ctx, false),
         XattrFileCtx::PathNoFollow(path) => lookup_path_from_fs(path, ctx, true),
         XattrFileCtx::FileHandle(file) => {
-            let path = file.as_inode_handle_or_err()?.path();
+            let file = file.as_inode_handle_or_err()?;
+            if file.status_flags().contains(StatusFlags::O_PATH) {
+                return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
+            }
+            let path = file.path();
             Ok(Cow::Borrowed(path))
         }
     }
@@ -178,26 +183,31 @@ pub(super) fn parse_xattr_name(name_str: &str) -> Result<XattrName<'_>> {
         return_errno_with_message!(Errno::ERANGE, "xattr name empty or too long");
     }
 
-    let xattr_name = XattrName::try_from_full_name(name_str).ok_or(Error::with_message(
-        Errno::EOPNOTSUPP,
-        "invalid xattr namespace",
-    ))?;
+    let xattr_name = XattrName::try_from_full_name(name_str)
+        .ok_or_else(|| Error::with_message(Errno::EOPNOTSUPP, "invalid xattr namespace"))?;
     Ok(xattr_name)
 }
 
 pub(super) fn check_xattr_namespace(namespace: XattrNamespace, ctx: &Context) -> Result<()> {
-    let credentials = ctx.posix_thread.credentials();
-    let permitted_capset = credentials.permitted_capset();
-    let effective_capset = credentials.effective_capset();
+    if namespace != XattrNamespace::Trusted {
+        return Ok(());
+    }
 
-    if namespace == XattrNamespace::Trusted
-        && (!permitted_capset.contains(CapSet::SYS_ADMIN)
-            || !effective_capset.contains(CapSet::SYS_ADMIN))
+    if !ctx
+        .posix_thread
+        .credentials()
+        .permitted_capset()
+        .contains(CapSet::SYS_ADMIN)
     {
         return_errno_with_message!(
             Errno::EPERM,
-            "try to access trusted xattr without CAP_SYS_ADMIN"
+            "try to access trusted xattr without permitted CAP_SYS_ADMIN"
         );
     }
-    Ok(())
+
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        UserNamespace::get_init_singleton().as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_ADMIN,
+    ))
 }

@@ -7,7 +7,7 @@ use core::time::Duration;
 
 use device_id::DeviceId;
 use no_std_io2::io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult, Write};
-use ostd::task::Task;
+use ostd::task::{CurrentTask, Task};
 use spin::Once;
 
 use super::{
@@ -17,14 +17,19 @@ use super::{
 use crate::{
     device::{Device, DeviceType},
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, Permission, StatusFlags},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags},
         utils::DirentVisitor,
         vfs::path::Path,
     },
     prelude::*,
-    process::{Gid, Uid, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
+    process::{
+        Gid, Uid,
+        credentials::capabilities::CapSet,
+        posix_thread::{AsPosixThread, PosixThread},
+    },
+    security::lsm::hooks as lsm_hooks,
     time::clocks::RealTimeCoarseClock,
-    vm::vmo::Vmo,
+    vm::page_cache::Vmo,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +122,27 @@ pub struct Metadata {
     ///
     /// Corresponds to `st_rdev`.
     pub self_dev_id: Option<DeviceId>,
+
+    /// The timestamp of the file's creation (birth time).
+    ///
+    /// For filesystems that do not record birth time (e.g., ext2), this is
+    /// `None`.
+    ///
+    /// Corresponds to `stx_btime`.
+    pub birth_at: Option<Duration>,
+}
+
+/// Describes whether an inode may get new hard links.
+///
+/// This does not control symbolic links. A symbolic link is a separate inode
+/// whose target is a pathname string, so creating one does not link the target
+/// inode directly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HardLinkability {
+    /// Allows creating hard links to the inode.
+    Linkable,
+    /// Prevents creating hard links to the inode.
+    Unlinkable,
 }
 
 impl Metadata {
@@ -137,6 +163,7 @@ impl Metadata {
             gid: Gid::new_root(),
             container_dev_id,
             self_dev_id: None,
+            birth_at: None,
         }
     }
 
@@ -162,6 +189,7 @@ impl Metadata {
             gid: Gid::new_root(),
             container_dev_id,
             self_dev_id: None,
+            birth_at: None,
         }
     }
 
@@ -187,6 +215,7 @@ impl Metadata {
             gid: Gid::new_root(),
             container_dev_id,
             self_dev_id: None,
+            birth_at: None,
         }
     }
 
@@ -213,6 +242,7 @@ impl Metadata {
             gid: Gid::new_root(),
             container_dev_id,
             self_dev_id: Some(device.id()),
+            birth_at: None,
         }
     }
 }
@@ -294,11 +324,12 @@ bitflags! {
     }
 }
 
-/// I/O operations in an [`Inode`].
+/// Basic file operations.
 ///
-/// This abstracts the common I/O operations used by both [`Inode`] (for regular files) and
-/// [`FileIo`] (for special files).
-pub trait InodeIo {
+/// For inode-backed files without per-`open()` state, [`Inode`] implements this
+/// trait directly. For files whose behavior depends on state created by `open`,
+/// the per-`open()` object implements this trait through [`PerOpenFileOps`].
+pub trait FileOps {
     /// Reads data from the file into the given `VmWriter`.
     fn read_at(
         &self,
@@ -314,14 +345,36 @@ pub trait InodeIo {
         reader: &mut VmReader,
         status_flags: StatusFlags,
     ) -> Result<usize>;
+
+    /// Reads directory entries from the given offset.
+    fn readdir_at(&self, _offset: usize, _visitor: &mut dyn DirentVisitor) -> Result<usize> {
+        return_errno_with_message!(Errno::ENOTDIR, "readdir is not supported");
+    }
 }
 
-pub trait Inode: Any + InodeIo + Send + Sync {
+pub trait Inode: Any + FileOps + Send + Sync {
     fn size(&self) -> usize;
 
     fn resize(&self, new_size: usize) -> Result<()>;
 
-    fn metadata(&self) -> Metadata;
+    /// Returns all inode metadata.
+    ///
+    /// This method returns all metadata fields and is typically used to serve
+    /// syscalls such as `fstat`. Callers must not assume that this operation
+    /// is always cheap. For example, remote filesystems may need to perform
+    /// I/O when getting or updating metadata, and such operations may fail.
+    ///
+    /// If only a specific field is needed, prefer using the dedicated getters
+    /// such as [`size`], [`ino`], [`type_`], [`mode`], [`owner`], and [`group`], which
+    /// are generally cheaper as they return cached data from the inode.
+    ///
+    /// [`size`]: Inode::size
+    /// [`ino`]: Inode::ino
+    /// [`type_`]: Inode::type_
+    /// [`mode`]: Inode::mode
+    /// [`owner`]: Inode::owner
+    /// [`group`]: Inode::group
+    fn metadata(&self) -> Result<Metadata>;
 
     fn ino(&self) -> u64;
 
@@ -359,6 +412,14 @@ pub trait Inode: Any + InodeIo + Send + Sync {
         Err(Error::new(Errno::ENOTDIR))
     }
 
+    fn create_tmpfile(
+        &self,
+        mode: InodeMode,
+        hard_linkability: HardLinkability,
+    ) -> Result<Arc<dyn Inode>> {
+        Err(Error::new(Errno::EOPNOTSUPP))
+    }
+
     fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::ENOTDIR))
     }
@@ -367,12 +428,8 @@ pub trait Inode: Any + InodeIo + Send + Sync {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         None
-    }
-
-    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
-        Err(Error::new(Errno::ENOTDIR))
     }
 
     fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
@@ -391,7 +448,13 @@ pub trait Inode: Any + InodeIo + Send + Sync {
         Err(Error::new(Errno::ENOTDIR))
     }
 
-    fn rename(&self, old_name: &str, target: &Arc<dyn Inode>, new_name: &str) -> Result<()> {
+    fn rename(
+        &self,
+        old_name: &str,
+        target: &Arc<dyn Inode>,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> Result<()> {
         Err(Error::new(Errno::ENOTDIR))
     }
 
@@ -508,24 +571,24 @@ pub trait Inode: Any + InodeIo + Send + Sync {
     /// Similar to Linux, using "fsuid" here allows setting filesystem permissions
     /// without changing the "normal" uids for other tasks.
     fn check_permission(&self, mut perm: Permission) -> Result<()> {
-        let creds = match Task::current() {
-            Some(task) => match task.as_posix_thread() {
-                Some(thread) => thread.credentials(),
-                None => return Ok(()),
-            },
-            None => return Ok(()),
+        let Some(task) = Task::current() else {
+            return Ok(());
+        };
+        let Some(posix_thread) = task.as_posix_thread() else {
+            return Ok(());
         };
 
+        let creds = posix_thread.credentials();
+        let metadata = self.metadata()?;
+        let mode = metadata.mode;
+
         // With DAC_OVERRIDE capability, the user can bypass some permission checks.
-        if creds.effective_capset().contains(CapSet::DAC_OVERRIDE) {
+        if has_dac_override_capability(&task, posix_thread) {
             // Read/write DACs are always overridable.
             perm -= Permission::MAY_READ | Permission::MAY_WRITE;
 
             // Executable DACs are overridable when there is at least one exec bit set.
             if perm.may_exec() {
-                let metadata = self.metadata();
-                let mode = metadata.mode;
-
                 if mode.is_owner_executable()
                     || mode.is_group_executable()
                     || mode.is_other_executable()
@@ -539,11 +602,6 @@ pub trait Inode: Any + InodeIo + Send + Sync {
                 }
             }
         }
-
-        perm =
-            perm.intersection(Permission::MAY_READ | Permission::MAY_WRITE | Permission::MAY_EXEC);
-        let metadata = self.metadata();
-        let mode = metadata.mode;
 
         if metadata.uid == creds.fsuid() {
             if (perm.may_read() && !mode.is_owner_readable())
@@ -568,6 +626,17 @@ pub trait Inode: Any + InodeIo + Send + Sync {
 
         Ok(())
     }
+}
+
+fn has_dac_override_capability(task: &CurrentTask, posix_thread: &PosixThread) -> bool {
+    let thread_local = task.as_thread_local().unwrap();
+    let user_ns = thread_local.borrow_user_ns();
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        user_ns.as_ref(),
+        posix_thread,
+        CapSet::DAC_OVERRIDE,
+    ))
+    .is_ok()
 }
 
 impl dyn Inode {
@@ -694,4 +763,15 @@ pub enum FallocMode {
     CollapseRange,
     /// Inserts space within a file without overwriting existing data.
     InsertRange,
+}
+
+/// The behavior of rename operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenameMode {
+    /// Replaces the destination if it already exists.
+    Replace,
+    /// Fails with `EEXIST` if the destination already exists.
+    NoReplace,
+    /// Exchanges the source and destination paths.
+    Exchange,
 }

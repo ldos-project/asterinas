@@ -32,13 +32,12 @@ ProcSelfMaps.Map2
 ProcSelfMaps.MapUnmap
 ProcSelfRoot.IsRoot
 ProcSelfStat.PopulateWriteRSS
-ProcSysKernelHostname.Exists
-ProcSysKernelHostname.MatchesUname
 ProcSysKernelKeysMax.Exists
 ProcSysKernelKeysMax.InvalidMaxKeysValue
 ProcSysKernelKeysMax.SetMaxKeys
+ProcSysKernelRandomUuid.Exists
+ProcSysKernelRandomUuid.DifferentEveryTime
 ProcSysVmMaxmapCount.HasNumericValue
-ProcSysVmMmapMinAddr.HasNumericValue
 ProcSysVmOvercommitMemory.HasNumericValue
 ProcTask.ChildTaskDir
 ProcTask.CommCanSetPeerThreadName
@@ -52,6 +51,8 @@ ProcTask.VerifyTaskDir
 ProcTask.VerifyTaskDirNlinks
 ProcTaskNs.AccessOnNsNodeSucceeds
 ProcTaskNs.NsDirExistsAndHasCorrectMetadata
+ProcDevices.ExpectedLines
+ProcSysKernel.RandomizeVaSpace
 
 SelfAndNumericPid/ProcPidStatTest.HasBasicFields/0
 SelfAndNumericPid/ProcPidStatTest.HasBasicFields/1

@@ -4,7 +4,9 @@
 
 set -e
 
-./cgroup.sh
+if [ "$(uname -m)" = "x86_64" ]; then
+    ./arch_prctl/fsgsbase
+fi
 
 ./clone3/clone_exit_signal
 ./clone3/clone_files
@@ -16,6 +18,7 @@ set -e
 ./cpu_affinity/cpu_affinity
 
 ./execve/execve
+./execve/execve_comm
 ./execve/execve_err
 ./execve/execve_memfd
 ./execve/execve_mt_parent
@@ -30,17 +33,24 @@ set -e
 
 ./getpid/getpid
 
-./itimer/setitimer
-./itimer/timer_create
+./personality/personality
 
 ./prctl/capbset
+./prctl/no_new_privs
 ./prctl/secure_bits
 ./prctl/subreaper
+./prctl/thread_name
 
 ./pthread/pthread_signal_test
 ./pthread/pthread_test
 
 ./ptrace/ptrace
+./ptrace/set_options
+
+if [ "$(uname -m)" = "x86_64" ]; then
+    ./ptrace/debugger
+    ./ptrace/read_write_regs
+fi
 
 ./sched/sched_attr_getset
 ./sched/sched_param_getset
@@ -61,6 +71,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
     ./signal/sigtrap
 fi
 
+./cgroup.sh
 ./group_session
 ./job_control
 ./pidfd

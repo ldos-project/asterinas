@@ -4,12 +4,12 @@
 
 use core::num::NonZero;
 
-use aster_bigtcp::iface::InterfaceType;
+use aster_bigtcp::{iface::InterfaceType, wire::EthernetAddress};
 
 use super::util::finish_response;
 use crate::{
     net::{
-        iface::{Iface, iter_all_ifaces},
+        iface::{DEFAULT_TX_QUEUE_LEN, Iface, iter_all_ifaces},
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{LinkAttr, LinkSegment, LinkSegmentBody, RtnlSegment},
@@ -19,6 +19,9 @@ use crate::{
     util::net::CSocketAddrFamily,
 };
 
+/// The unspecified link-layer address.
+const UNSPECIFIED_LINK_ADDR: EthernetAddress = EthernetAddress([0; 6]);
+
 pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
     let filter_by = FilterBy::from_request(request_segment)?;
 
@@ -26,7 +29,7 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
         // Filter to include only requested links.
         .filter(|iface| match &filter_by {
             FilterBy::Index(index) => *index == iface.index(),
-            FilterBy::Name(name) => *name == iface.name(),
+            FilterBy::Name(name) => *name == iface.name().as_cstr(),
             FilterBy::Dump => true,
         })
         .map(|iface| iface_to_new_link(request_segment.header(), iface))
@@ -46,7 +49,7 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
 
 enum FilterBy<'a> {
     Index(u32),
-    Name(&'a str),
+    Name(&'a CStr),
     Dump,
 }
 
@@ -71,7 +74,7 @@ impl<'a> FilterBy<'a> {
 
         let required_name = request_segment.attrs().iter().find_map(|attr| {
             if let LinkAttr::Name(name) = attr {
-                Some(name.to_str().unwrap())
+                Some(name.as_cstr())
             } else {
                 None
             }
@@ -136,10 +139,25 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
         flags: iface.flags(),
     };
 
-    let attrs = vec![
-        LinkAttr::Name(CString::new(iface.name()).unwrap()),
+    // Linux may report dozens of attributes in a fixed order.
+    // See the reference below for the complete attribute list and ordering.
+    // TODO: Asterinas currently reports only a subset of these attributes.
+    // Reference: <https://elixir.bootlin.com/linux/v7.1/source/net/core/rtnetlink.c#L2050>.
+    let mut attrs = Vec::with_capacity(5);
+    attrs.extend([
+        LinkAttr::Name(*iface.name()),
+        LinkAttr::TxqLen(DEFAULT_TX_QUEUE_LEN),
         LinkAttr::Mtu(iface.mtu() as u32),
-    ];
+    ]);
+
+    let (link_addr, link_broadcast_addr) = match iface.ethernet_addr() {
+        Some(ethernet_addr) => (ethernet_addr, EthernetAddress::BROADCAST),
+        None => (UNSPECIFIED_LINK_ADDR, UNSPECIFIED_LINK_ADDR),
+    };
+    attrs.extend([
+        LinkAttr::Address(link_addr),
+        LinkAttr::Broadcast(link_broadcast_addr),
+    ]);
 
     LinkSegment::new(header, link_message, attrs)
 }

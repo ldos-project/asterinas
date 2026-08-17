@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -51,6 +54,14 @@ static int read_tracer_pid(pid_t pid)
 
 	CHECK(fclose(status_file));
 	return tracer_pid;
+}
+
+static unsigned long read_proc_mem_word(int proc_mem_fd, unsigned long addr)
+{
+	unsigned long value = 0;
+	CHECK_WITH(pread(proc_mem_fd, &value, sizeof(value), (off_t)addr),
+		   _ret == sizeof(value));
+	return value;
 }
 
 FN_TEST(ptrace_signal_stop_wait_continue)
@@ -425,5 +436,139 @@ FN_TEST(ptrace_multiple_tracees)
 		TEST_RES(found, _ret == 1);
 		exit_count++;
 	}
+}
+END_TEST()
+
+FN_TEST(ptrace_kill_from_signal_stop)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+
+	int *flag = TEST_SUCC(mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+				   MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		// Trigger a page fault first.
+		*flag = 1;
+		CHECK(ptrace(PTRACE_TRACEME, 0, 0, 0));
+		CHECK(raise(SIGTERM));
+		// This write is unreachable, because the child is in a ptrace-stop,
+		// and the parent has sent a `SIGKILL` to it.
+		*flag = 2;
+		_exit(-1);
+	}
+
+	int status;
+	siginfo_t si;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGTERM);
+	TEST_RES(ptrace(PTRACE_GETSIGINFO, pid, 0, &si),
+		 _ret == 0 && si.si_signo == SIGTERM);
+
+	TEST_SUCC(ptrace(PTRACE_KILL, pid, 0, 0));
+	TEST_RES(waitpid(pid, &status, 0),
+		 _ret == pid && WIFSIGNALED(status) &&
+			 WTERMSIG(status) == SIGKILL && *flag == 1);
+	TEST_SUCC(munmap((void *)flag, 4096));
+}
+END_TEST()
+
+FN_TEST(ptrace_syscall_stop_wait_continue)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		CHECK(ptrace(PTRACE_TRACEME, 0, 0, 0));
+		CHECK(raise(SIGSTOP));
+		CHECK(syscall(SYS_getppid));
+		_exit(0);
+	}
+
+	int status = 0;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGSTOP);
+	TEST_SUCC(ptrace(PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD));
+
+	TEST_SUCC(ptrace(PTRACE_SYSCALL, pid, 0, 0));
+	TEST_RES(waitpid(pid, &status, 0),
+		 _ret == pid && WIFSTOPPED(status) &&
+			 WSTOPSIG(status) == (SIGTRAP | 0x80));
+
+	TEST_SUCC(ptrace(PTRACE_SYSCALL, pid, 0, 0));
+	TEST_RES(waitpid(pid, &status, 0),
+		 _ret == pid && WIFSTOPPED(status) &&
+			 WSTOPSIG(status) == (SIGTRAP | 0x80));
+
+	TEST_SUCC(ptrace(PTRACE_CONT, pid, 0, 0));
+	TEST_RES(waitpid(pid, &status, 0),
+		 _ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+END_TEST()
+
+FN_TEST(ptrace_peek_poke_data)
+{
+	SKIP_TEST_IF(read_yama_scope() == YAMA_SCOPE_NO_ATTACH);
+
+	int pipefd[2];
+	TEST_SUCC(pipe(pipefd));
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		CHECK(close(pipefd[0]));
+
+		unsigned long *word =
+			CHECK_WITH(mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+				   _ret != MAP_FAILED);
+		*word = 0x0123456789abcdefUL;
+
+		unsigned long addr = (unsigned long)word;
+		CHECK(write(pipefd[1], &addr, sizeof(addr)));
+		CHECK(close(pipefd[1]));
+
+		CHECK(ptrace(PTRACE_TRACEME, 0, 0, 0));
+		CHECK(raise(SIGSTOP));
+
+		if (*word != 0x0fedcba987654321UL) {
+			CHECK(munmap(word, 4096));
+			_exit(1);
+		}
+		CHECK(munmap(word, 4096));
+		_exit(0);
+	}
+
+	TEST_SUCC(close(pipefd[1]));
+
+	unsigned long addr = 0;
+	TEST_RES(read(pipefd[0], &addr, sizeof(addr)), _ret == sizeof(addr));
+	TEST_SUCC(close(pipefd[0]));
+
+	int status = 0;
+	TEST_RES(waitpid(pid, &status, 0), _ret == pid && WIFSTOPPED(status) &&
+						   WSTOPSIG(status) == SIGSTOP);
+
+	char mempath[64];
+	TEST_RES(snprintf(mempath, sizeof(mempath), "/proc/%d/mem", pid),
+		 _ret > 0 && _ret < (int)sizeof(mempath));
+	int proc_mem_fd = TEST_SUCC(open(mempath, O_RDWR));
+
+	unsigned long proc_word = read_proc_mem_word(proc_mem_fd, addr);
+
+	TEST_RES(ptrace(PTRACE_PEEKDATA, pid, (void *)addr, 0),
+		 _ret == proc_word);
+	TEST_RES(ptrace(PTRACE_PEEKTEXT, pid, (void *)addr, 0),
+		 _ret == proc_word);
+
+	unsigned long new_value = 0x0fedcba987654321UL;
+	TEST_SUCC(ptrace(PTRACE_POKEDATA, pid, (void *)addr, new_value));
+	TEST_RES(read_proc_mem_word(proc_mem_fd, addr), _ret == new_value);
+	TEST_SUCC(ptrace(PTRACE_POKETEXT, pid, (void *)addr, new_value));
+	TEST_RES(read_proc_mem_word(proc_mem_fd, addr), _ret == new_value);
+
+	TEST_SUCC(close(proc_mem_fd));
+	TEST_SUCC(ptrace(PTRACE_CONT, pid, 0, 0));
+	TEST_RES(waitpid(pid, &status, 0),
+		 _ret == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 END_TEST()

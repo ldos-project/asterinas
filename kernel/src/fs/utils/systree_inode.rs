@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{
-    borrow::Cow,
-    boxed::Box,
-    string::ToString,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::borrow::Cow;
 use core::time::Duration;
 
 use aster_systree::{
@@ -15,19 +9,20 @@ use aster_systree::{
 
 use crate::{
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         utils::DirentVisitor,
         vfs::{
             file_system::{FileSystem, SuperBlock},
             inode::{
-                Extension, FallocMode, Inode, InodeIo, Metadata, MknodType, RevalidationPolicy,
-                SymbolicLink,
+                Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
+                RevalidationPolicy, SymbolicLink,
             },
         },
     },
     prelude::*,
     process::{Gid, Uid},
-    time::{Clock, clocks::RealTimeCoarseClock},
+    time::clocks::RealTimeCoarseClock,
+    vm::page_cache::Vmo,
 };
 
 type Ino = u64;
@@ -92,6 +87,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
             gid: Gid::new_root(),
             container_dev_id: sb.container_dev_id,
             self_dev_id: None,
+            birth_at: None,
         }
     }
 
@@ -316,7 +312,7 @@ pub(in crate::fs) enum SysTreeNodeKind {
     Symlink(Arc<dyn SysSymlink>),
 }
 
-impl<KInode: SysTreeInodeTy + Send + Sync + 'static> InodeIo for KInode {
+impl<KInode: SysTreeInodeTy + Send + Sync + 'static> FileOps for KInode {
     default fn read_at(
         &self,
         offset: usize,
@@ -349,177 +345,6 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> InodeIo for KInode {
         };
 
         Ok(len)
-    }
-}
-
-impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
-    default fn type_(&self) -> InodeType {
-        self.metadata().type_
-    }
-
-    default fn metadata(&self) -> Metadata {
-        let mut metadata = *self.metadata();
-        metadata.mode = self.mode().unwrap();
-        metadata
-    }
-
-    default fn ino(&self) -> u64 {
-        self.metadata().ino
-    }
-
-    default fn mode(&self) -> Result<InodeMode> {
-        self.mode()
-    }
-
-    default fn set_mode(&self, mode: InodeMode) -> Result<()> {
-        self.set_mode(mode)
-    }
-
-    default fn size(&self) -> usize {
-        self.metadata().size
-    }
-
-    default fn resize(&self, _new_size: usize) -> Result<()> {
-        // The `resize` operation should be ignored by kernelfs inodes,
-        // and should not incur an error.
-        Ok(())
-    }
-
-    default fn atime(&self) -> Duration {
-        self.metadata().last_access_at
-    }
-
-    default fn set_atime(&self, _time: Duration) {}
-
-    default fn mtime(&self) -> Duration {
-        self.metadata().last_modify_at
-    }
-
-    default fn set_mtime(&self, _time: Duration) {}
-
-    default fn ctime(&self) -> Duration {
-        self.metadata().last_meta_change_at
-    }
-
-    default fn set_ctime(&self, _time: Duration) {}
-
-    default fn owner(&self) -> Result<Uid> {
-        Ok(self.metadata().uid)
-    }
-
-    default fn set_owner(&self, _uid: Uid) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn group(&self) -> Result<Gid> {
-        Ok(self.metadata().gid)
-    }
-
-    default fn set_group(&self, _gid: Gid) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn fs(&self) -> Arc<dyn FileSystem> {
-        unimplemented!("fs() method should be implemented by the concrete inode type");
-    }
-
-    default fn page_cache(&self) -> Option<Arc<crate::vm::vmo::Vmo>> {
-        None
-    }
-
-    default fn create(
-        &self,
-        name: &str,
-        _type_: InodeType,
-        mode: InodeMode,
-    ) -> Result<Arc<dyn Inode>> {
-        if name.len() > super::NAME_MAX {
-            return_errno!(Errno::ENAMETOOLONG);
-        }
-
-        let SysTreeNodeKind::Branch(branch_node) = &self.node_kind() else {
-            return_errno_with_message!(Errno::ENOTDIR, "self is not a dir");
-        };
-
-        let new_child = branch_node.create_child(name)?;
-
-        let sb = self.fs().sb();
-        let new_inode = if let Some(branch_child) = new_child.cast_to_branch() {
-            Self::new_branch_dir(
-                SysTreeNodeKind::Branch(branch_child),
-                Some(mode),
-                self.parent().clone(),
-                &sb,
-            )
-        } else {
-            Self::new_leaf_dir(
-                SysTreeNodeKind::Leaf(new_child.cast_to_node().unwrap()),
-                Some(mode),
-                self.parent().clone(),
-                &sb,
-            )
-        };
-
-        Ok(new_inode)
-    }
-
-    default fn mknod(
-        &self,
-        _name: &str,
-        _mode: InodeMode,
-        _dev: MknodType,
-    ) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn unlink(&self, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn rmdir(&self, _name: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn rename(
-        &self,
-        _old_name: &str,
-        _target: &Arc<dyn Inode>,
-        _new_name: &str,
-    ) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    default fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
-        if self.type_() != InodeType::Dir {
-            return_errno_with_message!(Errno::ENOTDIR, "not a directory inode");
-        }
-
-        if name == "." {
-            return Ok(self.this());
-        } else if name == ".." {
-            return Ok(self.parent().upgrade().unwrap_or_else(|| self.this()));
-        }
-
-        // Dispatch based on the concrete type of the directory inode
-        match &self.node_kind() {
-            SysTreeNodeKind::Branch(branch_node) => {
-                // Current inode is a directory corresponding to a SysBranchNode
-                self.lookup_node_or_attr(name, branch_node.as_ref())
-            }
-            SysTreeNodeKind::Leaf(leaf_node) => {
-                // Current inode is a directory corresponding to a SysNode (Leaf)
-                // Leaf directories only contain attributes, not other nodes.
-                self.lookup_attr(name, leaf_node.as_ref())
-            }
-            // Attr and Symlink nodes are not directories
-            SysTreeNodeKind::Attr(_, _) | SysTreeNodeKind::Symlink(_) => {
-                Err(Error::new(Errno::ENOTDIR))
-            }
-        }
     }
 
     default fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
@@ -585,6 +410,178 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         let next_ino = last_ino + 1;
         Ok((next_ino - start_ino) as usize)
     }
+}
+
+impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
+    default fn type_(&self) -> InodeType {
+        self.metadata().type_
+    }
+
+    default fn metadata(&self) -> Result<Metadata> {
+        let mut metadata = *self.metadata();
+        metadata.mode = self.mode().unwrap();
+        Ok(metadata)
+    }
+
+    default fn ino(&self) -> u64 {
+        self.metadata().ino
+    }
+
+    default fn mode(&self) -> Result<InodeMode> {
+        self.mode()
+    }
+
+    default fn set_mode(&self, mode: InodeMode) -> Result<()> {
+        self.set_mode(mode)
+    }
+
+    default fn size(&self) -> usize {
+        self.metadata().size
+    }
+
+    default fn resize(&self, _new_size: usize) -> Result<()> {
+        // The `resize` operation should be ignored by kernelfs inodes,
+        // and should not incur an error.
+        Ok(())
+    }
+
+    default fn atime(&self) -> Duration {
+        self.metadata().last_access_at
+    }
+
+    default fn set_atime(&self, _time: Duration) {}
+
+    default fn mtime(&self) -> Duration {
+        self.metadata().last_modify_at
+    }
+
+    default fn set_mtime(&self, _time: Duration) {}
+
+    default fn ctime(&self) -> Duration {
+        self.metadata().last_meta_change_at
+    }
+
+    default fn set_ctime(&self, _time: Duration) {}
+
+    default fn owner(&self) -> Result<Uid> {
+        Ok(self.metadata().uid)
+    }
+
+    default fn set_owner(&self, _uid: Uid) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn group(&self) -> Result<Gid> {
+        Ok(self.metadata().gid)
+    }
+
+    default fn set_group(&self, _gid: Gid) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn fs(&self) -> Arc<dyn FileSystem> {
+        unimplemented!("fs() method should be implemented by the concrete inode type");
+    }
+
+    default fn page_cache(&self) -> Option<Arc<Vmo>> {
+        None
+    }
+
+    default fn create(
+        &self,
+        name: &str,
+        _type_: InodeType,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        if name.len() > super::NAME_MAX {
+            return_errno!(Errno::ENAMETOOLONG);
+        }
+
+        let SysTreeNodeKind::Branch(branch_node) = &self.node_kind() else {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not a dir");
+        };
+
+        let new_child = branch_node.create_child(name)?;
+
+        let sb = self.fs().sb();
+        let new_inode = if let Some(branch_child) = new_child.cast_to_branch() {
+            Self::new_branch_dir(
+                SysTreeNodeKind::Branch(branch_child),
+                Some(mode),
+                self.parent().clone(),
+                &sb,
+            )
+        } else {
+            Self::new_leaf_dir(
+                SysTreeNodeKind::Leaf(new_child.cast_to_node().unwrap()),
+                Some(mode),
+                self.parent().clone(),
+                &sb,
+            )
+        };
+
+        Ok(new_inode)
+    }
+
+    default fn mknod(
+        &self,
+        _name: &str,
+        _mode: InodeMode,
+        _dev: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn unlink(&self, _name: &str) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn rmdir(&self, _name: &str) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn rename(
+        &self,
+        _old_name: &str,
+        _target: &Arc<dyn Inode>,
+        _new_name: &str,
+        _mode: RenameMode,
+    ) -> Result<()> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    default fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
+        if self.type_() != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "not a directory inode");
+        }
+
+        if name == "." {
+            return Ok(self.this());
+        } else if name == ".." {
+            return Ok(self.parent().upgrade().unwrap_or_else(|| self.this()));
+        }
+
+        // Dispatch based on the concrete type of the directory inode
+        match &self.node_kind() {
+            SysTreeNodeKind::Branch(branch_node) => {
+                // Current inode is a directory corresponding to a SysBranchNode
+                self.lookup_node_or_attr(name, branch_node.as_ref())
+            }
+            SysTreeNodeKind::Leaf(leaf_node) => {
+                // Current inode is a directory corresponding to a SysNode (Leaf)
+                // Leaf directories only contain attributes, not other nodes.
+                self.lookup_attr(name, leaf_node.as_ref())
+            }
+            // Attr and Symlink nodes are not directories
+            SysTreeNodeKind::Attr(_, _) | SysTreeNodeKind::Symlink(_) => {
+                Err(Error::new(Errno::ENOTDIR))
+            }
+        }
+    }
 
     default fn read_link(&self) -> Result<SymbolicLink> {
         match &self.node_kind() {
@@ -601,7 +598,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         &self,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         None
     }
 

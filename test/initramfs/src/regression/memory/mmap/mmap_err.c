@@ -9,15 +9,21 @@
 
 #define PAGE_SIZE 4096
 
-// The value in `/proc/sys/vm/mmap_min_addr`.
-#define MMAP_MIN_ADDR ((void *)65536)
-
+static void *mmap_min_addr;
 static void *valid_addr;
 static void *avail_addr;
 static int fd;
 
 FN_SETUP(init)
 {
+	FILE *fp;
+	unsigned long val;
+
+	fp = CHECK_WITH(fopen("/proc/sys/vm/mmap_min_addr", "r"), _ret != NULL);
+	CHECK_WITH(fscanf(fp, "%lu", &val), _ret == 1);
+	CHECK(fclose(fp));
+	mmap_min_addr = (void *)val;
+
 	valid_addr = CHECK_WITH(mmap(NULL, PAGE_SIZE * 4, PROT_READ,
 				     MAP_PRIVATE | MAP_ANONYMOUS, 0, 0),
 				_ret != MAP_FAILED);
@@ -116,19 +122,19 @@ FN_TEST(underflow_addr)
 	void *addr2;
 
 	// `mmap` without MAP_FIXED. The hint address will be rounded
-	// to MMAP_MIN_ADDR, unless it is in the first page, in which
+	// to `mmap_min_addr`, unless it is in the first page, in which
 	// case the hint will be ignored.
 	addr2 = TEST_RES(mmap(addr, PAGE_SIZE, PROT_READ,
 			      MAP_PRIVATE | MAP_ANONYMOUS, 0, 0),
-			 _ret == MMAP_MIN_ADDR);
+			 _ret == mmap_min_addr);
 	TEST_SUCC(munmap(addr2, PAGE_SIZE));
 	addr2 = TEST_RES(mmap(addr + 1, PAGE_SIZE, PROT_READ,
 			      MAP_PRIVATE | MAP_ANONYMOUS, 0, 0),
-			 _ret == MMAP_MIN_ADDR);
+			 _ret == mmap_min_addr);
 	TEST_SUCC(munmap(addr2, PAGE_SIZE));
 	addr2 = TEST_RES(mmap(addr - 1, PAGE_SIZE, PROT_READ,
 			      MAP_PRIVATE | MAP_ANONYMOUS, 0, 0),
-			 _ret != MMAP_MIN_ADDR);
+			 _ret != mmap_min_addr);
 	TEST_SUCC(munmap(addr2, PAGE_SIZE));
 
 	TEST_ERRNO(mmap(addr, PAGE_SIZE, PROT_READ,
@@ -179,6 +185,36 @@ FN_TEST(unaligned_addr)
 	TEST_ERRNO(mprotect(valid_addr + 1, PAGE_SIZE, PROT_READ), EINVAL);
 	TEST_ERRNO(madvise(valid_addr + 1, PAGE_SIZE, MADV_NORMAL), EINVAL);
 	TEST_ERRNO(msync(valid_addr + 1, PAGE_SIZE, 0), EINVAL);
+}
+END_TEST()
+
+FN_TEST(kernel_addr)
+{
+	void *addr = (void *)0xffffffffffff0000ul;
+
+	// Some applications probe the maximum mappable address by checking whether
+	// an unaligned large address returns `ENOMEM` or `EINVAL`. One example is
+	// gVisor, see
+	// <https://github.com/google/gvisor/blob/abf59273b7ba39536ad07ca6579c047f3101f9bb/pkg/abi/linux/mm.go#L143-L157>.
+	//
+	// So we must ensure that the following error code is `ENOMEM` (instead of
+	// `EINVAL`), even if the address is not page-aligned.
+	TEST_ERRNO(mmap(addr + 1, 512, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0),
+		   ENOMEM);
+	TEST_ERRNO(mmap(addr + 0, 512, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0),
+		   ENOMEM);
+	TEST_ERRNO(mmap(addr - 1, 512, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0),
+		   ENOMEM);
+
+	TEST_ERRNO(mmap(valid_addr + 1, 512, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0),
+		   EINVAL);
+	TEST_ERRNO(mmap(valid_addr - 1, 512, PROT_NONE,
+			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, 0, 0),
+		   EINVAL);
 }
 END_TEST()
 
@@ -235,6 +271,9 @@ FN_TEST(mmap_flags)
 	TEST_ERRNO(mmap(valid_addr, PAGE_SIZE, PROT_READ,
 			MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0),
 		   EEXIST);
+	TEST_ERRNO(mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+			MAP_SHARED_VALIDATE | MAP_ANONYMOUS, -1, 0),
+		   EINVAL);
 }
 END_TEST()
 

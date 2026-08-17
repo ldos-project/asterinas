@@ -19,11 +19,9 @@
 //! and `&mut [u8]` with `BufMut<[u8]>`.
 
 use alloc::vec;
-use core::convert::TryFrom;
 
 use lending_iterator::prelude::*;
 
-use super::BLOCK_SIZE;
 use crate::prelude::*;
 
 /// A owned buffer whose length is a multiple of the block size.
@@ -93,7 +91,7 @@ impl BufRef<'_> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for BufRef<'a> {
-    type Error = crate::error::Error;
+    type Error = Error;
 
     fn try_from(buf: &'a [u8]) -> Result<Self> {
         if buf.is_empty() {
@@ -148,7 +146,7 @@ impl BufMut<'_> {
 }
 
 impl<'a> TryFrom<&'a mut [u8]> for BufMut<'a> {
-    type Error = crate::error::Error;
+    type Error = Error;
 
     fn try_from(buf: &'a mut [u8]) -> Result<Self> {
         if buf.is_empty() {

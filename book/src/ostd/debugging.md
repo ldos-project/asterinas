@@ -15,7 +15,7 @@ xffffffff880d7b5f, 0xffffffff8809453a, 0xffffffff8833d5f7]
 ```
 
 This can be processed by the `cargo osdk enhance-log` command to generate a human readable trace.
-For example, 
+For example,
 
 ```
 Held by: at /root/asterinas/ostd/src/sync/mutex.rs:283:27 on task 1 on cpu 0 with stack: stacktrace[0xffffffff882f64d8, 0xffffffff882921ee, 0xffffffff880976bb, 0xffffffff880d7bcf, 0xffffffff880d7bf8, 0xffffffff880d7b5f, 0xffffffff8809453a, 0xffffffff8833d5f7]

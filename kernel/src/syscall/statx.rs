@@ -27,7 +27,7 @@ pub fn sys_statx(
     let user_space = ctx.user_space();
     let filename = user_space.read_cstring(filename_ptr, MAX_FILENAME_LEN)?;
     let flags = StatxFlags::from_bits(flags)
-        .ok_or(Error::with_message(Errno::EINVAL, "invalid statx flags"))?;
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid statx flags"))?;
     let mask = StatxMask::from_bits_truncate(mask);
     debug!(
         "dirfd = {}, filename = {:?}, flags = {:?}, mask = {:?}, statx_buf_ptr = 0x{:x}",
@@ -62,7 +62,7 @@ pub fn sys_statx(
         }
     };
 
-    let statx = Statx::new(&path);
+    let statx = Statx::new(&path, mask)?;
 
     user_space.write_val(statx_buf_ptr, &statx)?;
     Ok(SyscallReturn::Return(0))
@@ -71,7 +71,7 @@ pub fn sys_statx(
 /// Structures for the extended file attribute retrieval system call statx.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
-pub struct Statx {
+struct Statx {
     /// Indicates which fields in the `statx` structure were successfully filled,
     /// reflecting the state information supported by the filesystem.
     stx_mask: u32,
@@ -122,8 +122,8 @@ pub struct Statx {
 }
 
 impl Statx {
-    fn new(path: &Path) -> Self {
-        let info = path.metadata();
+    fn new(path: &Path, requested_mask: StatxMask) -> Result<Self> {
+        let info = path.metadata()?;
 
         let (stx_dev_major, stx_dev_minor) =
             device_id::decode_device_numbers(info.container_dev_id.as_encoded_u64());
@@ -138,11 +138,35 @@ impl Statx {
             stx_attributes |= STATX_ATTR_MOUNT_ROOT;
         }
 
-        let stx_mask = StatxMask::STATX_BASIC_STATS.bits()
-            | StatxMask::STATX_BTIME.bits()
-            | StatxMask::STATX_MNT_ID.bits();
+        // If `STATX_MNT_ID_UNIQUE` is specified, a 64-bit unique ID is provided
+        // instead of a 32-bit recyclable ID.
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/fs/stat.c#L303>
+        let want_unique_mnt_id = requested_mask.contains(StatxMask::STATX_MNT_ID_UNIQUE);
+        let stx_mnt_id = if want_unique_mnt_id {
+            path.mount_node().unique_id()
+        } else {
+            path.mount_node().id() as u64
+        };
+        let mnt_id_mask_bit = if want_unique_mnt_id {
+            StatxMask::STATX_MNT_ID_UNIQUE
+        } else {
+            StatxMask::STATX_MNT_ID
+        };
 
-        Self {
+        // Build `stx_mask` based on what's supported and what was requested.
+        // TODO: Pass the request `stx_mask` to the filesystem. It can determine which information
+        // to return and omit the information that is not requested and expensive to query.
+        let mut stx_mask = StatxMask::STATX_BASIC_STATS.bits() | mnt_id_mask_bit.bits();
+
+        // Include `STATX_BTIME` if the birth time is available.
+        let stx_btime = if let Some(birth_at) = info.birth_at {
+            stx_mask |= StatxMask::STATX_BTIME.bits();
+            StatxTimestamp::from(birth_at)
+        } else {
+            StatxTimestamp::default()
+        };
+
+        Ok(Self {
             // FIXME: All zero fields below are dummy implementations that need to be improved in the future.
             stx_mask,
             stx_blksize: info.optimal_block_size as u32,
@@ -157,25 +181,25 @@ impl Statx {
             stx_blocks: info.nr_sectors_allocated as u64,
             stx_attributes_mask,
             stx_atime: StatxTimestamp::from(info.last_access_at),
-            stx_btime: StatxTimestamp::from(Duration::ZERO), // TODO: Metadata do not track birth time for now.
+            stx_btime,
             stx_ctime: StatxTimestamp::from(info.last_meta_change_at),
             stx_mtime: StatxTimestamp::from(info.last_modify_at),
             stx_rdev_major,
             stx_rdev_minor,
             stx_dev_major,
             stx_dev_minor,
-            stx_mnt_id: path.mount_node().id() as u64,
+            stx_mnt_id,
             stx_dio_mem_align: 0,
             stx_dio_offset_align: 0,
             __spare3: [0; 12],
-        }
+        })
     }
 }
 
 /// Statx Timestamp (seconds and nanoseconds)
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
-pub struct StatxTimestamp {
+struct StatxTimestamp {
     /// Seconds
     tv_sec: i64,
     /// Nanoseconds

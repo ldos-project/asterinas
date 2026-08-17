@@ -10,7 +10,10 @@ mod port;
 mod sched;
 mod time;
 
-pub use common::{BoundPort, InterfaceFlags, InterfaceType};
+const IFNAMESIZE: usize = 16;
+pub type InterfaceName = aster_util::fixed_str::FixedCStr<IFNAMESIZE>;
+
+pub use common::{BoundPort, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceType};
 pub use iface::Iface;
 pub use phy::{EtherIface, IpIface};
 pub(crate) use poll_iface::{PollKey, PollableIfaceMut};

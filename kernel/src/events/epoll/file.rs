@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_set::BTreeSet, sync::Arc};
 use core::{borrow::Borrow, fmt::Display, time::Duration};
 
 use keyable_arc::KeyableWeak;
-use ostd::{ignore_err, sync::Mutex};
+use ostd::ignore_err;
 
 use super::{
     EpollCtl, EpollEvent, EpollFlags,
@@ -14,11 +13,10 @@ use crate::{
     events::IoEvents,
     fs::{
         file::{
-            CreationFlags, FileLike,
+            AccessMode, CreationFlags, FileCommon, FileLike, StatusFlags,
             file_table::{FdFlags, FileDesc, get_file_fast},
         },
         pseudofs::AnonInodeFs,
-        vfs::path::Path,
     },
     prelude::*,
     process::{
@@ -48,8 +46,8 @@ pub struct EpollFile {
     // Keep this in a separate `Arc` to avoid dropping `EpollFile` in the observer callback, which
     // may cause deadlocks.
     ready: Arc<ReadySet>,
-    /// The pseudo path associated with this epoll file.
-    pseudo_path: Path,
+    /// The common state for this epoll file.
+    common: FileCommon,
 }
 
 impl EpollFile {
@@ -60,7 +58,7 @@ impl EpollFile {
         Arc::new(Self {
             interest: Mutex::new(BTreeSet::new()),
             ready: Arc::new(ReadySet::new()),
-            pseudo_path,
+            common: FileCommon::new(pseudo_path, StatusFlags::empty()),
         })
     }
 
@@ -266,20 +264,17 @@ impl Pollable for EpollFile {
 
 // Implement the common methods required by FileHandle
 impl FileLike for EpollFile {
-    fn read(&self, _writer: &mut VmWriter) -> Result<usize> {
-        return_errno_with_message!(Errno::EINVAL, "epoll files do not support read");
-    }
-
-    fn write(&self, _reader: &mut VmReader) -> Result<usize> {
-        return_errno_with_message!(Errno::EINVAL, "epoll files do not support write");
-    }
-
     fn ioctl(&self, _raw_ioctl: RawIoctl) -> Result<i32> {
         return_errno_with_message!(Errno::ENOTTY, "epoll files do not support ioctl");
     }
 
-    fn path(&self) -> &Path {
-        &self.pseudo_path
+    fn access_mode(&self) -> AccessMode {
+        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/eventpoll.c#L2191>.
+        AccessMode::O_RDWR
+    }
+
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
@@ -290,7 +285,8 @@ impl FileLike for EpollFile {
 
         impl Display for FdInfo {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                let mut flags = self.inner.status_flags().bits() | self.inner.access_mode() as u32;
+                let mut flags =
+                    self.inner.common.status_flags().bits() | self.inner.access_mode() as u32;
                 if self.fd_flags.contains(FdFlags::CLOEXEC) {
                     flags |= CreationFlags::O_CLOEXEC.bits();
                 }

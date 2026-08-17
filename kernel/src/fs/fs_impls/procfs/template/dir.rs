@@ -2,6 +2,8 @@
 
 //! Reusable procfs directory inode templates and `readdir` helpers.
 
+#![short_vis_path::add(procfs)]
+
 use alloc::borrow::Cow;
 use core::time::Duration;
 
@@ -15,12 +17,15 @@ use crate::{
         utils::DirentVisitor,
         vfs::{
             file_system::{FileSystem, SuperBlock},
-            inode::{Extension, Inode, InodeIo, Metadata, MknodType, RevalidationPolicy},
+            inode::{
+                Extension, FileOps, Inode, Metadata, MknodType, RenameMode, RevalidationPolicy,
+            },
             path::{is_dot, is_dotdot},
         },
     },
     prelude::*,
     process::{Gid, Uid},
+    thread::Thread,
 };
 
 /// Wraps directory-specific procfs operations as a VFS inode.
@@ -28,16 +33,16 @@ use crate::{
 /// `ProcDir` owns the directory implementation object,
 /// tracks parent linkage for `.` and `..`,
 /// and forwards inode methods that are common to all procfs directories.
-pub struct ProcDir<D: DirOps> {
+pub(in procfs) struct ProcDir<D: ProcDirOps> {
     inner: D,
     this: Weak<ProcDir<D>>,
     parent: Option<Weak<dyn Inode>>,
     common: Common,
 }
 
-impl<D: DirOps> ProcDir<D> {
+impl<D: ProcDirOps> ProcDir<D> {
     /// Creates the root procfs directory inode.
-    pub fn new_root(
+    pub(in procfs) fn new_root(
         dir: D,
         fs: Weak<dyn FileSystem>,
         ino: u64,
@@ -56,7 +61,7 @@ impl<D: DirOps> ProcDir<D> {
     }
 
     /// Creates a non-root procfs directory inode under `parent`.
-    pub fn new(dir: D, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
+    pub(in procfs) fn new(dir: D, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
         let common = {
             let fs = parent.upgrade().unwrap().fs();
             let procfs = fs.downcast_ref::<ProcFs>().unwrap();
@@ -76,7 +81,7 @@ impl<D: DirOps> ProcDir<D> {
         self.this.upgrade().unwrap()
     }
 
-    pub fn this_weak(&self) -> &Weak<ProcDir<D>> {
+    pub(in procfs) fn this_weak(&self) -> &Weak<ProcDir<D>> {
         &self.this
     }
 
@@ -85,12 +90,12 @@ impl<D: DirOps> ProcDir<D> {
     }
 
     /// Returns the directory-specific procfs operations.
-    pub fn inner(&self) -> &D {
+    pub(in procfs) fn inner(&self) -> &D {
         &self.inner
     }
 }
 
-impl<D: DirOps + 'static> InodeIo for ProcDir<D> {
+impl<D: ProcDirOps + 'static> FileOps for ProcDir<D> {
     fn read_at(
         &self,
         _offset: usize,
@@ -108,47 +113,10 @@ impl<D: DirOps + 'static> InodeIo for ProcDir<D> {
     ) -> Result<usize> {
         Err(Error::new(Errno::EISDIR))
     }
-}
-
-#[inherit_methods(from = "self.common")]
-impl<D: DirOps + 'static> Inode for ProcDir<D> {
-    fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
-    fn extension(&self) -> &Extension;
-    fn ino(&self) -> u64;
-    fn mode(&self) -> Result<InodeMode>;
-    fn set_mode(&self, mode: InodeMode) -> Result<()>;
-    fn owner(&self) -> Result<Uid>;
-    fn set_owner(&self, uid: Uid) -> Result<()>;
-    fn group(&self) -> Result<Gid>;
-    fn set_group(&self, gid: Gid) -> Result<()>;
-    fn atime(&self) -> Duration;
-    fn set_atime(&self, time: Duration);
-    fn mtime(&self) -> Duration;
-    fn set_mtime(&self, time: Duration);
-    fn ctime(&self) -> Duration;
-    fn set_ctime(&self, time: Duration);
-    fn fs(&self) -> Arc<dyn FileSystem>;
-
-    fn resize(&self, _new_size: usize) -> Result<()> {
-        Err(Error::new(Errno::EISDIR))
-    }
-
-    fn type_(&self) -> InodeType {
-        InodeType::Dir
-    }
-
-    fn create(&self, _name: &str, _type_: InodeType, _mode: InodeMode) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EPERM))
-    }
-
-    fn mknod(&self, _name: &str, _mode: InodeMode, _type_: MknodType) -> Result<Arc<dyn Inode>> {
-        Err(Error::new(Errno::EPERM))
-    }
 
     fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
         /// Returns the always-present `.` and `..` entries for a procfs directory.
-        fn special_entries<D: DirOps + 'static>(
+        fn special_entries<D: ProcDirOps + 'static>(
             dir: &ProcDir<D>,
         ) -> impl Iterator<Item = (&'static str, Arc<dyn Inode>, usize)> {
             let this_inode: Arc<dyn Inode> = dir.this();
@@ -185,6 +153,47 @@ impl<D: DirOps + 'static> Inode for ProcDir<D> {
             _ => Ok(iterate_offset - offset),
         }
     }
+}
+
+#[inherit_methods(from = "self.common")]
+impl<D: ProcDirOps + 'static> Inode for ProcDir<D> {
+    fn size(&self) -> usize;
+    fn extension(&self) -> &Extension;
+    fn ino(&self) -> u64;
+    fn mode(&self) -> Result<InodeMode>;
+    fn set_mode(&self, mode: InodeMode) -> Result<()>;
+    fn owner(&self) -> Result<Uid>;
+    fn set_owner(&self, uid: Uid) -> Result<()>;
+    fn group(&self) -> Result<Gid>;
+    fn set_group(&self, gid: Gid) -> Result<()>;
+    fn atime(&self) -> Duration;
+    fn set_atime(&self, time: Duration);
+    fn mtime(&self) -> Duration;
+    fn set_mtime(&self, time: Duration);
+    fn ctime(&self) -> Duration;
+    fn set_ctime(&self, time: Duration);
+    fn fs(&self) -> Arc<dyn FileSystem>;
+
+    fn metadata(&self) -> Result<Metadata> {
+        let owner_thread = self.inner.owner_thread();
+        Ok(self.common.metadata_with_owner(owner_thread))
+    }
+
+    fn resize(&self, _new_size: usize) -> Result<()> {
+        Err(Error::new(Errno::EISDIR))
+    }
+
+    fn type_(&self) -> InodeType {
+        InodeType::Dir
+    }
+
+    fn create(&self, _name: &str, _type_: InodeType, _mode: InodeMode) -> Result<Arc<dyn Inode>> {
+        Err(Error::new(Errno::EPERM))
+    }
+
+    fn mknod(&self, _name: &str, _mode: InodeMode, _type_: MknodType) -> Result<Arc<dyn Inode>> {
+        Err(Error::new(Errno::EPERM))
+    }
 
     fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
         Err(Error::new(Errno::EPERM))
@@ -209,7 +218,13 @@ impl<D: DirOps + 'static> Inode for ProcDir<D> {
         self.inner.lookup_child(self, name)
     }
 
-    fn rename(&self, _old_name: &str, _target: &Arc<dyn Inode>, _new_name: &str) -> Result<()> {
+    fn rename(
+        &self,
+        _old_name: &str,
+        _target: &Arc<dyn Inode>,
+        _new_name: &str,
+        _mode: RenameMode,
+    ) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
@@ -231,7 +246,12 @@ impl<D: DirOps + 'static> Inode for ProcDir<D> {
     }
 }
 
-pub trait DirOps: Sync + Send + Sized {
+pub(in procfs) trait ProcDirOps: Sync + Send + Sized {
+    /// Returns the thread whose credentials own this procfs inode.
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        None
+    }
+
     /// Looks up a child inode in `this_dir` by name.
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>>;
 
@@ -281,15 +301,15 @@ pub trait DirOps: Sync + Send + Sized {
 /// A statically declared procfs child entry.
 ///
 /// The tuple stores the exported filename,
-/// the inode type reported to [`Inode::readdir_at`],
+/// the inode type reported to [`FileOps::readdir_at`],
 /// and the constructor used by lookup paths to instantiate the inode.
-pub type StaticDirEntry<Fp> = (&'static str, InodeType, Fp);
+pub(in procfs) type StaticDirEntry<Fp> = (&'static str, InodeType, Fp);
 
 /// Looks up a statically declared child from a `StaticDirEntry` table.
 ///
 /// The `constructor_adaptor` receives the stored constructor payload
 /// and can bind any per-directory context that is needed at the call site.
-pub fn lookup_child_from_table<Fp, F>(
+pub(in procfs) fn lookup_child_from_table<Fp, F>(
     name: &str,
     table: &[StaticDirEntry<Fp>],
     constructor_adaptor: F,
@@ -305,7 +325,7 @@ where
 }
 
 /// Converts a static procfs child table into listed entries.
-pub fn listed_entries_from_table<'a, Fp>(
+pub(in procfs) fn listed_entries_from_table<'a, Fp>(
     table: &'a [StaticDirEntry<Fp>],
 ) -> impl Iterator<Item = ListedEntry<'a>> + 'a
 where
@@ -325,7 +345,7 @@ mod readdir {
     //!
     //! # Vocabulary
     //!
-    //! - **Offset** - the cursor passed to `Inode::readdir_at`. Maps to
+    //! - **Offset** - the cursor passed to `FileOps::readdir_at`. Maps to
     //!   `dirent::d_off`. Offsets `1` and `2` are reserved for `.` and `..`.
     //!
     //! - **Key** - an integer that uniquely identifies one dynamic child
@@ -347,14 +367,14 @@ mod readdir {
     /// Unlike [`ReaddirEntry`], this type does not carry a continuation offset.
     /// It is intended for higher-level directory descriptions,
     /// while [`ReaddirEntry`] derives offsets from the iteration strategy.
-    pub struct ListedEntry<'a> {
+    pub(in procfs) struct ListedEntry<'a> {
         pub(super) name: Cow<'a, str>,
         pub(super) type_: InodeType,
     }
 
     impl<'a> ListedEntry<'a> {
         /// Creates a listed entry with the given filename and inode type.
-        pub fn new(name: impl Into<Cow<'a, str>>, type_: InodeType) -> Self {
+        pub(in procfs) fn new(name: impl Into<Cow<'a, str>>, type_: InodeType) -> Self {
             Self {
                 name: name.into(),
                 type_,
@@ -362,16 +382,16 @@ mod readdir {
         }
 
         /// Returns the filename of the listed entry.
-        pub fn name(&self) -> &str {
+        pub(in procfs) fn name(&self) -> &str {
             self.name.as_ref()
         }
     }
 
-    /// A directory entry emitted by [`DirOps::visit_entries_from_offset`].
+    /// A directory entry emitted by [`ProcDirOps::visit_entries_from_offset`].
     ///
     /// The `next_offset` is the continuation offset that should be used as the
-    /// starting point of the next [`Inode::readdir_at`] call.
-    pub struct ReaddirEntry<'a> {
+    /// starting point of the next [`FileOps::readdir_at`] call.
+    pub(in procfs) struct ReaddirEntry<'a> {
         pub(super) name: Cow<'a, str>,
         pub(super) ino: u64,
         pub(super) type_: InodeType,
@@ -397,7 +417,7 @@ mod readdir {
 
     /// A placeholder inode number for procfs entries.
     ///
-    /// [`Inode::readdir_at`] reports procfs entries without instantiating child inodes first,
+    /// [`FileOps::readdir_at`] reports procfs entries without instantiating child inodes first,
     /// so the inode number returned here is only a placeholder.
     /// Lookup still creates the real child inode on demand when the path is opened.
     //
@@ -411,7 +431,7 @@ mod readdir {
     /// have a deterministic iteration order.
     /// It reserves offsets `1` and `2` for `.` and `..`,
     /// so callers typically pass `2` as `first_entry_offset`.
-    pub fn sequential_readdir_entries<'a, I>(
+    pub(in procfs) fn sequential_readdir_entries<'a, I>(
         offset: usize,
         first_entry_offset: usize,
         entries: I,
@@ -441,7 +461,7 @@ mod readdir {
     /// so callers should provide non-negative keys in increasing order.
     /// Keys do not need to be dense,
     /// but each key must stay stable for the duration of one directory snapshot.
-    pub fn keyed_readdir_entries<'a, I, F>(
+    pub(in procfs) fn keyed_readdir_entries<'a, I, F>(
         offset: usize,
         first_entry_offset: usize,
         keys: I,
@@ -462,7 +482,7 @@ mod readdir {
     }
 
     /// Visits the given [`ReaddirEntry`] values in order, calling `visit_fn` for each one.
-    pub fn visit_readdir_entries<'a, I, F>(entries: I, mut visit_fn: F) -> Result<()>
+    pub(in procfs) fn visit_readdir_entries<'a, I, F>(entries: I, mut visit_fn: F) -> Result<()>
     where
         I: IntoIterator<Item = ReaddirEntry<'a>>,
         F: FnMut(ReaddirEntry<'a>) -> Result<()>,
@@ -475,7 +495,11 @@ mod readdir {
     }
 
     /// Visits listed entries using sequential continuation offsets.
-    pub fn visit_listed_entries<'a, I, F>(offset: usize, listed: I, visit_fn: F) -> Result<()>
+    pub(in procfs) fn visit_listed_entries<'a, I, F>(
+        offset: usize,
+        listed: I,
+        visit_fn: F,
+    ) -> Result<()>
     where
         I: IntoIterator<Item = ListedEntry<'a>>,
         F: FnMut(ReaddirEntry<'a>) -> Result<()>,
@@ -484,7 +508,7 @@ mod readdir {
     }
 }
 
-pub use readdir::{
+pub(in procfs) use readdir::{
     ListedEntry, ReaddirEntry, keyed_readdir_entries, sequential_readdir_entries,
     visit_listed_entries, visit_readdir_entries,
 };

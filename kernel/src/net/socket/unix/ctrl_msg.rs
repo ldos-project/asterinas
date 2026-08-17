@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::fmt;
+use core::{fmt, mem};
 
+use aster_bigtcp::socket::ReceiveBehavior;
 use aster_rights::ReadOp;
 use ostd::task::Task;
 
@@ -11,9 +12,10 @@ use crate::{
         FileLike,
         file_table::{FdFlags, get_file_fast},
     },
-    net::socket::util::{CControlHeader, ControlMessage},
+    net::socket::util::{CControlHeader, ControlMessage, RecvFlags},
     prelude::*,
-    process::{credentials::capabilities::CapSet, posix_thread::AsPosixThread},
+    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
+    security::lsm::hooks as lsm_hooks,
     util::net::CSocketOptionLevel,
 };
 
@@ -53,7 +55,7 @@ impl UnixControlMessage {
         }
     }
 
-    pub fn write_to(&self, writer: &mut VmWriter) -> Result<CControlHeader> {
+    pub fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
         match &self.0 {
             Message::Files(msg) => msg.write_to(writer),
             Message::Cred(msg) => msg.write_to(writer),
@@ -65,7 +67,7 @@ struct FileMessage {
     files: Vec<Arc<dyn FileLike>>,
 }
 
-impl fmt::Debug for FileMessage {
+impl Debug for FileMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FileMessage")
             .field("len", &self.files.len())
@@ -108,7 +110,7 @@ impl FileMessage {
         Ok(FileMessage { files })
     }
 
-    fn write_to(&self, writer: &mut VmWriter) -> Result<CControlHeader> {
+    fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
         let nfiles = self
             .files
             .len()
@@ -116,9 +118,11 @@ impl FileMessage {
         if nfiles == 0 {
             return_errno_with_message!(Errno::EINVAL, "the control message buffer is too small");
         }
-        if nfiles < self.files.len() {
-            warn!("setting MSG_CTRUNC is not supported");
-        }
+        let output_flags = if nfiles < self.files.len() {
+            RecvFlags::MSG_CTRUNC
+        } else {
+            RecvFlags::empty()
+        };
 
         let header = CControlHeader::new(
             CSocketOptionLevel::SOL_SOCKET,
@@ -141,7 +145,7 @@ impl FileMessage {
             writer.write_val::<i32>(&(fd.into()))?;
         }
 
-        Ok(header)
+        Ok((header, output_flags))
     }
 }
 
@@ -161,12 +165,14 @@ impl CredMessage {
         Ok(Self { cred })
     }
 
-    fn write_to(&self, writer: &mut VmWriter) -> Result<CControlHeader> {
+    fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
         let payload_len =
             size_of::<CUserCred>().min(CControlHeader::payload_len_from_total(writer.avail())?);
-        if payload_len != size_of::<CUserCred>() {
-            warn!("setting MSG_CTRUNC is not supported");
-        }
+        let output_flags = if payload_len != size_of::<CUserCred>() {
+            RecvFlags::MSG_CTRUNC
+        } else {
+            RecvFlags::empty()
+        };
 
         let header = CControlHeader::new(
             CSocketOptionLevel::SOL_SOCKET,
@@ -176,7 +182,7 @@ impl CredMessage {
         writer.write_val(&header)?;
         writer.write_fallible(&mut VmReader::from(self.cred.as_bytes()))?;
 
-        Ok(header)
+        Ok((header, output_flags))
     }
 }
 
@@ -253,13 +259,13 @@ impl AuxiliaryData {
         {
             warn!("UNIX sockets in SCM_RIGHTS messages can leak kernel resource");
 
-            let credentials = current_thread!().as_posix_thread().unwrap().credentials();
-            if !credentials.effective_capset().contains(CapSet::SYS_ADMIN) {
-                return_errno_with_message!(
-                    Errno::EPERM,
-                    "UNIX sockets in SCM_RIGHTS messages can leak kernel resource"
-                )
-            }
+            let current = current_thread!();
+            let posix_thread = current.as_posix_thread().unwrap();
+            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                UserNamespace::get_init_singleton().as_ref(),
+                posix_thread,
+                CapSet::SYS_ADMIN,
+            ))?;
         }
 
         Ok(Self { files, cred })
@@ -273,7 +279,11 @@ impl AuxiliaryData {
     }
 
     /// Generates the control messages from the auxiliary data.
-    pub(super) fn generate_control(&mut self, is_pass_cred: bool) -> Vec<ControlMessage> {
+    pub(super) fn generate_control(
+        &mut self,
+        behavior: ReceiveBehavior,
+        is_pass_cred: bool,
+    ) -> Vec<ControlMessage> {
         let mut ctrl_msgs = Vec::new();
 
         let Self { files, cred } = self;
@@ -289,9 +299,11 @@ impl AuxiliaryData {
         }
 
         if !files.is_empty() {
-            let unix_ctrl_msg = UnixControlMessage(Message::Files(FileMessage {
-                files: core::mem::take(files),
-            }));
+            let files = match behavior {
+                ReceiveBehavior::Recv => mem::take(files),
+                ReceiveBehavior::Peek => files.clone(),
+            };
+            let unix_ctrl_msg = UnixControlMessage(Message::Files(FileMessage { files }));
             ctrl_msgs.push(ControlMessage::Unix(unix_ctrl_msg));
         }
 

@@ -32,6 +32,14 @@ bitflags! {
         const MQ            = 1 << 12;
         const DISCARD       = 1 << 13;
         const WRITE_ZEROES  = 1 << 14;
+
+        const ALL_SUPPORTED = Self::BLK_SIZE.bits() | Self::FLUSH.bits();
+    }
+}
+
+impl BlockFeatures {
+    pub(super) fn negotiated_with_device(device_features: u64) -> Self {
+        BlockFeatures::from_bits_truncate(device_features) & Self::ALL_SUPPORTED
     }
 }
 
@@ -118,12 +126,6 @@ struct VirtioBlockTopology {
     opt_io_size: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct VirtioBlockFeature {
-    support_flush: bool,
-}
-
 impl VirtioBlockConfig {
     pub(self) fn new_manager(transport: &dyn VirtioTransport) -> ConfigManager<Self> {
         let safe_ptr = transport
@@ -197,12 +199,5 @@ impl ConfigManager<VirtioBlockConfig> {
             .unwrap() as usize;
 
         (cap_high << 32) | cap_low
-    }
-}
-
-impl VirtioBlockFeature {
-    pub(self) fn new(transport: &dyn VirtioTransport) -> Self {
-        let support_flush = transport.read_device_features() & BlockFeatures::FLUSH.bits() == 1;
-        VirtioBlockFeature { support_flush }
     }
 }

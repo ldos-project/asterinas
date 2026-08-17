@@ -38,7 +38,7 @@ mod stop;
 
 use self::policy::{SchedPolicyKind, SchedPolicyState};
 pub use self::{
-    policy::SchedPolicy,
+    policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
 };
 
@@ -163,7 +163,7 @@ impl SchedAttr {
             real_time: {
                 let (prio, policy) = match policy {
                     SchedPolicy::RealTime { rt_prio, rt_policy } => (rt_prio.get(), rt_policy),
-                    _ => (real_time::RealTimePriority::MAX.get(), Default::default()),
+                    _ => (RealTimePriority::MAX.get(), Default::default()),
                 };
                 real_time::RealTimeAttr::new(prio, policy)
             },
@@ -212,7 +212,7 @@ impl SchedAttr {
     }
 
     /// The CPU that the thread is running on or was most recently scheduled on.
-    fn last_cpu(&self) -> Option<CpuId> {
+    pub fn last_cpu(&self) -> Option<CpuId> {
         self.last_cpu.get()
     }
 

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![short_vis_path::add(vsock)]
+
+use aster_bigtcp::socket::ReceiveBehavior;
 use aster_virtio::device::socket::{header::VirtioVsockOp, packet::RxPacket};
 
 use crate::{
     net::socket::{
-        util::SendRecvFlags,
+        util::RecvFlags,
         vsock::transport::{
             CREDIT_UPDATE_THRESHOLD, Connection,
             connection::{ConnectionInner, ConnectionState},
@@ -16,10 +19,10 @@ use crate::{
 
 impl Connection {
     /// Copies queued payload bytes into `writer` and updates receive credit accounting.
-    pub(in crate::net::socket::vsock) fn try_recv(
+    pub(in vsock) fn try_recv(
         &mut self,
         writer: &mut dyn MultiWrite,
-        _flags: SendRecvFlags,
+        flags: RecvFlags,
     ) -> Result<usize> {
         // We use a packet-pool approach here so a receive attempt either completes for the chosen
         // packets or leaves the receive queue unchanged.
@@ -50,15 +53,19 @@ impl Connection {
         // Packets can only be received from a `&mut connection`. Therefore, releasing the state
         // lock does not cause race conditions. We need to release the lock in order to copy to
         // userspace.
-        let result = packets.copy_to_userspace(writer);
+        let behavior = flags.receive_behavior();
+        let result = packets.copy_to_userspace(writer, behavior);
         let recv_len = *result.as_ref().unwrap_or(&0);
 
-        self.inner
-            .state
-            .lock()
-            .ungrab_packets_and_finish_recv(&self.inner, packets, recv_len);
-
-        self.inner.pollee.invalidate();
+        if behavior.will_consume_data() {
+            self.inner
+                .state
+                .lock()
+                .ungrab_packets_and_finish_recv(&self.inner, packets, recv_len);
+            self.inner.pollee.invalidate();
+        } else {
+            self.inner.state.lock().undo_pop_rx_packets(packets);
+        }
 
         result
     }
@@ -70,7 +77,11 @@ struct PoppedRxPackets<'a> {
 }
 
 impl PoppedRxPackets<'_> {
-    fn copy_to_userspace(&mut self, writer: &mut dyn MultiWrite) -> Result<usize> {
+    fn copy_to_userspace(
+        &mut self,
+        writer: &mut dyn MultiWrite,
+        behavior: ReceiveBehavior,
+    ) -> Result<usize> {
         let mut read_offset = self.read_offset;
         let mut total_write_len = 0;
 
@@ -84,18 +95,22 @@ impl PoppedRxPackets<'_> {
             total_write_len += write_len;
 
             if payload.has_remain() {
-                read_offset += write_len;
-
-                self.skip_packets(i);
-                self.read_offset = read_offset;
+                if behavior.will_consume_data() {
+                    read_offset += write_len;
+                    self.skip_packets(i);
+                    self.read_offset = read_offset;
+                }
                 return Ok(total_write_len);
             }
 
             read_offset = 0;
         }
 
-        self.packets = &mut [];
-        self.read_offset = 0;
+        if behavior.will_consume_data() {
+            self.packets = &mut [];
+            self.read_offset = 0;
+        }
+
         Ok(total_write_len)
     }
 
@@ -145,12 +160,14 @@ impl ConnectionState {
 
             num_packets += 1;
 
+            let mut payload_len = packet_ref.payload_len();
+
             if read_offset.is_none() {
+                payload_len -= self.rx_queue.read_offset;
                 read_offset = Some(self.rx_queue.read_offset);
                 self.rx_queue.read_offset = 0;
             }
 
-            let payload_len = packet_ref.payload_len();
             if payload_len >= max_bytes {
                 break;
             } else {

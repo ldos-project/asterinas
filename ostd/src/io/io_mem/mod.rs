@@ -24,8 +24,7 @@ use crate::{
     cpu::{AtomicCpuSet, CpuSet},
     error::{AccessDeniedSnafu, InvalidArgsSnafu, PageFaultSnafu},
     mm::{
-        Fallible, HasPaddr, HasSize, Infallible, PAGE_SIZE, Paddr, PodOnce, VmIo, VmIoFill,
-        VmIoOnce, VmReader, VmWriter,
+        Fallible, Infallible, PAGE_SIZE, PodOnce, VmIo, VmIoFill, VmIoOnce, VmReader, VmWriter,
         io::{
             Io,
             copy::{memcpy, memset},
@@ -241,7 +240,7 @@ impl IoMem<Insensitive> {
         &self,
         offset: usize,
         writer: &mut VmWriter,
-    ) -> core::result::Result<usize, (Error, usize)> {
+    ) -> Result<usize, (Error, usize)> {
         let len = writer.avail();
         self.check_range(offset, len).map_err(|err| (err, 0))?;
 
@@ -266,7 +265,7 @@ impl IoMem<Insensitive> {
         &self,
         offset: usize,
         reader: &mut VmReader,
-    ) -> core::result::Result<usize, (Error, usize)> {
+    ) -> Result<usize, (Error, usize)> {
         let len = reader.remain();
         self.check_range(offset, len).map_err(|err| (err, 0))?;
 
@@ -367,7 +366,7 @@ impl VmIo for IoMem<Insensitive> {
 }
 
 impl VmIoFill for IoMem<Insensitive> {
-    fn fill_zeros(&self, offset: usize, len: usize) -> core::result::Result<(), (Error, usize)> {
+    fn fill_zeros(&self, offset: usize, len: usize) -> Result<(), (Error, usize)> {
         if len == 0 {
             return Ok(());
         }
@@ -410,11 +409,7 @@ macro_rules! impl_vm_io_pointer {
 
         #[inherit_methods(from = $from)]
         impl VmIoFill for $ty {
-            fn fill_zeros(
-                &self,
-                offset: usize,
-                len: usize,
-            ) -> core::result::Result<(), (Error, usize)>;
+            fn fill_zeros(&self, offset: usize, len: usize) -> Result<(), (Error, usize)>;
         }
     };
 }
@@ -444,8 +439,6 @@ impl<SecuritySensitivity> Drop for IoMem<SecuritySensitivity> {
 
 #[cfg(ktest)]
 mod test {
-    use core::mem::size_of;
-
     use crate::{
         arch::io::io_mem::{copy_from_mmio, copy_to_mmio, read_once, write_once},
         prelude::ktest,

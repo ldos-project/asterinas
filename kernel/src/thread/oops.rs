@@ -25,7 +25,7 @@ use ostd::{
 };
 
 use super::Thread;
-use crate::kcmdline::get_kernel_cmd_line;
+use crate::{kcmdline::get_kernel_cmd_line, prelude::*};
 
 // TODO: Control the kernel commandline parsing from the kernel crate. In Linux it can be
 // dynamically changed by writing to `/proc/sys/kernel/panic`.

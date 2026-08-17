@@ -68,6 +68,7 @@ capset04
 # cachestat04
 
 # chdir01
+chdir02
 chdir04
 
 chmod01
@@ -123,10 +124,13 @@ clone06
 clone07
 # clone08
 # clone09
+clone10
+# clone11
 
 # clone301
 # clone302
 # clone303
+clone304
 
 close01
 close02
@@ -250,6 +254,7 @@ fallocate03
 # file_attr02
 # file_attr03
 # file_attr04
+# file_attr05
 
 #posix_fadvise test cases
 # posix_fadvise01
@@ -414,15 +419,15 @@ fpathconf01
 # fremovexattr01
 # fremovexattr02
 
-# fsconfig01
-# fsconfig02
+fsconfig01
+fsconfig02
 # fsconfig03
 
-# fsmount01
-# fsmount02
+fsmount01
+fsmount02
 
-# fsopen01
-# fsopen02
+fsopen01
+fsopen02
 
 # fspick01
 # fspick02
@@ -618,6 +623,7 @@ getxattr01
 # ioctl_ficlonerange01
 # ioctl_ficlonerange02
 # ioctl_fiemap01
+# ioctl_getlbmd01
 
 # ioctl_pidfd01
 # ioctl_pidfd02
@@ -666,6 +672,7 @@ getxattr01
 # fanotify22
 # fanotify23
 # fanotify24
+# fanotify25
 
 # ioperm01
 # ioperm02
@@ -693,6 +700,7 @@ ioprio_set02
 # io_submit01
 # io_submit02
 # io_submit03
+# io_submit04
 
 # keyctl01
 # keyctl02
@@ -738,9 +746,9 @@ lchown01
 # lgetxattr02
 
 link02
-# link04
+link04
 link05
-# link08
+link08
 
 #linkat test cases
 linkat01
@@ -827,7 +835,7 @@ mknod02
 # mknod05
 mknod06
 # mknod07
-# mknod08
+mknod08
 mknod09
 
 #mknodat test cases
@@ -920,6 +928,7 @@ mremap03
 # mremap04
 mremap05
 # mremap06
+mremap07
 
 # mseal01
 # mseal02
@@ -973,6 +982,7 @@ nanosleep02
 
 # name_to_handle_at01
 # name_to_handle_at02
+# name_to_handle_at03
 
 # nftw01
 # nftw6401
@@ -1087,15 +1097,17 @@ pipeio_8
 
 poll01
 # poll02
+poll03
+poll04
 
 ppoll01
 
 prctl01
-# prctl02
+prctl02
 # prctl03 # FIXME: `SIGCHLD` must arrive by the time `wait()` returns. Otherwise, it is flaky.
 # prctl05
 # prctl06
-# prctl07
+prctl07
 # prctl08
 # prctl09
 # prctl10
@@ -1145,7 +1157,7 @@ pselect03_64
 # ptrace02
 # ptrace03
 # ptrace04
-# ptrace05
+ptrace05
 # ptrace06
 # ptrace07
 # ptrace08
@@ -1227,26 +1239,26 @@ readv01
 removexattr01
 # removexattr02
 
-# rename01
-# rename03
-# rename04
-# rename05
-# rename06
-# rename07
-# rename08
-# rename09
-# rename10
+rename01
+rename03
+rename04
+rename05
+rename06
+rename07
+rename08
+rename09
+rename10
 # rename11
-# rename12
-# rename13
+rename12
+rename13
 rename14
-# rename15
+rename15
 
 #renameat test cases
 # renameat01
 
-# renameat201
-# renameat202
+renameat201
+renameat202
 
 # request_key01
 # request_key02
@@ -1342,20 +1354,20 @@ semop03
 
 sendfile02
 sendfile02_64
-# sendfile03
-# sendfile03_64
-# sendfile04
-# sendfile04_64
+sendfile03
+sendfile03_64
+sendfile04
+sendfile04_64
 sendfile05
 sendfile05_64
 sendfile06
 sendfile06_64
-# sendfile07
-# sendfile07_64
+sendfile07
+sendfile07_64
 sendfile08
 sendfile08_64
-# sendfile09
-# sendfile09_64
+sendfile09
+sendfile09_64
 
 # sendmsg01
 # sendmsg02
@@ -1736,13 +1748,13 @@ umask01
 
 uname01
 uname02
-# uname04
+uname04
 
 unlink05
 unlink07
-# unlink08
+unlink08
 # unlink09
-# unlink10
+unlink10
 
 #unlinkat test cases
 unlinkat01
@@ -1766,6 +1778,11 @@ unshare04
 # umount2_02
 
 # userfaultfd01
+# userfaultfd02
+# userfaultfd03
+# userfaultfd04
+# userfaultfd05
+# userfaultfd06
 
 # ustat01
 # ustat02
@@ -1885,6 +1902,7 @@ statx03
 
 # io_uring01
 # io_uring02
+# io_uring03
 
 # Tests below may cause kernel memory leak
 # perf_event_open03

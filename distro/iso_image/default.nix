@@ -1,9 +1,10 @@
 { pkgs ? import <nixpkgs> { }, autoInstall ? false, extra-substituters ? ""
 , config-file-name ? "configuration.nix", extra-trusted-public-keys ? ""
-, version ? "", ... }:
+, target_platform ? "x86_64-linux", version ? "", ... }:
 let
   installer = pkgs.callPackage ../aster_nixos_installer {
-    inherit extra-substituters extra-trusted-public-keys config-file-name;
+    inherit extra-substituters extra-trusted-public-keys config-file-name
+      target_platform;
   };
   configuration = {
     imports = [
@@ -26,7 +27,7 @@ let
       ${pkgs.lib.optionalString autoInstall ''
         if [ "$(tty)" == "/dev/hvc0" ]; then
           echo "The installer automatically runs on /dev/hvc0!"
-          install_aster_nixos.sh --config $HOME/configuration.nix --disk /dev/vda --force-format-disk || true
+          aster-nixos-install --config $HOME/configuration.nix --disk /dev/vda --force-format-disk || true
           poweroff
         fi
       ''}

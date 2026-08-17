@@ -14,14 +14,14 @@ kernel image.
 
 ## Options
 
-`[LOGFILE]`: 
+`[LOGFILE]`:
 The name of the log file to process. Within Asterinas, `qemu.log` is an appropriate file generated
 on every kernel run. Default: stdin
 
-`-b <BINFILE>`, `--bin-file <BINFILE>`: 
+`-b <BINFILE>`, `--bin-file <BINFILE>`:
 The kernel binary to use for symbol resolution.
 
-`-o <FILE>`, `--output <FILE>`: 
+`-o <FILE>`, `--output <FILE>`:
 The file to output the enhanced log to. Default: stdout
 
 ## Examples
@@ -45,7 +45,7 @@ The command `cargo osdk enhance-log -b target/osdk/aster-nix/aster-nix-osdk-bin 
    7: core::result::Result<T,E>::unwrap::h0e8670b4a9bd9163 (/root/.rustup/toolchains/nightly-2025-02-01-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:1107)
 ```
 
-This provides resolves symbols and line information. 
+This provides resolves symbols and line information.
 
 `cargo osdk enhance-log` will also enhance the `pc` lines from the default `ostd` panic traces:
 

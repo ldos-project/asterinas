@@ -5,10 +5,10 @@ execute kernel mode unit test by starting QEMU.
 The usage is as follows:
 
 ```bash
-cargo osdk test [TESTNAME] [OPTIONS] 
+cargo osdk test [TESTNAME] [OPTIONS]
 ```
 
-## Arguments 
+## Arguments
 
 `TESTNAME`:
 Only run tests containing this string in their names
@@ -24,7 +24,7 @@ directly. The command should be:
 ```
 gdb <KERNEL IMAGE> -ex "target remote <DEBUG ADDR>"
 ```
-The kernel image path is printed during `cargo osdk test` in a line like: `Kernel image: <KERNEL IMAGE>`. 
+The kernel image path is printed during `cargo osdk test` in a line like: `Kernel image: <KERNEL IMAGE>`.
 The debug address is whatever you passed to `--gdb-server`'s `addr=`.
 
 For example,
@@ -40,7 +40,7 @@ $  gdb /root/asterinas/target/x86_64-unknown-none/debug/ostd-osdk-bin -ex "targe
 ```
 
 ## Examples
-- Execute tests that include *foo* in their names 
+- Execute tests that include *foo* in their names
 using QEMU with 3GB of memory
 
 ```bash

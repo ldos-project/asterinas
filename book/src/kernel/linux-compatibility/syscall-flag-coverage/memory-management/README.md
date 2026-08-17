@@ -1,8 +1,8 @@
 # Memory Management
 
 <!--
-Put system calls such as 
-brk, mmap, munmap, mprotect, mremap, msync, mincore, madvise, 
+Put system calls such as
+brk, mmap, munmap, mprotect, mremap, msync, mincore, madvise,
 shmget, shmat, shmctl, mlock, munlock, mbind, and set_mempolicy
 under this part.
 -->
@@ -29,7 +29,6 @@ Partially supported flags:
 * `MAP_FIXED_NOREPLACE` is treated as `MAP_FIXED`
 
 Unsupported flags:
-* `MAP_32BIT`
 * `MAP_HUGE_1GB`
 * `MAP_HUGE_2MB`
 * `MAP_UNINITIALIZED`

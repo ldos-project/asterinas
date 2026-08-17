@@ -17,6 +17,11 @@ use crate::{
     prelude::*,
 };
 
+pub(super) fn init() {
+    // Touch the mount node to trigger the initialization of all singletons.
+    let _ = PipeFs::mount_node();
+}
+
 pub(in crate::fs) struct PipeFs {
     _private: (),
 }
@@ -40,13 +45,15 @@ impl PipeFs {
     fn mount_node() -> &'static Arc<Mount> {
         static PIPEFS_MOUNT: Once<Arc<Mount>> = Once::new();
 
-        PIPEFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()))
+        PIPEFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()).unwrap())
     }
 }
 
 pub(super) struct PipeFsType;
 
 impl FsType for PipeFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "pipefs"
     }
@@ -55,7 +62,7 @@ impl FsType for PipeFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         return_errno_with_message!(Errno::EINVAL, "pipefs cannot be mounted");
     }
 

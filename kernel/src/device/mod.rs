@@ -18,11 +18,12 @@ pub use registry::lookup;
 
 use crate::{
     fs::{
-        file::{FileIo, InodeMode, InodeType, mkmod},
+        file::{InodeMode, InodeType, PerOpenFileOps, mkmod},
         ramfs::RamFs,
         vfs::{
             inode::MknodType,
             path::{FsPath, Path, PathResolver, PerMountFlags},
+            registry::FsAndRoot,
         },
     },
     prelude::*,
@@ -41,7 +42,7 @@ pub trait Device: Send + Sync + 'static {
 
     /// Opens the device, returning a file-like object that the userspace can interact with by
     /// doing I/O.
-    fn open(&self) -> Result<Box<dyn FileIo>>;
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>>;
 }
 
 impl Debug for dyn Device {
@@ -177,7 +178,7 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     // Mount devtmpfs.
     let dev_path = path_resolver.lookup(&FsPath::try_from("/dev")?)?;
     dev_path.mount(
-        RamFs::new(),
+        FsAndRoot::new(RamFs::new()),
         PerMountFlags::default(),
         Some("ramfs".to_string()),
         ctx,

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![short_vis_path::add(procfs)]
+
 use super::PidDirOps;
 use crate::{
     fs::{
         file::{InodeType, mkmod},
         procfs::{
+            StaticEntryWithOps,
             pid::task::{
                 auxv::AuxvFileOps, cgroup::CgroupFileOps, cmdline::CmdlineFileOps,
                 comm::CommFileOps, environ::EnvironFileOps, exe::ExeSymOps, fd::FdDirOps,
@@ -14,7 +17,7 @@ use crate::{
                 status::StatusFileOps, uid_map::UidMapFileOps,
             },
             template::{
-                DirOps, ListedEntry, ProcDir, ReaddirEntry, StaticDirEntry, keyed_readdir_entries,
+                ListedEntry, ProcDir, ProcDirOps, ReaddirEntry, keyed_readdir_entries,
                 listed_entries_from_table, lookup_child_from_table, visit_listed_entries,
                 visit_readdir_entries,
             },
@@ -46,10 +49,10 @@ mod status;
 mod uid_map;
 
 /// Represents the inode at `/proc/[pid]/task`.
-pub struct TaskDirOps(Arc<PidEntry>);
+pub(super) struct TaskDirOps(Arc<PidEntry>);
 
 impl TaskDirOps {
-    pub fn new_inode(dir: &PidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &PidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3316>
         ProcDir::new(Self(dir.pid_entry().clone()), parent, mkmod!(a+rx))
     }
@@ -61,16 +64,19 @@ impl TaskDirOps {
 
 /// Represents the inode at `/proc/[pid]/task/[tid]`.
 #[derive(Clone)]
-pub struct TidDirOps {
+pub(in procfs) struct TidDirOps {
     pid_entry: Arc<PidEntry>,
 }
 
 impl TidDirOps {
-    pub fn new(pid_entry: Arc<PidEntry>) -> Self {
+    pub(super) fn new(pid_entry: Arc<PidEntry>) -> Self {
         Self { pid_entry }
     }
 
-    pub fn new_inode(pid_entry: Arc<PidEntry>, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(in procfs) fn new_inode(
+        pid_entry: Arc<PidEntry>,
+        parent: Weak<dyn Inode>,
+    ) -> Arc<dyn Inode> {
         ProcDir::new(
             Self { pid_entry },
             parent,
@@ -79,7 +85,7 @@ impl TidDirOps {
         )
     }
 
-    pub fn pid_entry(&self) -> &Arc<PidEntry> {
+    pub(in procfs) fn pid_entry(&self) -> &Arc<PidEntry> {
         &self.pid_entry
     }
 
@@ -98,10 +104,7 @@ impl TidDirOps {
         Some((thread, process))
     }
 
-    #[expect(clippy::type_complexity)]
-    const STATIC_ENTRIES: &'static [StaticDirEntry<
-        fn(&TidDirOps, Weak<dyn Inode>) -> Arc<dyn Inode>,
-    >] = &[
+    const STATIC_ENTRIES: &'static [StaticEntryWithOps<TidDirOps>] = &[
         ("auxv", InodeType::File, AuxvFileOps::new_inode),
         ("cgroup", InodeType::File, CgroupFileOps::new_inode),
         ("cmdline", InodeType::File, CmdlineFileOps::new_inode),
@@ -132,7 +135,11 @@ impl TidDirOps {
     ];
 }
 
-impl DirOps for TidDirOps {
+impl ProcDirOps for TidDirOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.thread()
+    }
+
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         if self.pid_entry().type_().is_none() {
             return_errno_with_message!(Errno::ENOENT, "the thread or the process does not exist");
@@ -181,7 +188,11 @@ impl TidDirOps {
     }
 }
 
-impl DirOps for TaskDirOps {
+impl ProcDirOps for TaskDirOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         let Ok(tid) = name.parse::<Tid>() else {
             return_errno_with_message!(Errno::ENOENT, "the name is not a valid TID");

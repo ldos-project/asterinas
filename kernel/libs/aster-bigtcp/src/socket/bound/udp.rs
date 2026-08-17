@@ -11,11 +11,14 @@ use smoltcp::{
     wire::{IpRepr, UdpRepr},
 };
 
-use super::common::{Inner, Socket, SocketBg};
+use super::{
+    ReceiveBehavior,
+    common::{Inner, Socket, SocketBg},
+};
 use crate::{
     errors::udp::SendError,
     ext::Ext,
-    iface::BoundPort,
+    iface::BoundUdpPort,
     socket::{RawUdpSocket, event::SocketEvents, unbound::new_udp_socket},
 };
 
@@ -28,6 +31,7 @@ pub struct UdpSocketInner {
 }
 
 impl<E: Ext> Inner<E> for UdpSocketInner {
+    type BoundPort = BoundUdpPort<E>;
     type Observer = E::UdpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
@@ -103,12 +107,10 @@ impl<E: Ext> UdpSocket<E> {
     ///
     /// Polling the iface is _not_ required after this method succeeds.
     pub fn new_bind(
-        bound: BoundPort<E>,
+        bound: BoundUdpPort<E>,
         observer: E::UdpEventObserver,
-    ) -> Result<Self, (BoundPort<E>, smoltcp::socket::udp::BindError)> {
-        let Some(local_endpoint) = bound.endpoint() else {
-            return Err((bound, smoltcp::socket::udp::BindError::Unaddressable));
-        };
+    ) -> Result<Self, (BoundUdpPort<E>, smoltcp::socket::udp::BindError)> {
+        let local_endpoint = bound.endpoint();
 
         let socket = {
             let mut socket = new_udp_socket();
@@ -149,7 +151,7 @@ impl<E: Ext> UdpSocket<E> {
     {
         let mut socket = self.0.inner.socket.lock();
 
-        if size > socket.packet_send_capacity() {
+        if size > socket.payload_send_capacity() {
             return Err(SendError::TooLarge);
         }
 
@@ -167,14 +169,24 @@ impl<E: Ext> UdpSocket<E> {
     /// Receives some data.
     ///
     /// Polling the iface is _not_ required after this method succeeds.
-    pub fn recv<F, R>(&self, f: F) -> Result<R, smoltcp::socket::udp::RecvError>
+    pub fn recv<CopyFn, R>(
+        &self,
+        behavior: ReceiveBehavior,
+        copy_fn: CopyFn,
+    ) -> Result<R, smoltcp::socket::udp::RecvError>
     where
-        F: FnOnce(&[u8], UdpMetadata) -> R,
+        CopyFn: FnOnce(&[u8], UdpMetadata) -> R,
     {
         let mut socket = self.0.inner.socket.lock();
 
-        let (data, meta) = socket.recv()?;
-        let result = f(data, meta);
+        let (data, meta) = match behavior {
+            ReceiveBehavior::Recv => socket.recv()?,
+            ReceiveBehavior::Peek => {
+                let (data, meta) = socket.peek()?;
+                (data, *meta)
+            }
+        };
+        let result = copy_fn(data, meta);
 
         Ok(result)
     }

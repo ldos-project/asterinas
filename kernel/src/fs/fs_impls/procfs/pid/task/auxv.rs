@@ -4,23 +4,28 @@ use super::TidDirOps;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
+    thread::Thread,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/auxv` (and also `/proc/[pid]/auxv`).
-pub struct AuxvFileOps(TidDirOps);
+pub(super) struct AuxvFileOps(TidDirOps);
 
 impl AuxvFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3325>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(u+r))
     }
 }
 
-impl FileOps for AuxvFileOps {
+impl ProcFileOps for AuxvFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let Some(process) = self.0.process() else {
             return_errno_with_message!(Errno::ESRCH, "the process does not exist");

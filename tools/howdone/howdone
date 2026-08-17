@@ -24,8 +24,8 @@ except ImportError:
     print(
         f"""\
 ERROR: PyYAML is not installed.
-You can either install it (e.g. apt install python3-yaml), or launch this script with uv: 
-          
+You can either install it (e.g. apt install python3-yaml), or launch this script with uv:
+
 uv run {sys.argv[0]}
 """,
         file=sys.stderr,

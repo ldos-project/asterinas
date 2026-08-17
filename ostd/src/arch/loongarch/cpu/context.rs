@@ -14,10 +14,10 @@ use crate::{
     },
     cpu::PrivilegeLevel,
     irq::call_irq_callback_functions,
-    user::{ReturnReason, UserContextApi, UserContextApiInternal},
+    user::{ReturnReason, UserContextApi, UserContextApiInternal, UserModeHooks},
 };
 
-/// General registers
+/// General registers.
 #[expect(missing_docs)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -132,12 +132,6 @@ impl UserContext {
         self.tp()
     }
 
-    /// Activates the thread-local storage pointer for the current task.
-    pub fn activate_tls_pointer(&self) {
-        // In LoongArch, `tp` will be loaded at `UserContext::execute`, so it does not need to be
-        // activated in advance.
-    }
-
     /// Enables floating-point unit.
     pub fn enable_fpu(&mut self) {
         self.user_context.euen = 0x1;
@@ -145,13 +139,13 @@ impl UserContext {
 }
 
 impl UserContextApiInternal for UserContext {
-    fn execute<F>(&mut self, mut has_kernel_event: F) -> ReturnReason
-    where
-        F: FnMut() -> bool,
-    {
+    fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
         let ret = loop {
             crate::task::scheduler::might_preempt();
-            self.user_context.run();
+
+            let guard = crate::irq::disable_local();
+            hooks.pre_user_run(&guard);
+            self.user_context.run(guard);
 
             let cause = loongArch64::register::estat::read().cause();
             let badv = loongArch64::register::badv::read().raw();
@@ -172,7 +166,6 @@ impl UserContextApiInternal for UserContext {
                     | Exception::PageNonExecutableFault
                     | Exception::PagePrivilegeIllegal => {
                         // Handle page fault
-                        // Disable the badv in TLB.
                         tlb_flush_addr(badv);
                         self.cpu_exception_info = Some(CpuExceptionInfo {
                             code: exception,
@@ -203,7 +196,7 @@ impl UserContextApiInternal for UserContext {
                         crate::debug!(
                             "Floating point unit is not available, badv: {badv:#x?}, badi: {badi:#x?}, era: {era:#x?}"
                         );
-                        // TODO: Add FPU support and enable it when this exception occurs.
+                        // TODO: Add FPU support and enable it at proper time
                         break ReturnReason::UserException;
                     }
                     Exception::TLBRFill => unreachable!(),
@@ -241,7 +234,7 @@ impl UserContextApiInternal for UserContext {
                 }
             }
 
-            if has_kernel_event() {
+            if hooks.has_kernel_event() {
                 break ReturnReason::KernelEvent;
             }
         };
@@ -261,14 +254,6 @@ impl UserContextApiInternal for UserContext {
 }
 
 impl UserContextApi for UserContext {
-    fn trap_number(&self) -> usize {
-        todo!()
-    }
-
-    fn trap_error_code(&self) -> usize {
-        todo!()
-    }
-
     fn instruction_pointer(&self) -> usize {
         self.user_context.era
     }
@@ -359,7 +344,7 @@ impl FpuContext {
     pub fn save(&mut self) {}
 
     /// Loads CPU's FPU context from this instance, if needed.
-    pub fn load(&mut self) {}
+    pub fn load(&self) {}
 
     /// Returns the FPU context as a byte slice.
     pub fn as_bytes(&self) -> &[u8] {

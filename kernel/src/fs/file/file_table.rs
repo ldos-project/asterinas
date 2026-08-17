@@ -6,17 +6,12 @@ use core::{
 };
 
 use aster_util::{ranged_integer::RangedU32, slot_vec::SlotVec};
+use ostd::sync::RwArc;
 use serde::Serialize;
 
-use super::{StatusFlags, file_handle::FileLike};
+use super::file_handle::FileLike;
 use crate::{
-    events::{IoEvents, Observer},
-    prelude::*,
-    process::{
-        Pid, Process,
-        posix_thread::FileTableRefMut,
-        signal::{PollAdaptor, constants::SIGIO},
-    },
+    fs::vfs::range_lock::RangeLockOwner, prelude::*, process::posix_thread::FileTableRefMut,
 };
 
 /// Represents a validated, non-negative file descriptor.
@@ -103,16 +98,37 @@ impl TryFrom<RawFileDesc> for FileDesc {
     }
 }
 
-#[derive(Clone)]
+/// A file table.
+///
+/// A file table is created within an [`RwArc`] and remains within it (see [`Self::new`] and
+/// [`Self::fork_from`]). The file table's address is used as a [`RangeLockOwner`], so users should
+/// not try to move the file table to a different address.
 pub struct FileTable {
     table: SlotVec<FileTableEntry>,
 }
 
 impl FileTable {
-    pub const fn new() -> Self {
-        Self {
+    /// Creates a new file table.
+    pub fn new() -> RwArc<Self> {
+        RwArc::new(Self {
             table: SlotVec::new(),
-        }
+        })
+    }
+
+    /// Creates a new file table containing clones of all entries in `parent`.
+    pub fn fork_from(parent: &Self) -> RwArc<Self> {
+        RwArc::new(Self {
+            table: parent.table.clone(),
+        })
+    }
+
+    /// Returns the range-lock owner of `file_table`.
+    pub fn range_lock_owner(file_table: &RwArc<Self>) -> RangeLockOwner {
+        RangeLockOwner::from_address(file_table.as_ptr().addr())
+    }
+
+    fn as_range_lock_owner(&self) -> RangeLockOwner {
+        RangeLockOwner::from_address(self as *const Self as usize)
     }
 
     pub fn len(&self) -> usize {
@@ -156,7 +172,7 @@ impl FileTable {
         fd: FileDesc,
         new_fd: FileDesc,
         flags: FdFlags,
-    ) -> Result<Option<Arc<dyn FileLike>>> {
+    ) -> Result<Option<ClosedFile>> {
         let entry = self.duplicate_entry(fd, flags)?;
         let closed_file = self.close_file(new_fd);
         self.table.put_at(new_fd.into(), entry);
@@ -168,7 +184,7 @@ impl FileTable {
             .table
             .get(fd.into())
             .map(|entry| entry.file.clone())
-            .ok_or(Error::with_message(Errno::EBADF, "the FD does not exist"))?;
+            .ok_or_else(|| Error::with_message(Errno::EBADF, "the FD does not exist"))?;
         Ok(FileTableEntry::new(file, flags))
     }
 
@@ -178,23 +194,23 @@ impl FileTable {
         (self.table.put(entry) as RawFileDesc).try_into().unwrap()
     }
 
-    pub fn close_file(&mut self, fd: FileDesc) -> Option<Arc<dyn FileLike>> {
+    pub fn close_file(&mut self, fd: FileDesc) -> Option<ClosedFile> {
         let removed_entry = self.table.remove(fd.into())?;
         // POSIX record locks are process-associated and Linux drops them when any fd for the inode is
         // closed by that process, even if duplicated descriptors still exist.
         //
         // Reference: <https://man7.org/linux/man-pages/man2/fcntl_locking.2.html>
-        if let Ok(inode_handle) = removed_entry.file.as_inode_handle_or_err() {
-            inode_handle.release_range_locks();
-        }
-        Some(removed_entry.file)
+        Some(ClosedFile::new(
+            removed_entry.file,
+            self.as_range_lock_owner(),
+        ))
     }
 
-    pub fn close_files_on_exec(&mut self) -> Vec<Arc<dyn FileLike>> {
+    pub fn close_files_on_exec(&mut self) -> Vec<ClosedFile> {
         self.close_files(|entry| entry.flags().contains(FdFlags::CLOEXEC))
     }
 
-    fn close_files<F>(&mut self, should_close: F) -> Vec<Arc<dyn FileLike>>
+    fn close_files<F>(&mut self, should_close: F) -> Vec<ClosedFile>
     where
         F: Fn(&FileTableEntry) -> bool,
     {
@@ -223,19 +239,19 @@ impl FileTable {
         self.table
             .get(fd.into())
             .map(|entry| entry.file())
-            .ok_or(Error::with_message(Errno::EBADF, "the FD does not exist"))
+            .ok_or_else(|| Error::with_message(Errno::EBADF, "the FD does not exist"))
     }
 
     pub fn get_entry(&self, fd: FileDesc) -> Result<&FileTableEntry> {
         self.table
             .get(fd.into())
-            .ok_or(Error::with_message(Errno::EBADF, "the FD does not exist"))
+            .ok_or_else(|| Error::with_message(Errno::EBADF, "the FD does not exist"))
     }
 
     pub fn get_entry_mut(&mut self, fd: FileDesc) -> Result<&mut FileTableEntry> {
         self.table
             .get_mut(fd.into())
-            .ok_or(Error::with_message(Errno::EBADF, "the FD does not exist"))
+            .ok_or_else(|| Error::with_message(Errno::EBADF, "the FD does not exist"))
     }
 
     pub fn fds_and_files(&self) -> impl Iterator<Item = (FileDesc, &'_ Arc<dyn FileLike>)> {
@@ -246,9 +262,44 @@ impl FileTable {
     }
 }
 
-impl Default for FileTable {
-    fn default() -> Self {
-        Self::new()
+impl Drop for FileTable {
+    fn drop(&mut self) {
+        for (_, file) in self.fds_and_files() {
+            if let Ok(inode_handle) = file.as_inode_handle_or_err() {
+                inode_handle.release_range_locks(self.as_range_lock_owner());
+            }
+        }
+    }
+}
+
+/// A file removed from a [`FileTable`] whose close cleanup is pending.
+///
+/// Dropping this value may block, so it must be dropped after releasing the file-table lock.
+#[must_use = "close cleanup runs when this value is dropped"]
+pub struct ClosedFile {
+    file: Arc<dyn FileLike>,
+    range_lock_owner: RangeLockOwner,
+}
+
+impl ClosedFile {
+    fn new(file: Arc<dyn FileLike>, range_lock_owner: RangeLockOwner) -> Self {
+        Self {
+            file,
+            range_lock_owner,
+        }
+    }
+
+    /// Returns the removed file.
+    pub fn file(&self) -> &Arc<dyn FileLike> {
+        &self.file
+    }
+}
+
+impl Drop for ClosedFile {
+    fn drop(&mut self) {
+        if let Ok(inode_handle) = self.file.as_inode_handle_or_err() {
+            inode_handle.release_range_locks(self.range_lock_owner);
+        }
     }
 }
 
@@ -322,7 +373,6 @@ pub(crate) use get_file_fast;
 pub struct FileTableEntry {
     file: Arc<dyn FileLike>,
     flags: AtomicU8,
-    owner: Option<Owner>,
 }
 
 impl FileTableEntry {
@@ -330,39 +380,11 @@ impl FileTableEntry {
         Self {
             file,
             flags: AtomicU8::new(flags.bits()),
-            owner: None,
         }
     }
 
     pub fn file(&self) -> &Arc<dyn FileLike> {
         &self.file
-    }
-
-    pub fn owner(&self) -> Option<Pid> {
-        self.owner.as_ref().map(|(pid, _)| *pid)
-    }
-
-    /// Set a process (group) as owner of the file descriptor.
-    ///
-    /// Such that this process (group) will receive `SIGIO` and `SIGURG` signals
-    /// for I/O events on the file descriptor, if `O_ASYNC` status flag is set
-    /// on this file.
-    pub fn set_owner(&mut self, owner: Option<&Arc<Process>>) -> Result<()> {
-        let Some(process) = owner else {
-            self.owner = None;
-            return Ok(());
-        };
-
-        let mut poller = PollAdaptor::with_observer(OwnerObserver::new(
-            self.file.clone(),
-            Arc::downgrade(process),
-        ));
-        self.file
-            .poll(IoEvents::IN | IoEvents::OUT, Some(poller.as_handle_mut()));
-
-        self.owner = Some((process.pid(), poller));
-
-        Ok(())
     }
 
     pub fn flags(&self) -> FdFlags {
@@ -379,7 +401,6 @@ impl Clone for FileTableEntry {
         Self {
             file: self.file.clone(),
             flags: AtomicU8::new(self.flags.load(Ordering::Relaxed)),
-            owner: None,
         }
     }
 }
@@ -388,26 +409,5 @@ bitflags! {
     pub struct FdFlags: u8 {
         /// Close on exec
         const CLOEXEC = 1;
-    }
-}
-
-type Owner = (Pid, PollAdaptor<OwnerObserver>);
-
-struct OwnerObserver {
-    file: Arc<dyn FileLike>,
-    owner: Weak<Process>,
-}
-
-impl OwnerObserver {
-    pub fn new(file: Arc<dyn FileLike>, owner: Weak<Process>) -> Self {
-        Self { file, owner }
-    }
-}
-
-impl Observer<IoEvents> for OwnerObserver {
-    fn on_events(&self, _events: &IoEvents) {
-        if self.file.status_flags().contains(StatusFlags::O_ASYNC) {
-            crate::process::enqueue_signal_async(self.owner.clone(), SIGIO);
-        }
     }
 }

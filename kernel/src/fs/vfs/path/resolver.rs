@@ -4,7 +4,7 @@ use alloc::str;
 
 use ostd::task::Task;
 
-use super::{Mount, Path};
+use super::{Mount, Path, mount::MountTopology};
 use crate::{
     fs::{
         file::{
@@ -15,10 +15,7 @@ use crate::{
         vfs::{inode::SymbolicLink, path::MountNamespace},
     },
     prelude::*,
-    process::{
-        pid_table::PidTable,
-        posix_thread::{AsPosixThread, AsThreadLocal},
-    },
+    process::{pid_table::PidTable, posix_thread::AsPosixThread},
 };
 
 /// The file descriptor of the current working directory.
@@ -201,6 +198,18 @@ impl PathResolver {
             return AbsPathResult::Unreachable(path.name());
         }
 
+        // TODO: The paths reported via `/proc/<pid>/fd/<fd>` are currently
+        // incorrect for unlinked-but-open ("deleted") and anonymous
+        // (`O_TMPFILE`) dentries. Linux unhashes such dentries and renders the
+        // path with a trailing " (deleted)" (their dentry name is just "/",
+        // which Asterinas mirrors). Here there is no such detection: an
+        // anonymous dentry's "/" name is walked as an ordinary component, so
+        // e.g. an `O_TMPFILE` file under `/tmp` is rendered as `/tmp//` and
+        // misreported as `Reachable` instead of `Unreachable`. Detecting
+        // unreachable/deleted dentries belongs at this `Path` layer (mirroring
+        // the pseudo-path special-case above); the anonymous side is wired up
+        // together with the `O_TMPFILE` open path in PR #3185.
+
         let mut components = VecDeque::new();
         components.push_front(self.resolve_name(path));
 
@@ -325,18 +334,26 @@ impl PathResolver {
             return Ok(());
         }
 
-        let new_root = self.root.find_corresponding_mount(mnt_ns).ok_or_else(|| {
-            Error::with_message(
-                Errno::EINVAL,
-                "the root directory does not exist in the target mount namespace",
-            )
-        })?;
-        let new_cwd = self.cwd.find_corresponding_mount(mnt_ns).ok_or_else(|| {
-            Error::with_message(
-                Errno::EINVAL,
-                "the current working directory does not exist in the target mount namespace",
-            )
-        })?;
+        let topology_guard = MountTopology::read_lock();
+
+        let new_root = self
+            .root
+            .find_corresponding_mount(mnt_ns, &topology_guard)
+            .ok_or_else(|| {
+                Error::with_message(
+                    Errno::EINVAL,
+                    "the root directory does not exist in the target mount namespace",
+                )
+            })?;
+        let new_cwd = self
+            .cwd
+            .find_corresponding_mount(mnt_ns, &topology_guard)
+            .ok_or_else(|| {
+                Error::with_message(
+                    Errno::EINVAL,
+                    "the current working directory does not exist in the target mount namespace",
+                )
+            })?;
 
         self.root = new_root;
         self.cwd = new_cwd;
@@ -402,13 +419,15 @@ impl PathResolver {
                 "`new_root` or the current root is on the rootfs mount"
             );
         }
-        if !put_old_path.is_reachable_from(&new_root_path) {
+        let mut topology_guard = MountTopology::write_lock();
+
+        if !put_old_path.is_reachable_from(&new_root_path, &topology_guard) {
             return_errno_with_message!(
                 Errno::EINVAL,
                 "`put_old` is not at or underneath `new_root`"
             );
         }
-        if !new_root_path.is_reachable_from(&self.root) {
+        if !new_root_path.is_reachable_from(&self.root, &topology_guard) {
             return_errno_with_message!(
                 Errno::EINVAL,
                 "`new_root` is not at or underneath the current root"
@@ -421,8 +440,15 @@ impl PathResolver {
             Path::new(parent_mount, mountpoint)
         };
 
-        self.root.mount.graft_mount_tree(&put_old_path);
-        new_root_path.mount.graft_mount_tree(&parent_path);
+        self.root
+            .mount
+            .graft_mount_tree(&put_old_path, &mut topology_guard);
+        new_root_path
+            .mount
+            .graft_mount_tree(&parent_path, &mut topology_guard);
+
+        // Release the mount topology lock before taking other threads' resolver locks.
+        drop(topology_guard);
 
         // TODO: This method should only iterate threads in the current PID namespace instead of
         // the whole PID table.
@@ -492,6 +518,7 @@ impl PathResolver {
     ///
     /// The mounts are collected in depth-first order.
     pub(in crate::fs) fn collect_visible_mounts(&self) -> Vec<Arc<Mount>> {
+        let _topology_guard = MountTopology::read_lock();
         let mut visible = Vec::new();
         let mut stack = vec![self.root.mount.clone()];
         let is_root_mount_root = self.root.is_mount_root();
@@ -595,11 +622,13 @@ impl PathResolver {
             }
             FsPathInner::Cwd => LookupResult::Resolved(self.cwd.clone()),
             FsPathInner::FdRelative(fd, path) => {
-                let task = Task::current().unwrap();
-                let mut file_table = task.as_thread_local().unwrap().borrow_file_table_mut();
-                let file = get_file_fast!(&mut file_table, fd);
-                let parent = file.as_inode_handle_or_err()?.path();
-                self.lookup_from_parent(parent, path, follow_tail_link)?
+                let parent = {
+                    let task = Task::current().unwrap();
+                    let mut file_table = task.as_thread_local().unwrap().borrow_file_table_mut();
+                    let file = get_file_fast!(&mut file_table, fd);
+                    file.path().clone()
+                };
+                self.lookup_from_parent(&parent, path, follow_tail_link)?
             }
             FsPathInner::Fd(fd) => {
                 let task = Task::current().unwrap();
@@ -895,7 +924,7 @@ impl<'a> FsPath<'a> {
 }
 
 impl<'a> TryFrom<&'a str> for FsPath<'a> {
-    type Error = crate::error::Error;
+    type Error = Error;
 
     fn try_from(path: &'a str) -> Result<FsPath<'a>> {
         FsPath::from_fd_at(AT_FDCWD, path, EmptyPathStr::Reject)
@@ -904,44 +933,28 @@ impl<'a> TryFrom<&'a str> for FsPath<'a> {
 
 /// Utilities to split a string into its path components.
 pub trait SplitPath {
-    /// Splits a path into the parent directory name and the final component name, which is
-    /// expected to be a file (not a directory).
-    ///
-    /// If the final component refers to a directory, an error will be returned. Aside from the
-    /// constraint on the final component, this is similar to [`Self::split_dirname_and_basename`].
-    fn split_dirname_and_filename(&self) -> Result<(&Self, &Self)>;
-
     /// Splits a path into the parent directory name and the final component name.
     ///
     /// This behaves in a similar way to the POSIX C functions [`dirname()` and
     /// `basename()`](https://man7.org/linux/man-pages/man3/basename.3.html). Trailing slashes
-    /// (`/`) are trimmed from returned names unless the name refers to the root directory. In that
-    /// case, the name contains a single slash.
-    ///
-    /// If the original path is an empty string, an error will be returned.
+    /// (`/`) are trimmed from returned names unless the name refers to the root directory.
     ///
     /// If the original path directly points to the root directory (e.g., `/` or `//`, but not `/.`
-    /// or `/./`), an error will be returned.
-    fn split_dirname_and_basename(&self) -> Result<(&Self, &Self)>;
+    /// or `/./`), [`SplitPathError::Root`] will be returned.
+    ///
+    /// If the original path is an empty string, [`SplitPathError::Empty`] will be returned.
+    fn split_dirname_and_basename(&self) -> core::result::Result<(&Self, &Self), SplitPathError>;
 }
 
 impl SplitPath for str {
-    fn split_dirname_and_filename(&self) -> Result<(&Self, &Self)> {
-        if self.ends_with('/') {
-            return_errno_with_message!(Errno::EISDIR, "the path is a directory");
-        }
-
-        self.split_dirname_and_basename()
-    }
-
-    fn split_dirname_and_basename(&self) -> Result<(&Self, &Self)> {
+    fn split_dirname_and_basename(&self) -> core::result::Result<(&Self, &Self), SplitPathError> {
         if self.is_empty() {
-            return_errno_with_message!(Errno::ENOENT, "the path is empty");
+            return Err(SplitPathError::Empty);
         }
 
         let trimmed = self.trim_end_matches('/');
         if trimmed.is_empty() {
-            return_errno_with_message!(Errno::EBUSY, "the path is the root directory");
+            return Err(SplitPathError::Root);
         }
 
         if let Some(pos) = trimmed.rfind('/') {
@@ -956,72 +969,66 @@ impl SplitPath for str {
     }
 }
 
+/// Lexical path-splitting errors reported by [`SplitPath`].
+///
+/// These errors intentionally describe only what the path string looks like.
+/// Callers are responsible for translating them into syscall- or subsystem-specific `Errno`s.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SplitPathError {
+    /// The path to be split is empty (``).
+    Empty,
+    /// The path to be split is root
+    /// (any number of consecutive slashes such `/` or `////`).
+    Root,
+}
+
+impl SplitPathError {
+    /// Converts the error into an [`Error`], rejecting a root path as [`Errno::EBUSY`].
+    pub fn reject_root_as_busy(self) -> Error {
+        match self {
+            Self::Empty => Error::with_message(Errno::ENOENT, "the path is empty"),
+            Self::Root => {
+                Error::with_message(Errno::EBUSY, "the path refers to the root directory")
+            }
+        }
+    }
+
+    /// Converts the error into an [`Error`], rejecting a root path as [`Errno::EISDIR`].
+    pub fn reject_root_as_is_dir(self) -> Error {
+        match self {
+            Self::Empty => Error::with_message(Errno::ENOENT, "the path is empty"),
+            Self::Root => {
+                Error::with_message(Errno::EISDIR, "the path refers to the root directory")
+            }
+        }
+    }
+}
+
 #[cfg(ktest)]
 mod test {
     use ostd::prelude::ktest;
 
     use super::*;
 
-    type SplitResult = core::result::Result<(&'static str, &'static str), Errno>;
+    type SplitResult = Result<(&'static str, &'static str), SplitPathError>;
 
     #[track_caller]
     fn assert_split_results(
         cases: &Vec<(&'static str, SplitResult)>,
-        split: impl Fn(&str) -> Result<(&str, &str)>,
+        split: impl Fn(&str) -> Result<(&str, &str), SplitPathError>,
     ) {
         for case in cases.iter() {
             let result = split(case.0);
-            assert_eq!(
-                result.map_err(|err| err.error()),
-                case.1,
-                "splitting '{}' failed",
-                case.0
-            );
+            assert_eq!(result, case.1, "splitting '{}' failed", case.0);
         }
-    }
-
-    #[ktest]
-    fn path_split_filename() {
-        let cases = vec![
-            ("", Err(Errno::ENOENT)),
-            ("/", Err(Errno::EISDIR)),
-            ("///", Err(Errno::EISDIR)),
-            ("///.", Ok(("/", "."))),
-            ("//./", Err(Errno::EISDIR)),
-            ("a", Ok((".", "a"))),
-            ("/a", Ok(("/", "a"))),
-            ("b/a", Ok(("b", "a"))),
-            ("/b/a", Ok(("/b", "a"))),
-            ("a", Ok((".", "a"))),
-            ("//a", Ok(("/", "a"))),
-            ("b//a", Ok(("b", "a"))),
-            ("//b//a", Ok(("//b", "a"))),
-            ("a/", Err(Errno::EISDIR)),
-            ("/a/", Err(Errno::EISDIR)),
-            ("b/a/", Err(Errno::EISDIR)),
-            ("/b/a/", Err(Errno::EISDIR)),
-            ("a//", Err(Errno::EISDIR)),
-            ("/a//", Err(Errno::EISDIR)),
-            ("b/a//", Err(Errno::EISDIR)),
-            ("/b/a//", Err(Errno::EISDIR)),
-            (" a ", Ok((".", " a "))),
-            (" //a ", Ok((" ", "a "))),
-            (" b//a ", Ok((" b", "a "))),
-            (" //b//a ", Ok((" //b", "a "))),
-            (" a/ ", Ok((" a", " "))),
-            (" //a/ ", Ok((" //a", " "))),
-            (" b//a/ ", Ok((" b//a", " "))),
-            (" //b//a/ ", Ok((" //b//a", " "))),
-        ];
-        assert_split_results(&cases, SplitPath::split_dirname_and_filename);
     }
 
     #[ktest]
     fn path_split_basename() {
         let cases = vec![
-            ("", Err(Errno::ENOENT)),
-            ("/", Err(Errno::EBUSY)),
-            ("///", Err(Errno::EBUSY)),
+            ("", Err(SplitPathError::Empty)),
+            ("/", Err(SplitPathError::Root)),
+            ("///", Err(SplitPathError::Root)),
             ("///.", Ok(("/", "."))),
             ("//./", Ok(("/", "."))),
             ("a", Ok((".", "a"))),

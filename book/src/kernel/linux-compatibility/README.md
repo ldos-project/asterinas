@@ -15,7 +15,7 @@ support the loading of Linux kernel modules.
 ## System calls
 
 At the time of writing,
-Asterinas supports over 230 Linux system calls for the x86-64 architecture,
+Asterinas supports over 240 Linux system calls for the x86-64 architecture,
 which are summarized in the table below.
 
 | Numbers | Names                  | Supported      | Flag Coverage |
@@ -119,7 +119,7 @@ which are summarized in the table below.
 | 96      | gettimeofday           | ✅             | 💯 |
 | 97      | getrlimit              | ✅             | 💯 |
 | 98      | getrusage              | ✅             | [⚠️](syscall-flag-coverage/system-information-and-misc/#getrusage) |
-| 99      | sysinfo                | ✅             | 💯 |
+| 99      | sysinfo                | ✅             | [⚠️](syscall-flag-coverage/system-information-and-misc/#sysinfo) |
 | 100     | times                  | ❌             | N/A |
 | 101     | ptrace                 | ✅             | [⚠️](syscall-flag-coverage/process-and-thread-management/#ptrace) |
 | 102     | getuid                 | ✅             | 💯 |
@@ -344,6 +344,10 @@ which are summarized in the table below.
 | 328     | pwritev2               | ✅             | [⚠️](syscall-flag-coverage/file-and-directory-operations/#preadv2-and-pwritev2) |
 | 332     | statx                  | ✅             | [⚠️](syscall-flag-coverage/file-and-directory-operations/#statx) |
 | 424     | pidfd_send_signal      | ✅             | 💯 |
+| 429     | move_mount             | ✅             | [⚠️](syscall-flag-coverage/file-systems-and-mount-control/#move_mount) |
+| 430     | fsopen                 | ✅             | 💯 |
+| 431     | fsconfig               | ✅             | [⚠️](syscall-flag-coverage/file-systems-and-mount-control/#fsconfig) |
+| 432     | fsmount                | ✅             | [⚠️](syscall-flag-coverage/file-systems-and-mount-control/#fsmount) |
 | 434     | pidfd_open             | ✅             | 💯 |
 | 435     | clone3                 | ✅             | [⚠️](syscall-flag-coverage/process-and-thread-management/#clone-and-clone3) |
 | 436     | close_range            | ✅             | 💯 |

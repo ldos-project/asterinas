@@ -8,11 +8,15 @@ use aster_time::read_monotonic_time;
 use aster_util::mem_obj_slice::Slice;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
+use io_util::{
+    IoError,
+    batch::{IoBatch, IoCompletion},
+};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::{Element, OQueueError, RefProducer};
 use ostd::{
     Error,
-    error::AccessDeniedSnafu,
+    error::{AccessDeniedSnafu, NotEnoughResourcesSnafu},
     mm::{
         HasSize, Infallible, USegment, VmReader, VmWriter,
         dma::DmaStream,
@@ -24,7 +28,7 @@ use serde::Serialize;
 use spin::{Mutex, Once};
 
 use super::{BlockDevice, id::Sid};
-use crate::{BLOCK_SIZE, SECTOR_SIZE, prelude::*};
+use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, prelude::*};
 
 /// Trace data for block device I/O completion.
 ///
@@ -51,8 +55,19 @@ pub struct BlockDeviceCompletionStats {
 /// (2) The target sectors on the device for doing I/O,
 /// (3) The memory locations (`BioSegment`) from/to which data are read/written,
 /// (4) The optional callback function that will be invoked when the I/O is completed.
-#[derive(Debug)]
-pub struct Bio(Arc<BioInner>);
+///
+/// Before submission, a `Bio` owns its segments and completion callback.
+/// After submission, that ownership is transferred to `SubmittedBio`.
+pub struct Bio {
+    metadata: Arc<BioMetadata>,
+    complete_fn: Option<BioCompleteFn>,
+    segments: Vec<BioSegment>,
+}
+
+/// The completion function type for BIO operations.
+///
+/// The function receives the final `BioStatus` of the I/O operation.
+pub type BioCompleteFn = Box<dyn FnOnce(BioStatus) + Send>;
 
 impl Bio {
     /// Constructs a new `Bio`.
@@ -60,90 +75,75 @@ impl Bio {
     /// The `type_` describes the type of the I/O.
     /// The `start_sid` is the starting sector id on the device.
     /// The `segments` describes the memory segments.
-    /// The `complete_fn` is the optional callback function.
+    /// The `complete_fn` is the optional callback function that will be invoked
+    /// when the I/O is completed, receiving the final `BioStatus`.
     pub fn new(
         type_: BioType,
         start_sid: Sid,
         segments: Vec<BioSegment>,
-        complete_fn: Option<fn(&SubmittedBio)>,
-    ) -> Self {
-        Self::new_with_completion_fn(
-            type_,
-            start_sid,
-            segments,
-            complete_fn.map(|f| CompletionFn::Pointer(f)),
-        )
-    }
-
-    pub fn new_with_closure(
-        type_: BioType,
-        start_sid: Sid,
-        segments: Vec<BioSegment>,
-        complete_fn: impl FnOnce(&SubmittedBio) + Send + 'static,
-    ) -> Self {
-        Self::new_with_completion_fn(
-            type_,
-            start_sid,
-            segments,
-            Some(CompletionFn::Closure(Mutex::new(Some(Box::new(
-                complete_fn,
-            ))))),
-        )
-    }
-
-    fn new_with_completion_fn(
-        type_: BioType,
-        start_sid: Sid,
-        segments: Vec<BioSegment>,
-        complete_fn: Option<CompletionFn>,
+        complete_fn: Option<BioCompleteFn>,
     ) -> Self {
         let nsectors = segments
             .iter()
             .map(|segment| segment.nsectors().to_raw())
             .sum();
 
-        let inner = Arc::new(BioInner {
+        let metadata = Arc::new(BioMetadata {
             type_,
             sid_range: start_sid..start_sid + nsectors,
-            sid_offset: AtomicU64::new(0),
-            segments,
-            complete_fn,
             status: AtomicU32::new(BioStatus::Init as u32),
             wait_queue: WaitQueue::new(),
         });
-        Self(inner)
+        Self {
+            metadata,
+            complete_fn,
+            segments,
+        }
     }
 
     /// Returns the type.
     pub fn type_(&self) -> BioType {
-        self.0.type_()
+        self.metadata.type_()
     }
 
     /// Returns the range of target sectors on the device.
     pub fn sid_range(&self) -> &Range<Sid> {
-        self.0.sid_range()
+        self.metadata.sid_range()
     }
 
-    /// Returns the slice to the memory segments.
+    /// Returns the slice to the memory segments currently owned by this handle.
     pub fn segments(&self) -> &[BioSegment] {
-        self.0.segments()
+        &self.segments
     }
 
     /// Returns the status.
     pub fn status(&self) -> BioStatus {
-        self.0.status()
+        self.metadata.status()
     }
 
     /// Submits self to the `block_device` asynchronously.
     ///
-    /// Returns a `BioWaiter` to the caller to wait for its completion.
+    /// This method consumes `self` and transfers its segments and completion
+    /// callback to the submitted request.
+    ///
+    /// Pushes the completion record into `io_batch`.
     ///
     /// # Panics
     ///
     /// The caller must not submit a `Bio` more than once. Otherwise, a panic shall be triggered.
-    pub fn submit(&self, block_device: &dyn BlockDevice) -> Result<BioWaiter, BioEnqueueError> {
+    pub fn submit(
+        self,
+        block_device: &dyn BlockDevice,
+        io_batch: &mut IoBatch,
+    ) -> Result<(), BioEnqueueError> {
+        let Self {
+            metadata,
+            complete_fn,
+            segments,
+        } = self;
+
         // Change the status from "Init" to "Submit".
-        let result = self.0.status.compare_exchange(
+        let result = metadata.status.compare_exchange(
             BioStatus::Init as u32,
             BioStatus::Submit as u32,
             Ordering::Release,
@@ -151,11 +151,13 @@ impl Bio {
         );
         assert!(result.is_ok());
 
-        // enqueue to the block device
-        // A SubmittedBio is created here from a Bio, and then pass down to the lower layers.
+        let waiter_metadata = metadata.clone();
         // Those empty fields will be set just before in the block_device.enqueue function in the prepare_enqueue function.
-        if let Err(e) = block_device.enqueue(SubmittedBio {
-            bio_inner: self.0.clone(),
+        let submitted_bio = SubmittedBio {
+            metadata,
+            sid_offset: 0,
+            complete_fn,
+            segments,
             #[cfg(not(baseline_asterinas))]
             reply_handle: None,
             #[cfg(not(baseline_asterinas))]
@@ -168,9 +170,10 @@ impl Bio {
             outstanding_pages: None,
             #[cfg(not(baseline_asterinas))]
             outstanding_requests: None,
-        }) {
+        };
+        if let Err(e) = block_device.enqueue(submitted_bio) {
             // Fail to submit, revert the status.
-            let result = self.0.status.compare_exchange(
+            let result = waiter_metadata.status.compare_exchange(
                 BioStatus::Submit as u32,
                 BioStatus::Init as u32,
                 Ordering::Release,
@@ -180,9 +183,8 @@ impl Bio {
             return Err(e);
         }
 
-        Ok(BioWaiter {
-            bios: vec![self.0.clone()],
-        })
+        io_batch.push(waiter_metadata);
+        Ok(())
     }
 
     /// Submits self to the `block_device` and waits for the result synchronously.
@@ -193,21 +195,23 @@ impl Bio {
     ///
     /// The caller must not submit a `Bio` more than once. Otherwise, a panic shall be triggered.
     pub fn submit_and_wait(
-        &self,
+        self,
         block_device: &dyn BlockDevice,
     ) -> Result<BioStatus, BioEnqueueError> {
-        let waiter = self.submit(block_device)?;
-        match waiter.wait() {
-            Some(status) => {
-                assert!(status == BioStatus::Complete);
-                Ok(status)
-            }
-            None => {
-                let status = self.status();
-                assert!(status != BioStatus::Complete);
-                Ok(status)
-            }
-        }
+        let mut io_batch = IoBatch::with_capacity(1);
+        self.submit(block_device, &mut io_batch)?;
+        let _ = io_batch.wait_all();
+        let metadata = io_batch[0].downcast_ref::<BioMetadata>().unwrap();
+        Ok(metadata.status())
+    }
+}
+
+impl Debug for Bio {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("Bio")
+            .field("metadata", &self.metadata)
+            .field("segments", &self.segments)
+            .finish()
     }
 }
 
@@ -240,110 +244,20 @@ impl Display for BioEnqueueError {
 
 impl core::error::Error for BioEnqueueError {}
 
-impl From<BioEnqueueError> for ostd::Error {
+impl From<BioEnqueueError> for Error {
     fn from(_error: BioEnqueueError) -> Self {
-        ostd::error::NotEnoughResourcesSnafu.build()
-    }
-}
-
-/// A waiter for `Bio` submissions.
-///
-/// This structure holds a list of `Bio` requests and provides functionality to
-/// wait for their completion and retrieve their statuses.
-#[must_use]
-#[derive(Debug)]
-pub struct BioWaiter {
-    bios: Vec<Arc<BioInner>>,
-}
-
-impl BioWaiter {
-    /// Constructs a new `BioWaiter` instance with no `Bio` requests.
-    pub fn new() -> Self {
-        Self { bios: Vec::new() }
-    }
-
-    /// Returns the number of `Bio` requests associated with `self`.
-    pub fn nreqs(&self) -> usize {
-        self.bios.len()
-    }
-
-    /// Gets the `index`-th `Bio` request associated with `self`.
-    ///
-    /// # Panics
-    ///
-    /// If the `index` is out of bounds, this method will panic.
-    pub fn req(&self, index: usize) -> Bio {
-        Bio(self.bios[index].clone())
-    }
-
-    /// Returns the status of the `index`-th `Bio` request associated with `self`.
-    ///
-    /// # Panics
-    ///
-    /// If the `index` is out of bounds, this method will panic.
-    pub fn status(&self, index: usize) -> BioStatus {
-        self.bios[index].status()
-    }
-
-    /// Merges the `Bio` requests from another `BioWaiter` into this one.
-    ///
-    /// The another `BioWaiter`'s `Bio` requests are appended to the end of
-    /// the `Bio` list of `self`, effectively concatenating the two lists.
-    pub fn concat(&mut self, mut other: Self) {
-        self.bios.append(&mut other.bios);
-    }
-
-    /// Returns an iterator for the `Bio` requests associated with `self`.
-    pub fn reqs(&self) -> impl Iterator<Item = Bio> {
-        self.bios.iter().map(|bio_inner| Bio(bio_inner.clone()))
-    }
-
-    /// Waits for the completion of all `Bio` requests.
-    ///
-    /// This method iterates through each `Bio` in the list, waiting for their
-    /// completion.
-    ///
-    /// The return value is an option indicating whether all the requests in the list
-    /// have successfully completed.
-    /// On success this value is guaranteed to be equal to `Some(BioStatus::Complete)`.
-    pub fn wait(&self) -> Option<BioStatus> {
-        let mut ret = Some(BioStatus::Complete);
-
-        for bio in self.bios.iter() {
-            let status = bio.wait_queue.wait_until(|| {
-                let status = bio.status();
-                if status != BioStatus::Submit {
-                    Some(status)
-                } else {
-                    None
-                }
-            });
-            if status != BioStatus::Complete && ret.is_some() {
-                ret = None;
-            }
-        }
-
-        ret
-    }
-
-    /// Clears all `Bio` requests in this waiter.
-    pub fn clear(&mut self) {
-        self.bios.clear();
-    }
-}
-
-impl Default for BioWaiter {
-    fn default() -> Self {
-        Self::new()
+        NotEnoughResourcesSnafu.build()
     }
 }
 
 /// A submitted `Bio` object.
 ///
-/// The request queue
-#[cfg_attr(not(baseline_asterinas), derive(Element))]
+/// The request queue of block device only accepts a `SubmittedBio` into the queue.
 pub struct SubmittedBio {
-    bio_inner: Arc<BioInner>,
+    metadata: Arc<BioMetadata>,
+    sid_offset: u64,
+    complete_fn: Option<BioCompleteFn>,
+    segments: Vec<BioSegment>,
 
     #[cfg(not(baseline_asterinas))]
     reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
@@ -364,41 +278,25 @@ pub struct SubmittedBio {
     outstanding_requests: Option<u32>,
 }
 
-impl core::fmt::Debug for SubmittedBio {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut d = f.debug_struct("SubmittedBio");
-        let d = d.field("bio_inner", &self.bio_inner);
-        #[cfg(not(baseline_asterinas))]
-        let d = d
-            .field("submission_time", &self.submission_time)
-            .field(
-                "reply_handle",
-                &self.reply_handle.as_ref().map(|_| "<Producer>"),
-            )
-            .field("outstanding_pages", &self.outstanding_pages);
-        d.finish()
-    }
-}
-
 impl SubmittedBio {
     /// Returns the type.
     pub fn type_(&self) -> BioType {
-        self.bio_inner.type_()
+        self.metadata.type_()
     }
 
     /// Returns the range of target sectors on the device.
     pub fn sid_range(&self) -> &Range<Sid> {
-        self.bio_inner.sid_range()
+        self.metadata.sid_range()
     }
 
     /// Returns the offset of the first sector id.
     pub fn sid_offset(&self) -> u64 {
-        self.bio_inner.sid_offset.load(Ordering::Relaxed)
+        self.sid_offset
     }
 
     /// Sets the offset of the first sector id.
-    pub fn set_sid_offset(&self, offset: u64) {
-        self.bio_inner.sid_offset.store(offset, Ordering::Relaxed);
+    pub fn set_sid_offset(&mut self, offset: u64) {
+        self.sid_offset = offset;
     }
 
     /// Returns the number of 4KB pages if it has already been computed.
@@ -415,31 +313,38 @@ impl SubmittedBio {
     /// Note the field num_pages is only available when calling this function, but accessing it directly is not available.
     #[cfg(not(baseline_asterinas))]
     pub fn num_pages(&mut self) -> u32 {
+        let sectors = self.sid_range().end.to_raw() - self.sid_range().start.to_raw();
         *self.num_pages.get_or_insert_with(|| {
-            let sectors =
-                self.bio_inner.sid_range().end.to_raw() - self.bio_inner.sid_range().start.to_raw();
             sectors.div_ceil(8) as u32 // each page has 8 sectors
         })
     }
 
     /// Returns the slice to the memory segments.
     pub fn segments(&self) -> &[BioSegment] {
-        self.bio_inner.segments()
+        &self.segments
     }
 
     /// Returns the status.
     pub fn status(&self) -> BioStatus {
-        self.bio_inner.status()
+        self.metadata.status()
     }
 
-    /// Completes the `Bio` with the `status` and invokes the callback function.
+    /// Completes the `Bio` by consuming `self`, releasing the segments, and
+    /// invoking the callback function.
     ///
     /// When the driver finishes the request for this `Bio`, it will call this method.
-    pub fn complete(&self, status: BioStatus) {
+    pub fn complete(self, status: BioStatus) {
         assert!(status != BioStatus::Init && status != BioStatus::Submit);
 
+        let Self {
+            metadata,
+            complete_fn,
+            segments,
+            ..
+        } = self;
+
         // Set the status.
-        let result = self.bio_inner.status.compare_exchange(
+        let result = metadata.status.compare_exchange(
             BioStatus::Submit as u32,
             status as u32,
             Ordering::Release,
@@ -447,10 +352,11 @@ impl SubmittedBio {
         );
         assert!(result.is_ok());
 
-        self.bio_inner.wait_queue.wake_all();
-        if let Some(complete_fn) = &self.bio_inner.complete_fn {
-            complete_fn.call(self);
-        }
+        drop(segments);
+
+        general_complete_fn(metadata.type_(), status, complete_fn);
+
+        metadata.wait_queue.wake_all();
     }
 
     #[cfg(not(baseline_asterinas))]
@@ -492,50 +398,29 @@ impl SubmittedBio {
     }
 }
 
-type CompletionClosure = Box<dyn FnOnce(&SubmittedBio) + Send + 'static>;
-
-enum CompletionFn {
-    Pointer(fn(&SubmittedBio)),
-    Closure(Mutex<Option<CompletionClosure>>),
-}
-
-impl CompletionFn {
-    fn call(&self, bio: &SubmittedBio) {
-        match self {
-            Self::Pointer(func) => func(bio),
-            Self::Closure(func) => func.lock().take().unwrap()(bio),
-        }
-    }
-}
-
-impl Debug for CompletionFn {
+impl Debug for SubmittedBio {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match self {
-            Self::Pointer(func) => f.debug_tuple("Pointer").field(func).finish(),
-            Self::Closure(_) => f.debug_tuple("Closure").finish(),
-        }
+        f.debug_struct("SubmittedBio")
+            .field("metadata", &self.metadata)
+            .field("sid_offset", &self.sid_offset)
+            .field("segments", &self.segments)
+            .finish()
     }
 }
 
-/// The common inner part of `Bio`.
-struct BioInner {
+/// The metadata and waitable state shared by submitted `Bio`s and their waiter handles.
+struct BioMetadata {
     /// The type of the I/O
     type_: BioType,
     /// The logical range of target sectors on device
     sid_range: Range<Sid>,
-    /// The offset of the first sector id, used to adjust the `sid_range` for partition devices
-    sid_offset: AtomicU64,
-    /// The memory segments in this `Bio`
-    segments: Vec<BioSegment>,
-    /// The I/O completion method
-    complete_fn: Option<CompletionFn>,
     /// The I/O status
     status: AtomicU32,
     /// The wait queue for I/O completion
     wait_queue: WaitQueue,
 }
 
-impl BioInner {
+impl BioMetadata {
     pub fn type_(&self) -> BioType {
         self.type_
     }
@@ -544,23 +429,34 @@ impl BioInner {
         &self.sid_range
     }
 
-    pub fn segments(&self) -> &[BioSegment] {
-        &self.segments
-    }
-
     pub fn status(&self) -> BioStatus {
         BioStatus::try_from(self.status.load(Ordering::Relaxed)).unwrap()
     }
 }
 
-impl Debug for BioInner {
+impl IoCompletion for BioMetadata {
+    fn wait(&self) -> Result<(), IoError> {
+        let status = self.wait_queue.wait_until(|| {
+            let status = self.status();
+            (status != BioStatus::Submit).then_some(status)
+        });
+
+        match status {
+            BioStatus::Complete => Ok(()),
+            BioStatus::NotSupported => Err(IoError::Unsupported),
+            BioStatus::NoSpace => Err(IoError::OutOfSpace),
+            BioStatus::IoError => Err(IoError::Failed),
+            BioStatus::Init | BioStatus::Submit | BioStatus::Zeros => unreachable!(),
+        }
+    }
+}
+
+impl Debug for BioMetadata {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.debug_struct("BioInner")
+        f.debug_struct("BioMetadata")
             .field("type", &self.type_())
             .field("sid_range", &self.sid_range())
             .field("status", &self.status())
-            .field("segments", &self.segments())
-            .field("complete_fn", &self.complete_fn)
             .finish()
     }
 }
@@ -594,6 +490,8 @@ pub enum BioStatus {
     NoSpace = 4,
     /// An error occurred while doing I/O.
     IoError = 5,
+    /// No I/O operation is needed because the sectors to read only contain zeros.
+    Zeros = 6,
 }
 
 impl BioStatus {
@@ -607,6 +505,7 @@ impl BioStatus {
             Self::Init => 2,
             Self::Submit => 1,
             Self::Complete => 0,
+            Self::Zeros => 0,
         }
     }
 }
@@ -1052,19 +951,22 @@ mod test {
         let type_ = BioType::Read;
         let start_sid = Sid::new(2);
         let segments = vec![BioSegment::alloc(1, BioDirection::FromDevice)];
-        let complete_fn = |bio: &SubmittedBio| {
-            assert_eq!(bio.type_(), BioType::Read);
-            assert_eq!(bio.sid_range().start, Sid::new(2));
-            assert_eq!(bio.status(), BioStatus::Complete);
+        let complete_fn = |status| {
+            assert_eq!(status, BioStatus::Complete);
             CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
         };
 
-        let bio = Bio::new_with_closure(type_, start_sid, segments.clone(), complete_fn);
+        let bio = Bio::new(
+            type_,
+            start_sid,
+            segments.clone(),
+            Some(Box::new(complete_fn)),
+        );
         assert_eq!(bio.type_(), type_);
         assert_eq!(bio.sid_range().start, start_sid);
 
         CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
-        let _ = bio.submit(&FakeBlockDevice);
+        let _ = bio.submit(&FakeBlockDevice, &mut IoBatch::new());
         assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }
 
@@ -1074,19 +976,22 @@ mod test {
         let type_ = BioType::Write;
         let start_sid = Sid::new(2);
         let segments = vec![BioSegment::alloc(1, BioDirection::ToDevice)];
-        fn complete_fn(bio: &SubmittedBio) {
-            assert_eq!(bio.type_(), BioType::Write);
-            assert_eq!(bio.sid_range().start, Sid::new(2));
-            assert_eq!(bio.status(), BioStatus::Complete);
+        fn complete_fn(status: BioStatus) {
+            assert_eq!(status, BioStatus::Complete);
             CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
-        let bio = Bio::new(type_, start_sid, segments.clone(), Some(complete_fn));
+        let bio = Bio::new(
+            type_,
+            start_sid,
+            segments.clone(),
+            Some(Box::new(complete_fn)),
+        );
         assert_eq!(bio.type_(), type_);
         assert_eq!(bio.sid_range().start, start_sid);
 
         CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
-        let _ = bio.submit(&FakeBlockDevice);
+        let _ = bio.submit(&FakeBlockDevice, &mut IoBatch::new());
         assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
     }
 }

@@ -8,7 +8,7 @@ use crate::{
         file::mkmod,
         procfs::{
             pid::task::mountinfo::make_mount_point_path,
-            template::{FileOps, ProcFile},
+            template::{ProcFile, ProcFileOps},
         },
         vfs::{
             inode::Inode,
@@ -17,6 +17,7 @@ use crate::{
     },
     prelude::*,
     process::posix_thread::AsPosixThread,
+    thread::Thread,
 };
 
 /// A single entry in the mounts file.
@@ -41,21 +42,16 @@ impl core::fmt::Display for MountEntry<'_> {
         write!(
             f,
             "{} {} {} {} {} {}",
-            &self.source,
-            &self.mount_point,
-            &self.fs_type,
-            &self.mount_flags,
-            &self.dump,
-            &self.pass,
+            self.source, self.mount_point, self.fs_type, self.mount_flags, self.dump, self.pass,
         )
     }
 }
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/mounts` (and also `/proc/[pid]/mounts`).
-pub struct MountsFileOps(TidDirOps);
+pub(super) struct MountsFileOps(TidDirOps);
 
 impl MountsFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3351>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
@@ -109,7 +105,11 @@ impl MountsFileOps {
     }
 }
 
-impl FileOps for MountsFileOps {
+impl ProcFileOps for MountsFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let Some(thread) = self.0.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");

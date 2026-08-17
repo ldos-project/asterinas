@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
 SUBDIRS := \
-	alarm \
 	clone3 \
 	cpu_affinity \
 	execve \
@@ -9,7 +8,7 @@ SUBDIRS := \
 	fork_c \
 	getcpu \
 	getpid \
-	itimer \
+	personality \
 	prctl \
 	pthread \
 	ptrace \
@@ -17,7 +16,9 @@ SUBDIRS := \
 	signal \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)
-SUBDIRS += fork
+SUBDIRS += \
+	arch_prctl \
+	fork
 endif
 
 include ../common/Makefile

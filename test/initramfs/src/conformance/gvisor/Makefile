@@ -8,6 +8,8 @@
 TESTS ?= \
 	access_test \
 	brk_test \
+	capabilities_test \
+	chmod_test \
 	chown_test \
 	creat_test \
 	dev_test \
@@ -29,6 +31,7 @@ TESTS ?= \
 	mknod_test \
 	mmap_test \
 	mount_test \
+	mount_fd_test \
 	mremap_test \
 	msync_test \
 	open_create_test \
@@ -41,6 +44,7 @@ TESTS ?= \
 	proc_pid_oomscore_test \
 	proc_test \
 	pselect_test \
+	ptrace_test \
 	pty_test \
 	pwrite64_test \
 	pwritev2_test \

@@ -1,0 +1,665 @@
+# benchmark/problems.yaml — the review-problem suite (one queryable file).
+#
+# Schema: see ../spec/benchmark.md ("Schema").
+# Conventions:
+#   * Prose fields (source, desc, fix, expectation) are block scalars (>) and may
+#     use Markdown `backticks` around code — literal text in YAML.
+#   * `commit` (REQUIRED, top-level) is the snapshot every problem checks out (detached HEAD).
+#     `remote` (OPTIONAL, top-level) is where to fetch `commit` from if it is not already local;
+#     it defaults to https://github.com/asterinas/asterinas.
+#       - In `diff` mode `commit` must be a full 40-char SHA (it is fetched by SHA:
+#         PR-derived commits already sit on upstream main, synthetic ones are dangling
+#         on the fork).
+#       - In `files` mode `commit` may be any local commit-ish (e.g. `<fix>^`).
+#   * review_mode has EXACTLY ONE of `diff` or `files`:
+#       diff  -> {base}: review the change `base..HEAD` (each commit's message + diff).
+#                `base` is a ref relative to the checkout; for a single introducing
+#                commit it is `HEAD^` (the commit's parent).
+#       files -> a list of paths reviewed at `commit`.
+#   * Each defect carries: desc (what is wrong), expectation (the criterion the
+#     grader matches a review comment against), severity (informative), and a `fix`
+#     unless `is_negative: true`.
+#   * INTEGRITY: the `defects` (and `source`) are ground truth for the GRADER only —
+#     the harness never shows them to the review agent.
+
+- problem_id: 0001-mprotect-merge-unwrap
+  commit: 7feb803eaba2a70eb884e7984d4ce11ece5d85f9
+  source: >
+    PR-derived. Introduced by `7feb803ea` ("Fix cases where some pages are not
+    mapped"); fixed by `c7b633e9b`, which replaced the `unwrap` with a `let-else
+    continue`. The change under review is the introducing commit itself, fetched
+    by full SHA from upstream `main` (no local patch).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/vm/vmar/vmar_impls/protect.rs }
+      persona: development
+      grounding: "Reachable panic"
+      severity: critical
+      desc: >
+        The protect loop snapshots the intersecting mappings; for each it skips
+        any whose perms already equal the target (`perms == stored & ALL_PERMS`),
+        else it `remove`s the entry, protects it, and re-inserts with
+        `insert_try_merge`. A merge coalesces an adjacent mapping that has equal
+        perms — including a not-yet-processed snapshot entry — removing its B-tree
+        key, after which the loop's later `inner.remove(&start).unwrap()` on that
+        key panics. It is reachable from userspace: `mprotect` builds `VmPerms`
+        via `from_bits_truncate(perms)` without masking to `ALL_PERMS`, so a caller
+        can set a `MAY_*` bit (e.g. `mprotect(p, len, PROT_READ | 0x8)`) that
+        defeats the perms-equality skip for the absorbed neighbour while still
+        letting the merge fire.
+      fix: >
+        Do not `unwrap()` a `remove` whose key a merge may already have absorbed —
+        skip a missing entry with a `let-else`/match (as `c7b633e9b` did) — and
+        mask user `prot` to `ALL_PERMS` in `mprotect` so a `MAY_*` bit cannot
+        defeat the perms-equality skip.
+      expectation: >
+        A reviewer should flag the `remove(...).unwrap()` as a reachable panic
+        (bonus: the missing prot-bit masking in `mprotect`).
+
+- problem_id: 0002-fair-weight-race
+  commit: 4571fabc7a0b8cb34e2cc82fdd7fc2d50a36d0f3
+  source: >
+    PR-derived. Introduced by `4571fabc7` ("Fix integer overflow due to fair
+    weight change"); fixed by `4f772901f`, which serializes updates behind a
+    `SpinLock`. The change under review is the introducing commit itself, fetched
+    by full SHA from upstream `main` (no local patch).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/sched/sched_class/fair.rs }
+      persona: development
+      grounding: careful-atomics
+      severity: major
+      desc: >
+        The change implements weight updates with an ad-hoc lock-free scheme
+        across two independent atomics (`weight` with a `HAS_PENDING` bit and
+        `pending_weight`) plus a `compare_exchange_weak` loop. The store of
+        `pending_weight` and the OR-in of the pending bit are not atomic together,
+        so a concurrent update can be lost or a stale `pending_weight` read.
+      fix: >
+        Replace the ad-hoc multi-atomic protocol with a single atomic word or a
+        lock (the fix serializes updates behind a `SpinLock`).
+      expectation: >
+        A reviewer should flag the multi-word lock-free protocol as unsound and
+        ask for a single atomic or a lock.
+
+- problem_id: 0003-semop-timeout-toctou
+  commit: c4f3a1b30^
+  source: >
+    Fix-anchored. `commit` is the parent of the fix `c4f3a1b30`; the TOCTOU
+    is present at this snapshot and nothing in the file names it (leak-free). The
+    bug postdates a clean introducing commit, so files mode is used instead of a
+    patch.
+  review_mode:
+    files:
+      - kernel/src/ipc/semaphore/system_v/sem.rs
+  defects:
+    - target: { kind: file, path: kernel/src/ipc/semaphore/system_v/sem.rs }
+      persona: development
+      grounding: atomic-critical-sections
+      severity: major
+      desc: >
+        After the waiter wakes, `sem_op` reloads the operation's status and then
+        acts on it in steps that are not atomic with respect to a concurrent
+        removal or wakeup: the status it observed can change before it is acted
+        upon, so an operation that should have completed is reported as a spurious
+        `EAGAIN` (or the pending entry is mishandled).
+      fix: >
+        Make the post-wait status load and the action it drives atomic —
+        re-validate under the sem-set lock before acting (as `c4f3a1b30` does).
+      expectation: >
+        A reviewer should flag the check-then-act spanning the wait as a race.
+
+- problem_id: 0004-semop-dead-timer-retain
+  commit: 6ce50fab1c47a33960861675bb3627e9d9e2fbf8
+  source: >
+    PR-derived. Introduced by `6ce50fab1` ("Refactor semaphore to support atomic
+    semop"); fixed by `11a639f09`. The change under review is the introducing
+    commit itself — it carries TWO distinct defects — fetched by full SHA from
+    upstream `main` (no local patch).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/ipc/semaphore/system_v/sem.rs }
+      persona: development
+      grounding: raii
+      severity: critical
+      desc: >
+        The `JiffiesTimer` created for the timeout is bound to a local that is
+        dropped at the end of its scope, so the timer never fires and `semop`
+        timeouts are effectively ignored.
+      fix: >
+        Keep the timer alive across the wait — store the `Arc<Timer>` for the
+        duration of `waiter.wait()` (the fix stores it so it outlives the wait).
+      expectation: >
+        A reviewer should flag the timer/guard that is constructed but never kept
+        alive.
+    - target: { kind: file, path: kernel/src/ipc/semaphore/system_v/sem.rs }
+      persona: development
+      grounding: "Over-broad removal"
+      severity: major
+      desc: >
+        Cleanup uses `pending_ops.retain(|op| op.pid != pid)`, which removes ALL
+        pending ops for that PID instead of the one specific op, corrupting other
+        in-flight operations.
+      fix: >
+        Match the specific timed-out op by identity, e.g.
+        `!Arc::ptr_eq(&op.status, &status)`.
+      expectation: >
+        A reviewer should flag the over-broad predicate.
+
+- problem_id: 0005-virtio-blk-flush-desc-count
+  commit: 32572e22d9d9c7f49826a577484a0c57a6154f1e
+  source: >
+    PR-derived. Introduced by `32572e22d` ("Implement flush for virtio-blk");
+    fixed by `5f6520d99`, which sets the descriptor count to 2. The change under
+    review is the introducing commit itself, fetched by full SHA from upstream
+    `main` (no local patch).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/comps/virtio/src/device/block/device.rs }
+      persona: development
+      grounding: "Off by one"
+      severity: major
+      desc: >
+        `flush` submits two descriptors (a `req_slice` input and a `resp_slice`
+        output) but hardcodes `let num_used_descs = 1;`, so the
+        `num_used_descs > queue.available_desc()` guard can pass with only one free
+        slot, exhausting the virtqueue.
+      fix: >
+        Set `num_used_descs = 2` to match the two descriptors enqueued.
+      expectation: >
+        A reviewer should flag that the descriptor count does not match the number
+        of buffers enqueued.
+
+- problem_id: 0006-trapframe-pad-alignment
+  commit: f4e29d67c^
+  source: >
+    Fix-anchored. `commit` is the parent of the fix `f4e29d67c` (which
+    restored `_pad` and added the alignment `const_assert!`). Leak-free: at this
+    snapshot nothing in the files names the defect.
+  review_mode:
+    files:
+      - ostd/src/arch/x86/trap/mod.rs
+      - ostd/src/arch/x86/trap/trap.S
+  defects:
+    - target: { kind: file, path: ostd/src/arch/x86/trap/mod.rs }
+      persona: hardware
+      grounding: 16b-align-rsp-before-call
+      severity: critical
+      desc: >
+        `TrapFrame` is not a multiple of 16 bytes, so when the kernel trap path
+        materializes one on the stack and `call`s the Rust trap handler, `%rsp` is
+        misaligned by 8 at the call boundary, violating the System V AMD64 ABI (UB
+        for SSE instructions such as `movaps`).
+      fix: >
+        Restore the padding so `size_of::<TrapFrame>()` is a multiple of 16, and
+        add a `const_assert!` to enforce the invariant.
+      expectation: >
+        A reviewer should flag the struct's size / stack misalignment against the
+        trap-entry path as an ABI/soundness violation — reasoning from the code
+        alone, since at this commit no comment or `const_assert!` points at the
+        invariant. A matching comment may come from the Hardware persona or from
+        the Security persona (as an `unsafe` / soundness hazard).
+
+- problem_id: 0007-getcwd-erange
+  commit: 6678565c80bb615b90ba124ce47beb0642738492
+  source: >
+    Manual. A handcrafted regression of a real historical bug (it predates the
+    current crate layout, so it cannot be sourced from its introducing commit):
+    the commit reintroduces `getcwd` truncating into an undersized user buffer
+    instead of returning `ERANGE`, onto a sound base where `getcwd` is correct. It
+    touches only `getcwd.rs` and leaves the regression test in place, so the change
+    under review contains no hint of the defect. The commit is synthesized and
+    pushed to the fork as a dangling commit; because a fork shares GitHub's object
+    store with upstream, it is fetchable by full SHA from upstream too (no local
+    patch, no `remote` needed).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/syscall/getcwd.rs }
+      persona: security
+      grounding: validate-at-boundaries
+      severity: major
+      desc: >
+        The code clamps the user buffer with `let write_len = len.min(bytes.len())`
+        and writes a truncated path, returning the truncated length, instead of
+        returning `ERANGE` when the user buffer is too small (the Linux `getcwd`
+        contract).
+      fix: >
+        Return `ERANGE` when `bytes.len() > len` instead of clamping with `min()`
+        and truncating.
+      expectation: >
+        A reviewer should flag that silently clamping a user-supplied length hides
+        the "buffer too small" error the syscall must report. A matching comment
+        may come from the Security persona or the Development persona (incorrect
+        error semantics).
+
+- problem_id: 0008-noncompliant-commit-message
+  commit: d4508b8f51a849c1fbb8f5314db49b956a58a60b
+  source: >
+    Manual. A handcrafted commit whose code change is benign but whose subject
+    ("made some changes to getcwd") is vague and past-tense — to exercise
+    commit-message review in `diff` mode. Synthesized commit (not from history),
+    pushed to the fork as a dangling commit; it is fetchable by full SHA from
+    upstream via GitHub's shared fork object store (no local patch, no `remote`
+    needed).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target:
+        kind: commit_message
+      persona: maintainability
+      grounding: imperative-subject
+      severity: minor
+      desc: >
+        The commit subject "made some changes to getcwd" is past-tense and vague:
+        it does not summarize *what* the change does in the imperative mood, as
+        Asterinas requires. (The code change itself — a clarifying comment — is
+        fine; the message is the defect.)
+      fix: >
+        Rewrite the subject in the imperative mood, naming the actual change, e.g.
+        "Document sys_getcwd's user-buffer behavior".
+      expectation: >
+        A reviewer should flag the non-imperative, non-descriptive subject and ask
+        for a specific imperative summary.
+
+- problem_id: 0009-tmpfs-statfs
+  commit: 3749ab3327d1f065fadd1f384db31c06c6c7f761
+  source: >
+    PR-derived. The reviewed change updates `TmpFs::sb` to override tmpfs-visible
+    superblock fields and adds helper functions for default tmpfs limits.
+    The helpers encode the default capacity policy with an unnamed denominator.
+    The change under review is the reviewed commit itself, fetched by full SHA
+    from upstream `asterinas/asterinas` (no local patch).
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/fs/fs_impls/tmpfs/fs.rs }
+      persona: maintainability
+      grounding: no-magic-number
+      severity: minor
+      desc: >
+        The literal `2` encodes the tmpfs default capacity policy in both
+        `default_max_blocks` and `default_max_inodes`, but the policy has no
+        semantic name, making the "50% of memory" rule easy to miss or
+        accidentally change inconsistently.
+      fix: >
+        Introduce a named constant for the policy and use it in both helpers, for
+        example `TMPFS_DEFAULT_CAPACITY_DENOMINATOR`.
+      expectation: >
+        A reviewer should flag the duplicated literal `2` in the tmpfs default
+        block and inode limit helpers as an unnamed capacity policy and ask for a
+        named constant.
+    - target: { kind: file, path: kernel/src/fs/fs_impls/tmpfs/fs.rs }
+      persona: maintainability
+      grounding: backtick-identifiers
+      severity: minor
+      desc: >
+        The new `TmpFs::sb` workaround comment names implementation concepts such
+        as Tmpfs and RamFs as plain prose instead of formatting those identifiers
+        with Markdown backticks, which makes the code-oriented comment
+        inconsistent with the local comment style.
+      fix: >
+        Wrap the code identifiers in backticks in the TODO comment, for example
+        using `TmpFs`/`RamFs` consistently where the comment refers to the Rust
+        types or filesystem implementation names.
+      expectation: >
+        A reviewer should flag that the new tmpfs workaround comment leaves
+        code identifiers such as `RamFs` unformatted and ask for backticks around
+        them.
+    - target: { kind: file, path: kernel/src/fs/vfs/path/mod.rs }
+      persona: maintainability
+      grounding: consistency
+      severity: minor
+      desc: >
+        `Path::fs` is a new public method, but its summary is written as a plain
+        `//` comment, so it will not appear in rustdoc with the rest of the
+        public `Path` API.
+      fix: >
+        Change the summary to a rustdoc comment, for example by replacing the
+        `//` summary with a `///` summary that documents the returned filesystem.
+      expectation: >
+        A reviewer should flag that the public `Path::fs` method uses a plain
+        `//` summary instead of `///` and ask for a rustdoc comment.
+
+- problem_id: 0100-cmdline-maintainability-issues
+  commit: 46bb6b9c58fc3236ea66f8f93fa08fe8744457ae
+  source: >
+    PR-review-derived. Review comments
+    https://github.com/asterinas/asterinas/pull/3010#discussion_r2901089317
+    and
+    https://github.com/asterinas/asterinas/pull/3010#discussion_r2901089321
+    flagged PR commit `46bb6b9c5` ("Add `kernel-parameters` document") for
+    declaring the new `inventory` dependency directly in the member crate instead
+    of through workspace dependencies, for suppressing `dead_code` across the
+    whole cmdline `types` module. The same diff also exposes parsed
+    `CpuListSegment` invariants through public fields. The change under review is
+    that commit, fetched by full SHA from upstream (no local patch), diffed
+    against the supplied base commit `b205cacbf`; the diff adds these
+    maintainability defects but contains no note naming them.
+  review_mode:
+    diff:
+      base: b205cacbf5e5406172e5c7216179c2559c091885
+  defects:
+    - target:
+        kind: file
+        path: kernel/comps/cmdline/Cargo.toml
+        lines: "13"
+      persona: maintainability
+      grounding: workspace-deps
+      severity: minor
+      desc: >
+        `kernel/comps/cmdline/Cargo.toml` declares `inventory` directly with a
+        Git URL and revision. Shared dependencies should be declared once in the
+        workspace `[workspace.dependencies]` table and referenced from member
+        crates with `.workspace = true`; this is especially important here
+        because the same `inventory` crate is already used elsewhere with the
+        same source.
+      fix: >
+        Add `inventory` to the workspace `[workspace.dependencies]` table with
+        the shared Git URL/revision, then use `inventory.workspace = true` in
+        `kernel/comps/cmdline/Cargo.toml` and any other member crate that depends
+        on the same crate.
+      expectation: >
+        A reviewer should flag the direct `inventory` dependency in the member
+        crate and ask for a workspace dependency referenced with
+        `inventory.workspace = true`.
+    - target:
+        kind: file
+        path: kernel/comps/cmdline/src/types.rs
+        lines: "8"
+      persona: maintainability
+      grounding: narrow-lint-suppression
+      severity: minor
+      desc: >
+        `kernel/comps/cmdline/src/types.rs` adds `#![allow(dead_code)]` at module
+        scope, suppressing `dead_code` for every item in the new `types` module.
+        That hides unused-code warnings not only for the currently intentional
+        parser helpers, but also for future accidental additions to the module,
+        making the lint suppression broader than the code that needs it.
+      fix: >
+        Narrow the suppression to the specific item or small block that currently
+        needs it, preferably with `#[expect(dead_code)]` and a short reason if the
+        code is intentionally staged for later use.
+      expectation: >
+        A reviewer should flag the module-wide `#![allow(dead_code)]` and ask for
+        the `dead_code` suppression to be narrowed to the specific item that needs
+        it.
+    - target:
+        kind: file
+        path: kernel/comps/cmdline/src/types.rs
+        lines: "31"
+      persona: maintainability
+      grounding: getter-encapsulation
+      severity: minor
+      desc: >
+        `CpuListSegment` exposes `start`, `end`, `stride`, and `group` as public
+        fields even though the parser enforces invariants such as `start <= end`,
+        nonzero `stride`, and nonzero `group`. Public fields let external code
+        construct invalid segments and make the representation part of the API.
+      fix: >
+        Make the fields private and expose getters, plus a checked constructor if
+        external code needs to construct `CpuListSegment` values.
+      expectation: >
+        A reviewer should flag the public fields on `CpuListSegment` and ask for
+        private fields with getters or another checked interface that preserves
+        the parser invariants.
+
+- problem_id: 0200-i8042-keyboard-controller-protocol
+  commit: 2c4da30fe3dbccef31e92bd940361fb86b4f9f58
+  source: >
+    PR-derived. PR #2054 added i8042 controller support in `2c4da30fe`; review
+    comment `r2158245414` identified that controller I/O is performed without
+    checking the status register before reads or writes. This expanded variant
+    uses the same reviewed surface and covers three protocol/concurrency defects
+    in that diff: the controller error predicate misses single hardware error
+    bits, the IRQ input parser reads port `0x60` before checking for available
+    data, and the IRQ callback path invokes callbacks while holding an
+    IRQ-disabling spinlock. The reviewed surface is that real intermediate
+    commit, fetched by full SHA from the default upstream; the later
+    wait/send/receive helpers are outside the reviewer input.
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/comps/keyboard/src/i8042_chip/controller.rs }
+      persona: development
+      grounding: "Wrong predicate"
+      severity: major
+      desc: >
+        `Status::has_error` uses
+        `contains(Self::SYSTEM_FLAG | Self::TIME_OUT_ERROR | Self::PARITY_ERROR)`.
+        In `bitflags`, `contains` only returns true when all requested bits are
+        set, so a status with only `TIME_OUT_ERROR` or only `PARITY_ERROR` is
+        treated as clean. The expression also includes `SYSTEM_FLAG`, which is a
+        normal POST/status bit rather than an I/O error bit.
+      fix: >
+        Check only real error bits and use an any-bit predicate, for example
+        `self.intersects(Self::TIME_OUT_ERROR | Self::PARITY_ERROR)`, so either
+        hardware error rejects the scancode or controller reply.
+      expectation: >
+        A reviewer should flag that `Status::has_error` uses `contains` over
+        `SYSTEM_FLAG | TIME_OUT_ERROR | PARITY_ERROR`, thereby missing isolated
+        timeout or parity errors and mixing a normal status bit into error
+        detection.
+    - target: { kind: file, path: kernel/comps/keyboard/src/i8042_chip/keyboard.rs }
+      persona: development
+      grounding: "Invalid read"
+      severity: major
+      desc: >
+        `parse_inputkey` reads `DATA_PORT` before checking
+        `status.has_data_to_read()`. On a spurious IRQ1 or any interrupt where
+        the i8042 output buffer is empty, the code reads port `0x60` first and
+        only then notices that no data was available, consuming an undefined or
+        stale byte before returning `InputKey::Ign`.
+      fix: >
+        Read the status register first. Return before touching `DATA_PORT` when
+        the output buffer is empty or the status reports an error, then read the
+        scan code and validate the scan-code error value.
+      expectation: >
+        A reviewer should flag that the IRQ parser reads from port `0x60` before
+        checking `OUTPUT_BUFFER_IS_FULL` and should require the output-buffer
+        status check to happen before `ScanCode::read`.
+    - target: { kind: file, path: kernel/comps/keyboard/src/i8042_chip/keyboard.rs }
+      persona: development
+      grounding: no-io-under-spinlock
+      severity: major
+      desc: >
+        `handle_keyboard_input` iterates `KEYBOARD_CALLBACKS.lock().iter()` and
+        invokes arbitrary callbacks while holding the callback-list spinlock with
+        local IRQs disabled. The registered framebuffer callback can enter the
+        TTY path and echo input back through `FramebufferConsole::send`, so
+        framebuffer/console work can run while the keyboard callback spinlock is
+        held in interrupt context.
+      fix: >
+        Do not call keyboard callbacks while holding the callback-list spinlock.
+        Store callbacks in an RCU/snapshot-friendly structure, or copy stable
+        callback references out under the lock, drop the guard, and then invoke
+        the callbacks.
+      expectation: >
+        A reviewer should flag that the keyboard IRQ handler invokes callbacks
+        under `KEYBOARD_CALLBACKS`'s IRQ-disabling spinlock and require callback
+        dispatch to happen after releasing that lock.
+
+- problem_id: 0300-file-cap-setuid-root-effective
+  commit: f5fc357bbb33de3e2667f217572e65d4bd6fe7e8
+  source: >
+    PR-review-derived. Review comments
+    https://github.com/asterinas/asterinas/pull/3365#discussion_r3458393524
+    and
+    https://github.com/asterinas/asterinas/pull/3365#discussion_r3459392413
+    flagged PR commit `f5fc357b` for deriving exec-time capability sets from a
+    setuid-root transition even when file capabilities are present, and for
+    loading `security.capability` through a normal readable-file xattr path.
+    The current branch also computes capability sets from one executable
+    metadata snapshot and later applies setuid/setgid from a fresh metadata
+    read. The change under review is that
+    original PR commit, fetched by full SHA from upstream; the diff adds these
+    security defects but contains no later corrected condition or regression test
+    naming them.
+  review_mode:
+    diff:
+      base: HEAD^
+  defects:
+    - target: { kind: file, path: kernel/src/process/credentials/credentials_.rs }
+      persona: security
+      grounding: "Privilege escalation"
+      severity: critical
+      desc: >
+        `calculate_capsets_for_exec` computes `file_effective` with `(!no_root
+        && exec_euid.is_root()) || file_capabilities.has_effective_flag()`.
+        That grants a full effective capability set whenever exec makes the
+        effective UID root, even if the executable also carries file
+        capabilities. Linux treats the setuid-root plus file-capability case
+        specially: for a non-root caller executing such a file, the file
+        capabilities suppress the legacy setuid-root full-capability grant,
+        and only the file-capability effective flag should make the permitted
+        set effective.
+      fix: >
+        Base `file_effective` on the same root-special-case predicate used for
+        the permitted and inheritable file sets, so `exec_euid == 0` grants
+        full effective capabilities only when the legacy root rule actually
+        applies. If file capabilities are present for a non-root caller, use
+        the xattr effective flag to decide whether the resulting permitted set
+        becomes effective.
+      expectation: >
+        A reviewer should flag that setuid-root must not grant a full
+        effective capability set when file capabilities are present for a
+        non-root caller; only the file effective flag should make the
+        permitted set effective.
+    - target: { kind: file, path: kernel/src/process/credentials/file_capabilities.rs }
+      persona: security
+      grounding: "Incorrect permission check"
+      severity: major
+      desc: >
+        `FileCapabilities::read_from_inode` now calls `inode.get_xattr(...)`
+        to read `security.capability`. The filesystem `Inode::get_xattr`
+        implementations, such as ext2, perform a normal `MAY_READ` DAC check
+        before looking up the xattr. That check is inappropriate for exec-time
+        file-capability loading: a file can be executable without being
+        readable, for example mode `0111`, and an execute-only file with no
+        `security.capability` xattr should execute normally. With the new
+        path, the read permission check returns `EACCES` before the xattr
+        lookup can return `ENODATA`, so `execve` rejects such programs.
+      fix: >
+        Keep exec-time file-capability lookup on a permission-bypassing xattr
+        path, or provide an internal helper that reads `security.capability`
+        without applying the caller's ordinary file read permission check.
+        Continue treating `ENODATA` and `EOPNOTSUPP` as absence of file
+        capabilities.
+      expectation: >
+        A reviewer should flag that loading `security.capability` during
+        `execve` must not require the executable to be readable; execute-only
+        files without file capabilities must reach the xattr absence case and
+        execute successfully.
+    - target: { kind: file, path: kernel/src/process/execve.rs }
+      persona: security
+      grounding: "TOCTOU race"
+      severity: major
+      desc: >
+        `do_execve` computes `exec_euid` from `elf_file.mode()` and
+        `elf_file.owner()` before the irreversible exec phase, and
+        `prepare_capsets_for_exec` turns that value into cached
+        `ExecCapSets`. Later, `apply_caps_from_exec` calls
+        `set_uid_from_elf` and `set_gid_from_elf`, which re-read the inode
+        mode, owner, and group before installing the already-computed
+        capability sets. If the executable metadata changes between these
+        reads, the final effective UID/GID and the installed capability sets
+        can be derived from different file states.
+      fix: >
+        Use one consistent executable metadata snapshot for both the
+        setuid/setgid credential transition and capability calculation, or
+        recompute the final capability sets after applying the actual UID/GID
+        changes that will be committed. The pre-irreversible phase may still
+        validate file-capability failures, but the no-return phase must not
+        install capability sets derived from stale mode/owner metadata.
+      expectation: >
+        A reviewer should flag that exec capability sets are prepared from one
+        executable mode/owner snapshot while the setuid/setgid transition later
+        re-reads inode metadata, so concurrent metadata changes can make the
+        installed capabilities inconsistent with the final credentials.
+
+- problem_id: 0301-rt-sigprocmask-unblockable-signals
+  commit: 2154124dc46a5e2a1d768ed67dfbe5655da9987a
+  source: >
+    PR-body-derived from PR #2288
+    `https://github.com/asterinas/asterinas/pull/2288#issue-3268551599`. The
+    PR fixes `rt_sigprocmask` so user space cannot block `SIGKILL` or
+    `SIGSTOP`. Files mode uses `2154124dc46a5e2a1d768ed67dfbe5655da9987a`, the
+    parent of mainline fixing commit `8a801676ab2f827e1d6e4d1ec6803261b5e7859c`,
+    because it is the newest buggy snapshot before the `SetMask` branch starts
+    filtering unblockable signals. The same snapshot also decodes `how` before
+    checking whether the user supplied a new mask, and exposes the syscall-local
+    `MaskOp` decode enum unnecessarily.
+  review_mode:
+    files:
+      - kernel/src/syscall/rt_sigprocmask.rs
+  defects:
+    - target: { kind: file, path: kernel/src/syscall/rt_sigprocmask.rs }
+      persona: development
+      grounding: "Incorrect signal semantics"
+      severity: critical
+      desc: >
+        `sys_rt_sigprocmask` sanitizes `read_mask` for `MaskOp::Block`, but
+        the `MaskOp::SetMask` arm stores the user-provided mask verbatim with
+        `sig_mask_ref.store(read_mask, Ordering::Relaxed)`. A caller using
+        `SIG_SETMASK` can therefore place `SIGKILL` or `SIGSTOP` in the
+        thread's blocked signal mask. Linux requires attempts to block these
+        two signals to be silently ignored, so accepting them in the set-mask
+        path can make user tasks unkillable or unstoppable and breaks signal
+        semantics.
+      fix: >
+        Remove `SIGKILL` and `SIGSTOP` from the mask before storing it in the
+        `MaskOp::SetMask` branch. The operation should still return success,
+        matching Linux's silently-ignore behavior for attempts to block these
+        signals.
+      expectation: >
+        A reviewer should flag that every path installing a blocked signal
+        mask, including `SIG_SETMASK`, must preserve the invariant that
+        `SIGKILL` and `SIGSTOP` cannot be blocked.
+    - target: { kind: file, path: kernel/src/syscall/rt_sigprocmask.rs }
+      persona: development
+      grounding: "Incorrect argument validation"
+      severity: major
+      desc: >
+        `sys_rt_sigprocmask` converts `how` with `MaskOp::try_from(how)?`
+        before it checks whether `set_ptr` is null. Linux ignores the `how`
+        argument when `set` is `NULL`, because that call only reads the current
+        signal mask through `oldset`. A call such as
+        `rt_sigprocmask(999, NULL, oldset, 8)` should therefore succeed and
+        report the old mask, but this implementation returns `EINVAL` before
+        it reaches the `oldset_ptr` write.
+      fix: >
+        Delay converting `how` to `MaskOp` until the `set_ptr != 0` path, or
+        pass an `Option<MaskOp>` into the helper so the read-only
+        `set_ptr == 0` case writes `oldset` without validating `how`.
+      expectation: >
+        A reviewer should flag that `rt_sigprocmask` must ignore invalid
+        `how` values when `set` is `NULL`; only calls that install or change a
+        signal mask should validate the operation.
+    - target: { kind: file, path: kernel/src/syscall/rt_sigprocmask.rs }
+      persona: maintainability
+      grounding: narrow-visibility
+      severity: minor
+      desc: >
+        `MaskOp` is declared `pub`, but it is only used inside
+        `kernel/src/syscall/rt_sigprocmask.rs` to decode the syscall's `how`
+        argument. Exposing this syscall-local enum creates an unnecessary
+        module interface for an implementation detail that no other module
+        needs to name.
+      fix: >
+        Make `MaskOp` private unless another module actually needs to use the
+        enum type directly.
+      expectation: >
+        A reviewer should flag that syscall-local decode enums should not be
+        public when all uses are contained in the same source file.

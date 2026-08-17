@@ -4,7 +4,7 @@
 
 [The Learning-Directed OS project](https://ldos.utexas.edu/) is developing the next-generation Machine Learning-based
 Operating System to drive computing infrastructure toward high efficiency and performance (see https://ldos.utexas.edu/
-for more information). 
+for more information).
 
 The project is developing a kernel based on [the Asterinas framekernel](https://asterinas.github.io). We are not
 affiliated with the original authors of Asterinas and we expect our work to diverge from theirs due to very different
@@ -76,7 +76,7 @@ and has launched an experimental distribution,
 
 In 2026, our priority is to advance project maturity toward production readiness,
 specifically targeting standard and confidential virtual machines on x86-64.
-Looking ahead, we will continue to expand functionality and 
+Looking ahead, we will continue to expand functionality and
 harden the system for **mission-critical deployments**
 in data centers, autonomous vehicles, and embodied AI.
 
@@ -194,7 +194,7 @@ for the baseline are in `orpc_baseline.rs`).
 Some project-related configurations have a template being maintained in this repo, named with a `.template` suffix. For example, currently the two being maintained are:
 - `.vscode/settings.template.json`
 - `.devcontainer/devcontainer.template.json`
-Please remove the `.template` to use it as the regular configuration file. The version without the suffix is set to be untracked, so feel free to modify it as your local configuration. 
+Please remove the `.template` to use it as the regular configuration file. The version without the suffix is set to be untracked, so feel free to modify it as your local configuration.
 
 ## The Book
 
@@ -202,7 +202,7 @@ See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about 
 
 ## License
 
-Asterinas's source code and documentation primarily use the 
+Asterinas's source code and documentation primarily use the
 [Mozilla Public License (MPL), Version 2.0](https://github.com/ldos-project/asterinas/blob/main/LICENSE-MPL).
 Select components are under more permissive licenses,
 detailed [here](https://github.com/ldos-project/asterinas/blob/main/.licenserc.yaml). For the rationales behind the choice of MPL, see [here](https://asterinas.github.io/book/index.html#licensing).

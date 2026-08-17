@@ -427,6 +427,57 @@ ninja -C build
 ninja -C build -t targets
 ```
 
+## Debugging Tools
+
+### GDB
+
+[GDB](https://www.sourceware.org/gdb/), the GNU Project debugger, helps developers debug programs by inspecting variables, controlling execution, and analyzing runtime behavior.
+
+#### Installation
+
+```nix
+environment.systemPackages = [ pkgs.gdb ];
+```
+
+#### Verified Usage
+
+The following sample program is used for the verified GDB command sequence:
+
+```c
+{{#include gdb_sample.c}}
+```
+
+The verified GDB command sequence is:
+
+```gdb
+{{#include gdb_commands.gdb}}
+```
+
+```bash
+# Build a debug-friendly test program
+gcc -g -O0 gdb_sample.c -o gdb_sample
+
+# Run the verified GDB command sequence
+gdb -batch -x gdb_commands.gdb ./gdb_sample
+```
+
+### strace
+
+[strace](https://strace.io/) traces interactions between processes and the kernel, which include system calls, signal deliveries, and changes of process state.
+
+#### Installation
+
+```nix
+environment.systemPackages = [ pkgs.strace ];
+```
+
+#### Verified Usage
+
+```bash
+# Trace `ls` and save the syscall log
+strace -o strace.out ls /tmp
+```
+
 ## Editors & IDEs
 
 ### Emacs

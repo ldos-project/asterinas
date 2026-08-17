@@ -3,17 +3,17 @@
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{ProcSym, SymOps},
+        procfs::template::{ProcSym, ProcSymOps},
         vfs::inode::{Inode, SymbolicLink},
     },
     prelude::*,
 };
 
 /// Represents the inode at `/proc/mounts`.
-pub struct MountsSymOps;
+pub(super) struct MountsSymOps;
 
 impl MountsSymOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/root.c#L291>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L466>
@@ -21,7 +21,7 @@ impl MountsSymOps {
     }
 }
 
-impl SymOps for MountsSymOps {
+impl ProcSymOps for MountsSymOps {
     fn read_link(&self) -> Result<SymbolicLink> {
         Ok(SymbolicLink::Plain("self/mounts".to_string()))
     }

@@ -192,10 +192,17 @@ RUN apt update \
     grub2-common \
     libnuma1            `# running dependency for QEMU` \
     libpixman-1-dev     `# running dependency for QEMU` \
+    libsqlite3-dev      `# used by klint` \
+    libssl-dev          `# used by cargo-deps` \
     mtools              `# used by grub-mkrescue` \
     xorriso \
     && apt clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Install claude
+RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install codex
+RUN curl -fsSL https://chatgpt.com/codex/install.sh | sh
 
 # Install Rust with both nightly and stable
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -215,9 +222,15 @@ RUN mkdir -p /github/home \
 # Install cargo tools
 RUN cargo install --locked \
     cargo-binutils \
+    cargo-expand@1.0.122 \
+    cargo-udeps@0.1.61 \
+    lychee@0.24.2 \
     mdbook@0.5.2 \
     mdbook-mermaid@0.17.0 \
     typos-cli@1.39.0
+
+# Install klint. Pin the Klint commit compatible with the Asterinas toolchain.
+RUN cargo install klint --git https://github.com/Rust-for-Linux/klint --rev d2a4d60
 
 # Install QEMU built from the previous stages
 COPY --from=qemu /usr/local/qemu /usr/local/qemu
@@ -241,6 +254,19 @@ COPY --from=grub /usr/local/grub /usr/local/grub
 ENV PATH="/usr/local/grub/bin:${PATH}"
 # Make a symbolic link for `unicode.pf2` from the APT package
 RUN ln -sf /usr/share/grub/unicode.pf2 /usr/local/grub/share/grub/unicode.pf2
+
+# Download and install Firecracker VMM
+RUN ARCH=$(case ${TARGETARCH} in \
+        amd64) echo "x86_64" ;; \
+        arm64) echo "aarch64" ;; \
+        *) ;; \
+    esac) && \
+    if [ -n "${ARCH}" ]; then \
+        curl -L "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-${ARCH}.tgz" \
+            | tar -xz && \
+        install -D -m 755 "release-v1.16.1-${ARCH}/firecracker-v1.16.1-${ARCH}" /usr/local/bin/firecracker && \
+        rm -rf "release-v1.16.1-${ARCH}"; \
+    fi
 
 VOLUME [ "/root/asterinas" ]
 

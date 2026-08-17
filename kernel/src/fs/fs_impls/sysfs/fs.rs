@@ -4,7 +4,6 @@ use spin::Once;
 
 use crate::{
     fs::{
-        Result,
         pseudofs::AnonDeviceId,
         sysfs::{self, inode::SysFsInode},
         utils::systree_inode::SysTreeInodeTy,
@@ -84,6 +83,8 @@ impl FileSystem for SysFs {
 pub(super) struct SysFsType;
 
 impl FsType for SysFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "sysfs"
     }
@@ -92,7 +93,7 @@ impl FsType for SysFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(SysFs::singleton().clone())
     }
 

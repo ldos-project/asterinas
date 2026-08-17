@@ -2,10 +2,10 @@
 
 <!--
 Put system calls such as
-mount, umount2, pivot_root, statfs, fstatfs, truncate, ftruncate, fsync, 
+mount, umount2, pivot_root, statfs, fstatfs, truncate, ftruncate, fsync,
 fdatasync, sync, syncfs, sync_file_range, open_tree, move_mount, fsopen,
-fsconfig, fsmount, fspick, inotify_init, inotify_init1, inotify_add_watch,
-inotify_rm_watch
+fsconfig, fsmount, fspick, listmount, inotify_init, inotify_init1,
+inotify_add_watch, inotify_rm_watch
 under this category.
 -->
 
@@ -59,6 +59,91 @@ Silently-ignored flags:
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/umount.2.html).
+
+## New mount API
+
+### `fsconfig`
+
+Supported functionality in SCML:
+
+```c
+{{#include fsconfig.scml}}
+```
+
+Unsupported commands:
+* `FSCONFIG_SET_BINARY`
+* `FSCONFIG_SET_PATH`
+* `FSCONFIG_SET_PATH_EMPTY`
+* `FSCONFIG_SET_FD`
+* `FSCONFIG_CMD_CREATE_EXCL`
+
+For more information,
+see [the man page](https://man7.org/linux/man-pages/man2/fsconfig.2.html).
+
+### `fsmount`
+
+Supported functionality in SCML:
+
+```c
+{{#include fsmount.scml}}
+```
+
+Silently-ignored mount attributes:
+* `MOUNT_ATTR_NOATIME`
+* `MOUNT_ATTR_NODIRATIME`
+* `MOUNT_ATTR_RELATIME`
+* `MOUNT_ATTR_STRICTATIME`
+
+For more information,
+see [the man page](https://man7.org/linux/man-pages/man2/fsmount.2.html).
+
+### `move_mount`
+
+Supported functionality in SCML:
+
+```c
+{{#include move_mount.scml}}
+```
+
+Unsupported flags:
+* `MOVE_MOUNT_F_SYMLINKS`
+* `MOVE_MOUNT_F_AUTOMOUNTS`
+* `MOVE_MOUNT_T_SYMLINKS`
+* `MOVE_MOUNT_T_AUTOMOUNTS`
+* `MOVE_MOUNT_T_EMPTY_PATH`
+* `MOVE_MOUNT_SET_GROUP`
+* `MOVE_MOUNT_BENEATH`
+
+For more information,
+see [the man page](https://man7.org/linux/man-pages/man2/move_mount.2.html).
+
+## Mount queries
+
+### `listmount`
+
+Supported functionality in SCML:
+
+```c
+{{#include listmount.scml}}
+```
+
+The `req` argument is a `struct mnt_id_req`:
+* `mnt_id` is the parent mount's `unique_id`,
+  or `LSMT_ROOT` (`(uint64_t)-1`) for the current namespace's root mount.
+* `param` is a pagination cursor;
+  only descendants with `unique_id` strictly greater than `param` are returned
+  (strictly less than `param` when `LISTMOUNT_REVERSE` is set).
+* `size` must equal `MNT_ID_REQ_SIZE_VER0` (24);
+  future struct versions are not yet accepted.
+* `spare` must be `0`.
+
+Limitations:
+* Bind-mount visibility filtering (Linux's `is_path_reachable`)
+  is not yet modeled;
+  descendancy is determined by the strict mount parent chain.
+
+For more information,
+see [the man page](https://man7.org/linux/man-pages/man2/listmount.2.html).
 
 ## Event notifications
 

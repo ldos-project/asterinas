@@ -138,3 +138,33 @@ FN_TEST(rename_errno_order)
 	cleanup_test_tree();
 }
 END_TEST()
+
+FN_TEST(rename_dir_replace_nlink)
+{
+	const char *src_parent = BASE_DIR "/src_parent";
+	const char *src_child = BASE_DIR "/src_parent/child";
+	const char *dst_parent = BASE_DIR "/dst_parent";
+	const char *dst_child = BASE_DIR "/dst_parent/child";
+
+	ensure_dir(BASE_DIR);
+	ensure_dir(src_parent);
+	ensure_dir(src_child);
+	ensure_dir(dst_parent);
+	ensure_dir(dst_child);
+
+	struct stat st_before;
+	TEST_SUCC(stat(dst_parent, &st_before));
+
+	TEST_SUCC(rename(src_child, dst_child));
+
+	struct stat st_after;
+	TEST_SUCC(stat(dst_parent, &st_after));
+	TEST_RES(stat(dst_parent, &st_after),
+		 st_after.st_nlink == st_before.st_nlink);
+
+	remove_if_exists(dst_child);
+	remove_if_exists(dst_parent);
+	remove_if_exists(src_parent);
+	remove_if_exists(BASE_DIR);
+}
+END_TEST()

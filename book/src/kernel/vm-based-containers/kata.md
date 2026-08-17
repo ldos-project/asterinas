@@ -1,4 +1,4 @@
-**Note:** The LDOS project is not currently working on kata integration 
+**Note:** The LDOS project is not currently working on kata integration
 and has not actually created the repositories and images discussed here.
 If you want to use kata, please reach out to us and we will discuss
 expanding our support for kata.
@@ -20,9 +20,9 @@ with the stronger isolation boundary of virtual machines.
 It reduces the risk that a compromised workload can affect
 the host or other containers.
 
-This guide uses the
-[Asterinas fork of Kata Containers](https://github.com/ldos-project/kata-containers),
-which carries Asterinas-specific patches, helper scripts,
+The Kata Containers setup used in this guide comes from the
+[Asterinas fork of Kata Containers](https://github.com/ldos-project/kata-containers).
+The fork carries the Asterinas-specific patches, helper scripts,
 and configuration for building, installing, and testing Kata
 with Asterinas as the guest kernel.
 
@@ -34,7 +34,7 @@ The commands in this guide are currently written for x86-64 hosts.
 Verify that the required device nodes exist:
 
 ```bash
-ls /dev/kvm /dev/vhost-vsock
+ls /dev/kvm /dev/vhost-vsock /dev/vhost-net
 ```
 
 If any of them are missing,
@@ -44,18 +44,25 @@ load the matching kernel modules:
 sudo modprobe kvm
 sudo modprobe kvm_intel  # Or use kvm_amd on AMD hosts.
 sudo modprobe vhost_vsock
+sudo modprobe vhost_net
 ```
 
 Then make sure the user running Docker can access
-`/dev/kvm` and `/dev/vhost-vsock`.
+`/dev/kvm`,
+`/dev/vhost-net`,
+and `/dev/vhost-vsock`.
 
 ## Step 2: Enter the Kata-ready environment
 
-Use one of the Docker images below to enter an environment
-that can run Asterinas-powered Kata containers.
-End users should use the prebuilt `ldosproject/kata` image.
-Kernel developers should use the `ldosproject/asterinas` image
-with source mounts.
+We provide the `ldosproject/kata` Docker image,
+which is based on `ldosproject/asterinas` and bundles
+Kata Containers, the Asterinas guest kernel,
+and the Kata configuration.
+The image also provides helper scripts
+under `/root/kata-containers`.
+Use the same image in one of the two ways below:
+End users can run it directly,
+while kernel developers can mount the Asterinas source tree.
 
 ### Step 2.1: Prepare Docker arguments
 
@@ -67,6 +74,7 @@ KATA_DOCKER_ARGS=(
     --privileged
     --device /dev/kvm
     --device /dev/vhost-vsock
+    --device /dev/vhost-net
     --tmpfs /tmp:exec,mode=1777,size=8g
     --tmpfs /var/lib/containerd:exec,mode=755,size=8g
 )
@@ -77,9 +85,10 @@ These flags are required for Kata:
 - `--cgroupns host` shares the host cgroup namespace
   so that `containerd` inside the container can manage Kata workloads.
 - `--privileged` is required for KVM and nested container management.
-- `--device /dev/kvm` and `--device /dev/vhost-vsock`
-  expose the virtualization devices
-  that Kata needs.
+- `--device /dev/kvm`,
+  `--device /dev/vhost-net`,
+  and `--device /dev/vhost-vsock`
+  expose the virtualization devices that Kata needs.
 - `--tmpfs /tmp:exec,...` and `--tmpfs /var/lib/containerd:exec,...`
   give Kata enough temporary storage space to create containers.
 
@@ -96,55 +105,38 @@ to enter an environment with Kata and Asterinas preinstalled:
 docker run -it \
     "${KATA_DOCKER_ARGS[@]}" \
     -w /root/kata-containers \
-    ldosproject/kata:0.17.2-ldos-20260728
+    ldosproject/kata:0.18.0-20260603
 ```
 
-The Docker image includes Kata, the Asterinas guest kernel,
-the Kata configuration,
-and the `tools/kata/` helper scripts in `/root/kata-containers`.
-The command above makes `/root/kata-containers` the working directory.
+The command above makes `/root/kata-containers` the working directory,
+so the `tools/kata/` helper scripts are available
+at the relative paths used below.
 
 After entering the container,
 continue with [Step 3: Start a Kata workload](#step-3-start-a-kata-workload).
 
 #### For kernel developers
 
-Clone the Asterinas fork of Kata Containers,
-then run an `ldosproject/asterinas` Docker container
-with both source trees mounted:
+Run an `ldosproject/kata` Docker container,
+with the Asterinas source tree mounted:
 
 ```bash
 # Assumes the Asterinas source has already been cloned locally.
 ASTERINAS_SRC=$HOME/asterinas
 
-# Clones the Asterinas fork of kata-containers locally as well.
-cd $HOME && git clone https://github.com/ldos-project/kata-containers.git
-KATA_SRC=$HOME/kata-containers
-
 docker run -it \
     "${KATA_DOCKER_ARGS[@]}" \
     -v "${ASTERINAS_SRC}:/root/asterinas" \
-    -v "${KATA_SRC}:/root/kata-containers" \
     -w /root/kata-containers \
-    ldosproject/kata:0.17.2-ldos-20260728
+    ldosproject/kata:0.18.0-20260603
 ```
 
-This setup lets you rebuild the kernel
+This setup allows you to rebuild the kernel
 and test how kernel changes affect Kata workloads.
 The Asterinas source tree is mounted at `/root/asterinas`.
-The Asterinas fork of Kata Containers is mounted at `/root/kata-containers`.
-Use the Asterinas fork for changes to the Asterinas guest-kernel integration
-until those patches, scripts, and configuration are upstreamed.
 The command above makes `/root/kata-containers` the working directory,
 so the `tools/kata/` helper scripts are available
 at the relative paths used below.
-
-Install the Kata dependencies and configuration
-after entering the `ldosproject/asterinas` image:
-
-```bash
-tools/kata/kata_env.sh install
-```
 
 Then continue with [Step 3: Start a Kata workload](#step-3-start-a-kata-workload).
 
@@ -153,7 +145,9 @@ Then continue with [Step 3: Start a Kata workload](#step-3-start-a-kata-workload
 ### Step 3.1: Start services
 
 Start `containerd` and `syslogd`,
-the background services required by Kata:
+the background services required by Kata.
+The service script also prepares the `asterinas` network
+used by the `nerdctl` command below.
 
 ```bash
 tools/kata/kata_services.sh start
@@ -171,12 +165,14 @@ Use `nerdctl` with Kata to start an Alpine container:
 
 ```bash
 nerdctl run \
-    --cgroup-manager cgroupfs \
-    --net none \
     --runtime io.containerd.kata.v2 \
+    --cgroup-manager cgroupfs \
+    --net asterinas \
+    --ip "10.0.2.15" \
+    --entrypoint /bin/sh \
     --name foo \
     -it \
-    docker.io/alpine:latest
+    alpine/curl:8.19.0
 ```
 
 The `nerdctl` flags above are also required:
@@ -184,9 +180,13 @@ The `nerdctl` flags above are also required:
 - `--cgroup-manager cgroupfs` is required because the example runs
   inside a Docker container where the systemd cgroup driver
   is not available.
-- `--net none` is required because Asterinas does not yet support
-  hot-plugged network devices,
-  so workloads inside the guest cannot access the network.
+- `--net asterinas` uses the managed nerdctl network created by
+  `tools/kata/kata_services.sh start`.
+- `--ip "10.0.2.15"` matches the current fixed guest IP
+  expected by the Asterinas networking setup.
+- `--entrypoint /bin/sh` is required for `alpine/curl:8.19.0`
+  because the image's default entrypoint runs `curl`
+  instead of opening a shell.
 
 ### Step 3.3: Verify the guest
 
@@ -200,14 +200,14 @@ cat /etc/alpine-release
 ```
 
 The `/proc/cmdline` output should contain the Asterinas kernel image path.
-For the prebuilt `ldosproject/kata` image,
+If you are using the image's default kernel,
 look for:
 
 ```text
 /opt/kata/share/kata-containers/aster-kernel-osdk-bin.qemu_elf
 ```
 
-For a locally built kernel,
+If you configured a locally built kernel in Step 4,
 look for:
 
 ```text
@@ -217,6 +217,12 @@ look for:
 This is the most direct check that Kata booted an Asterinas guest kernel.
 The `/etc/alpine-release` output should print the Alpine version
 of the container rootfs.
+
+You can also check external network access from the guest:
+
+```bash
+curl https://asterinas.github.io/
+```
 
 ### Step 3.4: Clean up
 
@@ -232,7 +238,6 @@ This step is for the kernel-developer setup only:
 it requires the Asterinas source tree,
 so it assumes you entered the Kata-ready environment through the
 [For kernel developers](#for-kernel-developers) setup in Step 2.2.
-It is not available from the prebuilt `ldosproject/kata` image.
 
 Build the kernel first:
 

@@ -27,7 +27,7 @@ use x86_64::{
 };
 
 use super::RawUserContext;
-use crate::mm::PagingConstsTrait;
+use crate::{irq::DisabledLocalIrqGuard, mm::PagingConstsTrait};
 
 global_asm!(
     include_str!("syscall.S"),
@@ -80,12 +80,11 @@ impl RawUserContext {
     ///
     /// If `trap_num` is `0x100`, it will go user by `sysret` (`rcx` and `r11` are dropped),
     /// otherwise it will use `iret`.
-    pub(in crate::arch) fn run(&mut self) {
+    pub(in crate::arch) fn run(&mut self, guard: DisabledLocalIrqGuard) {
         // Return to userspace with interrupts disabled. Otherwise, interrupts
         // after executing `swapgs` will mess up the CPU state.
-        crate::arch::irq::disable_local();
-        unsafe {
-            syscall_return(self);
-        }
+        core::mem::forget(guard);
+
+        unsafe { syscall_return(self) };
     }
 }

@@ -22,6 +22,7 @@ SUBDIRS := \
 	process \
 	scripts \
 	security \
+	time \
 	raid1 \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)

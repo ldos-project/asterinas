@@ -30,14 +30,18 @@ pub use self::{
 };
 #[cfg(not(baseline_asterinas))]
 use crate::orpc::framework::Server;
-use crate::{arch::task::TaskContext, irq::InterruptLevel, prelude::*};
+use crate::{
+    arch::task::TaskContext,
+    irq::{DisabledLocalIrqGuard, InterruptLevel},
+    prelude::*,
+};
 
-static PRE_SCHEDULE_HANDLER: Once<fn()> = Once::new();
+static PRE_SCHEDULE_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
 /// Injects a handler to be executed before scheduling.
-pub fn inject_pre_schedule_handler(handler: fn()) {
+pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
     PRE_SCHEDULE_HANDLER.call_once(|| handler);
 }
 
@@ -246,9 +250,10 @@ impl TaskOptions {
         // the context switch.
         //
         // According to the System V AMD64 ABI, the stack pointer should be aligned
-        // to at least 16 bytes. And a larger alignment is needed if larger arguments
-        // are passed to the function. The `kernel_task_entry` function does not
-        // have any arguments, so we only need to align the stack pointer to 16 bytes.
+        // to at least 16 bytes. A larger alignment is needed if larger arguments
+        // are passed to the function, which is not the case for the
+        // `kernel_task_entry` function because it does not have any arguments. So
+        // we only need to align the stack pointer to 16 bytes.
         ctx.set_stack_pointer(kstack.end_vaddr() - 16);
 
         let new_task = Task {
@@ -257,10 +262,10 @@ impl TaskOptions {
             local_data: ForceSync::new(self.local_data.unwrap_or_else(|| Box::new(()))),
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
+            switched_to_cpu: AtomicBool::new(false),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
             },
-            switched_to_cpu: AtomicBool::new(false),
             id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             #[cfg(not(baseline_asterinas))]
             server: ForceSync::new(RefCell::new(None)),

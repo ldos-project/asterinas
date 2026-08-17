@@ -9,7 +9,10 @@ use crate::{
         vfs::path::{AT_FDCWD, EmptyPathStr, FsPath, Path},
     },
     prelude::*,
-    process::do_execve,
+    process::{
+        do_execve,
+        posix_thread::{ThreadName, derive_thread_name},
+    },
 };
 
 pub fn sys_execve(
@@ -19,12 +22,19 @@ pub fn sys_execve(
     ctx: &Context,
     user_context: &mut UserContext,
 ) -> Result<SyscallReturn> {
-    let elf_file = {
+    let (elf_file, thread_name) = {
         let flags = OpenFlags::empty();
         lookup_executable_file(AT_FDCWD, filename_ptr, flags, ctx)?
     };
 
-    do_execve(elf_file, argv_ptr_ptr, envp_ptr_ptr, ctx, user_context)?;
+    do_execve(
+        elf_file,
+        thread_name,
+        argv_ptr_ptr,
+        envp_ptr_ptr,
+        ctx,
+        user_context,
+    )?;
     Ok(SyscallReturn::NoReturn)
 }
 
@@ -37,13 +47,20 @@ pub fn sys_execveat(
     ctx: &Context,
     user_context: &mut UserContext,
 ) -> Result<SyscallReturn> {
-    let elf_file = {
+    let (elf_file, thread_name) = {
         let flags = OpenFlags::from_bits(flags)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
         lookup_executable_file(dfd, filename_ptr, flags, ctx)?
     };
 
-    do_execve(elf_file, argv_ptr_ptr, envp_ptr_ptr, ctx, user_context)?;
+    do_execve(
+        elf_file,
+        thread_name,
+        argv_ptr_ptr,
+        envp_ptr_ptr,
+        ctx,
+        user_context,
+    )?;
     Ok(SyscallReturn::NoReturn)
 }
 
@@ -52,13 +69,13 @@ fn lookup_executable_file(
     filename_ptr: Vaddr,
     flags: OpenFlags,
     ctx: &Context,
-) -> Result<Path> {
+) -> Result<(Path, ThreadName)> {
     let filename = ctx
         .user_space()
         .read_cstring(filename_ptr, MAX_FILENAME_LEN)?;
 
+    let filename = filename.to_string_lossy();
     let path = {
-        let filename = filename.to_string_lossy();
         let fs_path = FsPath::from_fd_at(dfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
         let fs_ref = ctx.thread_local.borrow_fs();
@@ -70,7 +87,16 @@ fn lookup_executable_file(
         }
     };
 
-    Ok(path)
+    // For a non-empty `filename`, Linux derives the thread name from the
+    // user-supplied exec path before symlink resolution. `execveat` with
+    // `AT_EMPTY_PATH` has no such path, so fall back to the resolved file name.
+    let thread_name = if filename.is_empty() {
+        derive_thread_name(&path.name())
+    } else {
+        derive_thread_name(&filename)
+    };
+
+    Ok((path, thread_name))
 }
 
 bitflags::bitflags! {

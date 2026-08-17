@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use aster_bigtcp::{
     socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption},
+    time::Duration,
     wire::IpEndpoint,
 };
 use connected::{ConnectedStream, close_and_linger};
@@ -12,7 +11,7 @@ use init::InitStream;
 use listen::ListenStream;
 use observer::StreamObserver;
 use options::{
-    Congestion, DeferAccept, Inq, KEEPALIVE_INTERVAL, KeepIdle, MaxSegment, NoDelay, SynCnt,
+    Congestion, DeferAccept, Inq, KeepCnt, KeepIdle, KeepIntvl, MaxSegment, NoDelay, SynCnt,
     UserTimeout, WindowClamp,
 };
 use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
@@ -20,12 +19,16 @@ use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
 use super::{
-    addr::UNSPECIFIED_LOCAL_ENDPOINT,
+    addr::IpAddressFamily,
+    ioctl::ipv4_ioctl,
     options::{IpOptionSet, SetIpLevelOption},
 };
 use crate::{
     events::IoEvents,
-    fs::{file::FileLike, pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, FileLike, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::{
         iface::Iface,
         socket::{
@@ -36,14 +39,16 @@ use crate::{
             },
             private::SocketPrivate,
             util::{
-                MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
-                options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+                MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
+                options::{
+                    GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                },
             },
         },
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    util::{MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, ioctl::RawIoctl, net::SockType},
 };
 
 mod connected;
@@ -59,11 +64,12 @@ pub struct StreamSocket {
     // FIXME: We perform userspace reads/writes when holding the spin locks (e.g., this state lock
     // and other locks in `aster-bigtcp`), which will break the atomic mode.
     state: RwLock<Takeable<State>>,
+    family: IpAddressFamily,
     options: RwLock<OptionSet>,
+    timeouts: SocketTimeouts,
 
-    is_nonblocking: AtomicBool,
     pollee: Pollee,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 enum State {
@@ -93,31 +99,60 @@ impl OptionSet {
     }
 
     fn raw(&self) -> RawTcpOption {
+        let keep_alive_interval = Duration::from_secs(self.tcp.keep_intvl() as u64);
+
         RawTcpOption {
-            keep_alive: self.socket.keep_alive().then_some(KEEPALIVE_INTERVAL),
+            keep_alive: self.socket.keep_alive().then_some(keep_alive_interval),
             is_nagle_enabled: !self.tcp.no_delay(),
         }
     }
 }
 
 impl StreamSocket {
-    pub fn new(is_nonblocking: bool) -> Arc<Self> {
+    pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Init(init_stream))),
+            family,
             options: RwLock::new(OptionSet::new()),
-            is_nonblocking: AtomicBool::new(is_nonblocking),
+            timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
 
-    fn new_accepted(connected_stream: ConnectedStream) -> Arc<Self> {
+    fn new_accepted(
+        connected_stream: ConnectedStream,
+        family: IpAddressFamily,
+        listener_options: &OptionSet,
+        listener_timeouts: &SocketTimeouts,
+        is_nonblocking: bool,
+    ) -> Arc<Self> {
         let options = connected_stream.raw_with(|raw_tcp_socket| {
             let mut options = OptionSet::new();
 
-            if raw_tcp_socket.keep_alive().is_some() {
+            // Inherit socket options from `raw_tcp_socket` first, then fall
+            // back to `listener_options` for options the raw socket cannot
+            // expose.
+            //
+            // The raw socket is created when a connection arrives, before
+            // `accept()` returns it. If the listener's options are changed
+            // after that but before `accept()` returns, using only
+            // `listener_options` would give the accepted socket "new" options
+            // while its raw socket still has the "old" ones.
+
+            if let Some(interval) = raw_tcp_socket.keep_alive() {
                 options.socket.set_keep_alive(true);
+                options.tcp.set_keep_intvl(interval.secs() as u32);
+            } else {
+                options
+                    .tcp
+                    .set_keep_intvl(listener_options.tcp.keep_intvl());
             }
 
             if !raw_tcp_socket.nagle_enabled() {
@@ -132,12 +167,19 @@ impl StreamSocket {
         let pollee = Pollee::new();
         connected_stream.init_observer(StreamObserver::new(pollee.clone()));
 
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
+
         Arc::new(Self {
-            options: RwLock::new(options),
             state: RwLock::new(Takeable::new(State::Connected(connected_stream))),
-            is_nonblocking: AtomicBool::new(false),
+            family,
+            options: RwLock::new(options),
+            timeouts: listener_timeouts.clone(),
             pollee,
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
 
@@ -239,6 +281,7 @@ impl StreamSocket {
 
             let (target_state, iface_to_poll) = match init_stream.connect(
                 remote_endpoint,
+                self.family,
                 &raw_option,
                 options.socket.reuse_addr(),
                 StreamObserver::new(self.pollee.clone()),
@@ -294,7 +337,7 @@ impl StreamSocket {
         }
     }
 
-    fn try_accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn try_accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         let state = self.read_updated_state();
 
         let State::Listen(listen_stream) = state.as_ref() else {
@@ -303,7 +346,14 @@ impl StreamSocket {
 
         let accepted = listen_stream.try_accept().map(|connected_stream| {
             let remote_endpoint = connected_stream.remote_endpoint();
-            let accepted_socket = Self::new_accepted(connected_stream);
+            let listener_options = self.options.read();
+            let accepted_socket = Self::new_accepted(
+                connected_stream,
+                self.family,
+                &listener_options,
+                &self.timeouts,
+                is_nonblocking,
+            );
             (accepted_socket as _, remote_endpoint.into())
         });
         let iface_to_poll = listen_stream.iface().clone();
@@ -318,7 +368,7 @@ impl StreamSocket {
     fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
+        flags: RecvFlags,
     ) -> Result<(usize, SocketAddr)> {
         let state = self.read_updated_state();
 
@@ -352,7 +402,7 @@ impl StreamSocket {
         Ok((recv_bytes, remote_endpoint.into()))
     }
 
-    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendRecvFlags) -> Result<usize> {
+    fn try_send(&self, reader: &mut dyn MultiRead, flags: SendFlags) -> Result<usize> {
         let state = self.read_updated_state();
 
         let connected_stream = match state.as_ref() {
@@ -419,11 +469,20 @@ impl Pollable for StreamSocket {
 
 impl SocketPrivate for StreamSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
+        self.common.is_nonblocking()
     }
 
-    fn set_nonblocking(&self, nonblocking: bool) {
-        self.is_nonblocking.store(nonblocking, Ordering::Relaxed);
+    fn protocol_ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        // Handle common IPv4/IPv6 ioctl commands.
+        match self.family {
+            IpAddressFamily::IPv4 => ipv4_ioctl(raw_ioctl),
+            IpAddressFamily::IPv6 => {
+                // TODO: Add support for IPv6 ioctl commands.
+                return_errno_with_message!(Errno::ENOTTY, "the socket ioctl command is unknown")
+            }
+        }
+
+        // Handle ioctl commands that require TCP-specific handling.
     }
 }
 
@@ -437,7 +496,7 @@ impl Socket for StreamSocket {
         };
 
         let can_reuse = self.options.read().socket.reuse_addr();
-        init_stream.bind(&endpoint, can_reuse)
+        init_stream.bind(&endpoint, self.family, can_reuse)
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
@@ -447,7 +506,14 @@ impl Socket for StreamSocket {
             return result;
         }
 
-        self.wait_events(IoEvents::OUT, None, || self.check_connect())
+        let send_timeout = self.timeouts.send_timeout();
+        self.wait_events(IoEvents::OUT, send_timeout.as_ref(), || {
+            self.check_connect()
+        })
+        .map_err(|err| match err.error() {
+            Errno::ETIME => Error::with_message(Errno::EINPROGRESS, "the socket timeout expired"),
+            _ => err,
+        })
     }
 
     fn listen(&self, backlog: usize) -> Result<()> {
@@ -489,8 +555,10 @@ impl Socket for StreamSocket {
         })
     }
 
-    fn accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
-        self.block_on(IoEvents::IN, || self.try_accept())
+    fn accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+        self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+            self.try_accept(is_nonblocking)
+        })
     }
 
     fn shutdown(&self, cmd: SockShutdownCmd) -> Result<()> {
@@ -518,7 +586,7 @@ impl Socket for StreamSocket {
         let local_endpoint = match state.as_ref() {
             State::Init(init_stream) => init_stream
                 .local_endpoint()
-                .unwrap_or(UNSPECIFIED_LOCAL_ENDPOINT),
+                .unwrap_or_else(|| self.family.unspecified_endpoint()),
             State::Connecting(connecting_stream) => connecting_stream.local_endpoint(),
             State::Listen(listen_stream) => listen_stream.local_endpoint(),
             State::Connected(connected_stream) => connected_stream.local_endpoint(),
@@ -542,7 +610,7 @@ impl Socket for StreamSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -562,7 +630,9 @@ impl Socket for StreamSocket {
             warn!("sending control message is not supported");
         }
 
-        self.block_on(IoEvents::OUT, || self.try_send(reader, flags))
+        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+            self.try_send(reader, flags)
+        })
 
         // TODO: Trigger `SIGPIPE` if the error code is `EPIPE` and `MSG_NOSIGNAL` is not specified
     }
@@ -570,14 +640,17 @@ impl Socket for StreamSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (received_bytes, _) = self.block_on(IoEvents::IN, || self.try_recv(writer, flags))?;
+        let (received_bytes, _) =
+            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+                self.try_recv(writer, flags)
+            })?;
 
         // TODO: Receive control message
 
@@ -585,7 +658,7 @@ impl Socket for StreamSocket {
         // peer address is ignored for connected socket.
         let message_header = MessageHeader::new(None, Vec::new());
 
-        Ok((received_bytes, message_header))
+        Ok((RecvOutput::new_for_stream(received_bytes), message_header))
     }
 
     fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
@@ -601,7 +674,10 @@ impl Socket for StreamSocket {
         let options = self.options.read();
 
         // Deal with socket-level options
-        match options.socket.get_option(option, state.as_ref()) {
+        match options
+            .socket
+            .get_option(option, &(state.as_ref(), &self.timeouts))
+        {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res,
         }
@@ -638,6 +714,14 @@ impl Socket for StreamSocket {
             tcp_keep_idle @ KeepIdle => {
                 let keep_idle = options.tcp.keep_idle();
                 tcp_keep_idle.set(keep_idle);
+            }
+            tcp_keep_intvl @ KeepIntvl => {
+                let keep_intvl = options.tcp.keep_intvl();
+                tcp_keep_intvl.set(keep_intvl);
+            }
+            tcp_keep_cnt @ KeepCnt => {
+                let keep_cnt = options.tcp.keep_cnt();
+                tcp_keep_cnt.set(keep_cnt);
             }
             tcp_syn_cnt @ SynCnt => {
                 let syn_cnt = options.tcp.syn_cnt();
@@ -678,7 +762,12 @@ impl Socket for StreamSocket {
         let mut options = self.options.write();
 
         // Deal with socket-level options
-        let need_iface_poll = match options.socket.set_option(option, state.as_ref()) {
+        let socket_option_result = {
+            let OptionSet { socket, tcp, .. } = &mut *options;
+            socket.set_option(option, &(state.as_ref(), &*tcp, &self.timeouts))
+        };
+
+        let need_iface_poll = match socket_option_result {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
                 match options.ip.set_option(option, state.as_ref()) {
@@ -706,8 +795,8 @@ impl Socket for StreamSocket {
         Ok(())
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }
 
@@ -748,6 +837,35 @@ fn do_tcp_setsockopt(
             options.tcp.set_keep_idle(*keepidle);
 
             // TODO: Track when the socket becomes idle to actually support keep idle.
+        }
+        tcp_keep_intvl @ KeepIntvl => {
+            // Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/net/tcp.h#L168>
+            const MIN_KEEP_INTVL: u32 = 1;
+            const MAX_KEEP_INTVL: u32 = 32767;
+
+            let keepintvl = tcp_keep_intvl.get().unwrap();
+            if *keepintvl < MIN_KEEP_INTVL || *keepintvl > MAX_KEEP_INTVL {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "the keepalive interval is out of bounds"
+                );
+            }
+            options.tcp.set_keep_intvl(*keepintvl);
+
+            return Ok(state.set_keep_alive(options.socket.keep_alive(), *keepintvl));
+        }
+        tcp_keep_cnt @ KeepCnt => {
+            // Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/net/tcp.h#L169>
+            const MIN_KEEP_CNT: u8 = 1;
+            const MAX_KEEP_CNT: u8 = 127;
+
+            let keepcnt = tcp_keep_cnt.get().unwrap();
+            if *keepcnt < MIN_KEEP_CNT || *keepcnt > MAX_KEEP_CNT {
+                return_errno_with_message!(Errno::EINVAL, "the keepalive count is out of bounds");
+            }
+            options.tcp.set_keep_cnt(*keepcnt);
+
+            // TODO: Track the keepalive count in the underlying TCP socket.
         }
         tcp_syn_cnt @ SynCnt => {
             const MAX_TCP_SYN_CNT: u8 = 127;
@@ -821,15 +939,7 @@ impl State {
             State::Listen(listen_stream) => Some(listen_stream.iface()),
         }
     }
-}
 
-impl GetSocketLevelOption for State {
-    fn is_listening(&self) -> bool {
-        matches!(self, Self::Listen(_))
-    }
-}
-
-impl SetSocketLevelOption for State {
     fn set_reuse_addr(&self, reuse_addr: bool) {
         let bound_port = match self {
             State::Init(init_stream) => {
@@ -849,17 +959,41 @@ impl SetSocketLevelOption for State {
         bound_port.set_can_reuse(reuse_addr);
     }
 
-    fn set_keep_alive(&self, keep_alive: bool) -> NeedIfacePoll {
-        let interval = if keep_alive {
-            Some(KEEPALIVE_INTERVAL)
-        } else {
-            None
-        };
+    fn set_keep_alive(&self, is_keep_alive_enabled: bool, keep_intvl: u32) -> NeedIfacePoll {
+        let interval = is_keep_alive_enabled.then(|| Duration::from_secs(keep_intvl as u64));
 
         let set_keepalive = |raw_socket: &dyn RawTcpSetOption| raw_socket.set_keep_alive(interval);
 
         self.set_raw_option(set_keepalive)
             .unwrap_or(NeedIfacePoll::FALSE)
+    }
+}
+
+impl GetSocketLevelOption for (&State, &SocketTimeouts) {
+    fn socket_type(&self) -> SockType {
+        SockType::SOCK_STREAM
+    }
+
+    fn is_listening(&self) -> bool {
+        matches!(self.0, State::Listen(_))
+    }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.1)
+    }
+}
+
+impl SetSocketLevelOption for (&State, &TcpOptionSet, &SocketTimeouts) {
+    fn set_reuse_addr(&self, reuse_addr: bool) {
+        self.0.set_reuse_addr(reuse_addr);
+    }
+
+    fn set_keep_alive(&self, keep_alive: bool) -> NeedIfacePoll {
+        self.0.set_keep_alive(keep_alive, self.1.keep_intvl())
+    }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.2)
     }
 }
 

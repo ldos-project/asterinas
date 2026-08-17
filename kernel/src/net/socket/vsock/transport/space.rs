@@ -6,7 +6,7 @@ use aster_virtio::device::socket::{
     header::{VirtioVsockHdr, VirtioVsockOp, VirtioVsockShutdownFlags, VirtioVsockType},
     packet::{RxPacket, TxPacket},
 };
-use ostd::sync::{PreemptDisabled, SpinLock};
+use ostd::sync::PreemptDisabled;
 use spin::Once;
 
 use crate::{
@@ -67,7 +67,7 @@ impl VsockSpace {
         bound_port: BoundPort,
         remote_addr: VsockSocketAddr,
         pollee: &Pollee,
-    ) -> core::result::Result<Connection, (Error, BoundPort)> {
+    ) -> Result<Connection, (Error, BoundPort)> {
         use alloc::collections::btree_map::Entry;
 
         let mut sockets = self.sockets.lock();
@@ -116,7 +116,7 @@ impl VsockSpace {
         bound_port: BoundPort,
         backlog: usize,
         pollee: &Pollee,
-    ) -> core::result::Result<Listener, (Error, BoundPort)> {
+    ) -> Result<Listener, (Error, BoundPort)> {
         use alloc::collections::btree_map::Entry;
 
         let mut sockets = self.sockets.lock();

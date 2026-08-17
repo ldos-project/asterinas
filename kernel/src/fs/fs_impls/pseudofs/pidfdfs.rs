@@ -15,6 +15,11 @@ use crate::{
     process::{Gid, Uid},
 };
 
+pub(super) fn init() {
+    // Touch the mount node to trigger the initialization of all singletons.
+    let _ = PidfdFs::mount_node();
+}
+
 pub struct PidfdFs {
     _private: (),
 }
@@ -40,7 +45,7 @@ impl PidfdFs {
     pub fn mount_node() -> &'static Arc<Mount> {
         static PIDFDFS_MOUNT: Once<Arc<Mount>> = Once::new();
 
-        PIDFDFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()))
+        PIDFDFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()).unwrap())
     }
 
     /// Returns the shared inode of the pidfd file system.

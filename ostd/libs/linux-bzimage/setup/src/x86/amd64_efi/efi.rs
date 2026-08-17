@@ -4,7 +4,7 @@ use core::{ffi::CStr, mem::MaybeUninit};
 
 use boot::{AllocateType, open_protocol_exclusive};
 use linux_boot_params::BootParams;
-use uefi::{boot::exit_boot_services, mem::memory_map::MemoryMap, prelude::*};
+use uefi::{mem::memory_map::MemoryMap, prelude::*, proto::BootPolicy};
 use uefi_raw::table::system::SystemTable;
 
 use super::decoder::decode_payload;
@@ -12,7 +12,7 @@ use crate::x86::amd64_efi::alloc::alloc_pages;
 
 pub(super) const PAGE_SIZE: u64 = 4096;
 
-/// SAFETY: The name does not collide with other symbols.
+// SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 unsafe extern "sysv64" fn main_efi_common64(
     handle: Handle,
@@ -105,10 +105,9 @@ fn efi_phase_boot(boot_params: &mut BootParams) {
 fn load_cmdline() -> Option<&'static CStr> {
     uefi::println!("[EFI stub] Loading the cmdline");
 
-    let loaded_image = open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
-        uefi::boot::image_handle(),
-    )
-    .unwrap();
+    let loaded_image =
+        open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(boot::image_handle())
+            .unwrap();
 
     let Some(load_options) = loaded_image.load_options_as_bytes() else {
         uefi::println!("[EFI stub] Warning: No cmdline is available!");
@@ -171,12 +170,12 @@ fn load_initrd() -> Option<&'static [u8]> {
             .unwrap()
     };
 
-    let Ok(handle) = uefi::boot::locate_device_path::<LoadFile2>(&mut device_path) else {
+    let Ok(handle) = boot::locate_device_path::<LoadFile2>(&mut device_path) else {
         uefi::println!("[EFI stub] Warning: Failed to locate the initrd device!");
         return None;
     };
 
-    let Ok(mut load_file2) = uefi::boot::open_protocol_exclusive::<LoadFile2>(handle) else {
+    let Ok(mut load_file2) = open_protocol_exclusive::<LoadFile2>(handle) else {
         uefi::println!("[EFI stub] Warning: Failed to open the initrd protocol!");
         return None;
     };
@@ -187,12 +186,12 @@ fn load_initrd() -> Option<&'static [u8]> {
         (load_file2.0.load_file)(
             &mut load_file2.0,
             device_path.as_ffi_ptr().cast(),
-            false, /* boot_policy */
+            BootPolicy::ExactMatch.into(),
             &mut size,
             core::ptr::null_mut(),
         )
     };
-    if status != uefi::Status::BUFFER_TOO_SMALL {
+    if status != Status::BUFFER_TOO_SMALL {
         uefi::println!("[EFI stub] Warning: Failed to get the initrd size!");
         return None;
     }
@@ -203,7 +202,7 @@ fn load_initrd() -> Option<&'static [u8]> {
         (load_file2.0.load_file)(
             &mut load_file2.0,
             device_path.as_ffi_ptr().cast(),
-            false, /* boot_policy */
+            BootPolicy::ExactMatch.into(),
             &mut size,
             initrd.as_mut_ptr().cast(),
         )
@@ -229,11 +228,11 @@ fn load_initrd() -> Option<&'static [u8]> {
 }
 
 fn find_rsdp_addr() -> Option<*const ()> {
-    use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
+    use uefi::table::cfg::ConfigTableEntry;
 
     // Prefer ACPI2 over ACPI.
-    for acpi_guid in [ACPI2_GUID, ACPI_GUID] {
-        if let Some(rsdp_addr) = uefi::system::with_config_table(|table| {
+    for acpi_guid in [ConfigTableEntry::ACPI2_GUID, ConfigTableEntry::ACPI_GUID] {
+        if let Some(rsdp_addr) = system::with_config_table(|table| {
             table
                 .iter()
                 .find(|entry| entry.guid == acpi_guid)
@@ -255,7 +254,7 @@ fn fill_screen_info(screen_info: &mut linux_boot_params::ScreenInfo) {
         proto::console::gop::{GraphicsOutput, PixelFormat},
     };
 
-    let Ok(handle) = uefi::boot::get_handle_for_protocol::<GraphicsOutput>() else {
+    let Ok(handle) = boot::get_handle_for_protocol::<GraphicsOutput>() else {
         uefi::println!("[EFI stub] Warning: Failed to locate the graphics handle!");
         return;
     };
@@ -274,7 +273,7 @@ fn fill_screen_info(screen_info: &mut linux_boot_params::ScreenInfo) {
         open_protocol::<GraphicsOutput>(
             OpenProtocolParams {
                 handle,
-                agent: uefi::boot::image_handle(),
+                agent: boot::image_handle(),
                 controller: None,
             },
             OpenProtocolAttributes::GetProtocol,
@@ -316,7 +315,7 @@ fn fill_screen_info(screen_info: &mut linux_boot_params::ScreenInfo) {
 unsafe fn efi_phase_runtime(boot_params: &mut BootParams) -> ! {
     uefi::println!("[EFI stub] Exiting EFI boot services");
     // SAFETY: The safety is upheld by the caller.
-    let memory_map = unsafe { exit_boot_services(uefi::table::boot::MemoryType::LOADER_DATA) };
+    let memory_map = unsafe { boot::exit_boot_services(Some(boot::MemoryType::LOADER_DATA)) };
 
     crate::println!(
         "[EFI stub] Processing {} memory map entries",
@@ -388,11 +387,9 @@ unsafe fn efi_phase_runtime(boot_params: &mut BootParams) -> ! {
     unsafe { super::call_aster_entrypoint(super::ASTER_ENTRY_POINT, boot_params) }
 }
 
-fn parse_memory_type(
-    mem_type: uefi::table::boot::MemoryType,
-) -> Option<linux_boot_params::E820Type> {
+fn parse_memory_type(mem_type: boot::MemoryType) -> Option<linux_boot_params::E820Type> {
     use linux_boot_params::E820Type;
-    use uefi::table::boot::MemoryType;
+    use uefi::boot::MemoryType;
 
     match mem_type {
         // UEFI Specification, 7.2 Memory Allocation Services:

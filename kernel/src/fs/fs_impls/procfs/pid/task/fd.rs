@@ -13,13 +13,14 @@ use crate::{
             mkmod,
         },
         procfs::template::{
-            DirOps, FileOps, ListedEntry, ProcDir, ProcFile, ProcSym, ReaddirEntry, SymOps,
-            keyed_readdir_entries, visit_readdir_entries,
+            ListedEntry, ProcDir, ProcDirOps, ProcFile, ProcFileOps, ProcSym, ProcSymOps,
+            ReaddirEntry, keyed_readdir_entries, visit_readdir_entries,
         },
         vfs::inode::{Inode, RevalidationPolicy, SymbolicLink},
     },
     prelude::*,
     process::posix_thread::AsPosixThread,
+    thread::Thread,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/fd` (and also `/proc/[pid]/fd`).
@@ -29,7 +30,7 @@ pub(super) struct FdDirOps<T> {
 }
 
 impl<T: FdOps> FdDirOps<T> {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         ProcDir::new(
             Self {
                 dir: dir.clone(),
@@ -42,7 +43,11 @@ impl<T: FdOps> FdDirOps<T> {
     }
 }
 
-impl<T: FdOps> DirOps for FdDirOps<T> {
+impl<T: FdOps> ProcDirOps for FdDirOps<T> {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.dir.thread()
+    }
+
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         let file_desc = if let Ok(raw_fd) = name.parse::<RawFileDesc>()
             && let Ok(file_desc) = FileDesc::try_from(raw_fd)
@@ -224,7 +229,11 @@ impl FdOps for FileSymOps {
     }
 }
 
-impl SymOps for FileSymOps {
+impl ProcSymOps for FileSymOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.tid_dir_ops.thread()
+    }
+
     fn read_link(&self) -> Result<SymbolicLink> {
         let Some(thread) = self.tid_dir_ops.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
@@ -287,7 +296,11 @@ impl FdOps for FileInfoOps {
     }
 }
 
-impl FileOps for FileInfoOps {
+impl ProcFileOps for FileInfoOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.tid_dir_ops.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let Some(thread) = self.tid_dir_ops.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");

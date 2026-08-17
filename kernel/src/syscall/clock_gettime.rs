@@ -10,7 +10,7 @@ use crate::{
     prelude::*,
     process::{pid_table, posix_thread::AsPosixThread},
     time::{
-        Clock, clockid_t,
+        clockid_t,
         clocks::{
             BootTimeClock, MonotonicClock, MonotonicCoarseClock, MonotonicRawClock, RealTimeClock,
             RealTimeCoarseClock,
@@ -63,10 +63,10 @@ pub enum ClockId {
 /// - A clock ID is invalid if bits 2, 1, and 0 are all set.
 ///
 /// Ref: <https://github.com/torvalds/linux/blob/master/include/linux/posix-timers_types.h>.
-pub enum DynamicClockIdInfo {
+pub(super) enum DynamicClockIdInfo {
     Pid(u32, DynamicClockType),
     Tid(u32, DynamicClockType),
-    #[expect(dead_code)]
+    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
     Fd(u32),
 }
 
@@ -99,7 +99,7 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
-pub enum DynamicClockType {
+pub(super) enum DynamicClockType {
     Profiling = 0,
     Virtual = 1,
     Scheduling = 2,
@@ -109,7 +109,7 @@ pub enum DynamicClockType {
 /// Reads the time of a clock specified by the input clock ID.
 ///
 /// If the clock ID does not support, this function will return `Err`.
-pub fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> {
+pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> {
     if clockid >= 0 {
         let clock_id = ClockId::try_from(clockid)?;
         match clock_id {

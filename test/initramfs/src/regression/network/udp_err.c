@@ -420,3 +420,44 @@ FN_TEST(self_connect)
 	TEST_SUCC(close(sk));
 }
 END_TEST()
+
+FN_TEST(send_and_recv_large_buffer)
+{
+	int receiver = TEST_SUCC(socket(PF_INET, SOCK_DGRAM, 0));
+	int sender = TEST_SUCC(socket(PF_INET, SOCK_DGRAM, 0));
+	char send_buf[1400], receive_buf[sizeof(send_buf)];
+
+	sk_addr.sin_port = htons(8083);
+	TEST_SUCC(bind(receiver, (struct sockaddr *)&sk_addr, sizeof(sk_addr)));
+	TEST_SUCC(
+		connect(sender, (struct sockaddr *)&sk_addr, sizeof(sk_addr)));
+
+	memset(send_buf, 'x', sizeof(send_buf));
+	TEST_RES(send(sender, send_buf, sizeof(send_buf), 0),
+		 _ret == sizeof(send_buf));
+
+	memset(receive_buf, 'y', sizeof(receive_buf));
+	TEST_RES(recv(receiver, receive_buf, sizeof(receive_buf), 0),
+		 _ret == sizeof(receive_buf));
+	TEST_RES(memcmp(send_buf, receive_buf, sizeof(receive_buf)), _ret == 0);
+
+	TEST_SUCC(close(receiver));
+	TEST_SUCC(close(sender));
+}
+END_TEST()
+
+FN_TEST(bind_tcp_and_udp_to_same_port)
+{
+	int tcp = TEST_SUCC(socket(PF_INET, SOCK_STREAM, 0));
+	int udp = TEST_SUCC(socket(PF_INET, SOCK_DGRAM, 0));
+
+	sk_addr.sin_port = htons(8082);
+
+	TEST_SUCC(bind(tcp, (struct sockaddr *)&sk_addr, sizeof(sk_addr)));
+	TEST_SUCC(listen(tcp, 1));
+	TEST_SUCC(bind(udp, (struct sockaddr *)&sk_addr, sizeof(sk_addr)));
+
+	TEST_SUCC(close(tcp));
+	TEST_SUCC(close(udp));
+}
+END_TEST()

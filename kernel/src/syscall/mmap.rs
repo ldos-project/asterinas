@@ -7,9 +7,9 @@ use crate::{
     fs::file::file_table::{RawFileDesc, get_file_fast},
     prelude::*,
     vm::{
+        page_cache::VmoOptions,
         perms::VmPerms,
         vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, VmarMapOffset},
-        vmo::VmoOptions,
     },
 };
 
@@ -85,10 +85,14 @@ fn do_sys_mmap(
                 options = options.offset(VmarMapOffset::FixedReplace(addr));
             }
         } else {
+            #[cfg(target_arch = "x86_64")]
             if option.flags().contains(MMapFlags::MAP_32BIT) {
-                // TODO: MAP_32BIT requires the mapping address to be below 2 GiB.
-                warn!("MAP_32BIT is not supported");
+                let addr_hint = if addr != 0 { Some(addr) } else { None };
+                options = options.offset(VmarMapOffset::Map32Bit(addr_hint));
+            } else if addr != 0 {
+                options = options.offset(VmarMapOffset::Hint(addr))
             }
+            #[cfg(not(target_arch = "x86_64"))]
             if addr != 0 {
                 options = options.offset(VmarMapOffset::Hint(addr))
             }
@@ -99,6 +103,13 @@ fn do_sys_mmap(
         }
 
         if option.flags().contains(MMapFlags::MAP_ANONYMOUS) {
+            // Linux rejects MAP_SHARED_VALIDATE for anonymous mappings.
+            if option.typ() == MMapType::SharedValidate {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "MAP_SHARED_VALIDATE and MAP_ANONYMOUS cannot be used together"
+                );
+            }
             // Anonymous shared mappings should share the same memory pages.
             if option.typ().is_shared() {
                 let shared_vmo = {
@@ -150,16 +161,16 @@ fn check_len(len: usize) -> Result<usize> {
 }
 
 fn check_addr(addr: Vaddr, len: usize) -> Result<()> {
+    if addr > VMAR_CAP_ADDR - len {
+        return_errno_with_message!(Errno::ENOMEM, "the mapping address is too high");
+    }
+
     if !addr.is_multiple_of(PAGE_SIZE) {
         return_errno_with_message!(Errno::EINVAL, "the mapping address is not aligned");
     }
 
     if addr < VMAR_LOWEST_ADDR {
         return_errno_with_message!(Errno::EPERM, "the mapping address is too low");
-    }
-
-    if addr > VMAR_CAP_ADDR - len {
-        return_errno_with_message!(Errno::ENOMEM, "the mapping address is too high");
     }
 
     Ok(())
@@ -232,6 +243,7 @@ bitflags! {
     struct MMapFlags : u32 {
         const MAP_FIXED           = 0x10;
         const MAP_ANONYMOUS       = 0x20;
+        #[cfg(target_arch = "x86_64")]
         const MAP_32BIT           = 0x40;
         const MAP_GROWSDOWN       = 0x100;
         const MAP_DENYWRITE       = 0x800;
@@ -246,10 +258,15 @@ bitflags! {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+const ARCH_LEGACY_MMAP_FLAGS: MMapFlags = MMapFlags::MAP_32BIT;
+
+#[cfg(not(target_arch = "x86_64"))]
+const ARCH_LEGACY_MMAP_FLAGS: MMapFlags = MMapFlags::empty();
+
 // Reference: <https://elixir.bootlin.com/linux/v6.18.1/source/include/linux/mman.h#L35-L59>
 const LEGACY_MMAP_FLAGS: MMapFlags = MMapFlags::MAP_FIXED
     .union(MMapFlags::MAP_ANONYMOUS)
-    .union(MMapFlags::MAP_32BIT)
     .union(MMapFlags::MAP_GROWSDOWN)
     .union(MMapFlags::MAP_DENYWRITE)
     .union(MMapFlags::MAP_EXECUTABLE)
@@ -258,7 +275,8 @@ const LEGACY_MMAP_FLAGS: MMapFlags = MMapFlags::MAP_FIXED
     .union(MMapFlags::MAP_POPULATE)
     .union(MMapFlags::MAP_NONBLOCK)
     .union(MMapFlags::MAP_STACK)
-    .union(MMapFlags::MAP_HUGETLB);
+    .union(MMapFlags::MAP_HUGETLB)
+    .union(ARCH_LEGACY_MMAP_FLAGS);
 
 impl MMapFlags {
     pub(self) fn is_fixed(self) -> bool {

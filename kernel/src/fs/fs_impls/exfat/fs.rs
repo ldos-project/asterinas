@@ -3,17 +3,21 @@
 #![expect(dead_code)]
 #![expect(unused_variables)]
 
-use core::{num::NonZeroUsize, ops::Range, sync::atomic::AtomicU64};
+use core::{
+    num::NonZeroUsize,
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use aster_block::{
     BlockDevice,
-    bio::{BioDirection, BioSegment, BioWaiter},
+    bio::{BioCompleteFn, BioSegment},
     id::BlockId,
 };
 use device_id::DeviceId;
 use hashbrown::HashMap;
+use io_util::batch::IoBatch;
 use lru::LruCache;
-use ostd::mm::Segment;
 pub(super) use ostd::mm::VmIo;
 
 use super::{
@@ -29,11 +33,11 @@ use crate::{
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::Inode,
-            page_cache::{CachePage, PageCache, PageCacheBackend},
-            registry::{FsCreationCtx, FsProperties, FsType},
+            registry::{FsCache, FsCreationCtx, FsProperties, FsType},
         },
     },
     prelude::*,
+    vm::page_cache::{BlockAsPageCacheBackend, PageCache},
 };
 
 #[derive(Debug)]
@@ -87,7 +91,7 @@ impl ExfatFs {
             fat_cache: RwLock::new(LruCache::<ClusterID, ClusterID>::new(
                 NonZeroUsize::new(FAT_LRU_CACHE_SIZE).unwrap(),
             )),
-            meta_cache: PageCache::with_capacity(fs_size, weak_self.clone() as _).unwrap(),
+            meta_cache: PageCache::new_with_backend(fs_size, weak_self.clone() as _).unwrap(),
             mutex: Mutex::new(()),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
         });
@@ -108,15 +112,11 @@ impl ExfatFs {
 
         let root = ExfatInode::build_root_inode(weak_fs.clone(), root_chain.clone())?;
 
-        let root_page_cache = root.page_cache().unwrap();
-
-        let upcase_table =
-            ExfatUpcaseTable::load(weak_fs.clone(), &root_page_cache, root_chain.clone())?;
-
-        let bitmap = ExfatBitmap::load(weak_fs.clone(), &root_page_cache, root_chain.clone())?;
-
-        *exfat_fs.bitmap.lock() = bitmap;
+        let upcase_table = root.read_upcase_table()?;
         *exfat_fs.upcase_table.lock() = upcase_table;
+
+        let bitmap = root.read_bitmap()?;
+        *exfat_fs.bitmap.lock() = bitmap;
 
         // TODO: Handle UTF-8
 
@@ -128,8 +128,7 @@ impl ExfatFs {
     }
 
     pub(super) fn alloc_inode_number(&self) -> Ino {
-        self.highest_inode_number
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        self.highest_inode_number.fetch_add(1, Ordering::Relaxed)
     }
 
     pub(super) fn find_opened_inode(&self, hash: usize) -> Option<Arc<ExfatInode>> {
@@ -156,18 +155,18 @@ impl ExfatFs {
         self.inodes.write().insert(inode.hash_index(), inode)
     }
 
-    pub(super) fn sync_meta_at(&self, range: core::ops::Range<usize>) -> Result<()> {
-        self.meta_cache.pages().decommit(range)?;
+    pub(super) fn sync_meta_at(&self, range: Range<usize>) -> Result<()> {
+        self.meta_cache.flush_range(range)?;
         Ok(())
     }
 
     pub(super) fn write_meta_at(&self, offset: usize, buf: &[u8]) -> Result<()> {
-        self.meta_cache.pages().write_bytes(offset, buf)?;
+        self.meta_cache.write_bytes(offset, buf)?;
         Ok(())
     }
 
     pub(super) fn read_meta_at(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
-        self.meta_cache.pages().read_bytes(offset, buf)?;
+        self.meta_cache.read_bytes(offset, buf)?;
         Ok(())
     }
 
@@ -377,37 +376,43 @@ impl ExfatFs {
     }
 }
 
-impl PageCacheBackend for ExfatFs {
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+impl BlockAsPageCacheBackend for ExfatFs {
+    fn submit_read_bio(
+        &self,
+        idx: usize,
+        bio_segment: BioSegment,
+        complete_fn: BioCompleteFn,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
         if self.fs_size() < idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid read size")
+            return_errno_with_message!(Errno::EINVAL, "invalid read size");
         }
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(frame.clone()).into(),
-            BioDirection::FromDevice,
-        );
-        let waiter = self
-            .block_device
-            .read_blocks_async(BlockId::new(idx as u64), bio_segment)?;
-        Ok(waiter)
+        self.block_device.read_blocks_async(
+            BlockId::new(idx as u64),
+            bio_segment,
+            Some(complete_fn),
+            io_batch,
+        )?;
+        Ok(())
     }
 
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter> {
+    fn submit_write_bio(
+        &self,
+        idx: usize,
+        bio_segment: BioSegment,
+        complete_fn: BioCompleteFn,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
         if self.fs_size() < idx * PAGE_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid write size")
+            return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::from(frame.clone()).into(),
-            BioDirection::ToDevice,
-        );
-        let waiter = self
-            .block_device
-            .write_blocks_async(BlockId::new(idx as u64), bio_segment)?;
-        Ok(waiter)
-    }
-
-    fn npages(&self) -> usize {
-        self.fs_size() / PAGE_SIZE
+        self.block_device.write_blocks_async(
+            BlockId::new(idx as u64),
+            bio_segment,
+            Some(complete_fn),
+            io_batch,
+        )?;
+        Ok(())
     }
 }
 
@@ -420,7 +425,7 @@ impl FileSystem for ExfatFs {
         for inode in self.inodes.read().values() {
             inode.sync_all()?;
         }
-        self.meta_cache.evict_range(0..self.fs_size())?;
+        self.meta_cache.flush_range(0..self.fs_size())?;
         Ok(())
     }
 
@@ -469,9 +474,17 @@ pub struct ExfatMountOptions {
     pub(super) zero_size_dir: bool,
 }
 
-pub(super) struct ExfatType;
+pub(super) struct ExfatType {
+    cache: FsCache<DeviceId>,
+}
+
+pub(super) static EXFAT_TYPE: ExfatType = ExfatType {
+    cache: FsCache::new(),
+};
 
 impl FsType for ExfatType {
+    type Key = DeviceId;
+
     fn name(&self) -> &'static str {
         "exfat"
     }
@@ -480,11 +493,21 @@ impl FsType for ExfatType {
         FsProperties::NEED_DISK
     }
 
-    fn create(&self, fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
-        Ok(ExfatFs::open(
-            fs_creation_ctx.resolve_block_device()?,
-            ExfatMountOptions::default(),
-        )?)
+    fn create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+        let disk = fs_creation_ctx.resolve_block_device()?.clone();
+        Ok(ExfatFs::open(disk, ExfatMountOptions::default())?)
+    }
+
+    fn obtain_key_and_cache(
+        &self,
+        fs_creation_ctx: &mut FsCreationCtx,
+    ) -> Option<(DeviceId, &FsCache<DeviceId>)> {
+        let key = fs_creation_ctx
+            .resolve_block_device()
+            .ok()
+            .map(|disk| disk.id())?;
+
+        Some((key, &self.cache))
     }
 
     fn sysnode(&self) -> Option<Arc<dyn aster_systree::SysNode>> {

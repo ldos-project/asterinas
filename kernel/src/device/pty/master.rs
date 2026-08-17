@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::format;
-
 use ostd::task::Task;
 
 use super::{PtySlave, driver::PtyDriver};
@@ -10,13 +8,15 @@ use crate::{
     events::IoEvents,
     fs::{
         devpts::Ptmx,
-        file::{AccessMode, FileIo, OpenArgs, StatusFlags, file_table::FdFlags, mkmod},
-        vfs::{inode::InodeIo, path::FsPath},
+        file::{
+            CreationFlags, InodeMode, OpenArgs, PerOpenFileOps, SettableStatusFlags, StatusFlags,
+            file_table::FdFlags,
+        },
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::{
         Terminal,
-        posix_thread::AsThreadLocal,
         signal::{PollHandle, Pollable},
     },
     util::ioctl::{RawIoctl, dispatch_ioctl},
@@ -91,7 +91,7 @@ impl Pollable for PtyMaster {
     }
 }
 
-impl InodeIo for PtyMaster {
+impl FileOps for PtyMaster {
     fn read_at(
         &self,
         _offset: usize,
@@ -139,7 +139,7 @@ impl InodeIo for PtyMaster {
     }
 }
 
-impl FileIo for PtyMaster {
+impl PerOpenFileOps for PtyMaster {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a pty");
     }
@@ -148,13 +148,14 @@ impl FileIo for PtyMaster {
         false
     }
 
-    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+    fn ioctl(&self, path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use super::ioctl_defs::*;
         use crate::{device::tty::ioctl_defs::*, util::ioctl::common_defs::GetNumBytesToRead};
 
         dispatch_ioctl!(match raw_ioctl {
-            GetTermios | SetTermios | SetTermiosWait | SetTermiosFlush | GetWinSize
-            | SetWinSize | GetPtyNumber => {
+            GetTermios | GetTermios2 | SetTermios | SetTermios2 | SetTermiosWait
+            | SetTermios2Wait | SetTermiosFlush | SetTermios2Flush | GetWinSize | SetWinSize
+            | GetPtyNumber => {
                 return self.slave.ioctl(raw_ioctl);
             }
 
@@ -177,36 +178,29 @@ impl FileIo for PtyMaster {
 
                 cmd.write(&is_locked)?;
             }
-            _cmd @ OpenPtySlave => {
-                let current_task = Task::current().unwrap();
-                let thread_local = current_task.as_thread_local().unwrap();
+            cmd @ OpenPtySlave => {
+                let flags = cmd.get();
+                let open_args = OpenArgs::from_flags_and_mode(flags, InodeMode::empty())?;
+                let fd_flags = if CreationFlags::from_bits_truncate(flags)
+                    .contains(CreationFlags::O_CLOEXEC)
+                {
+                    FdFlags::CLOEXEC
+                } else {
+                    FdFlags::empty()
+                };
 
-                // TODO: Deal with `open()` flags.
                 let slave = {
-                    let fs_ref = thread_local.borrow_fs();
-                    let path_resolver = fs_ref.resolver().read();
-
-                    let slave_name = {
-                        let devpts_path = path_resolver
-                            .make_abs_path(super::DEV_PTS.get().unwrap())
-                            .into_string();
-                        format!("{}/{}", devpts_path, self.slave.index())
-                    };
-
-                    let fs_path = FsPath::try_from(slave_name.as_str())?;
-
-                    let inode_handle = {
-                        let open_args = OpenArgs::from_modes(AccessMode::O_RDWR, mkmod!(u+rw));
-                        path_resolver.lookup(&fs_path)?.open(open_args)?
-                    };
-                    Arc::new(inode_handle)
+                    let devpts_root = Path::new_fs_root(path.mount_node().clone());
+                    let slave_path = devpts_root.lookup_child(&self.slave.index().to_string())?;
+                    Arc::new(slave_path.open(open_args)?)
                 };
 
                 let fd = {
+                    let current_task = Task::current().unwrap();
+                    let thread_local = current_task.as_thread_local().unwrap();
                     let file_table = thread_local.borrow_file_table();
                     let mut file_table_locked = file_table.unwrap().write();
-                    // TODO: Deal with the `O_CLOEXEC` flag.
-                    file_table_locked.insert(slave, FdFlags::empty())
+                    file_table_locked.insert(slave, fd_flags)
                 };
                 return Ok(fd.into());
             }
@@ -242,6 +236,10 @@ impl FileIo for PtyMaster {
         });
 
         Ok(0)
+    }
+
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
     }
 }
 

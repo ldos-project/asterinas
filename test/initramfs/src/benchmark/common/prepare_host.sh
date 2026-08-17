@@ -55,7 +55,7 @@ resolve_jdk_path() {
   if [ -z "$jdk_latest" ]; then
     return 1
   fi
-  
+
   realpath "$jdk_latest"
 }
 

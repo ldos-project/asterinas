@@ -9,6 +9,8 @@
 //
 // We make the following new changes:
 // * Implement the `trap_handler` of Asterinas.
+// * Remove riscv32 code.
+// * Move XLENB, LOAD_SP, and STORE_SP into trap.S.
 //
 // These changes are released under the following license:
 //
@@ -16,35 +18,14 @@
 
 use core::arch::{asm, global_asm};
 
-use crate::arch::cpu::{
-    context::GeneralRegs,
-    extension::{IsaExtensions, has_extensions},
+use crate::{
+    arch::cpu::{
+        context::GeneralRegs,
+        extension::{IsaExtensions, has_extensions},
+    },
+    irq::DisabledLocalIrqGuard,
+    mm::fault::TrapFrameApi,
 };
-
-#[cfg(target_arch = "riscv32")]
-global_asm!(
-    r"
-    .equ XLENB, 4
-    .macro LOAD_SP a1, a2
-        lw \a1, \a2*XLENB(sp)
-    .endm
-    .macro STORE_SP a1, a2
-        sw \a1, \a2*XLENB(sp)
-    .endm
-"
-);
-#[cfg(target_arch = "riscv64")]
-global_asm!(
-    r"
-    .equ XLENB, 8
-    .macro LOAD_SP a1, a2
-        ld \a1, \a2*XLENB(sp)
-    .endm
-    .macro STORE_SP a1, a2
-        sd \a1, \a2*XLENB(sp)
-    .endm
-"
-);
 
 /// FPU status bits.
 /// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#sstatus>.
@@ -53,7 +34,11 @@ pub(in crate::arch) const SSTATUS_FS_MASK: usize = 0b11 << 13;
 /// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#sstatus>.
 pub(in crate::arch) const SSTATUS_SUM: usize = 0b1 << 18;
 
-global_asm!(include_str!("trap.S"), SSTATUS_FS_MASK = const SSTATUS_FS_MASK, SSTATUS_SUM = const SSTATUS_SUM);
+global_asm!(
+    include_str!("trap.S"),
+    SSTATUS_FS_MASK = const SSTATUS_FS_MASK,
+    SSTATUS_SUM = const SSTATUS_SUM
+);
 
 /// Initialize interrupt handling for the current HART.
 ///
@@ -102,6 +87,16 @@ pub struct TrapFrame {
     pub sepc: usize,
 }
 
+impl TrapFrameApi for TrapFrame {
+    fn set_instruction_pointer(&mut self, ip: usize) {
+        self.sepc = ip;
+    }
+
+    fn instruction_pointer(&self) -> usize {
+        self.sepc
+    }
+}
+
 /// Saved registers on a trap.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -139,11 +134,12 @@ impl RawUserContext {
     ///
     /// On return, the context will be reset to the status before the trap.
     /// Trap reason and error code will be placed at `scause` and `stval`.
-    pub(in crate::arch) fn run(&mut self) {
+    pub(in crate::arch) fn run(&mut self, guard: DisabledLocalIrqGuard) {
         // Return to userspace with interrupts disabled. Otherwise, interrupts
         // after switching `sscratch` will mess up the CPU state.
-        crate::arch::irq::disable_local();
-        unsafe { run_user(self) }
+        core::mem::forget(guard);
+
+        unsafe { run_user(self) };
     }
 }
 

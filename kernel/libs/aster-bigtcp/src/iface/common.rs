@@ -2,11 +2,13 @@
 
 use alloc::{
     collections::btree_map::{BTreeMap, Entry},
-    string::String,
     sync::Arc,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    ops::Deref,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 
 use aster_softirq::BottomHalfDisabled;
 use bitflags::bitflags;
@@ -15,11 +17,11 @@ use ostd::sync::{SpinLock, SpinLockGuard};
 use smoltcp::{
     iface::{Context, packet::Packet},
     phy::Device,
-    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Packet},
+    wire::{IpAddress, IpEndpoint, Ipv4Cidr, Ipv4Packet, Ipv6Address, Ipv6Cidr, Ipv6Packet},
 };
 
 use super::{
-    Iface,
+    Iface, InterfaceName,
     poll::{FnHelper, PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
@@ -34,19 +36,51 @@ use crate::{
 
 pub struct IfaceCommon<E: Ext> {
     index: u32,
-    name: String,
+    name: InterfaceName,
     type_: InterfaceType,
     flags: InterfaceFlags,
 
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
-    used_ports: SpinLock<BTreeMap<u16, PortState>, BottomHalfDisabled>,
+    used_ports: SpinLock<PortTable, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
     sched_poll: E::ScheduleNextPoll,
 }
 
+/// An enum representing either an IPv4 or IPv6 packet.
+pub(super) enum IpPacket<'a> {
+    Ipv4(Ipv4Packet<&'a [u8]>),
+    Ipv6(Ipv6Packet<&'a [u8]>),
+}
+
+/// A normalized IP address for binding purposes.
+///
+/// IPv4 addresses are normalized to IPv4-mapped IPv6 addresses. IPv6 addresses
+/// remain unchanged.
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) should be treated as equivalent
+/// to their IPv4 counterparts for binding purposes. This ensures that binding
+/// to `192.0.2.1:80` and `::ffff:192.0.2.1:80` are treated as the same.
+//
+// TODO: This type currently only handles port binding conflict detection. Full
+// dual-stack support is not yet implemented, including:
+// - Accepting IPv4 connections on IPv6 wildcard socket (binding to `::`).
+// - Returning IPv4-mapped addresses in `accept()` for IPv4 clients.
+// - Proper handling of `IPV6_V6ONLY` socket option.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct NormalizedAddress(Ipv6Address);
+
+impl From<IpAddress> for NormalizedAddress {
+    fn from(value: IpAddress) -> Self {
+        match value {
+            IpAddress::Ipv4(ipv4) => Self(ipv4.to_ipv6_mapped()),
+            IpAddress::Ipv6(ipv6) => Self(ipv6),
+        }
+    }
+}
+
 impl<E: Ext> IfaceCommon<E> {
     pub(super) fn new(
-        name: String,
+        name: InterfaceName,
         type_: InterfaceType,
         flags: InterfaceFlags,
         interface: smoltcp::iface::Interface,
@@ -60,7 +94,7 @@ impl<E: Ext> IfaceCommon<E> {
             type_,
             flags,
             interface: SpinLock::new(PollableIface::new(interface)),
-            used_ports: SpinLock::new(BTreeMap::new()),
+            used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
             sched_poll,
         }
@@ -70,7 +104,7 @@ impl<E: Ext> IfaceCommon<E> {
         self.index
     }
 
-    pub(super) fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &InterfaceName {
         &self.name
     }
 
@@ -82,12 +116,12 @@ impl<E: Ext> IfaceCommon<E> {
         self.flags
     }
 
-    pub(super) fn ipv4_addr(&self) -> Option<Ipv4Address> {
-        self.interface.lock().ipv4_addr()
+    pub(super) fn ipv4_cidr(&self) -> Option<Ipv4Cidr> {
+        self.interface.lock().ipv4_cidr()
     }
 
-    pub(super) fn prefix_len(&self) -> Option<u8> {
-        self.interface.lock().prefix_len()
+    pub(super) fn ipv6_cidr(&self) -> Option<Ipv6Cidr> {
+        self.interface.lock().ipv6_cidr()
     }
 
     pub(super) fn sched_poll(&self) -> &E::ScheduleNextPoll {
@@ -98,7 +132,7 @@ impl<E: Ext> IfaceCommon<E> {
 /// An allocator that allocates a unique index for each interface.
 //
 // FIXME: This allocator is specific to each network namespace.
-pub static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(1);
+static INTERFACE_INDEX_ALLOCATOR: AtomicU32 = AtomicU32::new(1);
 
 // Lock order: `interface` -> `sockets`
 impl<E: Ext> IfaceCommon<E> {
@@ -117,88 +151,46 @@ const IP_LOCAL_PORT_START: u16 = 32768;
 const IP_LOCAL_PORT_END: u16 = 60999;
 
 impl<E: Ext> IfaceCommon<E> {
-    pub(super) fn bind(
+    pub(super) fn bind_tcp(
         &self,
         iface: Arc<dyn Iface<E>>,
         config: BindPortConfig,
-    ) -> core::result::Result<BoundPort<E>, BindError> {
-        let (port, can_reuse) = self.bind_port(config)?;
+    ) -> Result<BoundTcpPort<E>, BindError> {
+        self.bind(iface, config, PortProtocol::Tcp)
+            .map(BoundTcpPort)
+    }
+
+    pub(super) fn bind_udp(
+        &self,
+        iface: Arc<dyn Iface<E>>,
+        config: BindPortConfig,
+    ) -> Result<BoundUdpPort<E>, BindError> {
+        self.bind(iface, config, PortProtocol::Udp)
+            .map(BoundUdpPort)
+    }
+
+    fn bind(
+        &self,
+        iface: Arc<dyn Iface<E>>,
+        config: BindPortConfig,
+        protocol: PortProtocol,
+    ) -> Result<BoundPort<E>, BindError> {
+        let addr = config.addr();
+        let (port, can_reuse) = self.used_ports.lock().bind(config, protocol)?;
         Ok(BoundPort {
             iface,
+            addr,
             port,
+            protocol,
             can_reuse: AtomicBool::new(can_reuse),
         })
     }
 
-    /// Allocates an ephemeral port.
-    ///
-    /// We follow the port range that many Linux kernels use by default, which is 32768-60999.
-    ///
-    /// See <https://en.wikipedia.org/wiki/Ephemeral_port>.
-    fn alloc_ephemeral_port(
-        used_ports: &mut BTreeMap<u16, PortState>,
-        _can_reuse: bool,
-    ) -> Option<u16> {
-        for port in IP_LOCAL_PORT_START..=IP_LOCAL_PORT_END {
-            if let Entry::Vacant(..) = used_ports.entry(port) {
-                return Some(port);
-            }
-        }
-
-        // FIXME: If `can_reuse` is `true`, we should also check all in-use ephemeral ports
-        // to see if any can be reused instead of directly returning `None`.
-
-        None
-    }
-
-    fn bind_port(&self, config: BindPortConfig) -> Result<(u16, bool), BindError> {
-        let mut used_ports = self.used_ports.lock();
-        let config_can_reuse = config.can_reuse();
-
-        let port = if let Some(port) = config.port() {
-            port
-        } else {
-            match Self::alloc_ephemeral_port(&mut used_ports, config_can_reuse) {
-                Some(port) => port,
-                None => return Err(BindError::Exhausted),
-            }
-        };
-
-        if let Some(port_state) = used_ports.get_mut(&port) {
-            // FIXME: If the socket is not a backlog socket,
-            // we should check whether there is a listening socket on the port.
-            // If there is, the socket cannot be bound to that port.
-            let can_reuse = matches!(config, BindPortConfig::Backlog(_))
-                || (port_state.can_reuse() & config_can_reuse);
-            if can_reuse {
-                port_state.nsocket += 1;
-                if config_can_reuse {
-                    port_state.nreuse += 1;
-                }
-            } else {
-                return Err(BindError::InUse);
-            }
-        } else {
-            let port_state = PortState::new(config_can_reuse);
-            used_ports.insert(port, port_state);
-        };
-
-        Ok((port, config_can_reuse))
-    }
-
     /// Releases the port so that it can be used again.
-    fn release_port(&self, port: u16, can_reuse: bool) {
-        let mut used_ports = self.used_ports.lock();
-        if let Entry::Occupied(mut entry) = used_ports.entry(port) {
-            let port_state = entry.get_mut();
-            port_state.nsocket -= 1;
-            if can_reuse {
-                port_state.nreuse -= 1;
-            }
-            if port_state.nsocket == 0 {
-                entry.remove_entry();
-            }
-        }
+    fn release_port(&self, addr: IpAddress, port: u16, can_reuse: bool, protocol: PortProtocol) {
+        self.used_ports
+            .lock()
+            .release(addr, port, can_reuse, protocol);
     }
 }
 
@@ -234,7 +226,7 @@ impl<E: Ext> IfaceCommon<E> {
                 &'pkt [u8],
                 &'cx mut Context,
                 D::TxToken<'tx>,
-                Option<(Ipv4Packet<&'pkt [u8]>, D::TxToken<'tx>)>,
+                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
             >,
         Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
     {
@@ -270,11 +262,11 @@ impl<E: Ext> IfaceCommon<E> {
 /// A port bound to an iface.
 ///
 /// When dropped, the port is automatically released.
-//
-// FIXME: TCP and UDP ports are independent. Find a way to track the protocol here.
 pub struct BoundPort<E: Ext> {
     iface: Arc<dyn Iface<E>>,
+    addr: IpAddress,
     port: u16,
+    protocol: PortProtocol,
     can_reuse: AtomicBool,
 }
 
@@ -289,13 +281,14 @@ impl<E: Ext> BoundPort<E> {
         self.port
     }
 
+    /// Returns the bound IP address.
+    pub fn addr(&self) -> &IpAddress {
+        &self.addr
+    }
+
     /// Returns the bound endpoint.
-    pub fn endpoint(&self) -> Option<IpEndpoint> {
-        let ip_addr = {
-            let ipv4_addr = self.iface().ipv4_addr()?;
-            IpAddress::Ipv4(ipv4_addr)
-        };
-        Some(IpEndpoint::new(ip_addr, self.port))
+    pub fn endpoint(&self) -> IpEndpoint {
+        IpEndpoint::new(self.addr, self.port)
     }
 
     /// Sets whether the port can be reused.
@@ -303,17 +296,17 @@ impl<E: Ext> BoundPort<E> {
         let iface_common = self.iface.common();
         let mut used_ports = iface_common.used_ports.lock();
 
+        // Check after locking `used_ports` to avoid race conditions.
         if self.can_reuse.load(Ordering::Relaxed) == can_reuse {
             return;
         }
 
-        if let Some(port_state) = used_ports.get_mut(&self.port) {
-            if can_reuse {
-                port_state.nreuse += 1;
-            } else {
-                port_state.nreuse -= 1;
-            }
-        }
+        let key = PortKey {
+            addr: NormalizedAddress::from(self.addr),
+            port: self.port,
+            protocol: self.protocol,
+        };
+        used_ports.set_can_reuse(key, can_reuse);
 
         self.can_reuse.store(can_reuse, Ordering::Relaxed);
     }
@@ -321,10 +314,44 @@ impl<E: Ext> BoundPort<E> {
 
 impl<E: Ext> Drop for BoundPort<E> {
     fn drop(&mut self) {
-        self.iface
-            .common()
-            .release_port(self.port, *self.can_reuse.get_mut());
+        self.iface.common().release_port(
+            self.addr,
+            self.port,
+            *self.can_reuse.get_mut(),
+            self.protocol,
+        );
     }
+}
+
+/// A TCP port bound to an iface.
+pub struct BoundTcpPort<E: Ext>(BoundPort<E>);
+/// A UDP port bound to an iface.
+pub struct BoundUdpPort<E: Ext>(BoundPort<E>);
+
+impl<E: Ext> Deref for BoundTcpPort<E> {
+    type Target = BoundPort<E>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl<E: Ext> Deref for BoundUdpPort<E> {
+    type Target = BoundPort<E>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct PortKey {
+    addr: NormalizedAddress,
+    port: u16,
+    protocol: PortProtocol,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PortProtocol {
+    Tcp,
+    Udp,
 }
 
 struct PortState {
@@ -341,6 +368,150 @@ impl PortState {
 
     pub(self) fn can_reuse(&self) -> bool {
         self.nsocket == self.nreuse
+    }
+}
+
+struct PortTable {
+    used_ports: BTreeMap<PortKey, PortState>,
+    next_ephemeral_port: u16,
+}
+
+impl PortTable {
+    fn new() -> Self {
+        Self {
+            used_ports: BTreeMap::new(),
+            next_ephemeral_port: IP_LOCAL_PORT_START,
+        }
+    }
+
+    fn bind(
+        &mut self,
+        config: BindPortConfig,
+        protocol: PortProtocol,
+    ) -> Result<(u16, bool), BindError> {
+        let config_can_reuse = config.can_reuse();
+        let addr = NormalizedAddress::from(config.addr());
+
+        let port = if let Some(port) = config.port() {
+            port
+        } else {
+            match self.alloc_ephemeral_port(addr, protocol, config_can_reuse) {
+                Some(port) => port,
+                None => return Err(BindError::Exhausted),
+            }
+        };
+
+        let key = PortKey {
+            addr,
+            port,
+            protocol,
+        };
+        let entry = self.used_ports.entry(key);
+        match entry {
+            Entry::Occupied(mut occupied) => {
+                let port_state = occupied.get_mut();
+                // FIXME: If the socket is not a backlog socket,
+                // we should check whether there is a listening socket on the port.
+                // If there is, the socket cannot be bound to that port.
+                let can_reuse = config.is_backlog() || (port_state.can_reuse() & config_can_reuse);
+                if can_reuse {
+                    port_state.nsocket += 1;
+                    if config_can_reuse {
+                        port_state.nreuse += 1;
+                    }
+                } else {
+                    return Err(BindError::InUse);
+                }
+            }
+            Entry::Vacant(vacant) => {
+                let port_state = PortState::new(config_can_reuse);
+                vacant.insert(port_state);
+            }
+        };
+
+        Ok((port, config_can_reuse))
+    }
+
+    /// Allocates an ephemeral port.
+    ///
+    /// We follow the port range that many Linux kernels use by default, which is 32768-60999.
+    ///
+    /// Each allocation starts scanning from the port immediately
+    /// after the last successfully allocated ephemeral port.
+    /// This ensures that a recently released port is not immediately
+    /// reused by a new socket, which avoids potential port conflicts.
+    ///
+    /// See <https://en.wikipedia.org/wiki/Ephemeral_port>.
+    fn alloc_ephemeral_port(
+        &mut self,
+        addr: NormalizedAddress,
+        protocol: PortProtocol,
+        _can_reuse: bool,
+    ) -> Option<u16> {
+        const fn next_ephemeral_port_after(port: u16) -> u16 {
+            if port >= IP_LOCAL_PORT_END {
+                IP_LOCAL_PORT_START
+            } else {
+                port + 1
+            }
+        }
+
+        let mut key = PortKey {
+            addr,
+            port: 0,
+            protocol,
+        };
+        let start_port = self.next_ephemeral_port;
+        let mut port = start_port;
+        loop {
+            key.port = port;
+            if !self.used_ports.contains_key(&key) {
+                self.next_ephemeral_port = next_ephemeral_port_after(port);
+                return Some(port);
+            }
+
+            port = next_ephemeral_port_after(port);
+            if port == start_port {
+                break;
+            }
+        }
+
+        // FIXME: If `can_reuse` is `true`, we should also check all in-use ephemeral ports
+        // to see if any can be reused instead of directly returning `None`.
+
+        None
+    }
+
+    fn release(&mut self, addr: IpAddress, port: u16, can_reuse: bool, protocol: PortProtocol) {
+        let key = PortKey {
+            addr: NormalizedAddress::from(addr),
+            port,
+            protocol,
+        };
+        let Entry::Occupied(mut occupied) = self.used_ports.entry(key) else {
+            return;
+        };
+
+        let port_state = occupied.get_mut();
+        port_state.nsocket -= 1;
+        if can_reuse {
+            port_state.nreuse -= 1;
+        }
+        if port_state.nsocket == 0 {
+            occupied.remove();
+        }
+    }
+
+    fn set_can_reuse(&mut self, key: PortKey, can_reuse: bool) {
+        let Some(port_state) = self.used_ports.get_mut(&key) else {
+            return;
+        };
+
+        if can_reuse {
+            port_state.nreuse += 1;
+        } else {
+            port_state.nreuse -= 1;
+        }
     }
 }
 

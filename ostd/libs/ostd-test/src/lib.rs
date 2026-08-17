@@ -67,6 +67,7 @@
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
+#[cfg(not(test))]
 use alloc::{boxed::Box, string::String};
 
 #[derive(Clone, Debug)]
@@ -220,7 +221,7 @@ impl KtestIter {
     }
 }
 
-impl core::iter::Iterator for KtestIter {
+impl Iterator for KtestIter {
     type Item = KtestItem;
 
     fn next(&mut self) -> Option<Self::Item> {

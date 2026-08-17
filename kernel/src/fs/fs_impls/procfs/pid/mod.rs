@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::template::{
-    DirOps, ProcDir, ReaddirEntry, StaticDirEntry, listed_entries_from_table,
-    lookup_child_from_table, visit_listed_entries,
+use super::{
+    StaticEntryWithOps,
+    template::{
+        ProcDir, ProcDirOps, ReaddirEntry, listed_entries_from_table, lookup_child_from_table,
+        visit_listed_entries,
+    },
 };
 use crate::{
     fs::{
@@ -12,13 +15,14 @@ use crate::{
     },
     prelude::*,
     process::pid_table::{PidEntry, PidEntryType},
+    thread::Thread,
 };
 
 mod task;
 pub(super) use task::TidDirOps;
 
 /// Represents the inode at `/proc/[pid]`.
-pub struct PidDirOps(
+pub(super) struct PidDirOps(
     // The `/proc/<pid>` directory is a superset of the `/proc/<pid>/task/<tid>` directory.
     // So we embed `TidDirOps` here so that `PidDirOps` can "inherit" entries and methods
     // from `TidDirOps`.
@@ -26,7 +30,7 @@ pub struct PidDirOps(
 );
 
 impl PidDirOps {
-    pub fn new_inode(pid_entry: Arc<PidEntry>, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(pid_entry: Arc<PidEntry>, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         let this = Self(TidDirOps::new(pid_entry));
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3493>
         ProcDir::new(this, parent, mkmod!(a+rx))
@@ -40,8 +44,7 @@ impl PidDirOps {
         &self.0
     }
 
-    #[expect(clippy::type_complexity)]
-    const STATIC_ENTRIES: &[StaticDirEntry<fn(&PidDirOps, Weak<dyn Inode>) -> Arc<dyn Inode>>] = &[
+    const STATIC_ENTRIES: &[StaticEntryWithOps<PidDirOps>] = &[
         ("task", InodeType::Dir, TaskDirOps::new_inode),
         (
             "stat",
@@ -51,7 +54,11 @@ impl PidDirOps {
     ];
 }
 
-impl DirOps for PidDirOps {
+impl ProcDirOps for PidDirOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         if self.0.pid_entry().type_().is_none() {
             return_errno_with_message!(Errno::ESRCH, "the process does not exist");

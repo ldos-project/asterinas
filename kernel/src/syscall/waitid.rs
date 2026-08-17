@@ -28,7 +28,7 @@ pub fn sys_waitid(
     // FIXME: what does rusage use for?
     let process_filter = ProcessFilter::from_which_and_id(which, upid as _, ctx)?;
     let wait_options = WaitOptions::from_bits(options as u32)
-        .ok_or(Error::with_message(Errno::EINVAL, "invalid options"))?;
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid options"))?;
 
     // Check for waitid options
     if !wait_options
@@ -95,7 +95,6 @@ fn calculate_si_code_and_si_status(wait_status: &WaitStatus) -> (i32, i32) {
             let exit_code = thread.as_posix_thread().unwrap().exit_code();
             parse_exit_code(exit_code)
         }
-        // TODO: Add `PTRACE_EVENT_*` flags into `si_status`.
-        WaitStatus::TraceeStop(_, signum) => (CLD_TRAPPED, signum.as_u8() as i32),
+        WaitStatus::TraceeStop(_, status) => (CLD_TRAPPED, status.to_waitid_si_status()),
     }
 }

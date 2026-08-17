@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use aster_rights::ReadDupOp;
 use ostd::sync::WaitQueue;
@@ -25,6 +28,7 @@ use crate::{
     },
     prelude::*,
     process::signal::Pollee,
+    util::net::SockType,
 };
 
 pub(super) struct Listener {
@@ -55,13 +59,22 @@ impl Listener {
         self.backlog.addr()
     }
 
-    pub(super) fn try_accept(&self, is_seqpacket: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    pub(super) fn try_accept(
+        &self,
+        socket_type: SockType,
+        is_nonblocking: bool,
+    ) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+        debug_assert!(
+            socket_type == SockType::SOCK_STREAM || socket_type == SockType::SOCK_SEQPACKET
+        );
+
         let connected = self.backlog.pop_incoming()?;
 
         let peer_addr = connected.peer_addr().into();
         let options = OptionSet::new_accepted(connected.is_pass_cred());
 
-        let socket = UnixStreamSocket::new_connected(connected, options, false, is_seqpacket);
+        let socket =
+            UnixStreamSocket::new_connected(connected, options, is_nonblocking, socket_type);
         Ok((socket, peer_addr))
     }
 
@@ -262,7 +275,7 @@ impl Backlog {
         pollee: Pollee,
         options: &OptionSet,
         is_seqpacket: bool,
-    ) -> core::result::Result<Connected, (Error, Init)> {
+    ) -> Result<Connected, (Error, Init)> {
         if is_seqpacket != self.is_seqpacket {
             // FIXME: According to the Linux implementation, we should avoid this error by
             // maintaining two socket tables for SOCK_STREAM sockets and SOCK_SEQPACKET sockets
@@ -315,14 +328,25 @@ impl Backlog {
     }
 
     /// Blocks until the backlogs are free and the `try_connect` succeeds, or until interrupted.
-    pub(super) fn block_connect<F>(&self, mut try_connect: F) -> Result<()>
+    pub(super) fn block_connect<F>(
+        &self,
+        timeout: Option<Duration>,
+        mut try_connect: F,
+    ) -> Result<()>
     where
         F: FnMut() -> Result<()>,
     {
         self.connect_wait_queue
-            .pause_until(|| match try_connect() {
-                Err(err) if err.error() == Errno::EAGAIN => None,
-                result => Some(result),
+            .pause_until_or_timeout(
+                || match try_connect() {
+                    Err(err) if err.error() == Errno::EAGAIN => None,
+                    result => Some(result),
+                },
+                timeout.as_ref(),
+            )
+            .map_err(|err| match err.error() {
+                Errno::ETIME => Error::with_message(Errno::EAGAIN, "the socket timeout expired"),
+                _ => err,
             })?
     }
 }

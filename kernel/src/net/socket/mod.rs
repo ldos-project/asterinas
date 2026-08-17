@@ -3,16 +3,19 @@
 use core::fmt::Display;
 
 use options::SocketOption;
-use util::{MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr};
+use util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr};
 
 use crate::{
     fs::{
-        file::{CreationFlags, FileLike, StatusFlags, file_table::FdFlags},
+        file::{
+            AccessMode, CreationFlags, FileCommon, FileLike, SettableStatusFlags,
+            file_table::FdFlags,
+        },
         pseudofs::SockFs,
-        vfs::path::Path,
     },
+    net::socket::util::ioctl::socket_ioctl,
     prelude::*,
-    util::{MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, ioctl::RawIoctl},
 };
 
 pub mod ip;
@@ -23,7 +26,9 @@ pub mod util;
 pub mod vsock;
 
 mod private {
-    use crate::{events::IoEvents, prelude::*, process::signal::Pollable};
+    use core::time::Duration;
+
+    use crate::{events::IoEvents, prelude::*, process::signal::Pollable, util::ioctl::RawIoctl};
 
     /// Common methods for sockets, but private to the network module.
     ///
@@ -33,9 +38,6 @@ mod private {
         /// Returns whether the socket is in non-blocking mode.
         fn is_nonblocking(&self) -> bool;
 
-        /// Sets whether the socket is in non-blocking mode.
-        fn set_nonblocking(&self, nonblocking: bool);
-
         /// Blocks until some events occur to complete I/O operations.
         ///
         /// If the socket is in non-blocking mode and the I/O operations cannot be completed
@@ -43,7 +45,12 @@ mod private {
         ///
         /// [`EAGAIN`]: crate::error::Errno::EAGAIN
         #[track_caller]
-        fn block_on<F, R>(&self, events: IoEvents, mut try_op: F) -> Result<R>
+        fn block_on<F, R>(
+            &self,
+            events: IoEvents,
+            timeout: Option<Duration>,
+            mut try_op: F,
+        ) -> Result<R>
         where
             Self: Sized,
             F: FnMut() -> Result<R>,
@@ -51,8 +58,19 @@ mod private {
             if self.is_nonblocking() {
                 try_op()
             } else {
-                self.wait_events(events, None, try_op)
+                self.wait_events(events, timeout.as_ref(), try_op)
+                    .map_err(|err| match err.error() {
+                        Errno::ETIME => {
+                            Error::with_message(Errno::EAGAIN, "the socket timeout expired")
+                        }
+                        _ => err,
+                    })
             }
+        }
+
+        /// Handles commands specific to its protocol or socket type.
+        fn protocol_ioctl(&self, _raw_ioctl: RawIoctl) -> Result<i32> {
+            return_errno_with_message!(Errno::ENOTTY, "the socket ioctl command is unknown");
         }
     }
 }
@@ -75,7 +93,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     }
 
     /// Accepts a connection on the socket.
-    fn accept(&self) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+    fn accept(&self, _is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "accept() is not supported");
     }
 
@@ -111,22 +129,21 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize>;
 
     /// Receives a message from the socket.
     ///
-    /// If successful, the `io_vecs` buffer will be filled with the received content.
-    /// This method returns the length of the received message,
-    /// and the message header.
+    /// If successful, the `writer` buffer will be filled with the received content.
+    /// This method returns the length, flags, and header of the received message.
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)>;
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)>;
 
-    /// Returns a reference to the pseudo path associated with this socket.
-    fn pseudo_path(&self) -> &Path;
+    /// Returns the common state for this socket.
+    fn common(&self) -> &FileCommon;
 }
 
 impl<T: Socket + 'static> FileLike for T {
@@ -137,8 +154,8 @@ impl<T: Socket + 'static> FileLike for T {
         }
 
         // TODO: Set correct flags
-        self.recvmsg(writer, SendRecvFlags::empty())
-            .map(|(len, _)| len)
+        self.recvmsg(writer, RecvFlags::empty())
+            .map(|(output, _)| output.len())
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
@@ -146,35 +163,29 @@ impl<T: Socket + 'static> FileLike for T {
         self.sendmsg(
             reader,
             MessageHeader::new(None, Vec::new()),
-            SendRecvFlags::empty(),
+            SendFlags::empty(),
         )
     }
 
-    fn status_flags(&self) -> StatusFlags {
-        // TODO: Support other flags (e.g., `O_ASYNC`)
-        if self.is_nonblocking() {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        }
+    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        socket_ioctl(self, raw_ioctl)
     }
 
-    fn set_status_flags(&self, new_flags: StatusFlags) -> Result<()> {
-        // TODO: Support other flags (e.g., `O_ASYNC`)
-        if new_flags.contains(StatusFlags::O_NONBLOCK) {
-            self.set_nonblocking(true);
-        } else {
-            self.set_nonblocking(false);
-        }
-        Ok(())
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
+    }
+
+    fn access_mode(&self) -> AccessMode {
+        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/net/socket.c#L483>.
+        AccessMode::O_RDWR
     }
 
     fn as_socket(&self) -> Option<&dyn Socket> {
         Some(self)
     }
 
-    fn path(&self) -> &Path {
-        self.pseudo_path()
+    fn common(&self) -> &FileCommon {
+        Socket::common(self)
     }
 
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
@@ -192,14 +203,14 @@ impl<T: Socket + 'static> FileLike for T {
             }
         }
 
-        let mut flags = self.status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common().status_flags().bits() | self.access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }
 
         Box::new(FdInfo {
             flags,
-            ino: self.pseudo_path().inode().ino(),
+            ino: self.common().path().inode().ino(),
         })
     }
 }

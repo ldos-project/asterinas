@@ -9,7 +9,10 @@ use crate::{
             StatusFlags,
             file_table::{FdFlags, RawFileDesc},
         },
-        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath, LookupResult, PathResolver},
+        vfs::{
+            inode::HardLinkability,
+            path::{AT_FDCWD, EmptyPathStr, FsPath, LookupResult, PathResolver},
+        },
     },
     prelude::*,
     syscall::constants::MAX_FILENAME_LEN,
@@ -65,13 +68,13 @@ pub fn sys_openat(
 }
 
 pub fn sys_open(path_addr: Vaddr, flags: u32, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
-    self::sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
+    sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
 }
 
 pub fn sys_creat(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
     let flags =
         AccessMode::O_WRONLY as u32 | CreationFlags::O_CREAT.bits() | CreationFlags::O_TRUNC.bits();
-    self::sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
+    sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
 }
 
 fn do_open(
@@ -81,6 +84,10 @@ fn do_open(
     mode: InodeMode,
 ) -> Result<Arc<dyn FileLike>> {
     let open_args = OpenArgs::from_flags_and_mode(flags, mode)?;
+
+    if open_args.is_tmpfile() {
+        return do_open_tmpfile(path_resolver, fs_path, &open_args);
+    }
 
     let lookup_res = if open_args.follow_tail_link() {
         path_resolver.lookup_unresolved(fs_path)?
@@ -118,4 +125,32 @@ fn do_open(
     };
 
     Ok(file_handle)
+}
+
+fn do_open_tmpfile(
+    path_resolver: &PathResolver,
+    fs_path: &FsPath,
+    open_args: &OpenArgs,
+) -> Result<Arc<dyn FileLike>> {
+    let dir_path = if open_args.follow_tail_link() {
+        path_resolver.lookup(fs_path)?
+    } else {
+        path_resolver.lookup_no_follow(fs_path)?
+    };
+
+    // `O_EXCL` with `O_TMPFILE` is allowed by Linux, but it prevents the tmpfile
+    // from being linked later by `linkat(..., AT_EMPTY_PATH)`.
+    // Reference: <https://man7.org/linux/man-pages/man2/open.2.html>.
+    let hard_linkability = if open_args.creation_flags.contains(CreationFlags::O_EXCL) {
+        HardLinkability::Unlinkable
+    } else {
+        HardLinkability::Linkable
+    };
+    let tmpfile_path = dir_path.create_tmpfile(open_args.inode_mode, hard_linkability)?;
+
+    Ok(Arc::new(InodeHandle::new_unchecked_access(
+        tmpfile_path,
+        open_args.access_mode,
+        open_args.status_flags,
+    )?))
 }

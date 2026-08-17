@@ -11,7 +11,7 @@ pub use clock_gettime::ClockId;
 use ostd::arch::cpu::context::UserContext;
 pub use timer_create::create_timer;
 
-use crate::{context::Context, cpu::LinuxAbi, prelude::*};
+use crate::{cpu::LinuxAbi, prelude::*};
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
@@ -21,6 +21,7 @@ mod arch;
 mod accept;
 mod access;
 mod alarm;
+#[cfg(target_arch = "x86_64")]
 mod arch_prctl;
 mod bind;
 mod brk;
@@ -46,6 +47,9 @@ mod fallocate;
 mod fcntl;
 mod flock;
 mod fork;
+mod fsconfig;
+mod fsmount;
+mod fsopen;
 mod fsync;
 mod futex;
 mod get_ioprio;
@@ -78,6 +82,7 @@ mod ioctl;
 mod kill;
 mod link;
 mod listen;
+mod listmount;
 mod listxattr;
 mod lseek;
 mod madvise;
@@ -86,6 +91,7 @@ mod mkdir;
 mod mknod;
 mod mmap;
 mod mount;
+mod move_mount;
 mod mprotect;
 mod mremap;
 mod msync;
@@ -93,6 +99,7 @@ mod munmap;
 mod nanosleep;
 mod open;
 mod pause;
+mod personality;
 mod pidfd_getfd;
 mod pidfd_open;
 mod pidfd_send_signal;
@@ -344,14 +351,14 @@ use dispatch_fn_inner;
 use impl_syscall_nums_and_dispatch_fn;
 use syscall_handler;
 
-pub struct SyscallArgument {
+struct SyscallArgument {
     syscall_number: u64,
     args: [u64; 6],
 }
 
 /// Syscall return
 #[derive(Clone, Copy, Debug)]
-pub enum SyscallReturn {
+enum SyscallReturn {
     /// return isize, this value will be used to set rax
     Return(isize),
     /// does not need to set rax

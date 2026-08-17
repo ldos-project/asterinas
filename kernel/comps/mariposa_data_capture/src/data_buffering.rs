@@ -11,6 +11,7 @@ use aster_block::{
     bio::{BioDirection, BioSegment},
     id::Bid,
 };
+use io_util::batch::IoBatch;
 use minicbor_serde::Serializer;
 use ostd::{mm::io::util::HasVmReaderWriter as _, orpc::path::Path};
 use serde::Serialize;
@@ -128,9 +129,12 @@ impl ChunkingWriteWrapper {
         if writer.avail() > 1 {
             writer.write_val(&0xffu8).expect("Space was available");
         }
-        let _ = self
-            .block_device
-            .write_blocks_async(self.current_bid, bio_segment)?;
+        let _ = self.block_device.write_blocks_async(
+            self.current_bid,
+            bio_segment,
+            None,
+            &mut IoBatch::new(),
+        )?;
         Ok(n_written)
     }
 

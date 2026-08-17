@@ -5,9 +5,12 @@ use aster_bigtcp::{socket::UdpSocket, wire::IpEndpoint};
 use super::{bound::BoundDatagram, observer::DatagramObserver};
 use crate::{
     events::IoEvents,
-    net::socket::{
-        ip::common::{bind_port, get_ephemeral_endpoint},
-        util::datagram_common,
+    net::{
+        iface::BoundUdpPort,
+        socket::{
+            ip::common::{get_ephemeral_endpoint, resolve_bind_iface_and_config},
+            util::datagram_common,
+        },
     },
     prelude::*,
     process::signal::Pollee,
@@ -57,11 +60,21 @@ impl datagram_common::Unbound for UnboundDatagram {
         remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
     ) -> Result<Self::Bound> {
-        let endpoint = get_ephemeral_endpoint(remote_endpoint);
+        let endpoint = get_ephemeral_endpoint(remote_endpoint).ok_or_else(|| {
+            Error::with_message(
+                Errno::EADDRNOTAVAIL,
+                "no interface has an address for the specified family",
+            )
+        })?;
         self.bind(&endpoint, pollee, BindOptions { can_reuse: false })
     }
 
     fn check_io_events(&self) -> IoEvents {
         IoEvents::OUT
     }
+}
+
+fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundUdpPort> {
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse)?;
+    Ok(iface.bind_udp(config)?)
 }

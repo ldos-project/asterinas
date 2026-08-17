@@ -9,7 +9,7 @@
 
 mod file;
 
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::format;
 use core::{
     fmt::Debug,
     sync::atomic::{AtomicU32, Ordering},
@@ -25,14 +25,13 @@ use file::{
     EVDEV_BUFFER_SIZE, EvdevEvent, EvdevFile, EvdevFileInner, is_syn_dropped_event,
     is_syn_report_event,
 };
-use ostd::sync::SpinLock;
 use spin::Once;
 
 use super::{
     Device, DeviceType, DevtmpfsInodeMeta,
     registry::char::{MajorIdOwner, acquire_major, register, unregister},
 };
-use crate::{fs::file::FileIo, prelude::*, util::ring_buffer::RbProducer};
+use crate::{fs::file::PerOpenFileOps, prelude::*, util::ring_buffer::RbProducer};
 
 /// Major device number for evdev devices.
 const EVDEV_MAJOR_ID: u16 = 13;
@@ -204,7 +203,7 @@ impl Device for EvdevDevice {
         )))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         // Get the device from the registry.
         let devices = EVDEV_DEVICES.lock();
         let Some(evdev) = devices.get(&self.id.minor()) else {
@@ -216,7 +215,7 @@ impl Device for EvdevDevice {
 
         // Create a new opened evdev file for this evdev device.
         let file = evdev.create_file(EVDEV_BUFFER_SIZE)?;
-        Ok(file as Box<dyn FileIo>)
+        Ok(file as Box<dyn PerOpenFileOps>)
     }
 }
 
@@ -229,10 +228,7 @@ impl InputHandlerClass for EvdevHandlerClass {
         "evdev"
     }
 
-    fn connect(
-        &self,
-        dev: Arc<dyn InputDevice>,
-    ) -> core::result::Result<Arc<dyn InputHandler>, ConnectError> {
+    fn connect(&self, dev: Arc<dyn InputDevice>) -> Result<Arc<dyn InputHandler>, ConnectError> {
         // Allocate a new minor number.
         let minor = EVDEV_MINOR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let minor_id = MinorId::new(minor);

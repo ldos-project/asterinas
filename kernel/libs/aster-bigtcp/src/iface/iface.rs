@@ -2,9 +2,11 @@
 
 use alloc::sync::Arc;
 
-use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr};
 
-use super::{BoundPort, InterfaceFlags, InterfaceType, port::BindPortConfig};
+use super::{
+    BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceName, InterfaceType,
+};
 use crate::{errors::BindError, ext::Ext};
 
 /// A network interface.
@@ -14,6 +16,9 @@ use crate::{errors::BindError, ext::Ext};
 /// wireless adapters. They can also be virtual interfaces created by software, such as virtual
 /// private network (VPN) connections.
 pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
+    /// Returns the Ethernet address, if the interface uses Ethernet framing.
+    fn ethernet_addr(&self) -> Option<EthernetAddress>;
+
     /// Transmits or receives packets queued in the iface, and updates socket status accordingly.
     fn poll(&self);
 
@@ -22,23 +27,32 @@ pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
 }
 
 impl<E: Ext> dyn Iface<E> {
-    /// Binds a socket to the iface.
+    // FIXME: The reason for binding the socket and the iface together is because there are
+    // limitations inside smoltcp. See discussion at
+    // <https://github.com/smoltcp-rs/smoltcp/issues/779>.
+
+    /// Binds a TCP port to the iface.
     ///
-    /// After binding the socket to the iface, the iface will handle all packets to and from the
-    /// socket.
-    ///
-    /// If [`BindPortConfig::Ephemeral`] is specified, the iface will pick up an ephemeral port for
-    /// the socket.
-    ///
-    /// FIXME: The reason for binding the socket and the iface together is because there are
-    /// limitations inside smoltcp. See discussion at
-    /// <https://github.com/smoltcp-rs/smoltcp/issues/779>.
-    pub fn bind(
+    /// If no specific port is given in [`BindPortConfig`], the iface will pick up an ephemeral
+    /// port.
+    pub fn bind_tcp(
         self: &Arc<Self>,
         config: BindPortConfig,
-    ) -> core::result::Result<BoundPort<E>, BindError> {
+    ) -> Result<BoundTcpPort<E>, BindError> {
         let common = self.common();
-        common.bind(self.clone(), config)
+        common.bind_tcp(self.clone(), config)
+    }
+
+    /// Binds a UDP port to the iface.
+    ///
+    /// If no specific port is given in [`BindPortConfig`], the iface will pick up an ephemeral
+    /// port.
+    pub fn bind_udp(
+        self: &Arc<Self>,
+        config: BindPortConfig,
+    ) -> Result<BoundUdpPort<E>, BindError> {
+        let common = self.common();
+        common.bind_udp(self.clone(), config)
     }
 
     /// Returns the interface index.
@@ -49,7 +63,7 @@ impl<E: Ext> dyn Iface<E> {
     /// Gets the name of the iface.
     ///
     /// In Linux, the name is usually the driver name followed by a unit number.
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &InterfaceName {
         self.common().name()
     }
 
@@ -63,30 +77,24 @@ impl<E: Ext> dyn Iface<E> {
         self.common().flags()
     }
 
-    /// Gets the IPv4 address of the iface, if any.
-    //
-    // FIXME: One iface may have multiple IPv4 addresses.
-    pub fn ipv4_addr(&self) -> Option<Ipv4Address> {
-        self.common().ipv4_addr()
+    // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the
+    // address-related APIs below only account for the first CIDR of each family.
+
+    /// Gets the IPv4 CIDR of the iface, if any.
+    pub fn ipv4_cidr(&self) -> Option<Ipv4Cidr> {
+        self.common().ipv4_cidr()
     }
 
-    /// Retrieves the prefix length of the interface's IPv4 address.
+    /// Gets the IPv6 CIDR of the iface, if any.
+    pub fn ipv6_cidr(&self) -> Option<Ipv6Cidr> {
+        self.common().ipv6_cidr()
+    }
+
+    /// Gets the IPv4 broadcast address of the iface, if any.
     ///
-    /// Both `Self::ipv4_addr` and this method will either return `Some(_)`
-    /// or both will return `None`.
-    pub fn prefix_len(&self) -> Option<u8> {
-        self.common().prefix_len()
-    }
-
-    /// Gets the broadcast address of the iface, if any.
+    /// IPv6 does not define broadcast addresses and uses multicast instead.
     pub fn broadcast_addr(&self) -> Option<Ipv4Address> {
-        let cidr = {
-            let common = self.common();
-            let ipv4_addr = common.ipv4_addr()?;
-            let prefix_len = common.prefix_len()?;
-            Ipv4Cidr::new(ipv4_addr, prefix_len)
-        };
-        cidr.broadcast()
+        self.common().ipv4_cidr()?.broadcast()
     }
 
     /// Returns a reference to the associated [`ScheduleNextPoll`].

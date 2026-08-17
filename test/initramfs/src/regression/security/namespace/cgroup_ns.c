@@ -235,24 +235,21 @@ FN_TEST(cgroup_namespace_stays_thread_local)
 
 	TEST_SUCC(read_self_cgroup_ns_inode(&main_before));
 
-	TEST_RES(pthread_barrier_init(&probe.ready, NULL, 2), _ret == 0);
-	TEST_RES(pthread_barrier_init(&probe.release, NULL, 2), _ret == 0);
-	TEST_RES(pthread_create(&thread, NULL, unshare_cgroup_ns_thread,
-				&probe),
-		 _ret == 0);
+	TEST_SUCC(pthread_barrier_init(&probe.ready, NULL, 2));
+	TEST_SUCC(pthread_barrier_init(&probe.release, NULL, 2));
+	TEST_SUCC(pthread_create(&thread, NULL, unshare_cgroup_ns_thread,
+				 &probe));
 
-	TEST_RES(pthread_barrier_wait(&probe.ready),
-		 _ret == 0 || _ret == PTHREAD_BARRIER_SERIAL_THREAD);
+	TEST_SUCC(pthread_barrier_wait(&probe.ready));
 	TEST_RES(read_self_cgroup_ns_inode(&main_after),
 		 main_before == main_after);
 	TEST_RES(read_task_cgroup_ns_inode(probe.tid, &worker_ns),
 		 worker_ns != main_after);
-	TEST_RES(pthread_barrier_wait(&probe.release),
-		 _ret == 0 || _ret == PTHREAD_BARRIER_SERIAL_THREAD);
+	TEST_SUCC(pthread_barrier_wait(&probe.release));
 
-	TEST_RES(pthread_join(thread, NULL), _ret == 0);
-	TEST_RES(pthread_barrier_destroy(&probe.ready), _ret == 0);
-	TEST_RES(pthread_barrier_destroy(&probe.release), _ret == 0);
+	TEST_SUCC(pthread_join(thread, NULL));
+	TEST_SUCC(pthread_barrier_destroy(&probe.ready));
+	TEST_SUCC(pthread_barrier_destroy(&probe.release));
 }
 END_TEST()
 
@@ -318,6 +315,37 @@ FN_TEST(setns_revirtualizes_proc_cgroup)
 
 	TEST_SUCC(reset_self());
 	TEST_SUCC(close(pidfd));
+	kill_paused_process(child);
+}
+END_TEST()
+
+/*
+ * Joining a cgroup namespace through its nsfs fd should have the same
+ * re-virtualization effect as joining through a pidfd.
+ */
+FN_TEST(setns_nsfs_revirtualizes_proc_cgroup)
+{
+	char ns_path[64];
+	ino_t child_ns;
+	ino_t joined_ns;
+	pid_t child;
+	int nsfd;
+
+	TEST_SUCC(move_pid_to_cgroup(TEST_BASE_CGROUP, getpid()));
+	TEST_SUCC(check_proc_cgroup(getpid(), "0::/cgns-base\n"));
+
+	child = spawn_paused_process(TEST_BASE_CGROUP, MOVE_TO_NEW_CGROUP_NS);
+	TEST_SUCC(read_process_cgroup_ns_inode(child, &child_ns));
+
+	snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/cgroup", child);
+	nsfd = TEST_SUCC(open(ns_path, O_RDONLY));
+	TEST_SUCC(setns(nsfd, CLONE_NEWCGROUP));
+
+	TEST_RES(read_self_cgroup_ns_inode(&joined_ns), joined_ns == child_ns);
+	TEST_SUCC(check_proc_cgroup(getpid(), "0::/\n"));
+
+	TEST_SUCC(reset_self());
+	TEST_SUCC(close(nsfd));
 	kill_paused_process(child);
 }
 END_TEST()

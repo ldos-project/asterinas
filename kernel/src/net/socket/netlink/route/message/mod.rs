@@ -5,10 +5,15 @@
 //! This module defines how to interpret messages sent from user space and how to write
 //! kernel messages back to user space.
 
+#![short_vis_path::add(netlink)]
+
 mod attr;
 mod segment;
 
-pub(super) use attr::{addr::AddrAttr, link::LinkAttr};
+pub(super) use attr::{
+    addr::{AddrAttr, AddrProtocol},
+    link::LinkAttr,
+};
 pub(super) use segment::{
     RtnlSegment,
     addr::{AddrMessageFlags, AddrSegment, AddrSegmentBody, RtScope},
@@ -18,4 +23,4 @@ pub(super) use segment::{
 use crate::net::socket::netlink::message::Message;
 
 /// A netlink route message.
-pub(in crate::net::socket::netlink) type RtnlMessage = Message<RtnlSegment>;
+pub(in netlink) type RtnlMessage = Message<RtnlSegment>;

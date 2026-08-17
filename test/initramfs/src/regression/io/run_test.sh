@@ -9,8 +9,12 @@ set -e
 ./epoll/test_epoll_pwait.sh
 
 ./eventfd2/eventfd2
+./eventfd2/eventfd2_err
 
 ./file_io/access_err
+./file_io/block_device
 ./file_io/fcntl_lock
+./file_io/fcntl_owner
+./file_io/fcntl_status_flags
 ./file_io/file_err
 ./file_io/iovec_err

@@ -24,6 +24,7 @@ use crate::{
         CloneFlags, ContextSetNsAdminApi, NsProxy, NsProxyBuilder, PidFile,
         check_unsupported_ns_flags, credentials::capabilities::CapSet, posix_thread::AsPosixThread,
     },
+    security::lsm::hooks as lsm_hooks,
     syscall::SyscallReturn,
 };
 
@@ -157,7 +158,7 @@ fn try_apply_ns_from_inode<T: NsCommonOps>(
     flags: CloneFlags,
     apply: impl FnOnce(Arc<T>) -> Result<()>,
 ) -> Result<bool> {
-    let Some(ns_file) = inode_handle.downcast_file_io::<NsFile<T>>()? else {
+    let Some(ns_file) = inode_handle.downcast_open_file::<NsFile<T>>()? else {
         return Ok(false);
     };
 
@@ -203,14 +204,14 @@ fn set_mnt_ns(
 ) -> Result<()> {
     check_set_ns_perms(target_ns, ctx)?;
 
+    check_current_user_ns_cap(ctx, CapSet::SYS_CHROOT)?;
+
     if ctx.thread_local.is_fs_shared() {
         return_errno_with_message!(
             Errno::EINVAL,
             "setting a mount namespace is not allowed with shared filesystem information"
         );
     }
-
-    // TODO: Are the checks above sufficient?
 
     builder.mnt_ns(target_ns.clone());
 
@@ -230,17 +231,26 @@ fn set_uts_ns(
 }
 
 fn check_set_ns_perms<T: NsCommonOps>(target_ns: &Arc<T>, ctx: &Context) -> Result<()> {
-    // Verify the thread has SYS_ADMIN capability in the target namespace's owner
-    // and the current user namespace.
-    target_ns
-        .owner_user_ns()
-        .unwrap()
-        .check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
-    ctx.thread_local
-        .borrow_user_ns()
-        .check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
-
-    // TODO: Are the checks above sufficient?
+    // Verify the thread has `SYS_ADMIN` capability in the target namespace's
+    // owner and in its current user namespace.
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        target_ns.owner_user_ns().unwrap().as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_ADMIN,
+    ))?;
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        ctx.thread_local.borrow_user_ns().as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_ADMIN,
+    ))?;
 
     Ok(())
+}
+
+fn check_current_user_ns_cap(ctx: &Context, cap: CapSet) -> Result<()> {
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        ctx.thread_local.borrow_user_ns().as_ref(),
+        ctx.posix_thread,
+        cap,
+    ))
 }

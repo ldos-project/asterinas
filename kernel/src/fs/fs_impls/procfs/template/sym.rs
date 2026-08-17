@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![short_vis_path::add(procfs)]
+
 use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
@@ -11,20 +13,21 @@ use crate::{
         procfs::{BLOCK_SIZE, ProcFs},
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, Inode, InodeIo, Metadata, SymbolicLink},
+            inode::{Extension, FileOps, Inode, Metadata, SymbolicLink},
         },
     },
     prelude::*,
     process::{Gid, Uid},
+    thread::Thread,
 };
 
-pub struct ProcSym<S: SymOps> {
+pub(in procfs) struct ProcSym<S: ProcSymOps> {
     inner: S,
     common: Common,
 }
 
-impl<S: SymOps> ProcSym<S> {
-    pub fn new(sym: S, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
+impl<S: ProcSymOps> ProcSym<S> {
+    pub(in procfs) fn new(sym: S, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
         let common = {
             let fs = parent.upgrade().unwrap().fs();
             let procfs = fs.downcast_ref::<ProcFs>().unwrap();
@@ -39,12 +42,12 @@ impl<S: SymOps> ProcSym<S> {
         Arc::new(Self { inner: sym, common })
     }
 
-    pub fn inner(&self) -> &S {
+    pub(in procfs) fn inner(&self) -> &S {
         &self.inner
     }
 }
 
-impl<S: SymOps + 'static> InodeIo for ProcSym<S> {
+impl<S: ProcSymOps + 'static> FileOps for ProcSym<S> {
     fn read_at(
         &self,
         _offset: usize,
@@ -65,9 +68,8 @@ impl<S: SymOps + 'static> InodeIo for ProcSym<S> {
 }
 
 #[inherit_methods(from = "self.common")]
-impl<S: SymOps + 'static> Inode for ProcSym<S> {
+impl<S: ProcSymOps + 'static> Inode for ProcSym<S> {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
@@ -83,6 +85,11 @@ impl<S: SymOps + 'static> Inode for ProcSym<S> {
     fn ctime(&self) -> Duration;
     fn set_ctime(&self, time: Duration);
     fn fs(&self) -> Arc<dyn FileSystem>;
+
+    fn metadata(&self) -> Result<Metadata> {
+        let owner_thread = self.inner.owner_thread();
+        Ok(self.common.metadata_with_owner(owner_thread))
+    }
 
     fn resize(&self, _new_size: usize) -> Result<()> {
         Err(Error::new(Errno::EPERM))
@@ -101,6 +108,11 @@ impl<S: SymOps + 'static> Inode for ProcSym<S> {
     }
 }
 
-pub trait SymOps: Sync + Send {
+pub trait ProcSymOps: Sync + Send {
+    /// Returns the thread whose credentials own this procfs inode.
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        None
+    }
+
     fn read_link(&self) -> Result<SymbolicLink>;
 }

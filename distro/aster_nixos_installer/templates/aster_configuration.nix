@@ -1,6 +1,9 @@
 # The system-wide settings for AsterNixOS.
 
 { config, lib, pkgs, ... }: {
+  # Keep NixOS host platform aligned with the selected target architecture.
+  config.nixpkgs.hostPlatform = lib.mkDefault "@aster-target-platform@";
+
   # Imports all Nix files located under the 'modules' directory.
   #
   # Each Nix file within the 'modules' directory contributes a specific part to the overall 'configuration.nix'.
@@ -33,6 +36,8 @@
     (import ./overlays/podman/default.nix)
     (import ./overlays/switch-to-configuration-ng/default.nix)
     (import ./overlays/systemd/default.nix)
+    (import ./overlays/jtreg/default.nix)
+    (import ./overlays/codex/default.nix)
   ];
 
   # The Asterinas NixOS special options.

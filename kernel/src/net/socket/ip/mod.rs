@@ -3,9 +3,11 @@
 mod addr;
 mod common;
 mod datagram;
+mod ioctl;
 pub mod options;
 mod stream;
 
+pub use addr::IpAddressFamily;
 pub use datagram::DatagramSocket;
 pub(in crate::net) use datagram::observer::DatagramObserver;
 pub(in crate::net) use stream::observer::StreamObserver;

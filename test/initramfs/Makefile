@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
-OSDK_TARGET_ARCH ?= x86_64
+TARGET_ARCH ?= x86_64
 SMP ?= 1
 VERBOSE ?= 1
 ENABLE_CONFORMANCE_TEST ?= false
@@ -31,6 +31,11 @@ INITRAMFS_COMPRESSED := true
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
+LTP_DEV_IMAGE := $(BUILD_DIR)/ltp_dev.img
+SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
+XFSTESTS_TEST_IMAGE := $(BUILD_DIR)/xfstests_test.img
+XFSTESTS_SCRATCH_IMAGE := $(BUILD_DIR)/xfstests_scratch.img
+XFSTESTS_DISK_SIZE ?= 12G
 CAPTURE_IMAGE := $(BUILD_DIR)/capture.img
 CAPTURE_IMAGE_SIZE := 4G
 AUTHORIZED_KEYS_FILE := $(BUILD_DIR)/authorized_keys
@@ -40,6 +45,13 @@ ifeq ($(BENCHMARK), none)
 ENABLE_BENCHMARK_TEST = false
 else
 ENABLE_BENCHMARK_TEST = true
+endif
+
+BUILD_XFSTESTS_IMAGES = false
+ifeq ($(ENABLE_CONFORMANCE_TEST), true)
+ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
+BUILD_XFSTESTS_IMAGES = true
+endif
 endif
 
 ifneq ($(filter 1 true,$(ENABLE_PYTHON)),)
@@ -57,19 +69,21 @@ endif
 all: build
 
 .PHONY: build
-ifeq ($(OSDK_TARGET_ARCH), loongarch64)
+ifeq ($(TARGET_ARCH), loongarch64)
 build: $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE)
 	@echo "For loongarch, we generate a fake initramfs to successfully test or build."
 	@touch $(INITRAMFS_IMAGE)
+else ifeq ($(BUILD_XFSTESTS_IMAGES), true)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE) $(XFSTESTS_TEST_IMAGE) $(XFSTESTS_SCRATCH_IMAGE)
 else
-build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(CAPTURE_IMAGE)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE) $(CAPTURE_IMAGE)
 endif
 
 .PHONY: $(INITRAMFS_IMAGE)
 $(INITRAMFS_IMAGE): $(INITRAMFS)
 	@nix-build \
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
-		--argstr target $(OSDK_TARGET_ARCH) \
+		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
@@ -88,7 +102,7 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 $(INITRAMFS): $(AUTHORIZED_KEYS_FILE)
 	@nix-build \
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
-		--argstr target $(OSDK_TARGET_ARCH) \
+		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
@@ -188,6 +202,26 @@ $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
 	@fallocate -l 512M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
+
+$(LTP_DEV_IMAGE):
+	@mkdir -p $(BUILD_DIR)
+	@dd if=/dev/zero of=$(LTP_DEV_IMAGE) bs=512M count=1
+	@mke2fs -t ext2 -F $(LTP_DEV_IMAGE)
+
+$(SSD_IMAGE):
+	@mkdir -p $(BUILD_DIR)
+	@dd if=/dev/zero of=$(SSD_IMAGE) bs=256M count=1
+	@mke2fs -t ext2 -F $(SSD_IMAGE)
+
+$(XFSTESTS_TEST_IMAGE):
+	@mkdir -p $(BUILD_DIR)
+	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_TEST_IMAGE)
+	@mkfs.ext2 $(XFSTESTS_TEST_IMAGE)
+
+$(XFSTESTS_SCRATCH_IMAGE):
+	@mkdir -p $(BUILD_DIR)
+	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_SCRATCH_IMAGE)
+	@mkfs.ext2 $(XFSTESTS_SCRATCH_IMAGE)
 
 # We use truncate for capture files because sparse allocation will save disk-space in the host, the
 # writes will mostly be cached in RAM, and realistic access times are not needed.

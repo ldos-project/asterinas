@@ -211,9 +211,9 @@ strategy:
 
 ### Step 5: Test, Validate and Commit
 
-Before committing the changes, it is essential to test the new benchmark job locally to ensure it runs correctly. This step helps identify any issues or errors that may arise during the benchmark execution. 
+Before committing the changes, it is essential to test the new benchmark job locally to ensure it runs correctly. This step helps identify any issues or errors that may arise during the benchmark execution.
 
-Firstly, we can run the benchmark locally to ensure it works as expected. The following command should finally generate the `result_<bench_suite>-<bench_job>.json` under `asterinas/`. 
+Firstly, we can run the benchmark locally to ensure it works as expected. The following command should finally generate the `result_<bench_suite>-<bench_job>.json` under `asterinas/`.
 
 ```bash
 cd asterinas/
@@ -264,4 +264,4 @@ Using it is as simple as prefixing your command with `./tools/howdone/howdone`, 
 
 This will create a directory `run-<date and time>` which contains all the output of the command and
 other useful information as specified in `.howdone.yaml`. This will include the hardware and
-software in use, log files with resolved stack traces, and other information. 
+software in use, log files with resolved stack traces, and other information.

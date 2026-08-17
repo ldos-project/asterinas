@@ -4,6 +4,7 @@ pub mod cpu;
 #[cfg(not(baseline_asterinas))]
 pub mod pmu;
 mod power;
+pub mod ptrace;
 pub mod signal;
 
 pub fn init() {

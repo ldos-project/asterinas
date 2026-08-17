@@ -32,9 +32,9 @@ use crate::{
 
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
+pub mod page_cache;
 pub mod perms;
 pub mod vmar;
-pub mod vmo;
 
 #[ostd::global_frame_allocator]
 static FRAME_ALLOCATOR: FrameAllocator = FrameAllocator;

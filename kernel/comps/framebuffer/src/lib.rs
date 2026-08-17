@@ -14,20 +14,16 @@ macro_rules! __log_prefix {
 }
 
 mod ansi_escape;
-mod console;
-mod dummy_console;
-mod framebuffer;
-mod pixel;
+pub mod console;
+pub mod font;
+pub mod framebuffer;
+pub mod mode;
+pub mod pixel;
 
 use component::{ComponentInitError, init_component};
-pub use console::{CONSOLE_NAME, ConsoleCallbacks, FRAMEBUFFER_CONSOLE};
-pub use dummy_console::DummyFramebufferConsole;
-pub use framebuffer::{ColorMapEntry, FRAMEBUFFER, FrameBuffer, MAX_CMAP_SIZE};
-pub use pixel::{Pixel, PixelFormat, RenderedPixel};
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
     framebuffer::init();
-    console::init();
     Ok(())
 }
