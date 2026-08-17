@@ -35,6 +35,7 @@ use ostd::{
         sync::{BlockOnMany, Blocker},
     },
     path,
+    sync::WaitQueue,
 };
 use serde::Serialize;
 
@@ -114,6 +115,9 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     started: AtomicBool,
     stopped: AtomicBool,
+    /// Woken once `stopped` is set, so that [`DataCaptureFile::stop`] can wait for the server
+    /// thread rather than poll for it.
+    stopped_wait_queue: WaitQueue,
 }
 
 pub struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
@@ -176,6 +180,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         self.server
                             .stopped
                             .store(true, core::sync::atomic::Ordering::SeqCst);
+                        self.server.stopped_wait_queue.wake_all();
                         return Ok(());
                     }
                 }
@@ -226,9 +231,14 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
 
     fn stop(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::Stop);
-        while !self.stopped.load(core::sync::atomic::Ordering::Relaxed) {
-            ostd::task::Task::yield_now();
-        }
+        // Block rather than spin on `yield_now`: yielding only rotates within the caller's own
+        // scheduling class, so a real-time caller that is the only runnable real-time task keeps
+        // the CPU and starves the fair-priority block device worker this is ultimately waiting on.
+        self.stopped_wait_queue.wait_until(|| {
+            self.stopped
+                .load(core::sync::atomic::Ordering::SeqCst)
+                .then_some(())
+        });
         Ok(())
     }
 
@@ -273,6 +283,7 @@ impl DataCaptureFileBuilder {
                     command_oqueue,
                     started: AtomicBool::new(false),
                     stopped: AtomicBool::new(false),
+                    stopped_wait_queue: WaitQueue::new(),
                 });
 
                 spawn_thread(server.clone(), {

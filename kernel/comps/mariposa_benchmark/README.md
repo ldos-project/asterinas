@@ -97,15 +97,6 @@ configuration.
   matching the RAID worker this hot path mirrors. The userspace peer's scheduling cannot be set from
   userspace on this kernel, so there is no knob for it.
 
-  **Known problem: leave this unset.** A run under real-time scheduling completes every round trip
-  and then hangs while writing the samples out, with no diagnostic -- the reply timeout cannot fire
-  because measurement is already over. The cause is outside this benchmark: the virtio-block worker
-  that submits the write is spawned at fair priority
-  (`kernel/src/device/registry/block.rs`, `ThreadOptions::new(task_fn).spawn()`), unlike the ORPC
-  server threads, which `kernel/src/orpc_utils.rs` gives real-time priority 50. Giving that worker
-  the same priority makes a real-time run complete, but that is a scheduling decision for the kernel
-  to make, not this benchmark. It reproduces on every 1-vCPU boot and intermittently with more.
-
 ### Caveats
 
 - **Guest TSC under KVM is host-derived.** Both sides read the same guest TSC, so the four stamps are
