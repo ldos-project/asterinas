@@ -139,6 +139,16 @@ run_benchmark() {
         asterinas_cmd_arr+=(INTEL_TDX=1)
     fi
 
+    # asterinas = baseline (no Mariposa features), mariposa = default (with OQueues/capture)
+    # both_baseline = linux + baseline (for -o all pass 1)
+    local baseline_flag=false
+    if [[ "${run_os}" == "asterinas" || "${run_os}" == "both_baseline" ]]; then
+        baseline_flag=true
+    fi
+    if ${baseline_flag}; then
+        asterinas_cmd_arr+=(BASELINE_ASTERINAS=1)
+    fi
+
     local linux_append="console=ttyS0 rdinit=/benchmark/common/bench_runner.sh ${benchmark} linux mitigations=off hugepages=0 transparent_hugepage=never quiet"
 
     local linux_cmd_arr=(
@@ -192,14 +202,14 @@ run_benchmark() {
                 : > "${ASTER_OUTPUT}"
                 : > "${LINUX_OUTPUT}"
                 for seed in ${seeds}; do
-                    if [[ "${run_os}" == "asterinas" || "${run_os}" == "both" ]]; then
+                    if [[ "${run_os}" == "asterinas" || "${run_os}" == "mariposa" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
                         echo "Running benchmark ${benchmark} (seed ${seed}) on Asterinas..."
                         # KCMDARGS becomes --kcmd-args and is visible in /proc/cmdline
                         # inside the guest, where bench_runner.sh picks it up.
                         "${asterinas_cmd_arr[@]}" "KCMDARGS=BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=${seed}" 2>&1 | tee -a "${ASTER_OUTPUT}"
                         prepare_fs
                     fi
-                    if [[ "${run_os}" == "linux" || "${run_os}" == "both" ]]; then
+                    if [[ "${run_os}" == "linux" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
                         echo "Running benchmark ${benchmark} (seed ${seed}) on Linux..."
                         # The token rides on the kernel command line, visible in
                         # /proc/cmdline inside the guest.
@@ -207,13 +217,13 @@ run_benchmark() {
                     fi
                 done
             else
-                if [[ "${run_os}" == "asterinas" || "${run_os}" == "both" ]]; then
+                if [[ "${run_os}" == "asterinas" || "${run_os}" == "mariposa" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
                     echo "Running benchmark ${benchmark} on Asterinas..."
                     # Execute directly from array, redirect stderr to stdout, then tee
                     "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
                     prepare_fs
                 fi
-                if [[ "${run_os}" == "linux" || "${run_os}" == "both" ]]; then
+                if [[ "${run_os}" == "linux" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
                     echo "Running benchmark ${benchmark} on Linux..."
                     # Execute directly from array, redirect stderr to stdout, then tee
                     "${linux_cmd_arr[@]}" -append "${linux_append}" 2>&1 | tee "${LINUX_OUTPUT}"
@@ -395,18 +405,20 @@ parse_multi_results() {
                     | (length / 2) as $mid
                     | if length % 2 == 1 then $s[$mid | floor] else (($s[$mid - 1] + $s[$mid]) / 2) end;
                 def stats: {count: length, median: median, mean: (add / length), min: min, max: max};
+                def safe_stats: map(select(. != null)) | if length > 0 then stats else null end;
+                def safe_add: map(select(. != null)) | if length > 0 then add else null end;
                 split("\n")[:-1]
                 | map(split(" ") | {
                     seed: .[0],
-                    linux: (.[1] | tonumber),
-                    asterinas: (.[3] | tonumber),
+                    linux: (.[1] | try tonumber catch null),
+                    asterinas: (.[3] | try tonumber catch null),
                     fill: {
-                        linux: (.[5] | tonumber),
-                        asterinas: (.[7] | tonumber)
+                        linux: (.[5] | try tonumber catch null),
+                        asterinas: (.[7] | try tonumber catch null)
                     },
                     timing: {
-                        linux: {fill_s: (.[9] | tonumber), mix_s: (.[10] | tonumber), total_s: (.[11] | tonumber)},
-                        asterinas: {fill_s: (.[13] | tonumber), mix_s: (.[14] | tonumber), total_s: (.[15] | tonumber)}
+                        linux: {fill_s: (.[9] | try tonumber catch null), mix_s: (.[10] | try tonumber catch null), total_s: (.[11] | try tonumber catch null)},
+                        asterinas: {fill_s: (.[13] | try tonumber catch null), mix_s: (.[14] | try tonumber catch null), total_s: (.[15] | try tonumber catch null)}
                     }
                   })
                 | map(. + { histogram: {
@@ -419,19 +431,19 @@ parse_multi_results() {
                     mode: "multi_seed",
                     runs: $runs,
                     summary: {
-                        linux: ($runs | map(.linux) | stats),
-                        asterinas: ($runs | map(.asterinas) | stats)
+                        linux: ($runs | map(.linux) | safe_stats),
+                        asterinas: ($runs | map(.asterinas) | safe_stats)
                     },
                     timing_summary: {
                         linux: {
-                            fill_s: ($runs | map(.timing.linux.fill_s) | add),
-                            mix_s: ($runs | map(.timing.linux.mix_s) | add),
-                            total_s: ($runs | map(.timing.linux.total_s) | add)
+                            fill_s: ($runs | map(.timing.linux.fill_s) | safe_add),
+                            mix_s: ($runs | map(.timing.linux.mix_s) | safe_add),
+                            total_s: ($runs | map(.timing.linux.total_s) | safe_add)
                         },
                         asterinas: {
-                            fill_s: ($runs | map(.timing.asterinas.fill_s) | add),
-                            mix_s: ($runs | map(.timing.asterinas.mix_s) | add),
-                            total_s: ($runs | map(.timing.asterinas.total_s) | add)
+                            fill_s: ($runs | map(.timing.asterinas.fill_s) | safe_add),
+                            mix_s: ($runs | map(.timing.asterinas.mix_s) | safe_add),
+                            total_s: ($runs | map(.timing.asterinas.total_s) | safe_add)
                         }
                     }
                   }' > "${result_file}"
@@ -449,7 +461,7 @@ parse_multi_results() {
                 split("\n")[:-1]
                 | map(split(" ") | {
                     seed: .[0],
-                    asterinas: (.[1] | tonumber)
+                    asterinas: (.[1] | try tonumber catch null)
                   })
                 | map(. + { histogram: {
                         linux: null,
@@ -486,7 +498,7 @@ parse_multi_results() {
                 split("\n")[:-1]
                 | map(split(" ") | {
                     seed: .[0],
-                    linux: (.[1] | tonumber)
+                    linux: (.[1] | try tonumber catch null)
                   })
                 | map(. + { histogram: {
                         linux: ($linux_hists[0][.seed] // null),
@@ -513,7 +525,124 @@ parse_multi_results() {
     echo "Results written to ${result_file}"
 }
 
-# Clean up temporary files
+# Parse per-seed results from three separate OS output files and combine into
+# a single JSON with keys: linux, asterinas (baseline), mariposa.
+# Arguments: benchmark linux_file baseline_file mariposa_file
+parse_three_way_results() {
+    local benchmark="$1"
+    local linux_file="$2"
+    local baseline_file="$3"
+    local mariposa_file="$4"
+    local result_file="$(extract_result_file "${BENCHMARK_ROOT}/${benchmark}/bench_result.yaml")"
+
+    local linux_runs baseline_runs mariposa_runs
+    linux_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${linux_file}" | tr -d '\r')
+    baseline_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${baseline_file}" | tr -d '\r')
+    mariposa_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${mariposa_file}" | tr -d '\r')
+
+    if [[ -z "${linux_runs}" && -z "${baseline_runs}" && -z "${mariposa_runs}" ]]; then
+        echo "Error: No SEED_RESULT lines found in any output" >&2
+        exit 1
+    fi
+
+    local linux_fills baseline_fills mariposa_fills
+    linux_fills=$(awk '/^SEED_FILL /{print $2, $3}' "${linux_file}" | tr -d '\r')
+    baseline_fills=$(awk '/^SEED_FILL /{print $2, $3}' "${baseline_file}" | tr -d '\r')
+    mariposa_fills=$(awk '/^SEED_FILL /{print $2, $3}' "${mariposa_file}" | tr -d '\r')
+
+    local linux_times baseline_times mariposa_times
+    linux_times=$(awk '/^SEED_TIME /{print $2, $3, $4, $5}' "${linux_file}" | tr -d '\r')
+    baseline_times=$(awk '/^SEED_TIME /{print $2, $3, $4, $5}' "${baseline_file}" | tr -d '\r')
+    mariposa_times=$(awk '/^SEED_TIME /{print $2, $3, $4, $5}' "${mariposa_file}" | tr -d '\r')
+
+    local linux_hist_lines baseline_hist_lines mariposa_hist_lines
+    linux_hist_lines=$(grep '^SEED_HIST' "${linux_file}" | tr -d '\r' || true)
+    baseline_hist_lines=$(grep '^SEED_HIST' "${baseline_file}" | tr -d '\r' || true)
+    mariposa_hist_lines=$(grep '^SEED_HIST' "${mariposa_file}" | tr -d '\r' || true)
+
+    local linux_hists_file baseline_hists_file mariposa_hists_file
+    linux_hists_file=$(mktemp)
+    baseline_hists_file=$(mktemp)
+    mariposa_hists_file=$(mktemp)
+    trap 'rm -f "${linux_hists_file}" "${baseline_hists_file}" "${mariposa_hists_file}"' RETURN
+    histograms_from_lines <<< "${linux_hist_lines}" > "${linux_hists_file}"
+    histograms_from_lines <<< "${baseline_hist_lines}" > "${baseline_hists_file}"
+    histograms_from_lines <<< "${mariposa_hist_lines}" > "${mariposa_hists_file}"
+
+    paste -d ' ' \
+        <(printf '%s\n' "${linux_runs}") \
+        <(printf '%s\n' "${baseline_runs}") \
+        <(printf '%s\n' "${mariposa_runs}") \
+        <(printf '%s\n' "${linux_fills}") \
+        <(printf '%s\n' "${baseline_fills}") \
+        <(printf '%s\n' "${mariposa_fills}") \
+        <(printf '%s\n' "${linux_times}") \
+        <(printf '%s\n' "${baseline_times}") \
+        <(printf '%s\n' "${mariposa_times}") \
+        | jq -sR \
+            --arg benchmark "${benchmark}" \
+            --slurpfile linux_hists "${linux_hists_file}" \
+            --slurpfile baseline_hists "${baseline_hists_file}" \
+            --slurpfile mariposa_hists "${mariposa_hists_file}" '
+            def median:
+                sort as $s
+                | (length / 2) as $mid
+                | if length % 2 == 1 then $s[$mid | floor] else (($s[$mid - 1] + $s[$mid]) / 2) end;
+            def stats: {count: length, median: median, mean: (add / length), min: min, max: max};
+            def safe_stats: map(select(. != null)) | if length > 0 then stats else null end;
+            def safe_add: map(select(. != null)) | if length > 0 then add else null end;
+            split("\n")[:-1]
+            | map(split(" ") | {
+                seed: .[0],
+                linux: (.[1] | try tonumber catch null),
+                asterinas: (.[3] | try tonumber catch null),
+                mariposa: (.[5] | try tonumber catch null),
+                fill: {
+                    linux: (.[7] | try tonumber catch null),
+                    asterinas: (.[9] | try tonumber catch null),
+                    mariposa: (.[11] | try tonumber catch null)
+                },
+                timing: {
+                    linux:    {fill_s: (.[13] | try tonumber catch null), mix_s: (.[14] | try tonumber catch null), total_s: (.[15] | try tonumber catch null)},
+                    asterinas:{fill_s: (.[17] | try tonumber catch null), mix_s: (.[18] | try tonumber catch null), total_s: (.[19] | try tonumber catch null)},
+                    mariposa: {fill_s: (.[21] | try tonumber catch null), mix_s: (.[22] | try tonumber catch null), total_s: (.[23] | try tonumber catch null)}
+                }
+              })
+            | map(. + { histogram: {
+                    linux:     ($linux_hists[0][.seed] // null),
+                    asterinas: ($baseline_hists[0][.seed] // null),
+                    mariposa:  ($mariposa_hists[0][.seed] // null)
+                } })
+            | . as $runs
+            | {
+                benchmark: $benchmark,
+                mode: "multi_seed",
+                runs: $runs,
+                summary: {
+                    linux: ($runs | map(.linux) | safe_stats),
+                    asterinas: ($runs | map(.asterinas) | safe_stats),
+                    mariposa: ($runs | map(.mariposa) | safe_stats)
+                },
+                timing_summary: {
+                    linux: {
+                        fill_s: ($runs | map(.timing.linux.fill_s) | safe_add),
+                        mix_s: ($runs | map(.timing.linux.mix_s) | safe_add),
+                        total_s: ($runs | map(.timing.linux.total_s) | safe_add)
+                    },
+                    asterinas: {
+                        fill_s: ($runs | map(.timing.asterinas.fill_s) | safe_add),
+                        mix_s: ($runs | map(.timing.asterinas.mix_s) | safe_add),
+                        total_s: ($runs | map(.timing.asterinas.total_s) | safe_add)
+                    },
+                    mariposa: {
+                        fill_s: ($runs | map(.timing.mariposa.fill_s) | safe_add),
+                        mix_s: ($runs | map(.timing.mariposa.mix_s) | safe_add),
+                        total_s: ($runs | map(.timing.mariposa.total_s) | safe_add)
+                    }
+                }
+              }' > "${result_file}"
+    echo "Results written to ${result_file}"
+}
 cleanup() {
     echo "Cleaning up..."
     rm -f "${LINUX_OUTPUT}" "${ASTER_OUTPUT}" "${RESULT_TEMPLATE}"
@@ -529,12 +658,14 @@ main() {
             p) parse_only=true ;;
             o)
                 run_os="${OPTARG}"
-                if [[ "${run_os}" != "linux" && "${run_os}" != "asterinas" && "${run_os}" != "both" ]]; then
-                    echo "Error: --os must be 'linux', 'asterinas', or 'both'" >&2
+                if [[ "${run_os}" != "linux" && "${run_os}" != "asterinas" && \
+                      "${run_os}" != "mariposa" && "${run_os}" != "both" && \
+                      "${run_os}" != "all" ]]; then
+                    echo "Error: --os must be 'linux', 'asterinas', 'mariposa', 'both', or 'all'" >&2
                     exit 1
                 fi
                 ;;
-            *) echo "Usage: $0 [-p] [-o linux|asterinas|both] <benchmark> <platform>" >&2; exit 1 ;;
+            *) echo "Usage: $0 [-p] [-o linux|asterinas|mariposa|both|all] <benchmark> <platform>" >&2; exit 1 ;;
         esac
     done
     shift $((OPTIND - 1))
@@ -574,7 +705,40 @@ main() {
         done
     fi
 
-    # Run the benchmark, passing the config string
+    # -o all: run each OS variant separately, then combine into one result JSON
+    if [[ "${run_os}" == "all" ]]; then
+        local bench_short="${benchmark//\//-}"
+        local all_linux="${BENCHMARK_ROOT}/all_linux_output.txt"
+        local all_baseline="${BENCHMARK_ROOT}/all_baseline_output.txt"
+        local all_mariposa="${BENCHMARK_ROOT}/all_mariposa_output.txt"
+
+        echo "=== Pass 1/3: Linux ==="
+        if ! ${parse_only}; then
+            run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "linux"
+        fi
+        cp "${LINUX_OUTPUT}" "${all_linux}"
+
+        echo "=== Pass 2/3: Asterinas baseline ==="
+        if ! ${parse_only}; then
+            run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "asterinas"
+        fi
+        cp "${ASTER_OUTPUT}" "${all_baseline}"
+
+        echo "=== Pass 3/3: Mariposa ==="
+        if ! ${parse_only}; then
+            run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "mariposa"
+        fi
+        cp "${ASTER_OUTPUT}" "${all_mariposa}"
+
+        parse_three_way_results "$benchmark" "${all_linux}" "${all_baseline}" "${all_mariposa}"
+        mv "$(extract_result_file "$bench_result")" "result_${bench_short}-linux-asterinas-mariposa.json"
+
+        echo "Three-way comparison completed: result_${bench_short}-linux-asterinas-mariposa.json"
+        echo "Raw outputs preserved: ${all_linux}, ${all_baseline}, ${all_mariposa}"
+        exit 0
+    fi
+
+    # Single-pass (linux, asterinas, mariposa, or both)
     if ! ${parse_only}; then
         run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "$run_os"
     fi

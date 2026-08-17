@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Welch t-test analysis for rocksdb mixgraph benchmark results.
 
-Compares Linux vs Asterinas, or Asterinas from two different files.
+Compares two OS variants from a single JSON file, or across two files.
 
 Usage:
     python3 ttest_analysis.py result.json
     python3 ttest_analysis.py result.json --seeds 10
+    python3 ttest_analysis.py result.json --a asterinas --b mariposa
     python3 ttest_analysis.py file1.json --compare file2.json
+    python3 ttest_analysis.py file1.json --compare file2.json --a linux --b mariposa
     python3 ttest_analysis.py file1.json --compare file2.json --seeds 10
 """
 
@@ -94,7 +96,7 @@ def significance(p):
 
 
 def parse_args(argv):
-    args = {"json_path": None, "compare_path": None, "max_seeds": None}
+    args = {"json_path": None, "compare_path": None, "max_seeds": None, "key_a": None, "key_b": None}
     positional = []
     i = 1
     while i < len(argv):
@@ -103,6 +105,12 @@ def parse_args(argv):
             i += 2
         elif argv[i] == "--compare":
             args["compare_path"] = argv[i + 1]
+            i += 2
+        elif argv[i] == "--a":
+            args["key_a"] = argv[i + 1]
+            i += 2
+        elif argv[i] == "--b":
+            args["key_b"] = argv[i + 1]
             i += 2
         else:
             positional.append(argv[i])
@@ -117,7 +125,7 @@ def main():
 
     if args["json_path"] is None:
         print(
-            "Usage: ttest_analysis.py <result.json> [--seeds N] [--compare file2.json]",
+            "Usage: ttest_analysis.py <result.json> [--seeds N] [--a KEY --b KEY] [--compare file2.json]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -134,15 +142,18 @@ def main():
     if args["max_seeds"] is not None:
         runs1 = runs1[: args["max_seeds"]]
 
+    key_a = args["key_a"] or "linux"
+    key_b = args["key_b"] or "asterinas"
+
     if compare_mode:
         runs2 = data2["runs"]
         if args["max_seeds"] is not None:
             runs2 = runs2[: args["max_seeds"]]
-        label_a = "Asterinas A"
-        label_b = "Asterinas B"
+        label_a = key_a
+        label_b = key_b
     else:
-        label_a = "Linux"
-        label_b = "Asterinas"
+        label_a = key_a
+        label_b = key_b
 
     stats_list = ["count", "avg", "stddev", "min", "median", "max", "p50", "p75", "p99", "p99_9", "p99_99"]
     ops = [("fill", "write"), ("mix", "read"), ("mix", "write"), ("mix", "seek")]
@@ -165,22 +176,22 @@ def main():
                 vals_a = []
                 vals_b = []
                 for r in runs1:
-                    h = r["histogram"]["asterinas"]
+                    h = r["histogram"][key_a]
                     if h is not None:
                         vals_a.append(h[phase][op][stat])
                 for r in runs2:
-                    h = r["histogram"]["asterinas"]
+                    h = r["histogram"][key_b]
                     if h is not None:
                         vals_b.append(h[phase][op][stat])
             else:
                 vals_a = []
                 vals_b = []
                 for r in runs1:
-                    h = r["histogram"]["linux"]
+                    h = r["histogram"][key_a]
                     if h is not None:
                         vals_a.append(h[phase][op][stat])
                 for r in runs1:
-                    h = r["histogram"]["asterinas"]
+                    h = r["histogram"][key_b]
                     if h is not None:
                         vals_b.append(h[phase][op][stat])
             if len(vals_a) < 2 or len(vals_b) < 2:
@@ -203,7 +214,9 @@ def main():
     print("*** p<0.001  ** p<0.01  * p<0.05  n.s. not significant")
     print("Welch two-sample t-test (unequal variances)")
     if compare_mode:
-        print(f"Comparing: {args['json_path']} (Asterinas A) vs {args['compare_path']} (Asterinas B)")
+        print(f"Comparing: {args['json_path']} ({key_a}) vs {args['compare_path']} ({key_b})")
+    else:
+        print(f"Comparing: {key_a} vs {key_b} from {args['json_path']}")
 
 
 if __name__ == "__main__":
