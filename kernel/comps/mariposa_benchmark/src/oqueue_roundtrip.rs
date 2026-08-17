@@ -39,11 +39,6 @@ const NAME: &str = "oqueue_roundtrip";
 const PEER_SIGNAL_TIMEOUT_MS: u32 = 60_000;
 
 /// Upper bound on one [`RoundTripSample`]'s CBOR encoding, used to size the capture file.
-///
-/// serde encodes the sample as a map keyed by field name: one map header byte, then for each of the
-/// four fields a text key (its length byte plus 7 to 14 characters, 48 bytes in total) and a `u64`
-/// (at worst a header byte plus 8 payload bytes). That is 85 bytes; the rest is slack, since
-/// over-reserving only claims sparse image space that is never touched.
 const MAX_SAMPLE_BYTES: usize = 96;
 
 /// Room to add on top of the samples for the file's header, which names the capture and the sample
@@ -71,10 +66,7 @@ static REPLY_CAPACITY: AtomicU32 = AtomicU32::new(2);
 aster_cmdline::define_kv_param!("oqbench.reply_capacity", REPLY_CAPACITY);
 
 /// Real-time priority for the kernel thread (`oqbench.rt_prio`, `1..=99`).
-///
-/// Its presence is what selects real-time scheduling: unset means the fair policy. A separate
-/// on/off flag would have made `oqbench.realtime oqbench.rt_prio=…` two ways to say one thing, and
-/// left `oqbench.rt_prio=50` on its own meaning nothing.
+/// Its presence is what selects real-time scheduling: unset means the fair policy.
 static RT_PRIO: Once<u32> = Once::new();
 aster_cmdline::define_kv_param!("oqbench.rt_prio", RT_PRIO);
 
@@ -88,19 +80,8 @@ aster_cmdline::define_kv_param!("oqbench.peer_compute", PEER_COMPUTE);
 static BUSY_PROCS: AtomicU32 = AtomicU32::new(0);
 aster_cmdline::define_kv_param!("oqbench.busy_procs", BUSY_PROCS);
 
-/// The scheduling policy for the kernel thread, applied by the kernel crate when it spawns it.
-#[derive(Clone, Copy, Debug)]
-pub enum DriverSchedulingPolicy {
-    Normal,
-    RealTime { rt_prio: u8 },
-}
-
 /// Which of the three things a [`Request`] is saying.
-///
-/// Serialized as its discriminant rather than its name, so it costs one CBOR byte instead of the
-/// length of the variant's name.
 #[derive(Clone, Copy, Debug)]
-#[repr(u8)]
 enum RequestKind {
     /// Time the round trip identified by the request's sequence number.
     Measure = 0,
@@ -116,14 +97,6 @@ impl Serialize for RequestKind {
     }
 }
 
-/// What the kernel asks the peer to do next.
-///
-/// Exactly one of the two terminal kinds ends every run, and the peer's exit status follows it, so a
-/// run that failed can never be mistaken for one that finished.
-///
-/// [`TupleSerialize`] puts this on the wire as the flat two-element array `[seq, kind]`, so neither
-/// the field names nor the kind's name are repeated on every request. `seq` is meaningless for the
-/// terminal kinds and is sent as zero.
 #[derive(Clone, Copy, Debug, TupleSerialize)]
 struct Request {
     seq: u64,
@@ -151,11 +124,7 @@ impl Request {
     }
 }
 
-/// What the peer tells the kernel about its own lifecycle, on the control OQueue.
-///
-/// The kernel cannot ask an OQueue whether somebody is listening and get a useful answer -- an
-/// attached observer is not the same as a peer that is ready to serve, or one that has finished
-/// reading. So the peer says so explicitly, and the kernel waits for the value.
+/// Status the userspace peer receives.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 enum PeerSignal {
     /// Attached to every stream and ready to serve requests. Nothing is measured before this.
@@ -164,10 +133,6 @@ enum PeerSignal {
     Done,
 }
 
-/// Every way this benchmark's run can end other than by finishing.
-///
-/// The transparent variant absorbs the framework's own failures, so a caller has one type to report
-/// and the two kinds of failure cannot drift apart in how they are handled.
 #[ostd_error]
 #[derive(Debug, Snafu)]
 enum Error {
@@ -236,9 +201,7 @@ struct Config {
     timeout_ms: u32,
     request_capacity: u32,
     reply_capacity: u32,
-    scheduling_policy: DriverSchedulingPolicy,
-    // These two are acted on in userspace; the kernel carries them only so they appear in the
-    // reported configuration.
+    rt_prio: Option<u8>,
     #[expect(dead_code, reason = "read through the derived `Debug`")]
     peer_compute: u32,
     #[expect(dead_code, reason = "read through the derived `Debug`")]
@@ -247,21 +210,15 @@ struct Config {
 
 impl Config {
     /// Snapshots the parameters, along with the first thing wrong with them, if anything.
-    ///
-    /// A bad parameter is not reported here. The run has to reach the point where a peer is listening
-    /// before it can tell anyone the run failed, so the complaint is built and then carried until
-    /// then; see [`OQueueRoundTrip::run`].
     fn from_params() -> (Self, Option<Error>) {
         let mut problem = None;
 
-        let scheduling_policy = match RT_PRIO.get().copied() {
-            None => DriverSchedulingPolicy::Normal,
-            Some(rt_prio) if (1..=99).contains(&rt_prio) => DriverSchedulingPolicy::RealTime {
-                rt_prio: rt_prio as u8,
-            },
+        let rt_prio = match RT_PRIO.get().copied() {
+            None => None,
+            Some(rt_prio) if (1..=99).contains(&rt_prio) => Some(rt_prio as u8),
             Some(rt_prio) => {
                 problem = Some(BadRealTimePrioritySnafu { rt_prio }.build());
-                DriverSchedulingPolicy::Normal
+                None
             }
         };
 
@@ -275,7 +232,7 @@ impl Config {
             timeout_ms: TIMEOUT_MS.load(Ordering::Relaxed),
             request_capacity: REQUEST_CAPACITY.load(Ordering::Relaxed),
             reply_capacity: REPLY_CAPACITY.load(Ordering::Relaxed),
-            scheduling_policy,
+            rt_prio,
             peer_compute: PEER_COMPUTE.load(Ordering::Relaxed),
             busy_procs: BUSY_PROCS.load(Ordering::Relaxed),
         };
@@ -288,7 +245,6 @@ impl Config {
 /// the whole run.
 pub struct OQueueRoundTrip {
     config: Config,
-    /// What is wrong with the parameters, if anything; reported once a peer can hear it.
     config_problem: Option<Error>,
     producer: RefProducer<Request>,
     consumer: Consumer<[u64; 3]>,
@@ -296,9 +252,6 @@ pub struct OQueueRoundTrip {
 }
 
 /// Prepares a benchmark run, or returns `None` if `oqbench.enable` is not set.
-///
-/// The OQueues are created even for an unusable configuration, so the peer always has something to
-/// attach to and always learns how the run ended instead of waiting forever.
 pub fn prepare() -> Option<OQueueRoundTrip> {
     if !ENABLE.load(Ordering::Relaxed) {
         return None;
@@ -318,8 +271,7 @@ pub fn prepare() -> Option<OQueueRoundTrip> {
 
 /// Creates and exports the three OQueues on the `oqbench` OQFS subtree: the request queue
 /// (kernel -> user, exported as `strong_observe`), the reply queue (user -> kernel, exported as
-/// `produce`), and the control queue the peer reports its [`PeerSignal`]s on. The request queue also
-/// carries the terminal [`Request`] that ends the run.
+/// `produce`), and the control queue the peer reports its [`PeerSignal`]s on.
 fn setup_queues(
     request_capacity: u32,
     reply_capacity: u32,
@@ -354,11 +306,8 @@ fn setup_queues(
     (request_producer, reply_consumer, control_consumer)
 }
 
-/// Blocks (without spinning) until the peer sends the `expected` signal, giving up after
+/// Blocks (without spinning) until receiving the `Ready` signal from the peer, giving up after
 /// [`PEER_SIGNAL_TIMEOUT_MS`].
-///
-/// The blocker is local and dropped on return, so nothing disarms it: its timer callback holds only
-/// a weak reference and becomes a no-op.
 fn wait_for_signal(signals: &Consumer<PeerSignal>, expected: PeerSignal) -> Result<(), Error> {
     let timeout = TimeoutBlocker::new();
     let mut block_on_many = BlockOnMany::new();
@@ -380,27 +329,18 @@ fn wait_for_signal(signals: &Consumer<PeerSignal>, expected: PeerSignal) -> Resu
 }
 
 impl OQueueRoundTrip {
-    /// The scheduling policy the kernel thread should run under.
-    pub fn scheduling_policy(&self) -> DriverSchedulingPolicy {
-        self.config.scheduling_policy
+    /// The real-time priority the kernel thread should run at, or `None` for the fair policy.
+    pub fn rt_prio(&self) -> Option<u8> {
+        self.config.rt_prio
     }
 
-    /// Room to reserve on the capture device for this run's samples.
-    ///
-    /// Sized from the iteration count rather than fixed, so that raising `oqbench.iterations` cannot
-    /// quietly outgrow the file. Reserving too much costs nothing: the capture image is sparse and
-    /// only the blocks actually written are ever allocated.
+    /// Determine the amount of space to reserve on the capture device for this run's samples.
     pub fn capture_length(&self) -> usize {
-        (self.config.iterations as usize)
-            .saturating_mul(MAX_SAMPLE_BYTES)
-            .saturating_add(CAPTURE_OVERHEAD_BYTES)
+        // `iterations` is a `u32`, so this is at most ~4.1e11: no overflow on a 64-bit `usize`.
+        self.config.iterations as usize * MAX_SAMPLE_BYTES + CAPTURE_OVERHEAD_BYTES
     }
 
     /// Runs the benchmark and then tells the peer how it went.
-    ///
-    /// Must run on a dedicated kernel thread, not the boot thread, because it blocks on replies.
-    /// Nothing here stops the machine: every path ends by sending the peer a [`Request::ending`],
-    /// and the peer owns the shutdown.
     pub fn run(self, capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>) {
         let Self {
             config,
@@ -413,8 +353,7 @@ impl OQueueRoundTrip {
         // Every way this run can end says so on the console in one place and one form.
         let report = |error: &Error| println!("{PREFIX}|error {NAME}: {error}");
 
-        // Nothing is measured until the peer says it is ready. Without a peer there is also nobody
-        // to hand a verdict to, so give up rather than run into a timeout for every iteration.
+        // Wait for peer
         if wait_for_signal(&signals, PeerSignal::Ready)
             .inspect_err(report)
             .is_err()
@@ -426,17 +365,11 @@ impl OQueueRoundTrip {
             .inspect_err(report);
         producer.produce_ref(&Request::ending(&outcome));
 
-        // Returning drops the OQueues, which revokes the peer's observer, and a revoked observer
-        // reads as end of stream. The peer treats that as a failed run, so hold the queues open until
-        // it reports `Done`; otherwise a finished run could report as a failure.
         let _ = wait_for_signal(&signals, PeerSignal::Done).inspect_err(report);
     }
 }
 
 /// Measures every iteration and captures the samples, or reports why it could not.
-///
-/// `Err` means the reason has already been written to the console; the caller only has to pass the
-/// verdict on to the peer.
 fn measure(
     config: &Config,
     config_problem: Option<Error>,
@@ -448,8 +381,6 @@ fn measure(
         return Err(problem);
     }
 
-    // Set the blocking machinery up once rather than per round trip, so none of its cost lands
-    // between the two timestamps.
     let timeout = TimeoutBlocker::new();
     let timeout_jiffies = config.timeout_ms as u64 * TIMER_FREQ / 1000;
     let mut block_on_many = BlockOnMany::new();
@@ -473,9 +404,11 @@ fn measure(
 /// Times one round trip: produce request `seq`, block until its reply arrives, and split the four
 /// timestamps into intervals.
 ///
+/// This is the function specific to the oqueue round trip benchmark that is supplied to the run function
+/// in the framework.
+///
 /// An anomaly (a stale reply, an out-of-sequence reply, or no reply within the timeout) is reported
-/// and returned as `Err`, which ends the run: a benchmark that quietly carries on past one would be
-/// reporting numbers it cannot vouch for.
+/// and returned as `Err`, which ends the run.
 fn round_trip(
     config: &Config,
     producer: &RefProducer<Request>,

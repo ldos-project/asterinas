@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Startup for the OQFS round-trip microbenchmark.
-//!
-//! The measurement loop lives in the `mariposa_benchmark` component crate, which resolves its
-//! scheduling policy from the kernel command line but cannot depend on the kernel's scheduler types
-//! or its data capture device. This module is the kernel-side half: it owns those, and hands them to
-//! the benchmark when it spawns its kernel thread.
 
-use mariposa_benchmark::oqueue_roundtrip::{self, DriverSchedulingPolicy, RoundTripSample};
+use mariposa_benchmark::oqueue_roundtrip::{self, RoundTripSample};
 
 use crate::{
     data_capture::new_data_capture_file,
@@ -36,9 +31,10 @@ pub(crate) fn init_after_init_process() {
         return;
     };
 
-    let scheduling_policy = benchmark.scheduling_policy();
+    // Setup scheduling for the benchmark thread. 
+    let rt_prio = benchmark.rt_prio();
     let mut options = ThreadOptions::new(move || benchmark.run(capture_file));
-    if let DriverSchedulingPolicy::RealTime { rt_prio } = scheduling_policy {
+    if let Some(rt_prio) = rt_prio {
         options = options.sched_policy(SchedPolicy::RealTime {
             rt_prio: rt_prio
                 .try_into()

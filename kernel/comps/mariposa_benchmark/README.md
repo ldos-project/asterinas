@@ -2,16 +2,13 @@
 
 Benchmarks for Mariposa. Each benchmark lives in its own module; `framework.rs` holds what they
 share — collecting a sample per iteration, capturing the samples, reporting the run, and giving up on
-it — so that a benchmark module contains only what distinguishes it. Every benchmark is compiled into
-every kernel build and does nothing unless enabled on the kernel command line.
+it. 
 
 ## `oqueue_roundtrip` — the OQFS kernel ↔ user round trip
 
 Measures the latency of the kernel-triggered / userspace-served hot path over OQFS: a kernel thread
 produces a request into an OQueue, a userspace process observes it, computes, writes a reply into a
-second OQueue, and the kernel thread wakes on that reply. It is the same shape as the RAID-1
-`raid.selection=userspace` policy, reduced to a bare ping-pong so the numbers are about the transport
-and the scheduler rather than about RAID.
+reply OQueue, and the kernel thread wakes on that reply.
 
 ### What it measures
 
@@ -34,35 +31,20 @@ in TSC cycles:
 | `compute`        | `t2-t1`  | the peer's own work                        |
 | `user_to_kernel` | `t3-t2`  | the scheduler waking the kernel thread again |
 
-Every round trip is measured, however long: a sample is never discarded, capped, or substituted
-because it is large. There is no warmup parameter — the early iterations are captured like any other,
-so the analysis can see the warmup and decide how much of it to drop.
+Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) ends the 
+benchmark immediately. 
 
-Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) ends the
-run rather than being smoothed over. The kernel side never stops the machine, not even then: it writes
-the reason to the console and tells the peer the run failed, and the peer's exit status is what `init`
-acts on. Starting and stopping both belong to userspace; only the parameters come from the kernel
-command line.
-
-The peer says when it is ready over a third, control OQueue, and says so again once it has read the
-run's result. The kernel waits for those values rather than asking whether an observer happens to be
-attached, which would answer a different question: a stream can be open before its reader is ready to
-serve, and can still be open after the reader has stopped caring.
+When the peer is ready, it signals the kernel benchmarking thread via a control OQueu. 
 
 ### Getting the results
 
 Samples are buffered in memory during the run and written to the data capture device once it is over,
-in the standard Mariposa capture format (see `kernel/comps/mariposa_data_capture`). Read them on the
-host with `kernel/comps/mariposa_data_capture/python/mariposa_data_reader.py`. Convert cycles to
-seconds with the TSC frequency printed in the console metadata block.
+in the standard Mariposa capture format (see `kernel/comps/mariposa_data_capture`). See
+[`tools/oqbench/README.md`](../../../tools/oqbench/README.md) for reading them back.
 
 ### Running
 
 The host CLI is the intended interface; see [`tools/oqbench/README.md`](../../../tools/oqbench/README.md).
-
-```
-tools/oqbench/run.sh --iterations 2000000 --peer-compute 5000 --output result.csv
-```
 
 The always-on smoke test runs the whole pipeline at a small iteration count:
 
@@ -72,35 +54,12 @@ make run_kernel AUTO_TEST=oqbench ENABLE_KVM=1
 
 ### Command-line parameters
 
-| parameter                  | meaning                                                     | default      |
-|----------------------------|-------------------------------------------------------------|--------------|
-| `oqbench.enable`           | master switch; inert unless present                          | off          |
-| `oqbench.iterations`       | measured iterations                                          | 1000000      |
-| `oqbench.timeout_ms`       | per-reply timeout (ms); a timeout ends the run as failed      | 10000        |
-| `oqbench.request_capacity` | request OQueue capacity                                      | 2            |
-| `oqbench.reply_capacity`   | reply OQueue capacity                                        | 2            |
-| `oqbench.rt_prio`          | real-time priority (`1..=99`) for the kernel thread           | unset (fair) |
-| `oqbench.peer_compute`     | the peer's synthetic work per request, in TSC cycles          | 0            |
-| `oqbench.busy_procs`       | competing busy-loop processes, as scheduler contention        | 0            |
-
-`oqbench.peer_compute` and `oqbench.busy_procs` are acted on in userspace by `init` and the peer; the
-kernel registers them only so they are recognised parameters and appear in the reported
-configuration.
-
-- **`oqbench.peer_compute`** makes the peer spin for a fixed number of cycles between reading a
-  request and writing its reply, inflating `compute`. The default of `0` isolates pure transport and
-  scheduler cost.
-- **`oqbench.busy_procs`** adds competing processes for the duration of the run. The default of `0`
-  measures the idle best case; raise it to see how much of the wakeup latency is contention rather
-  than fixed cost.
-- **`oqbench.rt_prio`** runs the kernel thread under real-time scheduling at that priority,
-  matching the RAID worker this hot path mirrors. The userspace peer's scheduling cannot be set from
-  userspace on this kernel, so there is no knob for it.
+Every parameter is `oqbench.<name>` on the kernel command line, and `oqbench.enable` is the master
+switch — the benchmark is inert without it. `tools/oqbench/run.py --help` describes the rest, and a
+run's own `MARIPOSA_BENCH|config` line reports the values it actually used.
 
 ### Caveats
 
 - **Guest TSC under KVM is host-derived.** Both sides read the same guest TSC, so the four stamps are
   directly comparable, but the absolute frequency and host-side steal time are outside the guest's
   control.
-- **The wakeup latencies are scheduler-dependent — that is the point.** `kernel_to_user` and
-  `user_to_kernel` move with vCPU count, the kernel thread's scheduling policy, and competing load.

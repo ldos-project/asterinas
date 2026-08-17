@@ -3,13 +3,6 @@
 //! `oqbench_server`: the userspace peer of the kernel -> user -> kernel OQFS round-trip
 //! microbenchmark (see `kernel/comps/mariposa_benchmark`). For each `Measure` request it stamps `t1`,
 //! optionally spins for a fixed number of cycles, stamps `t2`, and writes the reply `[seq, t1, t2]`.
-//! The kernel writes the samples to the data capture device itself and then ends the run with either
-//! `Finished` or `Failed`, which this peer turns into its own exit status.
-//!
-//! The kernel never stops the machine, so this process ending is what lets `init` power the guest
-//! off.
-//!
-//! Runs as root because the OQueue stream files are root-only.
 
 use std::{
     fs::{self, File},
@@ -38,22 +31,10 @@ const MAX_RETRY_ATTEMPTS: u32 = 100;
 /// Delay between retries when waiting for an OQueue path to appear.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-/// What this peer tells the kernel about its own lifecycle, on the control OQueue. The kernel cannot
-/// tell from the OQueue alone whether this peer is ready to serve or has finished reading, so it is
-/// told. Mirrors `PeerSignal` in the kernel component, which decodes it by variant name.
 #[derive(Clone, Copy, Debug)]
 enum Signal {
     Ready,
     Done,
-}
-
-impl Signal {
-    fn name(self) -> &'static str {
-        match self {
-            Signal::Ready => "Ready",
-            Signal::Done => "Done",
-        }
-    }
 }
 
 /// Every way this peer can stop other than by the run finishing.
@@ -74,7 +55,7 @@ enum Error {
     #[snafu(display("could not open {path}: {source}"))]
     OpenStream { path: String, source: io::Error },
 
-    #[snafu(display("could not send the {} signal: {source}", signal.name()))]
+    #[snafu(display("could not send the {signal:?} signal: {source}"))]
     SendSignal { signal: Signal, source: io::Error },
 
     #[snafu(display("could not read a request: {source}"))]
@@ -97,7 +78,6 @@ enum Request {
 
 /// Reads the CPU timestamp counter, the same time base the kernel side stamps with.
 fn rdtsc() -> u64 {
-    // SAFETY: `_rdtsc` is always available on x86-64 and has no preconditions.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -127,15 +107,12 @@ struct Config {
 }
 
 /// Spins until the timestamp counter has advanced by `cycles`.
-///
-/// This waits for a measured amount of time rather than for an amount of arithmetic, whose duration
-/// would depend on how well the hardware happened to pipeline it.
 fn spin_for_cycles(cycles: u64) {
     if cycles == 0 {
         return;
     }
-    let deadline = rdtsc().wrapping_add(cycles);
-    while rdtsc().wrapping_sub(deadline) > u64::MAX / 2 {
+    let start = rdtsc();
+    while rdtsc().wrapping_sub(start) < cycles {
         std::hint::spin_loop();
     }
 }
@@ -177,7 +154,13 @@ fn encode_reply(out: &mut Vec<u8>, seq: u64, t1: u64, t2: u64) {
 
 /// Tells the kernel where this peer is in its lifecycle.
 fn signal(control_file: &mut File, signal: Signal) -> Result<(), Error> {
-    let encoded = minicbor::to_vec(signal.name()).expect("encoding a short string cannot fail");
+    // The kernel's `PeerSignal` is deserialized by serde, which puts a unit variant on the wire as
+    // its name, so that is what this has to send.
+    let name = match signal {
+        Signal::Ready => "Ready",
+        Signal::Done => "Done",
+    };
+    let encoded = minicbor::to_vec(name).expect("encoding a short string cannot fail");
     control_file
         .write_all(&encoded)
         .context(SendSignalSnafu { signal })
@@ -209,8 +192,6 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("oqbench_server: {error}");
-            // The message is what says what went wrong; the status only has to say that something
-            // did. `clap` uses 2 for a bad command line and exits on its own.
             ExitCode::FAILURE
         }
     }

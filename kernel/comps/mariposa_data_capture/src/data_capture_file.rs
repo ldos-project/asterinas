@@ -62,10 +62,7 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// Attach a new OQueue to the output. If output has already started, then the path will not
     /// appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
-    /// Write values the caller already holds, without routing them through an OQueue. This suits
-    /// producers that buffer their data and emit it in one batch, such as a benchmark dumping its
-    /// samples once measurement is over. Unlike observed data, these values are written whether or
-    /// not [`DataCaptureFile::start`] was called.
+    /// Write values the caller already holds, without routing them through an OQueue.
     fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
@@ -115,8 +112,6 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     started: AtomicBool,
     stopped: AtomicBool,
-    /// Woken once `stopped` is set, so that [`DataCaptureFile::stop`] can wait for the server
-    /// thread rather than poll for it.
     stopped_wait_queue: WaitQueue,
 }
 
@@ -166,9 +161,6 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         for value in values {
                             data_buf_handler.write_value(&value);
                             data_buf_handler.flush_if_needed()?;
-                            if data_buf_handler.current_bid == self.end_bid {
-                                log::warn!("Data capture ran out of space.");
-                            }
                         }
                         data_buf_handler.sync()?;
                     }
@@ -231,9 +223,6 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
 
     fn stop(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::Stop);
-        // Block rather than spin on `yield_now`: yielding only rotates within the caller's own
-        // scheduling class, so a real-time caller that is the only runnable real-time task keeps
-        // the CPU and starves the fair-priority block device worker this is ultimately waiting on.
         self.stopped_wait_queue.wait_until(|| {
             self.stopped
                 .load(core::sync::atomic::Ordering::SeqCst)

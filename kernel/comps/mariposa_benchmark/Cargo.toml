@@ -10,7 +10,6 @@ aster-cmdline = { workspace = true }
 mariposa_data_capture = { workspace = true }
 serde = { workspace = true }
 snafu = { workspace = true }
-# `Once` gives `oqbench.rt_prio` real `Option` semantics: unset means "not real-time".
 spin = { workspace = true }
 
 [lints]
