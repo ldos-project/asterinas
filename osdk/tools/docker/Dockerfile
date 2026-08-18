@@ -193,8 +193,9 @@ RUN apt update \
     libnuma1            `# running dependency for QEMU` \
     libpixman-1-dev     `# running dependency for QEMU` \
     libsqlite3-dev      `# used by klint` \
-    libssl-dev          `# used by cargo-deps` \
+    libssl-dev          `# used by cargo-udeps` \
     mtools              `# used by grub-mkrescue` \
+    pkg-config          `# used by cargo-udeps` \
     xorriso \
     && apt clean \
     && rm -rf /var/lib/apt/lists/*
