@@ -38,7 +38,7 @@ pub(super) fn init() {
 pub const MAX_MEMFD_NAME_LEN: usize = 249;
 
 pub struct MemfdInode {
-    inode: Arc<RamInode>,
+    inode: RamInode,
     name: String,
     seals: Mutex<FileSeals>,
 }
@@ -232,36 +232,41 @@ impl MemfdInodeHandle for InodeHandle {
         if name.len() > MAX_MEMFD_NAME_LEN {
             return_errno_with_message!(Errno::EINVAL, "the memfd name is too long");
         }
-        let (allow_sealing, executable) = if memfd_flags.contains(MemfdFlags::MFD_NOEXEC_SEAL) {
-            (true, false)
-        } else {
-            (memfd_flags.contains(MemfdFlags::MFD_ALLOW_SEALING), true)
-        };
 
-        let mode = if executable {
-            mkmod!(a+rwx)
-        } else {
-            mkmod!(a+rw)
-        };
+        let memfd_inode = Arc::new_cyclic(|weak_self| {
+            let (allow_sealing, executable) = if memfd_flags.contains(MemfdFlags::MFD_NOEXEC_SEAL) {
+                (true, false)
+            } else {
+                (memfd_flags.contains(MemfdFlags::MFD_ALLOW_SEALING), true)
+            };
 
-        let mut seals = FileSeals::empty();
-        if !allow_sealing {
-            seals |= FileSeals::F_SEAL_SEAL;
-        }
-        if !executable {
-            seals |= FileSeals::F_SEAL_EXEC;
-        }
+            let mode = if executable {
+                mkmod!(a+rwx)
+            } else {
+                mkmod!(a+rw)
+            };
 
-        let memfd_inode = Arc::new_cyclic(|weak_self| MemfdInode {
-            inode: RamInode::new_file_detached_in_memfd(
+            let ram_inode = RamInode::new_file_detached_in_memfd(
                 weak_self,
                 MemfdTmpFs::singleton().sb().container_dev_id,
                 mode,
                 Uid::new_root(),
                 Gid::new_root(),
-            ),
-            name,
-            seals: Mutex::new(seals),
+            );
+
+            let mut seals = FileSeals::empty();
+            if !allow_sealing {
+                seals |= FileSeals::F_SEAL_SEAL;
+            }
+            if !executable {
+                seals |= FileSeals::F_SEAL_EXEC;
+            }
+
+            MemfdInode {
+                inode: ram_inode,
+                name,
+                seals: Mutex::new(seals),
+            }
         });
 
         let path = MemfdTmpFs::new_path(memfd_inode);

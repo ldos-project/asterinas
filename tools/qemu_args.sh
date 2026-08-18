@@ -243,6 +243,7 @@ if [ "$1" = "microvm" ]; then
         -device virtio-blk-device,drive=x2,serial=vltpdev \
         -device virtio-blk-device,drive=r0,serial=raid0 \
         -device virtio-blk-device,drive=r1,serial=raid1 \
+        -device virtio-blk-device,drive=r2,serial=raid2 \
         -device virtio-blk-device,drive=d0,serial=capture \
         -device virtio-keyboard-device \
         -device virtio-net-device,netdev=net01 \
@@ -261,7 +262,7 @@ else
         -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -object rng-random,id=rng0,filename=/dev/urandom \
-        -device virtio-rng-pci,bus=pcie.0,addr=0x9,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+        -device virtio-rng-pci,bus=pcie.0,addr=0xd,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
         -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
         -drive if=none,format=raw,id=nvme0n1,file=./test/initramfs/build/nvme0n1.img \

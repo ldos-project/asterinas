@@ -38,10 +38,7 @@ use super::{
     prelude::*,
     super_block::SuperBlock,
 };
-use crate::fs::{
-    utils::IdBitmap,
-    vfs::page_cache::{CachePage, PageCacheBackend},
-};
+use crate::fs::utils::IdBitmap;
 
 /// Represents one block group in an ext2 filesystem.
 ///

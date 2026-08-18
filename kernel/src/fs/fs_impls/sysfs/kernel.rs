@@ -109,7 +109,7 @@ inherit_sys_branch_node!(KernelSysNodeRoot, fields, {
                 Ok(printer.bytes_written())
             }
             // TODO: Add support for reading other attributes.
-            _ => Err(Error::AttributeError),
+            _ => Err(aster_systree::Error::AttributeError),
         }
     }
 

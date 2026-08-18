@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use hashbrown::{Equivalent, HashMap, hash_map::Entry};
-use snafu::OptionExt;
+use snafu::OptionExt as _;
 use spin::Once;
 
 use crate::{

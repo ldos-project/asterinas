@@ -23,13 +23,10 @@ pub(super) use super::{
     inode::{Ext2Bid, Ext2Ino, Iblock},
     utils::{Dirty, IsPowerOf},
 };
-#[cfg(baseline_asterinas)]
-pub(super) use crate::fs::vfs::page_cache::PageCacheBackend;
 pub(super) use crate::{
     fs::{
         file::InodeType,
         utils::{CStr256, DirentVisitor, Str16, Str64},
-        vfs::page_cache::{CachePage, PageCache},
     },
     prelude::*,
     time::UnixTime,
