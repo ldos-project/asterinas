@@ -2,7 +2,7 @@
 
 //! OQueue data capture utilities.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::{result::Result, time::Duration};
 
 use aster_block::BlockDevice;
@@ -50,6 +50,12 @@ impl DataCaptureManager {
 
 static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<dyn mariposa_data_capture::DataCaptureDevice>>> =
     Mutex::new(None);
+
+/// OQueue paths belonging to the capture block device, excluded from observation.
+///
+/// Prevents a feedback loop where the capture thread observes its own writes.
+#[cfg(not(baseline_asterinas))]
+static EXCLUDED_OQUEUE_PATHS: Mutex<Vec<Path>> = Mutex::new(Vec::new());
 
 pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>> =
     Mutex::new(Vec::new());
@@ -100,6 +106,32 @@ pub(super) fn start_capture_devices() {
             .replace(mariposa_data_capture::DataCaptureDeviceServer::new(server));
     });
 
+    // Record the capture device's OQueue paths so we can exclude them from observation,
+    // preventing a feedback loop where the capture thread observes its own writes.
+    #[cfg(not(baseline_asterinas))]
+    if let Some(name) = kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name::<String>("data_capture", "device"))
+    {
+        use aster_virtio::device::block::{
+            device::BlockDevice as VirtIoBlockDevice,
+            server_traits::BlockIOObservable as _,
+        };
+
+        for device in aster_block::collect_all() {
+            if device.name() == name {
+                if let Some(virtio) = device.downcast_ref::<VirtIoBlockDevice>() {
+                    if let Some(path) = virtio.bio_submission_oqueue().path().cloned() {
+                        EXCLUDED_OQUEUE_PATHS.lock().push(path);
+                    }
+                    if let Some(path) = virtio.bio_completion_oqueue().path().cloned() {
+                        EXCLUDED_OQUEUE_PATHS.lock().push(path);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     // Start a server which syncs the data_capture devices every `secs` seconds based on the
     // kcmdline arg `data_capture.sync_period`. If `data_capture.sync_period` is not provided or is
     // <= 0, then do not sync periodically.
@@ -131,8 +163,7 @@ pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
     DATA_CAPTURE_FILE_SYNCERS.lock().push(Box::new({
         let ret = ret.clone();
         move || {
-            ignore_err!(ret.sync());
-            info!("[kernel] Sync'd data capture device");
+            ret.sync().expect("DataCaptureFile sync failed");
         }
     }));
     Some(ret)
@@ -177,6 +208,17 @@ pub fn new_data_capture_data_file_by_type<
                 );
                 continue;
             };
+
+            // Skip OQueues belonging to the capture device itself to avoid a
+            // feedback loop where the capture thread observes its own writes.
+            #[cfg(not(baseline_asterinas))]
+            {
+                let excluded = EXCLUDED_OQUEUE_PATHS.lock();
+                if excluded.iter().any(|p| Some(p) == oqueue.path()) {
+                    continue;
+                }
+            }
+
             ignore_err!(capture_file.register_observer(
                 mariposa_data_capture::ObserverRegistration {
                     observer: oqueue.attach_strong_observer(query()).unwrap(),

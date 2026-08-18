@@ -243,7 +243,7 @@ fn first_kthread() {
             let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
                 mariposa_data_capture::FileDescriptor {
                     path: path!(scheduler.events),
-                    length: 500 * 1024 * 1024,
+                    length: 8 * 1024 * 1024 * 1024,
                 },
             );
 
@@ -288,7 +288,7 @@ fn first_kthread() {
         }
         new_data_capture_data_file_by_type::<SubmittedBio, _>(
             path!(io.block.submitted),
-            500 * 1024 * 1024,
+            4 * 1024 * 1024 * 1024,
             || {
                 ObservationQuery::new(|e: &SubmittedBio| {
                     let sid_range = e.sid_range();
@@ -309,7 +309,7 @@ fn first_kthread() {
         }
         new_data_capture_data_file_by_type::<BlockDeviceCompletionStats, _>(
             path!(io.block.completion),
-            500 * 1024 * 1024,
+            4 * 1024 * 1024 * 1024,
             || {
                 ObservationQuery::new(|stats| {
                     let context = EventContext::new();

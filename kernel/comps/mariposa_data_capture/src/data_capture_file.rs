@@ -256,7 +256,17 @@ impl DataCaptureFileBuilder {
                         end_bid: Bid::from_offset(self.end),
                         server: server.clone(),
                     };
-                    move || Ok(thread.run()?)
+                    move || {
+                        thread.run().map_err(|e| {
+                            log::error!(
+                                "DataCaptureFileServerThread '{}' failed: {:?}",
+                                thread.path,
+                                e
+                            );
+                            e
+                        })?;
+                        Ok(())
+                    }
                 });
 
                 Ok(server)

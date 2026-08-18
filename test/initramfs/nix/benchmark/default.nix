@@ -40,7 +40,9 @@
     version = "0.1.0";
     src = lib.fileset.toSource {
       root = ./../../src/benchmark;
-      fileset = ./../../src/benchmark;
+      fileset = lib.fileset.difference ./../../src/benchmark (
+        lib.fileset.directoryFilter (name: name == "data") ./../../src/benchmark
+      );
     };
 
     buildCommand = ''

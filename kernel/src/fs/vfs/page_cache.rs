@@ -102,7 +102,7 @@ pub(super) fn init_in_first_kthread() {
     let mut file_guard = PAGE_CACHE_LOG_FILE.lock();
     if file_guard.is_none() {
         *file_guard = new_data_capture_file(FileDescriptor {
-            length: 200 * 1024 * 1024,
+            length: 2 * 1024 * 1024 * 1024,
             path: path!(page_cache.read_info),
         });
     }

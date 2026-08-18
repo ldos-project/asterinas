@@ -32,7 +32,7 @@ endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 CAPTURE_IMAGE := $(BUILD_DIR)/capture.img
-CAPTURE_IMAGE_SIZE := 4G
+CAPTURE_IMAGE_SIZE := 50G
 AUTHORIZED_KEYS_FILE := $(BUILD_DIR)/authorized_keys
 
 # Include benchmark, if BENCHMARK is set.

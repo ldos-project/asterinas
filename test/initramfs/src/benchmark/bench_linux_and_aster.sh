@@ -44,8 +44,10 @@ parse_raw_results() {
 
     # Write the results into the template
     yq --arg linux_result "${linux_result:-null}" --arg aster_result "${aster_result:-null}" \
-        '(.[] | select(.extra == "linux_result") | .value) |= $linux_result |
-         (.[] | select(.extra == "aster_result") | .value) |= $aster_result' \
+        --arg capture_args "${BENCHMARK_CAPTURE_ARGS:-}" \
+        '.capture_args = $capture_args |
+         (.results[] | select(.extra == "linux_result") | .value) |= $linux_result |
+         (.results[] | select(.extra == "aster_result") | .value) |= $aster_result' \
         "${RESULT_TEMPLATE}" > "${result_file}"
     echo "Results written to ${result_file}"
 }
@@ -60,10 +62,13 @@ generate_template() {
     local asterinas_legend=${legend//"{system}"/"Asterinas"}
 
     # Generate the result template JSON
-    yq -n --arg linux "$linux_legend" --arg aster "$asterinas_legend" --arg unit "$unit" '[
-        { "name": $linux, "unit": $unit, "value": 0, "extra": "linux_result" },
-        { "name": $aster, "unit": $unit, "value": 0, "extra": "aster_result" }
-    ]' > "${RESULT_TEMPLATE}"
+    yq -n --arg linux "$linux_legend" --arg aster "$asterinas_legend" --arg unit "$unit" '{
+        "capture_args": "",
+        "results": [
+            { "name": $linux, "unit": $unit, "value": 0, "extra": "linux_result" },
+            { "name": $aster, "unit": $unit, "value": 0, "extra": "aster_result" }
+        ]
+    }' > "${RESULT_TEMPLATE}"
 }
 
 # Extract the result file path based on benchmark location
@@ -74,13 +79,70 @@ extract_result_file() {
     local filename=$(basename "$bench_result")
 
     # Handle different naming conventions for result files
+    local base
     if [[ "$filename" == bench_* ]]; then
         local second_part=$(dirname "$bench_result" | awk -F"/benchmark/$first_dir/" '{print $2}' | cut -d'/' -f1)
-        echo "result_${first_dir}-${second_part}.json"
+        base="result_${first_dir}-${second_part}"
     else
         local result_file="result_${relative_path//\//-}"
-        echo "${result_file/.yaml/.json}"
+        base="${result_file/.yaml/.json}"
+        base="${base%.json}"
     fi
+
+    local data_dir="${BENCHMARK_ROOT}/../data"
+    mkdir -p "${data_dir}"
+    echo "${data_dir}/${base}_${git_hash}.json"
+}
+
+save_capture_data() {
+    local benchmark="$1"
+    local seed="$2"
+    local os_variant="$3"
+    local capture_img="${BENCHMARK_ROOT}/../../build/capture.img"
+
+    if [[ ! -f "${capture_img}" ]] || [[ $(stat -c %b "${capture_img}") -eq 0 ]]; then
+        echo "No capture data written, skipping save."
+        return 0
+    fi
+
+    local data_dir="${BENCHMARK_ROOT}/../data"
+    mkdir -p "${data_dir}"
+
+    local benchmark_short="${benchmark//\//-}"
+    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local dest="${data_dir}/capture_${os_variant}_${benchmark_short}_${seed}_${timestamp}.img"
+    cp --reflink=auto "${capture_img}" "${dest}"
+    echo "Capture data saved: ${dest}"
+}
+
+save_benchmark_output() {
+    local os_variant="$1"   # linux, asterinas, mariposa
+    local benchmark="$2"
+
+    local data_dir="${BENCHMARK_ROOT}/../data"
+    mkdir -p "${data_dir}"
+
+    local benchmark_short="${benchmark//\//-}"
+    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local dest="${data_dir}/${os_variant}_${benchmark_short}_${git_hash}_${timestamp}.txt"
+
+    local src
+    if [[ "${os_variant}" == "linux" ]]; then
+        src="${LINUX_OUTPUT}"
+    else
+        src="${ASTER_OUTPUT}"
+    fi
+
+    {
+        echo "# benchmark: ${benchmark_short}"
+        echo "# os: ${os_variant}"
+        echo "# capture_args: ${BENCHMARK_CAPTURE_ARGS:-}"
+        echo "# git: ${git_hash}"
+        echo "# timestamp: $(date -Iseconds)"
+        echo "# ---"
+        cat "${src}"
+    } > "${dest}"
+    echo "${dest}"
 }
 
 # Run the specified benchmark with runtime configurations
@@ -206,7 +268,8 @@ run_benchmark() {
                         echo "Running benchmark ${benchmark} (seed ${seed}) on Asterinas..."
                         # KCMDARGS becomes --kcmd-args and is visible in /proc/cmdline
                         # inside the guest, where bench_runner.sh picks it up.
-                        "${asterinas_cmd_arr[@]}" "KCMDARGS=BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=${seed}" 2>&1 | tee -a "${ASTER_OUTPUT}"
+                        "${asterinas_cmd_arr[@]}" "KCMDARGS=BENCHMARK_DBBENCH_MIXGRAPH_SEEDS=${seed} ${BENCHMARK_CAPTURE_ARGS:-}" 2>&1 | tee -a "${ASTER_OUTPUT}"
+                        save_capture_data "${benchmark}" "${seed}" "mariposa"
                         prepare_fs
                     fi
                     if [[ "${run_os}" == "linux" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
@@ -221,6 +284,7 @@ run_benchmark() {
                     echo "Running benchmark ${benchmark} on Asterinas..."
                     # Execute directly from array, redirect stderr to stdout, then tee
                     "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
+                    save_capture_data "${benchmark}" "noseed" "mariposa"
                     prepare_fs
                 fi
                 if [[ "${run_os}" == "linux" || "${run_os}" == "both" || "${run_os}" == "both_baseline" ]]; then
@@ -245,7 +309,8 @@ run_benchmark() {
                 "${asterinas_cmd_str}" \
                 "${linux_cmd_str}" \
                 "${ASTER_OUTPUT}" \
-                "${LINUX_OUTPUT}"
+                "${LINUX_OUTPUT}" \
+                "${run_os}"
             ;;
         *)
             echo "Error: Unknown benchmark type '${run_mode}'" >&2
@@ -305,7 +370,15 @@ histograms_from_lines() {
 parse_multi_results() {
     local benchmark="$1"
     local bench_result="$2"
+    local run_os="$3"
     local result_file="$(extract_result_file "$bench_result")"
+
+    # Map run_os to the JSON key name for the non-linux guest OS.
+    local guest_key="asterinas"
+    case "${run_os}" in
+        mariposa|both) guest_key="mariposa" ;;
+        asterinas)     guest_key="asterinas" ;;
+    esac
 
     local linux_runs aster_runs
     linux_runs=$(awk '/^SEED_RESULT /{print $2, $3}' "${LINUX_OUTPUT}" | tr -d '\r')
@@ -398,6 +471,8 @@ parse_multi_results() {
             <(printf '%s\n' "${aster_times}") \
             | jq -sR \
                 --arg benchmark "${benchmark}" \
+                --arg guest_os "${guest_key}" \
+                --arg capture_args "${BENCHMARK_CAPTURE_ARGS:-}" \
                 --slurpfile linux_hists "${linux_hists_file}" \
                 --slurpfile aster_hists "${aster_hists_file}" '
                 def median:
@@ -411,28 +486,29 @@ parse_multi_results() {
                 | map(split(" ") | {
                     seed: .[0],
                     linux: (.[1] | try tonumber catch null),
-                    asterinas: (.[3] | try tonumber catch null),
+                    ($guest_os): (.[3] | try tonumber catch null),
                     fill: {
                         linux: (.[5] | try tonumber catch null),
-                        asterinas: (.[7] | try tonumber catch null)
+                        ($guest_os): (.[7] | try tonumber catch null)
                     },
                     timing: {
                         linux: {fill_s: (.[9] | try tonumber catch null), mix_s: (.[10] | try tonumber catch null), total_s: (.[11] | try tonumber catch null)},
-                        asterinas: {fill_s: (.[13] | try tonumber catch null), mix_s: (.[14] | try tonumber catch null), total_s: (.[15] | try tonumber catch null)}
+                        ($guest_os): {fill_s: (.[13] | try tonumber catch null), mix_s: (.[14] | try tonumber catch null), total_s: (.[15] | try tonumber catch null)}
                     }
                   })
                 | map(. + { histogram: {
                         linux:     ($linux_hists[0][.seed] // null),
-                        asterinas: ($aster_hists[0][.seed] // null)
+                        ($guest_os): ($aster_hists[0][.seed] // null)
                     } })
                 | . as $runs
                 | {
                     benchmark: $benchmark,
+                    capture_args: $capture_args,
                     mode: "multi_seed",
                     runs: $runs,
                     summary: {
                         linux: ($runs | map(.linux) | safe_stats),
-                        asterinas: ($runs | map(.asterinas) | safe_stats)
+                        ($guest_os): ($runs | map(.[$guest_os]) | safe_stats)
                     },
                     timing_summary: {
                         linux: {
@@ -440,18 +516,20 @@ parse_multi_results() {
                             mix_s: ($runs | map(.timing.linux.mix_s) | safe_add),
                             total_s: ($runs | map(.timing.linux.total_s) | safe_add)
                         },
-                        asterinas: {
-                            fill_s: ($runs | map(.timing.asterinas.fill_s) | safe_add),
-                            mix_s: ($runs | map(.timing.asterinas.mix_s) | safe_add),
-                            total_s: ($runs | map(.timing.asterinas.total_s) | safe_add)
+                        ($guest_os): {
+                            fill_s: ($runs | map(.timing[$guest_os].fill_s) | safe_add),
+                            mix_s: ($runs | map(.timing[$guest_os].mix_s) | safe_add),
+                            total_s: ($runs | map(.timing[$guest_os].total_s) | safe_add)
                         }
                     }
                   }' > "${result_file}"
     elif ${have_asterinas}; then
-        # Asterinas only
+        # Guest OS only (asterinas or mariposa)
         printf '%s\n' "${aster_runs}" \
             | jq -sR \
                 --arg benchmark "${benchmark}" \
+                --arg guest_os "${guest_key}" \
+                --arg capture_args "${BENCHMARK_CAPTURE_ARGS:-}" \
                 --slurpfile aster_hists "${aster_hists_file}" '
                 def median:
                     sort as $s
@@ -461,27 +539,28 @@ parse_multi_results() {
                 split("\n")[:-1]
                 | map(split(" ") | {
                     seed: .[0],
-                    asterinas: (.[1] | try tonumber catch null)
+                    ($guest_os): (.[1] | try tonumber catch null)
                   })
                 | map(. + { histogram: {
                         linux: null,
-                        asterinas: ($aster_hists[0][.seed] // null)
+                        ($guest_os): ($aster_hists[0][.seed] // null)
                     },
-                    fill: { linux: null, asterinas: null },
-                    timing: { linux: null, asterinas: null }
+                    fill: { linux: null, ($guest_os): null },
+                    timing: { linux: null, ($guest_os): null }
                   })
                 | . as $runs
                 | {
                     benchmark: $benchmark,
+                    capture_args: $capture_args,
                     mode: "multi_seed",
                     runs: $runs,
                     summary: {
                         linux: null,
-                        asterinas: ($runs | map(.asterinas) | stats)
+                        ($guest_os): ($runs | map(.[$guest_os]) | stats)
                     },
                     timing_summary: {
                         linux: null,
-                        asterinas: null
+                        ($guest_os): null
                     }
                   }' > "${result_file}"
     else
@@ -489,6 +568,7 @@ parse_multi_results() {
         printf '%s\n' "${linux_runs}" \
             | jq -sR \
                 --arg benchmark "${benchmark}" \
+                --arg capture_args "${BENCHMARK_CAPTURE_ARGS:-}" \
                 --slurpfile linux_hists "${linux_hists_file}" '
                 def median:
                     sort as $s
@@ -510,6 +590,7 @@ parse_multi_results() {
                 | . as $runs
                 | {
                     benchmark: $benchmark,
+                    capture_args: $capture_args,
                     mode: "multi_seed",
                     runs: $runs,
                     summary: {
@@ -581,6 +662,7 @@ parse_three_way_results() {
         <(printf '%s\n' "${mariposa_times}") \
         | jq -sR \
             --arg benchmark "${benchmark}" \
+            --arg capture_args "${BENCHMARK_CAPTURE_ARGS:-}" \
             --slurpfile linux_hists "${linux_hists_file}" \
             --slurpfile baseline_hists "${baseline_hists_file}" \
             --slurpfile mariposa_hists "${mariposa_hists_file}" '
@@ -616,6 +698,7 @@ parse_three_way_results() {
             | . as $runs
             | {
                 benchmark: $benchmark,
+                capture_args: $capture_args,
                 mode: "multi_seed",
                 runs: $runs,
                 summary: {
@@ -651,10 +734,12 @@ cleanup() {
 # Main function to coordinate the benchmark run
 main() {
     local parse_only=false
+    local gc_nix=false
     local run_os="both"
 
-    while getopts "po:" opt; do
+    while getopts "cpo:" opt; do
         case ${opt} in
+            c) gc_nix=true ;;
             p) parse_only=true ;;
             o)
                 run_os="${OPTARG}"
@@ -665,13 +750,21 @@ main() {
                     exit 1
                 fi
                 ;;
-            *) echo "Usage: $0 [-p] [-o linux|asterinas|mariposa|both|all] <benchmark> <platform>" >&2; exit 1 ;;
+            *) echo "Usage: $0 [-c] [-p] [-o linux|asterinas|mariposa|both|all] <benchmark> <platform>" >&2; exit 1 ;;
         esac
     done
     shift $((OPTIND - 1))
 
     local benchmark="$1"
     local platform="$2"
+
+    # Compute git hash (short + dirty flag) for tagging outputs
+    local git_hash
+    git_hash=$(git -C "${BENCHMARK_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    if ! git -C "${BENCHMARK_ROOT}" diff --quiet HEAD 2>/dev/null || \
+       ! git -C "${BENCHMARK_ROOT}" diff --quiet --cached HEAD 2>/dev/null; then
+        git_hash="${git_hash}-dirty"
+    fi
 
     if [[ -z "${BENCHMARK_ROOT}/${benchmark}" ]]; then
         echo "Error: No benchmark specified" >&2
@@ -707,46 +800,85 @@ main() {
 
     # -o all: run each OS variant separately, then combine into one result JSON
     if [[ "${run_os}" == "all" ]]; then
-        local bench_short="${benchmark//\//-}"
-        local all_linux="${BENCHMARK_ROOT}/all_linux_output.txt"
-        local all_baseline="${BENCHMARK_ROOT}/all_baseline_output.txt"
-        local all_mariposa="${BENCHMARK_ROOT}/all_mariposa_output.txt"
+        if ${gc_nix} && ! ${parse_only}; then
+            echo "Running nix garbage collection (before benchmarks)..."
+            nix-collect-garbage -d
+        fi
 
         echo "=== Pass 1/3: Linux ==="
         if ! ${parse_only}; then
             run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "linux"
         fi
-        cp "${LINUX_OUTPUT}" "${all_linux}"
+        if ${gc_nix} && ! ${parse_only}; then
+            echo "Running nix garbage collection..."
+            nix-collect-garbage -d
+        fi
+        local all_linux
+        all_linux=$(save_benchmark_output "linux" "$benchmark")
 
         echo "=== Pass 2/3: Asterinas baseline ==="
         if ! ${parse_only}; then
             run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "asterinas"
         fi
-        cp "${ASTER_OUTPUT}" "${all_baseline}"
+        if ${gc_nix} && ! ${parse_only}; then
+            echo "Running nix garbage collection..."
+            nix-collect-garbage -d
+        fi
+        local all_baseline
+        all_baseline=$(save_benchmark_output "asterinas" "$benchmark")
 
         echo "=== Pass 3/3: Mariposa ==="
         if ! ${parse_only}; then
             run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "mariposa"
         fi
-        cp "${ASTER_OUTPUT}" "${all_mariposa}"
+        if ${gc_nix} && ! ${parse_only}; then
+            echo "Running nix garbage collection (after benchmarks)..."
+            nix-collect-garbage -d
+        fi
+        local all_mariposa
+        all_mariposa=$(save_benchmark_output "mariposa" "$benchmark")
 
         parse_three_way_results "$benchmark" "${all_linux}" "${all_baseline}" "${all_mariposa}"
-        mv "$(extract_result_file "$bench_result")" "result_${bench_short}-linux-asterinas-mariposa.json"
 
-        echo "Three-way comparison completed: result_${bench_short}-linux-asterinas-mariposa.json"
+        echo "Three-way comparison completed: $(extract_result_file "$bench_result")"
         echo "Raw outputs preserved: ${all_linux}, ${all_baseline}, ${all_mariposa}"
         exit 0
     fi
 
     # Single-pass (linux, asterinas, mariposa, or both)
+    if ${gc_nix} && ! ${parse_only}; then
+        echo "Running nix garbage collection (before benchmark)..."
+        nix-collect-garbage -d
+    fi
     if ! ${parse_only}; then
         run_benchmark "$benchmark" "$run_mode" "$runtime_configs_str" "$run_os"
+    fi
+
+    # Save raw outputs to data/
+    if ! ${parse_only}; then
+        case "${run_os}" in
+            linux)
+                save_benchmark_output "linux" "$benchmark"
+                ;;
+            both)
+                save_benchmark_output "linux" "$benchmark"
+                save_benchmark_output "mariposa" "$benchmark"
+                ;;
+            asterinas|mariposa)
+                save_benchmark_output "${run_os}" "$benchmark"
+                ;;
+        esac
+    fi
+
+    if ${gc_nix} && ! ${parse_only}; then
+        echo "Running nix garbage collection (after benchmark)..."
+        nix-collect-garbage -d
     fi
 
     # Parse results if benchmark configuration exists
     if [[ -f "$bench_result" ]]; then
         if [[ "$(yq -r '.multi_run // false' "$bench_result")" == "true" ]]; then
-            parse_multi_results "$benchmark" "$bench_result"
+            parse_multi_results "$benchmark" "$bench_result" "$run_os"
         else
             parse_results "$bench_result"
         fi
