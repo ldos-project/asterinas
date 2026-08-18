@@ -253,6 +253,7 @@ impl From<BioEnqueueError> for Error {
 /// A submitted `Bio` object.
 ///
 /// The request queue of block device only accepts a `SubmittedBio` into the queue.
+#[cfg_attr(not(baseline_asterinas), derive(Element))]
 pub struct SubmittedBio {
     metadata: Arc<BioMetadata>,
     sid_offset: u64,

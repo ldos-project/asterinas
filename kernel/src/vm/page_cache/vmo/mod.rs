@@ -185,10 +185,10 @@ pub enum VmoCommitError {
 
 impl VmoCommitError {
     /// Returns the page index whose commit is pending on I/O or initialization.
-    pub fn pending_index(&self) -> Result<usize> {
+    pub fn pending_index(self) -> Result<usize> {
         match self {
-            Self::NeedIo { index } | Self::WaitUntilInit { index, .. } => Ok(*index),
-            Self::Err(e) => Err(*e),
+            Self::NeedIo { index } | Self::WaitUntilInit { index, .. } => Ok(index),
+            Self::Err(e) => Err(e),
         }
     }
 }

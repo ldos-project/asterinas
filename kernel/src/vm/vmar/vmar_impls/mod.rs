@@ -12,7 +12,7 @@ mod unmap;
 use core::{
     array,
     ops::Range,
-    sync::atomic::{AtomicIsize, Ordering},
+    sync::atomic::{AtomicIsize, AtomicUsize, Ordering},
 };
 
 use align_ext::AlignExt;

@@ -30,20 +30,23 @@ pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
     let closed_file = {
         let file_table = ctx.thread_local.borrow_file_table();
         let mut file_table_locked = file_table.unwrap().write();
-        let _ = file_table_locked.get_file(fd)?;
+        let file = file_table_locked.get_file(fd)?;
+
+        if file.as_socket_or_err().is_ok() {
+            #[cfg(not(baseline_asterinas))]
+            super::oqueue::get_socket_oqueue().produce_ref(
+                &super::oqueue::SocketOQueueMessage {
+                    fd,
+                    is_close: 1,
+                    timestamp: MonotonicRawClock::get().read_time(),
+                },
+            )?;
+        }
+
         file_table_locked.close_file(fd).unwrap()
     };
 
     fs::vfs::notify::on_close(closed_file.file());
-
-    if file.as_socket_or_err().is_ok() {
-        #[cfg(not(baseline_asterinas))]
-        super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
-            fd,
-            is_close: 1,
-            timestamp: MonotonicRawClock::get().read_time(),
-        })?;
-    }
 
     // Cleanup work needs to be done in the `Drop` impl.
     //
