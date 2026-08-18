@@ -32,10 +32,10 @@ use super::{BLOCK_SIZE, Common, OQueueFs};
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, Inode, InodeIo, Metadata},
+            inode::{Extension, FileOps, Inode, Metadata},
         },
     },
     prelude::*,
@@ -83,7 +83,7 @@ pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
 
 impl StrongObserveInode {
     /// Attaches a fresh strong observer to the OQueue and builds a per-open streaming handle.
-    fn open_stream(&self, access_mode: AccessMode) -> Result<Box<dyn FileIo>> {
+    fn open_stream(&self, access_mode: AccessMode) -> Result<Box<dyn PerOpenFileOps>> {
         if access_mode.is_writable() {
             return_errno_with_message!(Errno::EPERM, "the OQueue stream is read-only");
         }
@@ -96,7 +96,7 @@ impl StrongObserveInode {
     }
 }
 
-impl InodeIo for StrongObserveInode {
+impl FileOps for StrongObserveInode {
     fn read_at(
         &self,
         _offset: usize,
@@ -120,7 +120,7 @@ impl InodeIo for StrongObserveInode {
 #[inherit_methods(from = "self.common")]
 impl Inode for StrongObserveInode {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
@@ -149,7 +149,7 @@ impl Inode for StrongObserveInode {
         &self,
         access_mode: AccessMode,
         _status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.open_stream(access_mode))
     }
 }
@@ -274,7 +274,7 @@ impl StrongObserveFile {
     }
 }
 
-impl InodeIo for StrongObserveFile {
+impl FileOps for StrongObserveFile {
     /// This is the offset-free read function. It appears as read_at because
     /// the selection for calling the offsetted and non-offsetted read function
     /// happens in kernel/src/fs/file/inode_handle.rs:261, specifically the
@@ -307,7 +307,7 @@ impl InodeIo for StrongObserveFile {
     }
 }
 
-impl FileIo for StrongObserveFile {
+impl PerOpenFileOps for StrongObserveFile {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the OQueue stream is not seekable")
     }

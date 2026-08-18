@@ -26,10 +26,10 @@ use super::{BLOCK_SIZE, Common, OQueueFs};
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, Inode, InodeIo, Metadata},
+            inode::{Extension, FileOps, Inode, Metadata},
         },
     },
     prelude::*,
@@ -76,7 +76,7 @@ pub(super) fn new_inode(fs: Weak<OQueueFs>, path: Path) -> Arc<dyn Inode> {
 
 impl ProduceInode {
     /// Attaches a fresh producer to the OQueue and builds a per-open write handle.
-    fn open_producer(&self, access_mode: AccessMode) -> Result<Box<dyn FileIo>> {
+    fn open_producer(&self, access_mode: AccessMode) -> Result<Box<dyn PerOpenFileOps>> {
         if !access_mode.is_writable() {
             return_errno_with_message!(Errno::EPERM, "the OQueue produce file is write-only");
         }
@@ -92,7 +92,7 @@ impl ProduceInode {
     }
 }
 
-impl InodeIo for ProduceInode {
+impl FileOps for ProduceInode {
     fn read_at(
         &self,
         _offset: usize,
@@ -116,7 +116,7 @@ impl InodeIo for ProduceInode {
 #[inherit_methods(from = "self.common")]
 impl Inode for ProduceInode {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
@@ -144,8 +144,8 @@ impl Inode for ProduceInode {
     fn open(
         &self,
         access_mode: AccessMode,
-        _status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+        status_flags: StatusFlags,
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.open_producer(access_mode))
     }
 }
@@ -205,7 +205,7 @@ impl ProduceFile {
     }
 }
 
-impl InodeIo for ProduceFile {
+impl FileOps for ProduceFile {
     /// This is the offset-free write function; see the analogous comment on
     /// `strong_observe::StrongObserveFile::read_at`.
     ///
@@ -245,7 +245,7 @@ impl InodeIo for ProduceFile {
     }
 }
 
-impl FileIo for ProduceFile {
+impl PerOpenFileOps for ProduceFile {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the OQueue produce file is not seekable")
     }
