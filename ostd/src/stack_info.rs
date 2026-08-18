@@ -27,7 +27,7 @@ pub struct Location {
     pub column: u32,
 }
 
-impl fmt::Display for Location {
+impl Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

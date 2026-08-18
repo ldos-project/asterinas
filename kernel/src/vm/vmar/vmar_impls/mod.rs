@@ -88,10 +88,10 @@ impl Vmar {
             inner: RwMutex::new(inner),
             vm_space: Arc::new(vm_space),
             rss_counters,
-            rss_hwm_counters,
             process_vm,
             num_handles: AtomicUsize::new(1),
             weak_self: weak_self.clone(),
+            rss_hwm_counters,
             #[cfg(not(baseline_asterinas))]
             page_fault_oqueue_producer: oqueues::PAGE_FAULT_OQUEUE.wait().clone(),
         })

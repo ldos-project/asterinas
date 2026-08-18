@@ -2,7 +2,6 @@
 
 //! OQueue data capture utilities.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{result::Result, time::Duration};
 
 use aster_block::BlockDevice;
@@ -14,7 +13,6 @@ use ostd::{
         orpc_server,
         path::Path,
     },
-    sync::Mutex,
 };
 use serde::Serialize;
 
@@ -56,7 +54,7 @@ pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>>
 
 static DATA_CAPTURE_FILE_SYNCERS: Mutex<Vec<Box<dyn Fn() + Send>>> = Mutex::new(Vec::new());
 
-fn find_block_device(device_name: &str) -> Option<Arc<dyn aster_block::BlockDevice>> {
+fn find_block_device(device_name: &str) -> Option<Arc<dyn BlockDevice>> {
     aster_block::collect_all()
         .into_iter()
         .find(|d| d.name() == device_name)
@@ -112,7 +110,7 @@ pub(super) fn start_capture_devices() {
 }
 
 /// Create a new data capture file for OQueues.
-pub fn new_data_capture_file<T: serde::Serialize + Copy + Send + 'static>(
+pub fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
 ) -> Option<Arc<dyn mariposa_data_capture::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE

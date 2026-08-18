@@ -176,11 +176,7 @@ fn build_admission(
 #[cfg(not(baseline_asterinas))]
 fn attach_weak_observers(
     members: &[Arc<dyn aster_block::BlockDevice>],
-) -> Vec<
-    ostd::sync::Mutex<
-        ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>,
-    >,
-> {
+) -> Vec<Mutex<ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>>> {
     use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
@@ -190,7 +186,7 @@ fn attach_weak_observers(
             let virtio = member
                 .downcast_ref::<VirtIoBlockDevice>()
                 .expect("RAID member must be a VirtIoBlockDevice");
-            ostd::sync::Mutex::new(
+            Mutex::new(
                 virtio
                     .bio_completion_oqueue()
                     .attach_weak_observer(4, ObservationQuery::identity())

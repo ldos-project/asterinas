@@ -98,7 +98,7 @@ pub fn init_for_ktest() {
             component::parse_metadata!(),
         )
         .unwrap();
-        crate::time::init();
-        crate::vm::vmar::init_in_first_kthread();
+        time::init();
+        vm::vmar::init_in_first_kthread();
     });
 }

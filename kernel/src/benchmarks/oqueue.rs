@@ -6,8 +6,9 @@ use alloc::{
     alloc::{alloc, handle_alloc_error},
     borrow::ToOwned,
     boxed::Box,
-    string::ToString as _,
+    string::{String, ToString as _},
     sync::{Arc, Weak},
+    vec::Vec,
 };
 use core::{
     any::type_name,
@@ -19,6 +20,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+use aster_logger::println;
 use crossbeam_utils::CachePadded;
 use ostd::{
     info,
@@ -32,14 +34,15 @@ use ostd::{
     sync::{Waker, WakerKey},
 };
 
-use super::{Benchmark, BenchmarkHarness, time, *};
+use super::{Benchmark, BenchmarkHarness, time};
 use crate::{
     benchmarks::legacy_oqueue::{
-        Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
+        self, Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserver, WeakObserver,
         ringbuffer::MPMCOQueue,
     },
     kcmdline::get_kernel_cmd_line,
     thread::kernel_thread::ThreadOptions,
+    time::Clock as _,
 };
 
 /// A single element (slot for storing a value) in a ring buffer.
@@ -104,7 +107,7 @@ impl<T> Slot<T> {
 }
 
 fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
-    let elem_size = core::mem::size_of::<Slot<T>>();
+    let elem_size = size_of::<Slot<T>>();
     let total_size = elem_size * len;
 
     // Layout with page alignment
@@ -315,7 +318,7 @@ impl<T: Copy + Send> Blocker for RigtorpProducer<T> {
         panic!("!");
     }
 
-    fn remove(&self, _key: ostd::sync::WakerKey) {
+    fn remove(&self, _key: WakerKey) {
         panic!("!");
     }
 }
@@ -346,7 +349,7 @@ impl<T: Copy + Send> Blocker for RigtorpConsumer<T> {
         panic!("!");
     }
 
-    fn remove(&self, _key: ostd::sync::WakerKey) {
+    fn remove(&self, _key: WakerKey) {
         panic!("!");
     }
 }
@@ -362,32 +365,28 @@ impl<T: Copy + Send + 'static> Consumer<T> for RigtorpConsumer<T> {
 }
 
 impl<T: Copy + Send + 'static> OQueue<T> for Rigtorp<T> {
-    fn attach_producer(&self) -> core::result::Result<Box<dyn Producer<T>>, OQueueAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         Ok(Box::new(RigtorpProducer {
             oqueue: self.get_this(),
             _phantom: PhantomData,
         }) as _)
     }
 
-    fn attach_consumer(&self) -> core::result::Result<Box<dyn Consumer<T>>, OQueueAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
         Ok(Box::new(RigtorpConsumer {
             oqueue: self.get_this(),
             _phantom: PhantomData,
         }) as _)
     }
 
-    fn attach_strong_observer(
-        &self,
-    ) -> core::result::Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
             message: "no observer".to_owned(),
         })
     }
 
-    fn attach_weak_observer(
-        &self,
-    ) -> core::result::Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::AllocationFailed {
             table_type: type_name::<Self>().to_owned(),
             message: "no observer".to_owned(),
@@ -1095,18 +1094,12 @@ impl OQueueLegacyBenchmark {
         let n_messages = input.n_messages;
 
         if q_type == "mpmc_oq" {
-            let q = crate::benchmarks::legacy_oqueue::ringbuffer::mpmc::MPMCOQueue::<u64>::new(
-                2 << 20,
-                16,
-            );
+            let q = MPMCOQueue::<u64>::new(2 << 20, 16);
             assert!(q.capacity() >= n_messages);
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else if q_type == "locking" {
-            let q = crate::benchmarks::legacy_oqueue::locking::ObservableLockingQueue::<u64>::new(
-                2 << 20,
-                16,
-            );
+            let q = legacy_oqueue::locking::ObservableLockingQueue::<u64>::new(2 << 20, 16);
             let q: Arc<dyn OQueue<u64>> = q;
             q
         } else {
@@ -1324,8 +1317,8 @@ impl OQueueBenchmark {
     fn new(name: &str, test_type: BenchmarkType) -> Box<Self> {
         Box::new(Self {
             name: name.to_string(),
-            input: None,
             test_type,
+            input: None,
         })
     }
 

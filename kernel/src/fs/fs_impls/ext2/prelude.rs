@@ -26,7 +26,7 @@ pub(super) use super::{
 pub(super) use crate::{
     fs::{
         file::InodeType,
-        utils::{CStr256, DirentVisitor, Str16, Str64},
+        utils::{DirentVisitor, Str16, Str64},
     },
     prelude::*,
     time::UnixTime,

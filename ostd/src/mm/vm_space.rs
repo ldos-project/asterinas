@@ -46,8 +46,7 @@ pub struct VmMappingRequest {
 pub trait VmMappingPolicy: Sync + Send {
     /// Get the level of page that should be mapped in request to a fault at
     /// `req.page_aligned_addr`.
-    fn get_page_level(&self, req: &VmMappingRequest)
-    -> core::result::Result<PagingLevel, RPCError>;
+    fn get_page_level(&self, req: &VmMappingRequest) -> Result<PagingLevel, RPCError>;
 }
 
 /// Default [`VmMappingPolicy`] implementation that always maps base pages.
@@ -56,10 +55,7 @@ struct VmMappingPolicyBasePagesOnly {}
 
 #[orpc_impl]
 impl VmMappingPolicy for VmMappingPolicyBasePagesOnly {
-    fn get_page_level(
-        &self,
-        _req: &VmMappingRequest,
-    ) -> core::result::Result<PagingLevel, RPCError> {
+    fn get_page_level(&self, _req: &VmMappingRequest) -> Result<PagingLevel, RPCError> {
         Ok(1)
     }
 }

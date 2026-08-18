@@ -147,7 +147,6 @@ impl BlockDevice {
             use ostd::orpc::framework::spawn_thread;
 
             let block_device_server = Self::new_with(|orpc_internal, weak_self| BlockDevice {
-                orpc_internal,
                 device,
                 queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
@@ -155,6 +154,7 @@ impl BlockDevice {
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
+                orpc_internal,
             });
 
             // Thread 2: Handle requests from the OQueue and enqueue them
@@ -375,9 +375,9 @@ impl DeviceInner {
             block_responses,
             id_allocator: SyncIdAlloc::with_capacity(Self::QUEUE_SIZE as usize),
             submitted_requests: SpinLock::new(BTreeMap::new()),
+            device_id: id,
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
-            device_id: id,
         });
 
         let cloned_device = device.clone();

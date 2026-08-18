@@ -263,10 +263,10 @@ impl TaskOptions {
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
             switched_to_cpu: AtomicBool::new(false),
+            id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
             },
-            id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             #[cfg(not(baseline_asterinas))]
             server: ForceSync::new(RefCell::new(None)),
         };

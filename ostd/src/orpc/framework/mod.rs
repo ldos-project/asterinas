@@ -282,17 +282,14 @@ impl Drop for CurrentServerChangeGuard {
 
 #[cfg(ktest)]
 mod test {
-    use core::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
+    use core::time::Duration;
 
     use ostd_macros::ktest;
     use snafu::{Whatever, whatever};
 
     use super::*;
     use crate::{
-        orpc::{errors, oqueue::generic_test, sync::Blocker},
+        orpc::{oqueue::generic_test, sync::Blocker},
         sync::{Waker, WakerKey},
         task::TaskOptions,
     };
@@ -349,7 +346,7 @@ mod test {
                         // TODO: An actual logging operation.
                         server
                             .orpc_server_base()
-                            .abort(&errors::RPCError::from_panic(payload));
+                            .abort(&RPCError::from_panic(payload));
                     }
                     server.thread_exited.store(true, Ordering::SeqCst);
                 }

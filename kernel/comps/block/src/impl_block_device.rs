@@ -310,12 +310,11 @@ pub(super) fn general_complete_fn(
 #[cfg(ktest)]
 mod test {
     use alloc::boxed::Box;
-    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use ostd::prelude::*;
 
     use super::*;
-    use crate::{id::Bid, test_utils::FakeBlockDevice};
+    use crate::test_utils::FakeBlockDevice;
 
     /// An atomic counter used to track how many times a callback has been called. This must be
     /// static to work with static `fn`s passed to Bio.

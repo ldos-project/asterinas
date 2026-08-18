@@ -51,13 +51,13 @@ pub fn wrap_server_thread_body(
     body: ThreadMain,
 ) -> impl FnOnce() {
     move || {
-        if let Result::Err(payload) = crate::panic::catch_unwind({
+        if let Err(payload) = crate::panic::catch_unwind({
             let server = server.clone();
             move || {
                 Server::orpc_server_base(server.as_ref()).attach_task();
                 let _server_context =
                     CurrentServer::enter_server_context(server.orpc_server_base());
-                if let Result::Err(e) = body() {
+                if let Err(e) = body() {
                     Server::orpc_server_base(server.as_ref()).abort(&e);
                 }
             }

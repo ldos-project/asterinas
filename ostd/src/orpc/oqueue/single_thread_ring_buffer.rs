@@ -96,11 +96,11 @@ impl RingBuffer {
 
         Ok(RingBuffer {
             element_type: TypeId::of::<T>(),
+            #[cfg(debug_assertions)]
+            element_type_name: type_name::<T>(),
             buffer,
             tail_index: 0,
             strong_reader_heads: SmallVec::default(),
-            #[cfg(debug_assertions)]
-            element_type_name: type_name::<T>(),
             drop_fn: |this| {
                 if this.strong_reader_heads.is_empty() {
                     // There is no reader so there is no way to know what part of the buffer can be

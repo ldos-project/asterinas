@@ -253,7 +253,7 @@ endif
 
 ifeq ($(BASELINE_ASTERINAS), 1)
 RUSTFLAGS += --cfg=baseline_asterinas
-CLIPPY_COMMON_ARGS += --cfg=baseline_asterinas -A unused-imports -A dead-code -A unfulfilled-lint-expectations
+CLIPPY_COMMON_ARGS += --cfg=baseline_asterinas -A unused-imports -A dead-code -A unfulfilled-lint-expectations -A redundant-imports
 endif
 
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's

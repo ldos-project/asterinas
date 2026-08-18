@@ -88,7 +88,7 @@ def delete_file(f):
 if __name__ == "__main__":
     DESCRIPTION = """\
         Helper for merging upstream asterinas into ldos fork.
-        
+
         It temporarily rewrites ldos-specific image references + a github link
         to their upstream equivalents to avoid common merge conflicts, then
         restores them afterwards. The script is invoked twice to conduct a merge from
@@ -109,7 +109,7 @@ if __name__ == "__main__":
           1. python3 tools/merge_upstream.py --start    # rewrite refs, commit, then git merge upstream/main
           2. resolve any real merge conflicts and commit them
           3. python3 tools/merge_upstream.py --finish   # restore refs and squash into the merge commit
-        
+
           python3 tools/merge_upstream.py --abort       # bail out and reset to before the merge
     """
 

@@ -10,16 +10,12 @@
 //! The file behaves like a pipe in the write direction: writes are producing and offset-free
 //! (`lseek` fails with `ESPIPE`), and a blocking write waits for space in the OQueue.
 
-use alloc::{boxed::Box, vec::Vec};
 use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
-use ostd::{
-    orpc::{
-        oqueue::{CborProducer, ProduceCborError, registry},
-        path::Path,
-    },
-    sync::Mutex,
+use ostd::orpc::{
+    oqueue::{CborProducer, ProduceCborError, registry},
+    path::Path,
 };
 
 use super::{BLOCK_SIZE, Common, OQueueFs};
@@ -144,7 +140,7 @@ impl Inode for ProduceInode {
     fn open(
         &self,
         access_mode: AccessMode,
-        status_flags: StatusFlags,
+        _status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.open_producer(access_mode))
     }

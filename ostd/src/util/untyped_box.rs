@@ -215,8 +215,8 @@ mod test {
         let layout = allocation.layout();
 
         // Total layout should accommodate all elements
-        assert!(layout.size() >= core::mem::size_of::<u64>() * 10);
-        assert_eq!(layout.align(), core::mem::align_of::<u64>());
+        assert!(layout.size() >= size_of::<u64>() * 10);
+        assert_eq!(layout.align(), align_of::<u64>());
     }
 
     #[repr(align(64))]

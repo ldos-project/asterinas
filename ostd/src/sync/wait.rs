@@ -233,7 +233,7 @@ impl Waiter {
     /// reference to the Task that is waiting.
     pub fn wait_cancellable<F, E>(&self, cancel_cond: F)
     where
-        F: Fn() -> core::result::Result<(), E>,
+        F: Fn() -> Result<(), E>,
     {
         self.waker.do_wait_cancellable(cancel_cond);
     }
@@ -316,7 +316,7 @@ impl Waker {
     #[track_caller]
     fn do_wait_cancellable<F, E>(&self, cancel_cond: F)
     where
-        F: Fn() -> core::result::Result<(), E>,
+        F: Fn() -> Result<(), E>,
     {
         while !self.has_woken.swap(false, Ordering::Acquire) {
             scheduler::park_current(|| {

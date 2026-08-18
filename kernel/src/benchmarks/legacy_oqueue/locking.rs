@@ -43,15 +43,15 @@ impl<T> LockingQueue<T> {
     fn new_with_observers(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
         Arc::new_cyclic(|this| LockingQueue {
             this: this.clone(),
-            buffer_size,
             inner: SpinLock::new(LockingOQueueInner {
                 buffer: (0..buffer_size).map(|_| None).collect(),
                 n_consumers: 0,
                 head_index: usize::MAX,
                 tail_index: 0,
-                free_strong_observer_heads: (0..max_strong_observers).collect(),
                 strong_observer_heads: (0..max_strong_observers).map(|_| usize::MAX).collect(),
+                free_strong_observer_heads: (0..max_strong_observers).collect(),
             }),
+            buffer_size,
             put_wait_queue: Default::default(),
             read_wait_queue: Default::default(),
         })
@@ -234,7 +234,7 @@ impl<T> LockingOQueueInner<T> {
 }
 
 impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
-    fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         let this = self.inner.get_this()?;
         Ok(Box::new(LockingProducer {
             oqueue: this.this.clone(),
@@ -242,7 +242,7 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
         }))
     }
 
-    fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::OQueueAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
         let this = self.inner.get_this()?;
         this.inner.lock().attach_consumer();
         Ok(Box::new(CloningLockingConsumer {
@@ -251,9 +251,7 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
         }))
     }
 
-    fn attach_strong_observer(
-        &self,
-    ) -> Result<Box<dyn super::StrongObserver<T>>, super::OQueueAttachError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         let index = {
             let mut inner = self.inner.inner.lock();
             let Some(index) = inner.free_strong_observer_heads.pop() else {
@@ -276,9 +274,7 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
         }))
     }
 
-    fn attach_weak_observer(
-        &self,
-    ) -> Result<Box<dyn super::WeakObserver<T>>, super::OQueueAttachError> {
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         let this = self.inner.get_this()?;
         Ok(Box::new(LockingWeakObserver {
             oqueue: this.this.clone(),
@@ -289,7 +285,7 @@ impl<T: Clone + Send + 'static> OQueue<T> for ObservableLockingQueue<T> {
 }
 
 impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
-    fn attach_producer(&self) -> Result<Box<dyn super::Producer<T>>, super::OQueueAttachError> {
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError> {
         let this = self.get_this()?;
         Ok(Box::new(LockingProducer {
             oqueue: this.this.clone(),
@@ -297,23 +293,19 @@ impl<T: Send + 'static> OQueue<T> for LockingQueue<T> {
         }))
     }
 
-    fn attach_consumer(&self) -> Result<Box<dyn super::Consumer<T>>, super::OQueueAttachError> {
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError> {
         let this = self.get_this()?;
         this.inner.lock().attach_consumer();
         Ok(Box::new(LockingConsumer { oqueue: this }))
     }
 
-    fn attach_strong_observer(
-        &self,
-    ) -> Result<Box<dyn super::StrongObserver<T>>, super::OQueueAttachError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::Unsupported {
             table_type: type_name::<Self>().to_owned(),
         })
     }
 
-    fn attach_weak_observer(
-        &self,
-    ) -> Result<Box<dyn super::WeakObserver<T>>, super::OQueueAttachError> {
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError> {
         Err(OQueueAttachError::Unsupported {
             table_type: type_name::<Self>().to_owned(),
         })

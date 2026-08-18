@@ -65,7 +65,7 @@ impl PartialEq for PathComponent {
 }
 
 impl Hash for PathComponent {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.borrow().hash(state);
     }
 }

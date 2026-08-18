@@ -74,7 +74,7 @@ impl BenchmarkHarness {
             .benchmarks
             .iter_mut()
             .find(|b| b.name() == self.benchmark.as_str());
-        let benchmark: &mut alloc::boxed::Box<dyn Benchmark> = match benchmark {
+        let benchmark: &mut Box<dyn Benchmark> = match benchmark {
             Some(b) => b,
             None => panic!(
                 "Could not find benchmark {}. Available benchmarks {:?}",

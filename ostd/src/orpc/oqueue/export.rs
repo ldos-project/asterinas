@@ -345,7 +345,7 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{orpc::oqueue::ConsumableOQueueRef, path, prelude::*};
+    use crate::{path, prelude::*};
 
     /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
     fn decode_records(buf: &[u8]) -> Vec<u64> {
@@ -385,8 +385,7 @@ mod test {
         // A single userspace write through the produce attachment reaches both the consumer and
         // the independently attached observer.
         let mut record = Vec::new();
-        serde::Serialize::serialize(&7usize, &mut minicbor_serde::Serializer::new(&mut record))
-            .unwrap();
+        Serialize::serialize(&7usize, &mut Serializer::new(&mut record)).unwrap();
         producer.produce_cbor(&record).unwrap();
 
         assert_eq!(consumer.consume(), 7);

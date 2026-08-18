@@ -10,7 +10,7 @@ use crate::{
 /// The implementation of the `orpc_trait` attr macro.
 pub fn orpc_trait_macro_impl(
     _attr: proc_macro::TokenStream,
-    input: syn::ItemTrait,
+    input: ItemTrait,
 ) -> proc_macro2::TokenStream {
     // The declarations of the fields in the OQueue struct
     let mut oqueue_declarations = Vec::new();

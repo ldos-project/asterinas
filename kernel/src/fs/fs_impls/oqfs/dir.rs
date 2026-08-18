@@ -340,10 +340,10 @@ impl Inode for DirInode {
 
     fn rename(
         &self,
-        old_name: &str,
-        target: &Arc<dyn Inode>,
-        new_name: &str,
-        mode: RenameMode,
+        _old_name: &str,
+        _target: &Arc<dyn Inode>,
+        _new_name: &str,
+        _mode: RenameMode,
     ) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }

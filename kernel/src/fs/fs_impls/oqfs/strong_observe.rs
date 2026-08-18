@@ -16,16 +16,12 @@
 // but the OQueue still exists, so reopening resumes the stream), and `EIO` when the underlying
 // OQueue disappears (is unregistered). This lets a reader tell whether to reconnect or give up.
 
-use alloc::{boxed::Box, vec::Vec};
 use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
-use ostd::{
-    orpc::{
-        oqueue::{CborStrongObserve, registry},
-        path::Path,
-    },
-    sync::Mutex,
+use ostd::orpc::{
+    oqueue::{CborStrongObserve, registry},
+    path::Path,
 };
 
 use super::{BLOCK_SIZE, Common, OQueueFs};

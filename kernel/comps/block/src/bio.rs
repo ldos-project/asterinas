@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::boxed::Box;
-use core::{fmt::Display, sync::atomic::AtomicU64, time::Duration};
+use core::{fmt::Display, time::Duration};
 
 use align_ext::AlignExt;
 use aster_time::read_monotonic_time;
@@ -25,7 +25,7 @@ use ostd::{
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
 use serde::Serialize;
-use spin::{Mutex, Once};
+use spin::Once;
 
 use super::{BlockDevice, id::Sid};
 use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, prelude::*};
@@ -935,8 +935,6 @@ impl<const N: u16> AlignedUsize<N> {
 
 #[cfg(ktest)]
 mod test {
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
     use ostd::prelude::*;
 
     use super::*;

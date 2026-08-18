@@ -28,8 +28,8 @@ pub struct Dummy0Policy {
 impl Dummy0Policy {
     pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             members,
+            orpc_internal,
         });
         Ok(server)
     }
@@ -51,9 +51,9 @@ pub struct RoundRobinPolicy {
 impl RoundRobinPolicy {
     pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
+            orpc_internal,
         });
         Ok(server)
     }
@@ -121,7 +121,6 @@ impl LinnOSPolicy {
         let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
@@ -129,6 +128,7 @@ impl LinnOSPolicy {
             hidden_biases,
             output_layers,
             output_biases,
+            orpc_internal,
         });
 
         Ok(server)
@@ -274,10 +274,10 @@ impl DecisionTreePolicy {
         observers: Vec<Mutex<ostd::orpc::oqueue::WeakObserver<BlockDeviceCompletionStats>>>,
     ) -> Result<Arc<Self>, Error> {
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
+            orpc_internal,
         });
         Ok(server)
     }
@@ -404,7 +404,6 @@ impl LinnOSPlusPolicy {
         let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
@@ -414,6 +413,7 @@ impl LinnOSPlusPolicy {
             hidden2_biases,
             output_weights,
             output_biases,
+            orpc_internal,
         });
 
         Ok(server)
@@ -602,10 +602,10 @@ impl UserspacePolicy {
             block_on_many: BlockOnMany::new(),
         };
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             read_cursor: AtomicUsize::new(0),
             members,
             channel: Mutex::new(channel),
+            orpc_internal,
         });
 
         Ok(server)

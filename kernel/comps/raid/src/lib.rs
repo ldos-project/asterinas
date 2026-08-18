@@ -82,7 +82,7 @@ pub struct Raid1Device {
     /// target. When present, only the admitted members are offered to the
     /// selection policy.
     #[cfg(not(baseline_asterinas))]
-    admission: Option<Arc<crate::heimdall::Heimdall>>,
+    admission: Option<Arc<heimdall::Heimdall>>,
 
     /// Cached list of all member indices (`0..members.len()`), used as the
     /// candidate set when no admission policy is active. Avoids a per-read
@@ -136,7 +136,7 @@ impl Raid1Device {
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
         #[cfg(not(baseline_asterinas))] selection_policy: Arc<dyn SelectionPolicy>,
-        #[cfg(not(baseline_asterinas))] admission: Option<Arc<crate::heimdall::Heimdall>>,
+        #[cfg(not(baseline_asterinas))] admission: Option<Arc<heimdall::Heimdall>>,
     ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
@@ -153,7 +153,6 @@ impl Raid1Device {
 
         #[cfg(not(baseline_asterinas))]
         let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
-            orpc_internal,
             members,
             queue,
             metadata,
@@ -162,6 +161,7 @@ impl Raid1Device {
             all_indices,
             name: name.to_owned(),
             id,
+            orpc_internal,
         });
         #[cfg(baseline_asterinas)]
         let device = Arc::new_cyclic(|_weak_self| Raid1Device {
@@ -274,7 +274,7 @@ impl Raid1Device {
     /// failure) completes the parent. Any failed member marks the write as
     /// `IoError`; all members must succeed for `Complete` to be reported.
     fn process_write_async(&self, request: BioRequest) {
-        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use core::sync::atomic::{AtomicBool, AtomicUsize};
 
         use ostd::sync::{LocalIrqDisabled, SpinLock};
 
@@ -401,6 +401,7 @@ impl Raid1Device {
     }
 
     /// Clones segments from a parent BIO for use by a child BIO.
+    #[expect(dead_code)]
     fn clone_segments(parent: &SubmittedBio) -> Vec<BioSegment> {
         parent.segments().to_vec()
     }

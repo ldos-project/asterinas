@@ -20,7 +20,7 @@
 ///
 /// ```no_run
 /// # use log::Level;
-/// # let expr: core::result::Result<u16, usize> = Err(32);
+/// # let expr: Result<u16, usize> = Err(32);
 /// # let x = 42;
 /// ignore_err!(expr)
 /// ignore_err!(expr, Level::Info)
@@ -50,7 +50,7 @@ macro_rules! ignore_err {
 mod test {
     use crate::prelude::*;
 
-    static ERROR: core::result::Result<u16, usize> = Err(32);
+    static ERROR: Result<u16, usize> = Err(32);
 
     #[ktest]
     fn ignore_err() {

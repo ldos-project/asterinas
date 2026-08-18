@@ -35,6 +35,7 @@ use crate::{
     kcmdline::{KCmdlineArg, set_kernel_cmd_line},
     prelude::*,
     process::{Process, spawn_init_process},
+    sched,
     sched::SchedPolicy,
     thread::{self, kernel_thread::ThreadOptions},
     vm::{
@@ -50,8 +51,8 @@ pub(super) fn main() {
     // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
     // - ORPC spawn function must be injected, otherwise ORPC threads are created without
     //   Thread association and are ignored by the ClassScheduler
-    crate::thread::init();
-    crate::sched::init();
+    thread::init();
+    sched::init();
     #[cfg(not(baseline_asterinas))]
     crate::orpc_utils::init();
 
@@ -85,7 +86,7 @@ fn init() {
 }
 
 fn init_on_each_cpu() {
-    crate::sched::init_on_each_cpu();
+    sched::init_on_each_cpu();
     crate::process::init_on_each_cpu();
     crate::fs::init_on_each_cpu();
     crate::time::init_on_each_cpu();
@@ -256,8 +257,8 @@ fn first_kthread() {
                                 let context = EventContext::new();
                                 KernelSchedulingEvent {
                                     timestamp: context.timestamp,
-                                    kind: e.kind,
                                     task: TaskId::new(&e.task),
+                                    kind: e.kind,
                                 }
                             }))
                             .unwrap(),
@@ -333,7 +334,7 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     component::init_all(InitStage::Kthread, component::parse_metadata!()).unwrap();
     // Work queue should be initialized before interrupt is enabled,
     // in case any irq handler uses work queue as bottom half
-    crate::thread::work_queue::init_in_first_kthread();
+    thread::work_queue::init_in_first_kthread();
 
     let karg: KCmdlineArg = boot_info().kernel_cmdline.as_str().into();
     set_kernel_cmd_line(karg.clone());
@@ -363,7 +364,7 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     crate::fs::init_in_first_kthread(path_resolver);
     #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
     crate::vdso::init_in_first_kthread();
-    crate::vm::vmar::init_in_first_kthread();
+    vm::vmar::init_in_first_kthread();
     crate::syscall::init_in_first_kthread();
 }
 

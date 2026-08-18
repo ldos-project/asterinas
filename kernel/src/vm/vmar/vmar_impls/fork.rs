@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{array, sync::atomic::AtomicIsize};
-
-use aster_util::per_cpu_counter::PerCpuCounter;
-use osdk_heap_allocator::alloc_cpu_local;
 use ostd::{
     mm::{
         CachePolicy, PageFlags,
@@ -14,8 +10,6 @@ use ostd::{
 };
 
 use super::{RssDelta, Vmar};
-#[cfg(not(baseline_asterinas))]
-use crate::vm::vmar::oqueues;
 use crate::{prelude::*, process::ProcessVm, vm::vmar::VmarHandle};
 
 impl Vmar {
