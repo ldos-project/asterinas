@@ -10,7 +10,7 @@ jobs:
   xfstests-full:
     runs-on: ubuntu-4-cores-150GB-ssd
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: --device=/dev/kvm --privileged
     timeout-minutes: 90
     steps:
