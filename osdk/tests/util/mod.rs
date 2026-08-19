@@ -137,6 +137,7 @@ pub(crate) fn depends_on_local_ostd(manifest_path: impl AsRef<Path>) {
 /// adding features = ["coverage"] to ostd dependency and creating a [features] section.
 ///
 /// This transforms the manifest to enable coverage support.
+#[expect(dead_code)]
 pub(crate) fn depends_on_coverage(manifest_path: impl AsRef<Path>, osdk_path: impl AsRef<Path>) {
     let manifest_content = fs::read_to_string(&manifest_path).unwrap();
     let mut manifest: Table = toml::from_str(&manifest_content).unwrap();
