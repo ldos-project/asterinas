@@ -5,9 +5,9 @@ use crate::{
     fs::{
         file::InodeType,
         vfs::{
-            file_system::{FileSystem, FsFlags},
+            file_system::FsFlags,
             path::{AT_FDCWD, EmptyPathStr, FsPath, MountPropType, Path, PerMountFlags},
-            registry::{FsCreationCtx, FsType},
+            registry::{DynFsType, FsAndRoot, FsCreationCtx},
         },
     },
     prelude::*,
@@ -97,8 +97,9 @@ fn do_remount_mnt_and_fs(
     } else {
         Some(ctx.user_space().read_cstring(data_addr, MAX_FILENAME_LEN)?)
     };
+    let data = data.as_deref().map(CStr::to_string_lossy);
 
-    path.remount(per_mount_flags, Some(fs_flags), data, ctx)
+    path.remount(per_mount_flags, Some(fs_flags), data.as_deref(), ctx)
 }
 
 /// Binds a mount to a dst location.
@@ -205,10 +206,12 @@ fn do_new_mount(
         let fs_type_str = fs_type_cstr
             .to_str()
             .map_err(|_| Error::with_message(Errno::ENODEV, "invalid file system type"))?;
-        crate::fs::vfs::registry::look_up(fs_type_str).ok_or(Error::with_message(
-            Errno::ENODEV,
-            "the filesystem is not configured in the kernel",
-        ))?
+        crate::fs::vfs::registry::look_up(fs_type_str).ok_or_else(|| {
+            Error::with_message(
+                Errno::ENODEV,
+                "the filesystem is not configured in the kernel",
+            )
+        })?
     };
 
     let source = if src_name_addr == 0 {
@@ -222,8 +225,8 @@ fn do_new_mount(
         Some(source)
     };
 
-    let fs = open_fs(source.as_deref(), flags, fs_type, data_addr, ctx)?;
-    target_path.mount(fs, flags.into(), source, ctx)?;
+    let fs_and_root = open_fs(source.as_deref(), flags, fs_type, data_addr, ctx)?;
+    target_path.mount(fs_and_root, flags.into(), source, ctx)?;
     Ok(())
 }
 
@@ -231,19 +234,20 @@ fn do_new_mount(
 fn open_fs(
     source: Option<&str>,
     flags: MountFlags,
-    fs_type: &dyn FsType,
+    fs_type: &dyn DynFsType,
     data_addr: Vaddr,
     ctx: &Context,
-) -> Result<Arc<dyn FileSystem>> {
+) -> Result<FsAndRoot> {
     let user_space = ctx.user_space();
     let data = if data_addr == 0 {
         None
     } else {
         Some(user_space.read_cstring(data_addr, MAX_FILENAME_LEN)?)
     };
+    let data = data.as_deref().map(CStr::to_string_lossy);
 
-    let fs_creation_ctx = FsCreationCtx::new(source, flags.into(), data.as_deref(), ctx);
-    fs_type.create(&fs_creation_ctx)
+    let mut fs_creation_ctx = FsCreationCtx::new(source, flags.into(), data.as_deref(), ctx);
+    fs_type.get_or_create(&mut fs_creation_ctx)
 }
 
 bitflags! {

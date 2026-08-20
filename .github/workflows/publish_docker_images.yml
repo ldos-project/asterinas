@@ -103,7 +103,7 @@ jobs:
       push: true
       # TODO: Get arm64 builds working
       #platforms: linux/amd64,linux/arm64
-      platforms: linux/amd64 
+      platforms: linux/amd64
       context: .
       file: ./tools/docker/Dockerfile
       meta-images: ldosproject/asterinas

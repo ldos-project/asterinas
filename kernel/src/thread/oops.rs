@@ -11,7 +11,7 @@
 //! to make Rust panics as a general exception handling mechanism. Handling
 //! exceptions with [`Result`] is more idiomatic.
 
-use alloc::{boxed::Box, format, string::String, sync::Arc};
+use alloc::format;
 use core::{
     result::Result,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -25,7 +25,7 @@ use ostd::{
 };
 
 use super::Thread;
-use crate::kcmdline::get_kernel_cmd_line;
+use crate::{kcmdline::get_kernel_cmd_line, prelude::*};
 
 // TODO: Control the kernel commandline parsing from the kernel crate. In Linux it can be
 // dynamically changed by writing to `/proc/sys/kernel/panic`.
@@ -116,7 +116,7 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 
             // Raise the panic and expect it to be caught. If this returns, then the catch_unwind is
             // broken or missing.
-            let r = panic::begin_panic(Box::new(ostd::panic::CaughtPanic {
+            let r = panic::begin_panic(Box::new(CaughtPanic {
                 message: format!("{}", message),
                 context: Some(stack_info),
             }));

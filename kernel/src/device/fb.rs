@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
-
-use aster_framebuffer::{ColorMapEntry, FRAMEBUFFER, FrameBuffer, MAX_CMAP_SIZE, PixelFormat};
+use aster_framebuffer::{
+    framebuffer::{ColorMapEntry, FRAMEBUFFER, FrameBuffer, MAX_CMAP_SIZE},
+    pixel::PixelFormat,
+};
 use device_id::{DeviceId, MajorId, MinorId};
-use ostd::mm::{HasPaddr, HasSize, VmIo, VmReader, VmWriter};
+use ostd::mm::{HasPaddr, HasSize, VmIo};
 
 use super::{Device, DeviceType, DevtmpfsInodeMeta, registry::char};
 use crate::{
     context::current_userspace,
     events::IoEvents,
     fs::{
-        file::{FileIo, Mappable, StatusFlags},
-        vfs::inode::InodeIo,
+        file::{Mappable, PerOpenFileOps, StatusFlags},
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
@@ -234,7 +235,7 @@ impl Device for Fb {
         Some(DevtmpfsInodeMeta::new("fb0"))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(framebuffer) = FRAMEBUFFER.get() else {
             return Err(Error::with_message(
                 Errno::ENODEV,
@@ -295,8 +296,8 @@ impl FbHandle {
             right_margin: DEFAULT_RIGHT_MARGIN,
             upper_margin: DEFAULT_UPPER_MARGIN,
             lower_margin: DEFAULT_LOWER_MARGIN,
-            vsync_len: DEFAULT_VSYNC_LEN,
             hsync_len: (self.framebuffer.width() as u32 / 8) & 0xf8,
+            vsync_len: DEFAULT_VSYNC_LEN,
             ..Default::default()
         }
     }
@@ -403,7 +404,7 @@ impl Pollable for FbHandle {
     }
 }
 
-impl InodeIo for FbHandle {
+impl FileOps for FbHandle {
     fn read_at(
         &self,
         offset: usize,
@@ -488,7 +489,7 @@ impl InodeIo for FbHandle {
     }
 }
 
-impl FileIo for FbHandle {
+impl PerOpenFileOps for FbHandle {
     fn check_seekable(&self) -> Result<()> {
         Ok(())
     }
@@ -502,7 +503,7 @@ impl FileIo for FbHandle {
         Ok(Mappable::IoMem(iomem.clone()))
     }
 
-    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+    fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
         dispatch_ioctl!(match raw_ioctl {

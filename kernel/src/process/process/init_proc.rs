@@ -13,14 +13,14 @@ use crate::{
     prelude::*,
     process::{
         Credentials, ProcessVm, UserNamespace, pid_table,
-        posix_thread::{PosixThreadBuilder, ThreadName, allocate_posix_tid},
+        posix_thread::{PosixThreadBuilder, allocate_posix_tid, derive_thread_name},
         program_loader::ProgramToLoad,
         rlimit::new_resource_limits_for_init,
         signal::sig_disposition::SigDispositions,
     },
     sched::Nice,
     thread::Tid,
-    vm::vmar::Vmar,
+    vm::vmar::VmarHandle,
 };
 
 /// Creates and schedules the init process to run.
@@ -95,7 +95,7 @@ fn create_init_process(
     let elf_path = fs.resolver().read().lookup(&fs_path)?;
 
     let pid = allocate_posix_tid();
-    let vmar = Vmar::new(ProcessVm::new(elf_path.clone()));
+    let vmar = VmarHandle::new(ProcessVm::new(elf_path.clone()));
     let resource_limits = new_resource_limits_for_init();
     let nice = Nice::default();
     let oom_score_adj = 0;
@@ -104,7 +104,7 @@ fn create_init_process(
 
     let init_proc = Process::new(
         pid,
-        vmar,
+        vmar.clone_arc(),
         resource_limits,
         nice,
         oom_score_adj,
@@ -112,7 +112,7 @@ fn create_init_process(
         user_ns,
     );
 
-    let init_task = create_init_task(pid, &init_proc, fs, elf_path, argv, envp)?;
+    let init_task = create_init_task(pid, &init_proc, fs, vmar, elf_path, argv, envp)?;
     init_proc.tasks().lock().insert(init_task).unwrap();
 
     Ok(init_proc)
@@ -137,6 +137,7 @@ fn create_init_task(
     tid: Tid,
     process: &Arc<Process>,
     fs: ThreadFsInfo,
+    vmar: VmarHandle,
     elf_path: Path,
     argv: Vec<CString>,
     envp: Vec<CString>,
@@ -159,10 +160,11 @@ fn create_init_task(
     user_ctx.set_instruction_pointer(elf_load_info.entry_point as _);
     user_ctx.set_stack_pointer(elf_load_info.user_stack_top as _);
 
-    let thread_name = ThreadName::new_from_executable_path(&elf_abs_path);
+    let thread_name = derive_thread_name(&elf_abs_path);
 
-    let thread_builder = PosixThreadBuilder::new(tid, thread_name, Box::new(user_ctx), credentials)
-        .process(Arc::downgrade(process))
-        .fs(Arc::new(fs));
+    let thread_builder =
+        PosixThreadBuilder::new(tid, thread_name, Box::new(user_ctx), credentials, vmar)
+            .process(Arc::downgrade(process))
+            .fs(Arc::new(fs));
     Ok(thread_builder.build())
 }

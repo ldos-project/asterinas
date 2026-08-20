@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use aster_bigtcp::wire::IpEndpoint;
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
-use super::addr::UNSPECIFIED_LOCAL_ENDPOINT;
+use super::{addr::UNSPECIFIED_LOCAL_ENDPOINT, ioctl::ipv4_ioctl};
 use crate::{
     events::IoEvents,
-    fs::{pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::{
         iface::is_broadcast_endpoint,
         socket::{
@@ -18,15 +19,17 @@ use crate::{
             options::{Error as SocketError, SocketOption, macros::sock_option_mut},
             private::SocketPrivate,
             util::{
-                MessageHeader, SendRecvFlags, SocketAddr,
+                MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
                 datagram_common::{Bound, Inner, select_remote_and_bind},
-                options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+                options::{
+                    GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                },
             },
         },
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    util::{MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, ioctl::RawIoctl, net::SockType},
 };
 
 mod bound;
@@ -37,10 +40,10 @@ pub struct DatagramSocket {
     // Lock order: `inner` first, `options` second
     inner: RwMutex<Inner<UnboundDatagram, BoundDatagram>>,
     options: RwLock<OptionSet>,
+    timeouts: SocketTimeouts,
 
-    is_nonblocking: AtomicBool,
     pollee: Pollee,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 #[derive(Clone, Debug)]
@@ -61,35 +64,40 @@ impl OptionSet {
 impl DatagramSocket {
     pub fn new(is_nonblocking: bool) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             options: RwLock::new(OptionSet::new()),
-            is_nonblocking: AtomicBool::new(is_nonblocking),
+            timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
 
     fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, SocketAddr)> {
-        let recv_bytes = self
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, SocketAddr)> {
+        let result = self
             .inner
             .read()
             .try_recv(writer, flags)
-            .map(|(recv_bytes, remote_endpoint)| (recv_bytes, remote_endpoint.into()))?;
+            .map(|(output, remote_endpoint)| (output, remote_endpoint.into()))?;
         self.pollee.invalidate();
 
-        Ok(recv_bytes)
+        Ok(result)
     }
 
     fn try_send(
         &self,
         reader: &mut dyn MultiRead,
         remote: Option<&IpEndpoint>,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         let (sent_bytes, iface_to_poll) = select_remote_and_bind(
             &self.inner,
@@ -128,11 +136,15 @@ impl Pollable for DatagramSocket {
 
 impl SocketPrivate for DatagramSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
+        self.common.is_nonblocking()
     }
 
-    fn set_nonblocking(&self, is_nonblocking: bool) {
-        self.is_nonblocking.store(is_nonblocking, Ordering::Relaxed);
+    fn protocol_ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        // Handle common IPv4/IPv6 ioctl commands.
+        // TODO: Handle IPv6 ioctls once UDP sockets support IPv6.
+        ipv4_ioctl(raw_ioctl)
+
+        // Handle ioctl commands that require UDP-specific handling.
     }
 }
 
@@ -182,7 +194,7 @@ impl Socket for DatagramSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -221,21 +233,23 @@ impl Socket for DatagramSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (received_bytes, peer_addr) =
-            self.block_on(IoEvents::IN, || self.try_recv(writer, flags))?;
+        let (output, peer_addr) =
+            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+                self.try_recv(writer, flags)
+            })?;
 
         // TODO: Receive control message
 
         let message_header = MessageHeader::new(Some(peer_addr), Vec::new());
 
-        Ok((received_bytes, message_header))
+        Ok((output, message_header))
     }
 
     fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
@@ -252,7 +266,10 @@ impl Socket for DatagramSocket {
         let options = self.options.read();
 
         // Deal with socket-level options
-        match options.socket.get_option(option, &*inner) {
+        match options
+            .socket
+            .get_option(option, &(&*inner, &self.timeouts))
+        {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res,
         }
@@ -266,7 +283,10 @@ impl Socket for DatagramSocket {
         let mut options = self.options.write();
 
         // Deal with socket-level options
-        let need_iface_poll = match options.socket.set_option(option, &*inner) {
+        let need_iface_poll = match options
+            .socket
+            .set_option(option, &(&*inner, &self.timeouts))
+        {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
                 options.ip.set_option(option, &*inner)?
@@ -292,24 +312,36 @@ impl Socket for DatagramSocket {
         Ok(())
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }
 
-impl GetSocketLevelOption for Inner<UnboundDatagram, BoundDatagram> {
+impl GetSocketLevelOption for (&Inner<UnboundDatagram, BoundDatagram>, &SocketTimeouts) {
+    fn socket_type(&self) -> SockType {
+        SockType::SOCK_DGRAM
+    }
+
     fn is_listening(&self) -> bool {
         false
     }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.1)
+    }
 }
 
-impl SetSocketLevelOption for Inner<UnboundDatagram, BoundDatagram> {
+impl SetSocketLevelOption for (&Inner<UnboundDatagram, BoundDatagram>, &SocketTimeouts) {
     fn set_reuse_addr(&self, reuse_addr: bool) {
-        let Inner::Bound(bound) = self else {
+        let Inner::Bound(bound) = self.0 else {
             return;
         };
 
         bound.bound_port().set_can_reuse(reuse_addr);
+    }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.1)
     }
 }
 

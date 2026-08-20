@@ -8,50 +8,79 @@ use aster_bigtcp::{
 
 use crate::{
     net::{
-        iface::{BoundPort, Iface, iter_all_ifaces, loopback_iface, virtio_iface},
+        iface::{Iface, iter_all_ifaces, loopback_iface, virtio_iface},
         socket::util::check_port_privilege,
     },
     prelude::*,
 };
 
-pub(super) fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
-    let IpAddress::Ipv4(ipv4_addr) = ip_addr;
-    iter_all_ifaces()
-        .find(|iface| {
-            if let Some(iface_ipv4_addr) = iface.ipv4_addr() {
-                iface_ipv4_addr == *ipv4_addr
-            } else {
-                false
-            }
-        })
-        .map(Clone::clone)
+fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
+    match *ip_addr {
+        IpAddress::Ipv4(ipv4_addr) => iter_all_ifaces()
+            .find(|iface| {
+                iface
+                    .ipv4_cidr()
+                    .is_some_and(|cidr| cidr.address() == ipv4_addr)
+            })
+            .map(Clone::clone),
+        IpAddress::Ipv6(ipv6_addr) => iter_all_ifaces()
+            .find(|iface| {
+                iface
+                    .ipv6_cidr()
+                    .is_some_and(|cidr| cidr.address() == ipv6_addr)
+            })
+            .map(Clone::clone),
+    }
 }
 
 /// Get a suitable iface to deal with sendto/connect request if the socket is not bound to an iface.
 /// If the remote address is the same as that of some iface, we will use the iface.
 /// Otherwise, we will use a default interface.
 fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
-    let IpAddress::Ipv4(remote_ipv4_addr) = remote_ip_addr;
-    if let Some(iface) = iter_all_ifaces().find(|iface| {
-        if let Some(iface_ipv4_addr) = iface.ipv4_addr() {
-            iface_ipv4_addr == *remote_ipv4_addr
-        } else {
-            false
-        }
-    }) {
-        return iface.clone();
-    }
+    match remote_ip_addr {
+        IpAddress::Ipv4(remote_ipv4_addr) => {
+            if let Some(iface) = iter_all_ifaces().find(|iface| {
+                iface
+                    .ipv4_cidr()
+                    .is_some_and(|cidr| cidr.address() == *remote_ipv4_addr)
+            }) {
+                return iface.clone();
+            }
 
-    // FIXME: Instead of hardcoding the rules here, we should choose the
-    // default interface according to the routing table.
-    if let Some(virtio_iface) = virtio_iface() {
-        virtio_iface.clone()
-    } else {
-        loopback_iface().clone()
+            // FIXME: Instead of hardcoding the rules here, we should choose the
+            // default interface according to the routing table.
+            if let Some(virtio_iface) = virtio_iface() {
+                virtio_iface.clone()
+            } else {
+                loopback_iface().clone()
+            }
+        }
+        IpAddress::Ipv6(remote_ipv6_addr) => {
+            if let Some(iface) = iter_all_ifaces().find(|iface| {
+                iface
+                    .ipv6_cidr()
+                    .is_some_and(|cidr| cidr.address() == *remote_ipv6_addr)
+            }) {
+                return iface.clone();
+            }
+
+            // Fall back to an interface with an IPv6 address.
+            // Prefer virtio over loopback for external traffic.
+            if let Some(virtio_iface) = virtio_iface()
+                && virtio_iface.ipv6_cidr().is_some()
+            {
+                return virtio_iface.clone();
+            }
+
+            loopback_iface().clone()
+        }
     }
 }
 
-pub(super) fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundPort> {
+pub(super) fn resolve_bind_iface_and_config(
+    endpoint: &IpEndpoint,
+    can_reuse: bool,
+) -> Result<(Arc<Iface>, BindPortConfig)> {
     check_port_privilege(endpoint.port)?;
 
     let iface = match get_iface_to_bind(&endpoint.addr) {
@@ -64,9 +93,9 @@ pub(super) fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundP
         }
     };
 
-    let bind_port_config = BindPortConfig::new(endpoint.port, can_reuse);
+    let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
 
-    Ok(iface.bind(bind_port_config)?)
+    Ok((iface, bind_port_config))
 }
 
 impl From<BindError> for Error {
@@ -82,8 +111,16 @@ impl From<BindError> for Error {
     }
 }
 
-pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> IpEndpoint {
+pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> Option<IpEndpoint> {
     let iface = get_ephemeral_iface(&remote_endpoint.addr);
-    let ip_addr = iface.ipv4_addr().unwrap();
-    IpEndpoint::new(IpAddress::Ipv4(ip_addr), 0)
+    match remote_endpoint.addr {
+        IpAddress::Ipv4(_) => {
+            let ipv4_cidr = iface.ipv4_cidr()?;
+            Some(IpEndpoint::new(IpAddress::Ipv4(ipv4_cidr.address()), 0))
+        }
+        IpAddress::Ipv6(_) => {
+            let ipv6_cidr = iface.ipv6_cidr()?;
+            Some(IpEndpoint::new(IpAddress::Ipv6(ipv6_cidr.address()), 0))
+        }
+    }
 }

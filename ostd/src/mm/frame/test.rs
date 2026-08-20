@@ -84,7 +84,7 @@ mod frame {
             .unwrap();
         let dyn_frame: Frame<dyn AnyFrameMeta> = frame.into();
         assert!(!dyn_frame.dyn_meta().is_untyped());
-        let result: core::result::Result<Frame<MockFrameMeta>, _> = Frame::try_from(dyn_frame);
+        let result: Result<Frame<MockFrameMeta>, _> = Frame::try_from(dyn_frame);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().meta().value, 42);
     }
@@ -372,7 +372,7 @@ mod segment {
     }
 
     #[ktest]
-    #[should_panic]
+    #[should_panic(expected = "segment virtual address out-of-bound for splitting")]
     fn invalid_segment_split() {
         let total_frames = 2;
         let segment = FrameAllocOptions::new()
@@ -383,11 +383,23 @@ mod segment {
     }
 
     #[ktest]
+    #[should_panic(expected = "segment virtual address out-of-bound for slicing")]
+    fn segment_slice_out_of_bounds() {
+        let total_frames = 3;
+        let segment = FrameAllocOptions::new()
+            .alloc_segment(total_frames)
+            .expect("Failed to allocate segment");
+        let huge_page_aligned_offset = usize::MAX - (PAGE_SIZE - 1);
+        // Huge out-of-bounds offsets should panic
+        segment.slice(&(huge_page_aligned_offset..huge_page_aligned_offset));
+    }
+
+    #[ktest]
     fn segment_to_usegment() {
         let options = FrameAllocOptions::new();
         let segment = options.alloc_segment(1).unwrap();
         let dyn_segment: Segment<dyn AnyFrameMeta> = segment.clone().into();
-        let result: core::result::Result<USegment, Segment<_>> = USegment::try_from(dyn_segment);
+        let result: Result<USegment, Segment<_>> = USegment::try_from(dyn_segment);
         assert!(result.is_ok());
         let usegment = result.unwrap();
         assert_eq!(usegment.size(), PAGE_SIZE);
@@ -401,8 +413,7 @@ mod segment {
             .alloc_segment_with(1, |_| MockFrameMeta { value: 42 })
             .unwrap();
         let dyn_segment: Segment<dyn AnyFrameMeta> = segment.into();
-        let result: core::result::Result<Segment<MockFrameMeta>, Segment<_>> =
-            Segment::try_from(dyn_segment);
+        let result: Result<Segment<MockFrameMeta>, Segment<_>> = Segment::try_from(dyn_segment);
         assert!(result.is_ok());
         let segment = result.unwrap();
         assert_eq!(segment.size(), PAGE_SIZE);

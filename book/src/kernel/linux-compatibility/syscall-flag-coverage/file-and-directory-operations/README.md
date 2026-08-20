@@ -2,9 +2,9 @@
 
 <!--
 Put system calls such as
-open, openat, creat, close, read, write, readv, writev, pread64, 
-pwrite64, lseek, stat, fstat, lstat, statx, mkdir, rmdir, link, 
-unlink, rename, symlink, readlink, chmod, fchmod, chown, fchown, 
+open, openat, creat, close, read, write, readv, writev, pread64,
+pwrite64, lseek, stat, fstat, lstat, statx, mkdir, rmdir, link,
+unlink, rename, symlink, readlink, chmod, fchmod, chown, fchown,
 utime, and utimensat
 under this category.
 -->
@@ -27,9 +27,7 @@ Silently-ignored flags:
 
 Partially-supported flags:
 * `O_PATH`
-
-Unsupported flags:
-* `O_TMPFILE`
+* `O_TMPFILE` (only on file systems that support unnamed temporary files, e.g. ramfs)
 
 Supported and unsupported functionality of `openat` are the same as `open`.
 The SCML rules are omitted for brevity.
@@ -133,7 +131,6 @@ Silently-ignored flags:
 
 Silently-ignored masks:
 * `STATX_DIOALIGN`
-* `STATX_MNT_ID_UNIQUE`
 * `STATX_SUBVOL`
 * `STATX_WRITE_ATOMIC`
 * `STATX_DIO_READ_ALIGN`
@@ -165,9 +162,6 @@ Supported functionality in SCML:
 ```c
 {{#include utimensat.scml}}
 ```
-
-Unsupported flags:
-* `AT_EMPTY_PATH`
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/utimensat.2.html).

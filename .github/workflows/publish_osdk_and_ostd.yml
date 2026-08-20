@@ -8,6 +8,8 @@ on:
   #     - VERSION
   #     - ostd/**
   #     - osdk/**
+  #     - .github/workflows/publish_osdk_and_ostd.yml
+  #     - tools/github_workflows/publish_osdk_and_ostd.sh
   # push:
   #   branches:
   #     - main
@@ -18,7 +20,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    container: ldosproject/asterinas:0.17.2-ldos-20260728
+    container: ldosproject/asterinas:0.18.0-ldos-20260818
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +29,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           ./tools/github_workflows/publish_osdk_and_ostd.sh --dry-run
-      
+
       - name: Publish OSTD and OSDK
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:

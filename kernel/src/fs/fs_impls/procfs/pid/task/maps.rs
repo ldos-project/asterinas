@@ -6,9 +6,9 @@ use super::TidDirOps;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileIo, StatusFlags, mkmod},
-        procfs::template::{FileOpsByHandle, ProcFile},
-        vfs::inode::{Inode, InodeIo},
+        file::{AccessMode, PerOpenFileOps, StatusFlags, mkmod},
+        procfs::template::{ProcFile, ProcFileOpsByHandle},
+        vfs::inode::{FileOps, Inode},
     },
     prelude::*,
     process::{
@@ -16,25 +16,30 @@ use crate::{
         posix_thread::{AsPosixThread, alien_access::AlienAccessMode},
         signal::{PollHandle, Pollable},
     },
+    thread::Thread,
     vm::vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR},
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/maps` (and also `/proc/[pid]/maps`).
-pub struct MapsFileOps(TidDirOps);
+pub(super) struct MapsFileOps(TidDirOps);
 
 impl MapsFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3343>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
 }
 
-impl FileOpsByHandle for MapsFileOps {
+impl ProcFileOpsByHandle for MapsFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn open(
         &self,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
-    ) -> Result<Box<dyn FileIo>> {
+    ) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(process) = self.0.process() else {
             return_errno_with_message!(Errno::ESRCH, "the process does not exist");
         };
@@ -67,7 +72,7 @@ impl Pollable for MapsFileHandle {
     }
 }
 
-impl InodeIo for MapsFileHandle {
+impl FileOps for MapsFileHandle {
     fn read_at(
         &self,
         offset: usize,
@@ -114,7 +119,7 @@ impl InodeIo for MapsFileHandle {
     }
 }
 
-impl FileIo for MapsFileHandle {
+impl PerOpenFileOps for MapsFileHandle {
     fn check_seekable(&self) -> Result<()> {
         Ok(())
     }

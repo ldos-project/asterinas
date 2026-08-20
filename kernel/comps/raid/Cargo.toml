@@ -10,6 +10,7 @@ ostd = { workspace = true }
 aster-block = { workspace = true }
 aster-virtio = { workspace = true }
 aster-time = { workspace = true }
+io-util = { workspace = true }
 device-id = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }

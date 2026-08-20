@@ -7,18 +7,20 @@ on:
   #   paths:
   #     - .github/workflows/push_cachix_pkgs.yml
   #     - distro/**
+  #     - test/nixos/common/merge_nixos_config.sh
   # push:
   #   branches:
   #     - main
   #   paths:
   #     - .github/workflows/push_cachix_pkgs.yml
   #     - distro/**
+  #     - test/nixos/common/merge_nixos_config.sh
 
 jobs:
   push-pkgs:
     runs-on: ubuntu-4-cores-150GB-ssd
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
     timeout-minutes: 60
     steps:

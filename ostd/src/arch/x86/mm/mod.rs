@@ -2,7 +2,6 @@
 
 use core::ops::Range;
 
-use cfg_if::cfg_if;
 pub(crate) use util::{
     __atomic_cmpxchg_fallible, __atomic_load_fallible, __memcpy_fallible, __memset_fallible,
 };
@@ -16,9 +15,7 @@ use x86_64::{
 use crate::mm::{
     PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
     dma::DmaDirection,
-    page_prop::{
-        CachePolicy, PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags,
-    },
+    page_prop::{PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags},
     page_table::{PteScalar, PteTrait},
 };
 
@@ -41,9 +38,9 @@ impl PagingConstsTrait for PagingConsts {
 }
 
 bitflags::bitflags! {
+    /// Possible flags for a page table entry.
     #[repr(C)]
     #[derive(Pod)]
-    /// Possible flags for a page table entry.
     pub(crate) struct PteFlags: usize {
         /// Specifies whether the mapped frame or page table is loaded in memory.
         const PRESENT =         1 << 0;
@@ -82,7 +79,7 @@ bitflags::bitflags! {
     }
 }
 
-/// Flush any TLB entry that contains the map of the given virtual address.
+/// Flushes any TLB entry that contains the map of the given virtual address.
 ///
 /// This flush performs regardless of the global-page bit. So it can flush both global
 /// and non-global entries.
@@ -90,21 +87,21 @@ pub(crate) fn tlb_flush_addr(vaddr: Vaddr) {
     tlb::flush(VirtAddr::new(vaddr as u64));
 }
 
-/// Flush any TLB entry that intersects with the given address range.
+/// Flushes any TLB entry that intersects with the given address range.
 pub(crate) fn tlb_flush_addr_range(range: &Range<Vaddr>) {
     for vaddr in range.clone().step_by(PAGE_SIZE) {
         tlb_flush_addr(vaddr);
     }
 }
 
-/// Flush all TLB entries except for the global-page entries.
+/// Flushes all TLB entries, except for the global-page entries.
 pub(crate) fn tlb_flush_all_excluding_global() {
     tlb::flush_all();
 }
 
-/// Flush all TLB entries, including global-page entries.
+/// Flushes all TLB entries, including the global-page entries.
 pub(crate) fn tlb_flush_all_including_global() {
-    // SAFETY: updates to CR4 here only change the global-page bit, the side effect
+    // SAFETY: Updates to CR4 here only change the global-page bit. The side effect
     // is only to invalidate the TLB, which doesn't affect the memory safety.
     unsafe {
         // To invalidate all entries, including global-page
@@ -136,26 +133,13 @@ pub(crate) unsafe fn sync_dma_range<D: DmaDirection>(_range: Range<Vaddr>) {
 
 /// Activates the given root-level page table.
 ///
-/// The cache policy of the root page table node is controlled by `root_pt_cache`.
-///
 /// # Safety
 ///
 /// Changing the root-level page table is unsafe, because it's possible to violate memory safety by
 /// changing the page mapping.
-pub(crate) unsafe fn activate_page_table(root_paddr: Paddr, root_pt_cache: CachePolicy) {
+pub(crate) unsafe fn activate_page_table(root_paddr: Paddr) {
     let addr = PhysFrame::from_start_address(x86_64::PhysAddr::new(root_paddr as u64)).unwrap();
-    let flags = match root_pt_cache {
-        CachePolicy::Writeback => x86_64::registers::control::Cr3Flags::empty(),
-        CachePolicy::Writethrough => x86_64::registers::control::Cr3Flags::PAGE_LEVEL_WRITETHROUGH,
-        CachePolicy::Uncacheable => x86_64::registers::control::Cr3Flags::PAGE_LEVEL_CACHE_DISABLE,
-        // Write-combining and write-protected are not supported for root page table (CR3)
-        // as CR3 only supports WB, WT, and UC via PCD/PWT bits
-        _ => {
-            panic!(
-                "unsupported cache policy for the root page table (only WB, WT, and UC are allowed)"
-            )
-        }
-    };
+    let flags = x86_64::registers::control::Cr3Flags::empty();
 
     // SAFETY: The safety is upheld by the caller.
     unsafe { x86_64::registers::control::Cr3::write(addr, flags) };
@@ -180,12 +164,13 @@ macro_rules! parse_flags {
 }
 
 impl PageTableEntry {
-    cfg_if! {
-        if #[cfg(feature = "cvm_guest")] {
+    cfg_select! {
+        feature = "cvm_guest" => {
             const PHYS_ADDR_MASK_LVL1: usize = 0x7_ffff_ffff_f000;
             const PHYS_ADDR_MASK_LVL2: usize = 0x7_ffff_ffe0_0000;
             const PHYS_ADDR_MASK_LVL3: usize = 0x7_ffff_c000_0000;
-        } else {
+        }
+        _ => {
             const PHYS_ADDR_MASK_LVL1: usize = 0xf_ffff_ffff_f000;
             const PHYS_ADDR_MASK_LVL2: usize = 0xf_ffff_ffe0_0000;
             const PHYS_ADDR_MASK_LVL3: usize = 0xf_ffff_c000_0000;
@@ -204,8 +189,8 @@ impl PageTableEntry {
     }
 
     fn is_present(&self) -> bool {
-        // For PT child, `PRESENT` should be set; for huge page, `HUGE` should
-        // be set; for the leaf child page, `PAT`, which is the same bit as
+        // For PT children, `PRESENT` should be set; for huge pages, `HUGE`
+        // should be set; for leaf child pages, `PAT`, which is the same bit as
         // the `HUGE` bit in upper levels, should be set.
         self.0 & PteFlags::PRESENT.bits() != 0 || self.0 & PteFlags::HUGE.bits() != 0
     }
@@ -295,10 +280,10 @@ impl PageTableEntry {
 
 impl PodOnce for PageTableEntry {}
 
-/// SAFETY: The implementation is safe because:
-///  - `from_usize` and `into_usize` are not overridden;
-///  - `from_repr` and `repr` are correctly implemented;
-///  - a zeroed PTE represents an absent entry.
+// SAFETY: The implementation is safe because:
+//  - `from_usize` and `into_usize` are not overridden;
+//  - `from_repr` and `repr` are correctly implemented;
+//  - a zeroed PTE represents an absent entry.
 unsafe impl PteTrait for PageTableEntry {
     fn from_repr(repr: &PteScalar, level: PagingLevel) -> Self {
         match repr {

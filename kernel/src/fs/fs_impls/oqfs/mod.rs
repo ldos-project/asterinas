@@ -122,6 +122,8 @@ impl FileSystem for OQueueFs {
 struct OQueueFsType;
 
 impl FsType for OQueueFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "oqueue"
     }
@@ -130,7 +132,7 @@ impl FsType for OQueueFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(OQueueFs::new())
     }
 
@@ -162,8 +164,8 @@ impl Common {
         self.fs.upgrade().unwrap()
     }
 
-    fn metadata(&self) -> Metadata {
-        *self.metadata.read()
+    fn metadata(&self) -> Result<Metadata> {
+        Ok(*self.metadata.read())
     }
 
     fn ino(&self) -> u64 {
@@ -241,10 +243,13 @@ mod tests {
     };
 
     use super::*;
-    use crate::fs::file::{AccessMode, StatusFlags};
+    use crate::fs::{
+        file::{AccessMode, StatusFlags},
+        vfs::inode::FileOps,
+    };
 
     /// Reads all currently-available bytes from a nonblocking stream handle.
-    fn read_all(stream: &dyn crate::fs::file::FileIo) -> Vec<u8> {
+    fn read_all(stream: &dyn FileOps) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
             let mut buf = [0u8; 512];
@@ -471,7 +476,7 @@ mod tests {
             .unwrap()
             .lookup(strong_observe::FILE_NAME)
             .unwrap();
-        let observe_meta = observe_leaf.metadata();
+        let observe_meta = observe_leaf.metadata().unwrap();
         assert_eq!(observe_meta.uid, Uid::new_root());
         assert_eq!(observe_meta.gid, Gid::new_root());
         assert!(observe_meta.mode.is_owner_readable());
@@ -487,7 +492,7 @@ mod tests {
             .unwrap()
             .lookup(produce::FILE_NAME)
             .unwrap();
-        let produce_meta = produce_leaf.metadata();
+        let produce_meta = produce_leaf.metadata().unwrap();
         assert_eq!(produce_meta.uid, Uid::new_root());
         assert_eq!(produce_meta.gid, Gid::new_root());
         assert!(produce_meta.mode.is_owner_writable());
@@ -505,7 +510,7 @@ mod tests {
                 .lookup("perm_observe")
                 .unwrap(),
         ] {
-            let meta = dir.metadata();
+            let meta = dir.metadata().unwrap();
             assert_eq!(meta.uid, Uid::new_root());
             assert_eq!(meta.gid, Gid::new_root());
             assert!(meta.mode.is_owner_readable() && meta.mode.is_owner_executable());
@@ -523,7 +528,7 @@ mod tests {
             .unwrap()
             .lookup(metadata::FILE_NAME)
             .unwrap();
-        let metadata_meta = metadata_file.metadata();
+        let metadata_meta = metadata_file.metadata().unwrap();
         assert_eq!(metadata_meta.uid, Uid::new_root());
         assert_eq!(metadata_meta.gid, Gid::new_root());
         assert!(metadata_meta.mode.is_owner_readable());

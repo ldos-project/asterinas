@@ -10,6 +10,7 @@ set -e
 #   --docker_version_file [major|minor|patch|date]   Bump the Docker image version in the DOCKER_IMAGE_VERSION file under the project root
 #   --docker_version_refs                            Update all references to the Docker image version throughout the codebase
 #   --version_file                                   Bump the project version to match the Docker image version
+#   --api_doc_hyperlinks_in_book                     Update all API doc hyperlinks in the Book to match VERSION
 #   --help, -h                                       Show this help message
 # Options:
 #   major, minor, patch, date                        The version part to increment when bumping the Docker image version
@@ -40,11 +41,10 @@ update_image_versions() {
     sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
     # Update the version of ldosproject/osdk container
     sed -i "s/ldosproject\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/osdk:${new_version}/g" $1
-    # Update the version of ldosproject/kata container
-    sed -i "s/ldosproject\/kata:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/kata:${new_version}/g" $1
     #do we also need to update nix container?
     # Update the version of ldosproject/nix container
     sed -i "s/ldosproject\/nix:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/nix:${new_version}/g" $1
+
 }
 
 # Print the help message
@@ -55,6 +55,7 @@ print_help() {
     echo "  --docker_version_file [major|minor|patch|date]   Bump the Docker image version in the DOCKER_IMAGE_VERSION file under the project root"
     echo "  --docker_version_refs                            Update all references to the Docker image version throughout the codebase"
     echo "  --version_file                                   Bump the project version to match the Docker image version"
+    echo "  --api_doc_hyperlinks_in_book                     Update all API doc hyperlinks in the Book to match VERSION"
     echo "  --help, -h                                       Show this help message"
     echo ""
     echo "The [major|minor|patch|date] options for --docker_version_file specify which part of the"
@@ -132,7 +133,6 @@ update_all_docker_version_refs() {
     # Update Docker image versions in the Book
     update_image_versions ${BOOK_DIR}/src/kernel/intel-tdx.md
     update_image_versions ${BOOK_DIR}/src/kernel/README.md
-    update_image_versions ${BOOK_DIR}/src/kernel/vm-based-containers/kata.md
     update_image_versions ${BOOK_DIR}/src/osdk/guide/intel-tdx.md
 
     # Update Docker image versions in workflows
@@ -148,6 +148,21 @@ update_all_docker_version_refs() {
             update_image_versions "$workflow"
         fi
     done
+}
+
+update_api_doc_hyperlinks_in_book() {
+    new_version=$(cat ${VERSION_PATH})
+
+    # This matches 'asterinas.github.io/api-docs/' followed by any X.Y.Z version.
+    SEARCH_PATTERN="asterinas\.github\.io/api-docs/[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+"
+    REPLACE_STR="asterinas\.github\.io/api-docs/${new_version}"
+
+    grep -rl "asterinas.github.io/api-docs/" "$BOOK_SRC_DIR" | while read -r file; do
+        # We use '|' as a delimiter for sed to avoid escaping the slashes in the URL.
+        sed -i "s|$SEARCH_PATTERN|$REPLACE_STR|g" "$file"
+    done
+
+    echo "Updated Book API doc hyperlinks to ${new_version}"
 }
 
 # Update project dependencies (Cargo.toml and Cargo.lock)
@@ -166,6 +181,7 @@ update_project_dependencies() {
     # Automatically bump Cargo.lock files
     cargo update -p aster-kernel --precise $new_version # For Cargo.lock
     cd ${OSDK_DIR} && cargo update -p cargo-osdk --precise $new_version # For osdk/Cargo.lock
+    cd ${SCTRACE_DIR} && cargo update -p sctrace --precise $new_version # For tools/sctrace/Cargo.lock
 }
 
 # Synchronize project version to Docker version (update VERSION)
@@ -202,7 +218,9 @@ BOOK_DIR=${ASTER_SRC_DIR}/book
 WORKSPACE_CARGO_TOML_PATH=${ASTER_SRC_DIR}/Cargo.toml
 OSDK_DIR=${ASTER_SRC_DIR}/osdk
 OSDK_CARGO_TOML_PATH=${OSDK_DIR}/Cargo.toml
-SCTRACE_CARGO_TOML_PATH=${ASTER_SRC_DIR}/tools/sctrace/Cargo.toml
+SCTRACE_DIR=${ASTER_SRC_DIR}/tools/sctrace
+SCTRACE_CARGO_TOML_PATH=${SCTRACE_DIR}/Cargo.toml
+BOOK_SRC_DIR=${ASTER_SRC_DIR}/book/src
 VERSION_PATH=${ASTER_SRC_DIR}/VERSION
 DOCKER_IMAGE_VERSION_PATH=${ASTER_SRC_DIR}/DOCKER_IMAGE_VERSION
 
@@ -223,7 +241,10 @@ case "$command" in
     "--version_file")
         sync_project_version
         ;;
+    "--api_doc_hyperlinks_in_book")
+        update_api_doc_hyperlinks_in_book
+        ;;
     *)
-        echo "Warning: Using --docker_version_file, --docker_version_refs, or --version_file instead."
+        echo "Warning: Using --docker_version_file, --docker_version_refs, --version_file, or --api_doc_hyperlinks_in_book instead."
         ;;
 esac

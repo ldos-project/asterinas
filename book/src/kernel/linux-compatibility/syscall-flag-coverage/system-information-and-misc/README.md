@@ -18,7 +18,6 @@ Supported functionality in SCML:
 
 Unsupported codes:
 * `ARCH_GET_CPUID` and `ARCH_SET_CPUID`
-* `ARCH_GET_GS` and `ARCH_SET_GS`
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/arch_prctl.2.html).
@@ -68,6 +67,25 @@ Unsupported `op` flags:
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/reboot.2.html).
+
+### `sysinfo`
+
+Supported functionality in SCML:
+
+```c
+{{#include sysinfo.scml}}
+```
+
+Supported returned fields:
+* `uptime`, rounded up to seconds when it has a fractional part
+* `loads`, containing the 1-, 5-, and 15-minute load averages as fixed-point values scaled by `1 << SI_LOAD_SHIFT`
+* `totalram`, `freeram`, `procs`, and `mem_unit`
+
+The `sharedram`, `bufferram`, `totalhigh`, and `freehigh` fields are reported as zero.
+The `totalswap` and `freeswap` fields are reported as zero because swap is not supported.
+
+For more information,
+see [the man page](https://man7.org/linux/man-pages/man2/sysinfo.2.html).
 
 ## POSIX clocks
 

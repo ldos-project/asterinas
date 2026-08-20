@@ -1,6 +1,6 @@
 [package]
 name = "cargo-osdk"
-version = "0.17.2"
+version = "0.18.0"
 edition = "2024"
 description = "Accelerate OS development with Asterinas OSDK"
 license = "MPL-2.0"
@@ -15,7 +15,7 @@ collapsible_if = "allow"
 unnecessary_unwrap = "allow"
 
 [dependencies]
-linux-bzimage-builder = { version = "0.17.2", path = "../ostd/libs/linux-bzimage/builder" }
+linux-bzimage-builder = { path = "../ostd/libs/linux-bzimage/builder", version = "0.18.0" }
 clap = { version = "4.4.17", features = ["cargo", "derive"] }
 chrono = "0.4.38"
 env_logger = "0.11.0"

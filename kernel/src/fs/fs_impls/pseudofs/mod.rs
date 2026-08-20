@@ -39,11 +39,11 @@ use spin::Once;
 
 use crate::{
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         utils::NAME_MAX,
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
-            inode::{Extension, Inode, InodeIo, Metadata},
+            inode::{Extension, FileOps, Inode, Metadata},
         },
     },
     prelude::*,
@@ -154,6 +154,12 @@ pub(super) fn init() {
     crate::fs::vfs::registry::register(&SockFsType).unwrap();
     // Note: `AnonInodeFs` does not need to be registered in the FS registry.
     // Reference: <https://elixir.bootlin.com/linux/v6.16.5/A/ident/anon_inode_fs_type>
+
+    anon_inodefs::init();
+    nsfs::init();
+    pidfdfs::init();
+    pipefs::init();
+    sockfs::init();
 }
 
 /// Root Inode ID.
@@ -218,6 +224,7 @@ impl PseudoInode {
             gid,
             container_dev_id: dev_id,
             self_dev_id: None,
+            birth_at: None,
         };
 
         PseudoInode {
@@ -229,7 +236,7 @@ impl PseudoInode {
     }
 }
 
-impl InodeIo for PseudoInode {
+impl FileOps for PseudoInode {
     fn read_at(
         &self,
         _offset: usize,
@@ -264,8 +271,8 @@ impl Inode for PseudoInode {
         return_errno_with_message!(Errno::EINVAL, "pseudo inodes can not be resized");
     }
 
-    fn metadata(&self) -> Metadata {
-        *self.metadata.lock()
+    fn metadata(&self) -> Result<Metadata> {
+        Ok(*self.metadata.lock())
     }
 
     fn extension(&self) -> &Extension {
@@ -348,7 +355,7 @@ impl Inode for PseudoInode {
         &self,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(Err(Error::with_message(
             Errno::ENXIO,
             "the pseudo inode is not re-openable",

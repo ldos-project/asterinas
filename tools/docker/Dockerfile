@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /tmp
 
 RUN wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.2.10.tar.xz && \
-    echo "57c562c3cd2753f232549cab05c8ad770ed848ae86401619c7581bdffaeea4fe  linux-6.2.10.tar.xz" | sha256sum -c - 
+    echo "57c562c3cd2753f232549cab05c8ad770ed848ae86401619c7581bdffaeea4fe  linux-6.2.10.tar.xz" | sha256sum -c -
 
 RUN tar xf linux-6.2.10.tar.xz
 
@@ -84,7 +84,7 @@ RUN set -eux; \
 
 # Build the gvisor syscall test binaries
 WORKDIR /root
-RUN git clone -b release-20251215.0 --single-branch --depth 1 https://github.com/google/gvisor.git
+RUN git clone -b release-20260622.0 --single-branch --depth 1 https://github.com/google/gvisor.git
 WORKDIR /root/gvisor
 RUN bazel build --test_tag_filters=native //test/syscalls/... && \
     mkdir -p /root/syscall_test_bins && \
@@ -118,6 +118,7 @@ RUN apt update && apt-get install -y --no-install-recommends \
     strace \
     sudo \
     unzip \
+    virtiofsd \
     vim \
     zip
 # Clean apt cache
@@ -128,7 +129,7 @@ RUN ln -s /root/asterinas/tools/sctrace.sh /usr/local/bin/sctrace
 
 # Set the `ASTER_SCML` env var to make sctrace easier to use for Asterinas developers.
 # For more information, check out the README of sctrace.
-RUN echo 'export ASTER_SCML=$(find /root/asterinas/book/src/kernel/linux-compatibility/ -name "*.scml")' >> /root/.bashrc
+RUN echo 'export ASTER_SCML=$(find /root/asterinas/book/src/kernel/linux-compatibility/ -name "*.scml" 2>/dev/null)' >> /root/.bashrc
 
 # Copy the gvisor syscall test binaries
 COPY --from=build-gvisor /root/syscall_test_bins /root/syscall_test_bins

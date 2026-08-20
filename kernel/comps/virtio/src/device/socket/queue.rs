@@ -83,9 +83,7 @@ impl TxQueue {
             self.inflight[token as usize] = Some(packet);
         }
 
-        if self.queue.should_notify() {
-            self.queue.notify();
-        }
+        self.notify_if_needed();
     }
 
     /// Tries to submit `packet` to the inflight queue immediately, or returns a guard for
@@ -103,11 +101,15 @@ impl TxQueue {
         debug_assert!(self.inflight[token as usize].is_none());
         self.inflight[token as usize] = Some(packet);
 
+        self.notify_if_needed();
+
+        Ok(())
+    }
+
+    fn notify_if_needed(&mut self) {
         if self.queue.should_notify() {
             self.queue.notify();
         }
-
-        Ok(())
     }
 }
 
@@ -164,10 +166,6 @@ impl RxQueue {
             assert_eq!(buffers.put(buffer) as u16, index);
         }
 
-        if queue.should_notify() {
-            queue.notify();
-        }
-
         Ok(Self {
             queue,
             buffers,
@@ -201,11 +199,15 @@ impl RxQueue {
         debug_assert_eq!(new_token, token);
         self.buffers.put_at(new_token as usize, new_packet);
 
+        self.notify_if_needed();
+
+        Some(packet)
+    }
+
+    pub(super) fn notify_if_needed(&mut self) {
         if self.queue.should_notify() {
             self.queue.notify();
         }
-
-        Some(packet)
     }
 }
 
@@ -225,10 +227,6 @@ impl EventQueue {
         let buffer = DmaStream::alloc_uninit(1, false).context(ResourceAllocSnafu)?;
         let token = queue.add_output_bufs(&[&buffer]).unwrap();
         debug_assert_eq!(token, 0);
-
-        if queue.should_notify() {
-            queue.notify();
-        }
 
         Ok(Self { queue, buffer })
     }
@@ -258,10 +256,14 @@ impl EventQueue {
         let token = self.queue.add_output_bufs(&[&self.buffer]).unwrap();
         debug_assert_eq!(token, 0);
 
+        self.notify_if_needed();
+
+        event_id
+    }
+
+    pub(super) fn notify_if_needed(&mut self) {
         if self.queue.should_notify() {
             self.queue.notify();
         }
-
-        event_id
     }
 }

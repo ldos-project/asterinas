@@ -24,7 +24,7 @@ pub type suseconds_t = i64;
 
 const NSEC_PER_USEC: i64 = 1_000;
 const USEC_PER_SEC: i64 = 1_000_000;
-const NSEC_PER_SEC: i64 = 1_000_000_000;
+pub const NSEC_PER_SEC: i64 = 1_000_000_000;
 
 pub(super) fn init() {
     system_time::init();
@@ -118,7 +118,7 @@ impl TryFrom<timeval_t> for Duration {
         if timeval.sec < 0 || timeval.usec < 0 {
             return_errno_with_message!(Errno::EINVAL, "timeval_t cannot be negative");
         }
-        if timeval.usec > USEC_PER_SEC {
+        if timeval.usec >= USEC_PER_SEC {
             // The value of microsecond cannot exceed 10^6,
             // otherwise the value for seconds should be set.
             return_errno_with_message!(Errno::EINVAL, "nsec is not normalized");
@@ -170,4 +170,12 @@ pub struct itimerval_t {
 pub struct itimerspec_t {
     pub it_interval: timespec_t,
     pub it_value: timespec_t,
+}
+
+/// This struct is corresponding to the `timezone` struct in Linux.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct timezone_t {
+    pub tz_minuteswest: i32,
+    pub tz_dsttime: i32,
 }

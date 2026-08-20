@@ -1,0 +1,1216 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Lower-level virtual memory object machinery used by the page cache.
+//!
+//! This submodule defines [`Vmo`] and [`VmoOptions`], the generic memory-object
+//! layer underneath [`crate::vm::page_cache::PageCache`]. A [`Vmo`] owns a sparse
+//! array of pages, commits them on demand, and optionally cooperates with a
+//! [`crate::vm::page_cache::PageCacheBackend`] to populate or write back pages with
+//! a backend.
+//!
+//! # When to Use This Module
+//!
+//! - Filesystem buffered I/O, invalidation, and resize should usually stay at
+//!   [`crate::vm::page_cache::PageCache`].
+//! - Memory-mapping, page-fault, and other lower-level VM paths that need
+//!   direct page-oriented access should work with [`Vmo`].
+
+use core::{
+    cmp::min,
+    ops::{Deref, Range},
+    sync::atomic::{AtomicIsize, AtomicUsize, Ordering},
+};
+
+use align_ext::AlignExt;
+use io_util::batch::IoBatch;
+use ostd::{
+    mm::{HasPaddr, io::util::HasVmReaderWriter},
+    task::disable_preempt,
+};
+use xarray::{Cursor, LockedXArray, XArray};
+
+use crate::{
+    prelude::*,
+    vm::{
+        page_cache::{CachePage, CachePageExt, PageCacheBackend, cache_page::PageState},
+        vmar::Rmap,
+    },
+};
+
+mod options;
+
+pub use options::VmoOptions;
+
+/// Page-indexed memory object used by the page cache and mapping code.
+///
+/// A `Vmo` represents a contiguous byte range backed by a sparse array of
+/// [`CachePage`]s. Pages are materialized on demand: anonymous VMOs allocate
+/// zero-filled RAM pages, while VMOs with a backend consult a
+/// [`PageCacheBackend`] to populate or write back individual pages.
+///
+/// `Vmo` is the storage engine underneath [`crate::vm::page_cache::PageCache`]. It
+/// understands page indices, per-page state transitions, and optional backend
+/// I/O, but it deliberately stays below filesystem policy. In particular, it
+/// does not define logical EOF semantics, extent mapping policy, or whole-file
+/// synchronization.
+///
+/// # Backing Modes
+///
+/// - **Anonymous VMO.** RAM-backed and zero-filled on first access. This is
+///   used for anonymous memory and in-memory page caches.
+/// - **Backend VMO.** Connected to a [`PageCacheBackend`]. Pages are loaded
+///   lazily and can later be written back.
+///
+/// # What `Vmo` Owns
+///
+/// - the page-aligned byte span returned by [`Vmo::size`];
+/// - the sparse page array and page-commit path;
+/// - per-page initialization, dirtying, and writeback coordination; and
+/// - writable-mapping tracking for callers that opt into it.
+///
+/// # What Stays Outside `Vmo`
+///
+/// Filesystems and higher layers still own:
+///
+/// - logical file size and inode metadata;
+/// - extent or block mapping decisions embodied by the backend; and
+/// - the higher-level locking that excludes conflicting buffered I/O,
+///   invalidation, truncate, or page-fault operations.
+///
+/// # Size Synchronization
+///
+/// A file that uses [`crate::vm::page_cache::PageCache`] has two related sizes:
+///
+/// - the logical file size stored in filesystem metadata; and
+/// - the page-aligned accessible range returned by [`Vmo::size`].
+///
+/// The logical file size defines EOF for filesystem operations. [`Vmo::size`]
+/// defines how far lower-level VMO operations such as reads, page commits, and
+/// page faults may access, and it may be larger because it is rounded up to
+/// whole pages.
+///
+/// These two sizes must be updated while holding the same higher-level
+/// inode- or file-level lock that serializes resize against buffered I/O, page
+/// faults, and invalidation. The filesystem-facing resize API,
+/// [`crate::vm::page_cache::PageCache::resize`], documents the required ordering
+/// between logical file size updates and [`Vmo::size`] changes.
+///
+/// # Backend Page Lifecycle
+///
+/// For pages with a backend, the state machine is:
+///
+/// - `Uninit -> UpToDate`: the page is populated from the backend, or a hole is
+///   materialized as zeros.
+/// - `Uninit -> Dirty`: a full-page overwrite commits and keeps the page
+///   locked until the writer has copied its new contents.
+/// - `UpToDate -> Dirty`: buffered writes modify the page under the page lock,
+///   or the page is mapped writably to userspace.
+/// - `Dirty -> UpToDate`: the VMO writeback path hands the page to the backend.
+/// - `UpToDate -> Evicted`: the page is evicted and the page lock is held until
+///   the page is removed from the VMO.
+///
+/// The auxiliary `is_writing_back` bit is set under the page lock, then cleared
+/// later by the BIO completion callback after the writeback state has been
+/// handed off. Anonymous VMOs stay `UpToDate` in steady state once a page is
+/// committed.
+pub struct Vmo {
+    /// The backend that provides disk I/O operations, if any.
+    //
+    // TODO: Using `Weak` here is to avoid circular references in exfat file systems.
+    // We should avoid the circular reference by design, and then we can change this to `Arc`.
+    pub(super) backend: Option<Weak<dyn PageCacheBackend>>,
+    /// Flags
+    pub(super) flags: VmoFlags,
+    /// The virtual pages where the VMO resides.
+    pub(super) pages: XArray<CachePage>,
+    /// The size of the VMO.
+    ///
+    /// This is the page-aligned VMO size, which may differ from the
+    /// filesystem's logical file size. Updates must happen after locking the
+    /// [`XArray`] in `pages`, so a size read after taking that lock observes
+    /// the latest resize performed under the required higher-level file-size
+    /// synchronization.
+    pub(super) size: AtomicUsize,
+    /// The status of writable mappings of the VMO.
+    //
+    // TODO: This field is used only by VMOs belonging to memfd (i.e., `MemfdInode`). But VMOs do
+    // not have the knowledge to determine if they belong to memfd. We may want to enhance
+    // `VmoOptions` to make VMOs aware of whether its writable mappings should be tracked.
+    pub(super) writable_mapping_status: WritableMappingStatus,
+    /// Reserve mappings.
+    pub(super) rmap: Mutex<Rmap>,
+}
+
+impl Debug for Vmo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Vmo")
+            .field("has_backend", &self.backend.is_some())
+            .field("flags", &self.flags)
+            .field("size", &self.size)
+            .field("writable_mapping_status", &self.writable_mapping_status)
+            .finish_non_exhaustive()
+    }
+}
+
+bitflags! {
+    /// VMO flags.
+    pub struct VmoFlags: u32 {
+        /// Set this flag if a VMO is resizable.
+        const RESIZABLE  = 1 << 0;
+        /// Set this flags if a VMO is backed by physically contiguous memory
+        /// pages.
+        ///
+        /// To ensure the memory pages to be contiguous, these pages
+        /// are allocated upon the creation of the VMO, rather than on demands.
+        const CONTIGUOUS = 1 << 1;
+        /// Set this flag if a VMO is backed by memory pages that supports
+        /// Direct Memory Access (DMA) by devices.
+        const DMA        = 1 << 2;
+    }
+}
+
+/// The error type used for commit operations of [`Vmo`].
+#[derive(Debug)]
+pub enum VmoCommitError {
+    /// A general error occurred during the commit operation.
+    Err(Error),
+    /// The commit operation requires backend I/O for the page at `index`.
+    NeedIo { index: usize },
+    /// The page exists but is not yet initialized.
+    ///
+    /// The caller should wait for initialization of `page` at `index` to
+    /// complete.
+    WaitUntilInit { index: usize, page: CachePage },
+}
+
+impl VmoCommitError {
+    /// Returns the page index whose commit is pending on I/O or initialization.
+    pub fn pending_index(self) -> Result<usize> {
+        match self {
+            Self::NeedIo { index } | Self::WaitUntilInit { index, .. } => Ok(index),
+            Self::Err(e) => Err(e),
+        }
+    }
+}
+
+impl From<Error> for VmoCommitError {
+    fn from(e: Error) -> Self {
+        VmoCommitError::Err(e)
+    }
+}
+
+impl From<ostd::Error> for VmoCommitError {
+    fn from(e: ostd::Error) -> Self {
+        Error::from(e).into()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitMode {
+    Read,
+    Overwrite,
+}
+
+impl CommitMode {
+    fn skips_backend_read(self) -> bool {
+        matches!(self, Self::Overwrite)
+    }
+}
+
+/// A mode specified when committing a new [`Vmo`] page to the map in a page table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmoMapMode {
+    /// The page is private. It can be a snapshot.
+    Private,
+    /// The page is shared. It needs to be read.
+    SharedRead,
+    /// The page is shared. It needs to be read and written.
+    SharedWrite,
+}
+
+impl VmoMapMode {
+    /// Ensures that the page can be mapped to a page table.
+    fn ensure(self, page: CachePage) {
+        match page.state() {
+            PageState::UpToDate if self.is_write() => {
+                let locked_page = page.lock_guard();
+                if locked_page.state().is_up_to_date() {
+                    locked_page.set_dirty();
+                }
+            }
+            PageState::UpToDate | PageState::Dirty => (),
+            PageState::Evicted if !self.is_shared() => (),
+            state @ (PageState::Uninit | PageState::Evicted) => {
+                // We shouldn't reach this point if the page is not initialized. `CommitMode::Read`
+                // should have been specified earlier to either read the page from the backend
+                // storage or report an error if reading fails.
+                debug_assert_eq!(state, PageState::Evicted);
+                // The page may be evicted. It still contains valid data. However, it cannot be
+                // mapped to a page table. We acquire the page lock here so that, when the caller
+                // retries, it won't see this page anymore.
+                let _ = page.lock_guard();
+            }
+        }
+    }
+
+    /// Tries to ensure that the page can be mapped to a page table without blocking.
+    ///
+    /// On success, returns a mode that satisfies `self` but may grant the caller more permissions
+    /// when mapping `page`. See also the "Map modes" section in [`Vmo::try_commit_page`].
+    fn try_ensure(self, page_idx: usize, page: &CachePage) -> Result<Self, VmoCommitError> {
+        match page.state() {
+            PageState::UpToDate if self.is_write() => {
+                if let Some(locked_page) = page.try_lock_guard()
+                    && locked_page.state().is_up_to_date()
+                {
+                    locked_page.set_dirty();
+                    Ok(Self::SharedWrite)
+                } else {
+                    Err(VmoCommitError::NeedIo { index: page_idx })
+                }
+            }
+            PageState::UpToDate => Ok(Self::SharedRead),
+            PageState::Dirty => Ok(Self::SharedWrite),
+            PageState::Evicted if !self.is_shared() => Ok(Self::Private),
+            PageState::Uninit | PageState::Evicted => {
+                Err(VmoCommitError::NeedIo { index: page_idx })
+            }
+        }
+    }
+
+    fn is_write(self) -> bool {
+        matches!(self, Self::SharedWrite)
+    }
+
+    fn is_shared(self) -> bool {
+        matches!(self, Self::SharedRead | Self::SharedWrite)
+    }
+}
+
+impl Vmo {
+    /// Commits the page at `page_idx`, blocking on backend I/O if required.
+    ///
+    /// For anonymous VMOs the page is zero-filled on first access.
+    /// For VMOs with a backend this may perform synchronous I/O.
+    pub fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
+        let page = self.commit_on_internal(page_idx, CommitMode::Read)?;
+        map_mode.ensure(page);
+        Ok(())
+    }
+
+    fn commit_on_internal(&self, page_idx: usize, commit_mode: CommitMode) -> Result<CachePage> {
+        if let Some(backed_vmo) = self.as_backed_vmo() {
+            return backed_vmo.commit_on_internal(page_idx, commit_mode);
+        }
+
+        self.commit_on_anonymous(page_idx)
+    }
+
+    fn commit_on_anonymous(&self, page_idx: usize) -> Result<CachePage> {
+        let mut locked_pages = self.pages.lock();
+        if page_idx >= self.size().div_ceil(PAGE_SIZE) {
+            return_errno_with_message!(Errno::EINVAL, "the offset is outside the VMO");
+        }
+
+        let mut cursor = locked_pages.cursor_mut(page_idx as u64);
+        if let Some(page) = cursor.load() {
+            return Ok(page.clone());
+        }
+
+        let new_page = CachePage::alloc_zero()?;
+        cursor.store(new_page.clone());
+        Ok(new_page)
+    }
+
+    /// Tries to commit the page covering byte `offset` without blocking on I/O.
+    ///
+    /// If the commit operation needs to perform I/O, it will return a
+    /// [`VmoCommitError::NeedIo`].
+    ///
+    /// If the VMO corresponds to a page cache, callers must hold the page table
+    /// lock and insert the committed page atomically to the page table after
+    /// this method returns.
+    ///
+    /// # Map modes
+    ///
+    /// `map_mode` specifies the requested mapping mode for the page in the page
+    /// table. If successful, this method returns another [`VmoMapMode`] that
+    /// grants at least the requested mode, but may grant additional permissions
+    /// according to the page state. Callers can use this information to prevent
+    /// some future page faults.
+    ///
+    /// For example, if the page is already dirty, mapping it as writable is
+    /// permitted even if only read access is required in `map_mode`. In this
+    /// case, the requested mode (`map_mode`) is [`VmoMapMode::SharedRead`] but
+    /// the granted mode (the return value) is [`VmoMapMode::SharedWrite`].
+    pub fn try_commit_page(
+        &self,
+        offset: usize,
+        map_mode: VmoMapMode,
+    ) -> Result<(CachePage, VmoMapMode), VmoCommitError> {
+        let page_idx = offset / PAGE_SIZE;
+        if offset >= self.size() {
+            return Err(VmoCommitError::Err(Error::with_message(
+                Errno::EINVAL,
+                "the offset is outside the VMO",
+            )));
+        }
+
+        let (_, page) = {
+            let guard = disable_preempt();
+            let mut cursor = self.pages.cursor(&guard, page_idx as u64);
+            // `VmoMapMode::try_ensure` checks if the page has been initialized.
+            self.try_commit_with_cursor(&mut cursor, CommitMode::Overwrite)?
+        };
+        let mode = map_mode.try_ensure(page_idx, &page)?;
+        Ok((page, mode))
+    }
+
+    fn try_commit_with_cursor(
+        &self,
+        cursor: &mut Cursor<'_, CachePage>,
+        commit_mode: CommitMode,
+    ) -> Result<(usize, CachePage), VmoCommitError> {
+        if let Some(backed_vmo) = self.as_backed_vmo() {
+            return backed_vmo.try_commit_with_cursor(cursor, commit_mode);
+        } else if let Some(page) = cursor.load() {
+            let index = cursor.index() as usize;
+            return Ok((index, page.clone()));
+        }
+
+        // Need to commit. Only Anonymous VMOs can reach here, because VMOs
+        // with a backend will return `Err` if the page is not loaded.
+        let index = cursor.index() as usize;
+        let page = self.commit_on_anonymous(index)?;
+        Ok((index, page))
+    }
+
+    /// Traverses the indices within a specified range of a VMO sequentially.
+    ///
+    /// For each index position, you have the option to commit the page as well as
+    /// perform other operations.
+    ///
+    /// Once a commit operation needs to perform I/O, it will return a
+    /// [`VmoCommitError::NeedIo`].
+    ///
+    /// If the VMO corresponds to a page cache, callers must hold the page table
+    /// lock and insert the committed page atomically to the page table inside
+    /// the operation.
+    pub fn try_operate_on_range<F>(
+        &self,
+        range: &Range<usize>,
+        mut operate: F,
+        map_mode: VmoMapMode,
+    ) -> Result<(), VmoCommitError>
+    where
+        F: FnMut(
+            &mut dyn FnMut() -> Result<(usize, CachePage), VmoCommitError>,
+        ) -> Result<(), VmoCommitError>,
+    {
+        self.try_operate_on_range_internal(
+            range,
+            |commit_fn| {
+                let mut new_commit_fn = || {
+                    let (idx, page) = commit_fn()?;
+                    map_mode.try_ensure(idx, &page)?;
+                    Ok((idx, page))
+                };
+                operate(&mut new_commit_fn)
+            },
+            // `VmoMapMode::try_ensure` checks if the page has been initialized.
+            CommitMode::Overwrite,
+        )
+    }
+
+    fn try_operate_on_range_internal<F>(
+        &self,
+        range: &Range<usize>,
+        mut operate: F,
+        commit_mode: CommitMode,
+    ) -> Result<(), VmoCommitError>
+    where
+        F: FnMut(
+            &mut dyn FnMut() -> Result<(usize, CachePage), VmoCommitError>,
+        ) -> Result<(), VmoCommitError>,
+    {
+        if range.end > self.size() {
+            return Err(VmoCommitError::Err(Error::with_message(
+                Errno::EINVAL,
+                "the range to operate exceeds the VMO size",
+            )));
+        }
+
+        let page_idx_range = get_page_idx_range(range);
+        let guard = disable_preempt();
+        let mut cursor = self.pages.cursor(&guard, page_idx_range.start as u64);
+        for _ in page_idx_range {
+            let mut commit_fn = || self.try_commit_with_cursor(&mut cursor, commit_mode);
+            operate(&mut commit_fn)?;
+            cursor.next();
+        }
+        Ok(())
+    }
+
+    /// Returns the current page-aligned size of the VMO in bytes.
+    ///
+    /// Higher layers may keep a smaller logical EOF alongside this capacity.
+    pub fn size(&self) -> usize {
+        self.size.load(Ordering::Acquire)
+    }
+
+    /// Returns the status of writable mappings of the VMO.
+    pub fn writable_mapping_status(&self) -> &WritableMappingStatus {
+        // Currently, only VMOs used by `MemfdInode` (anonymous) track writable mapping status.
+        // VMOs with a backend do not use this field.
+        debug_assert!(!self.has_backend());
+        &self.writable_mapping_status
+    }
+
+    /// Returns reverse mappings of the VMO.
+    ///
+    /// Holding either this lock or the VMAR lock ensures the stability of the
+    /// associated VM mappings. In other words, when adding, removing, or
+    /// moving a VM mapping, both this lock and the VMAR lock must be held.
+    ///
+    /// To avoid deadlocks, acquire this lock after the VMAR lock in cases both
+    /// locks need to be acquired.
+    pub fn rmap(&self) -> &Mutex<Rmap> {
+        &self.rmap
+    }
+
+    /// Decommits anonymous pages in the specified byte range.
+    pub(super) fn decommit_anon_pages(
+        &self,
+        mut locked_rmap: MutexGuard<Rmap>,
+        mut locked_pages: LockedXArray<CachePage>,
+        range: Range<usize>,
+    ) -> Result<()> {
+        debug_assert!(!self.has_backend());
+
+        let page_idx_range = get_page_idx_range(&range);
+        let mut cursor = locked_pages.cursor_mut(page_idx_range.start as u64);
+
+        // We remove pages before unmapping them in the page table. So a concurrent page fault will
+        // synchronize via the page table lock. Either the mapped item will be unmapped below or the
+        // page fault handler will commit the page and be blocked on the reverse-mapping lock.
+        loop {
+            cursor.remove();
+            let page_idx = cursor.next_present();
+            if page_idx.is_none_or(|idx| idx >= page_idx_range.end as u64) {
+                break;
+            }
+        }
+
+        drop(locked_pages);
+
+        locked_rmap.unmap(page_idx_range.start * PAGE_SIZE..page_idx_range.end * PAGE_SIZE);
+
+        Ok(())
+    }
+
+    /// Converts this VMO to a backend VMO wrapper if it has a backend.
+    ///
+    /// Returns `None` if this is an anonymous VMO.
+    pub(super) fn as_backed_vmo(&self) -> Option<BackedVmo<'_>> {
+        self.backend.as_ref().and_then(|weak_backend| {
+            weak_backend
+                .upgrade()
+                .map(|backend| BackedVmo { vmo: self, backend })
+        })
+    }
+
+    /// Returns whether this VMO has a backend.
+    fn has_backend(&self) -> bool {
+        self.backend.is_some()
+    }
+}
+
+// Implement the read/write methods for `Vmo`.
+impl Vmo {
+    /// Maximum number of pages collected per batch from the `XArray`.
+    const PAGE_BATCH_CAPACITY: usize = 32;
+
+    /// Reads data from the VMO at `offset` into `writer`.
+    pub fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<()> {
+        let read_len = writer.avail().min(self.size().saturating_sub(offset));
+        if read_len == 0 {
+            return Ok(());
+        }
+        let read_end = offset + read_len;
+
+        let range = offset..read_end;
+        let page_idx_range = get_page_idx_range(&range);
+        let mut current_idx = page_idx_range.start;
+        let mut page_offset = offset % PAGE_SIZE;
+        let mut page_batch =
+            Vec::with_capacity(min(page_idx_range.len(), Self::PAGE_BATCH_CAPACITY));
+
+        while current_idx < page_idx_range.end {
+            self.collect_pages(
+                current_idx,
+                page_idx_range.end,
+                CommitMode::Read,
+                &mut page_batch,
+            )?;
+
+            for (_, page) in page_batch.iter() {
+                page.reader().skip(page_offset).read_fallible(writer)?;
+                page_offset = 0;
+            }
+
+            // `current_idx < page_idx_range.end` guarantees at least one page is successfully
+            // collected here.
+            current_idx = page_batch.last().unwrap().0 + 1;
+        }
+
+        Ok(())
+    }
+
+    /// Writes data from `reader` into the VMO at `offset`.
+    pub fn write(&self, offset: usize, reader: &mut VmReader) -> Result<()> {
+        let write_len = reader.remain().min(self.size().saturating_sub(offset));
+        if write_len == 0 {
+            return Ok(());
+        }
+        let write_end = offset + write_len;
+
+        let write_range = offset..write_end;
+        let mut page_offset = offset % PAGE_SIZE;
+        let mut page_batch = Vec::with_capacity(min(
+            write_range.len().div_ceil(PAGE_SIZE),
+            Self::PAGE_BATCH_CAPACITY,
+        ));
+
+        if !self.has_backend() {
+            return self.write_anonymous_pages(
+                &write_range,
+                &mut page_offset,
+                reader,
+                &mut page_batch,
+            );
+        }
+
+        // VMOs with a backend require dirty tracking and may skip backend reads
+        // for page-aligned ranges that will be entirely overwritten.
+        if write_range.len() < PAGE_SIZE {
+            return self.write_pages_with_backend(
+                &write_range,
+                &mut page_offset,
+                reader,
+                CommitMode::Read,
+                &mut page_batch,
+            );
+        }
+
+        // Split into head (unaligned), middle (aligned), and tail (unaligned).
+        let up_align_start = write_range.start.align_up(PAGE_SIZE);
+        let down_align_end = write_range.end.align_down(PAGE_SIZE);
+
+        if write_range.start != up_align_start {
+            let head = write_range.start..up_align_start;
+            self.write_pages_with_backend(
+                &head,
+                &mut page_offset,
+                reader,
+                CommitMode::Read,
+                &mut page_batch,
+            )?;
+        }
+        if up_align_start != down_align_end {
+            let mid = up_align_start..down_align_end;
+            self.write_pages_with_backend(
+                &mid,
+                &mut page_offset,
+                reader,
+                CommitMode::Overwrite,
+                &mut page_batch,
+            )?;
+        }
+        if down_align_end != write_range.end {
+            let tail = down_align_end..write_range.end;
+            self.write_pages_with_backend(
+                &tail,
+                &mut page_offset,
+                reader,
+                CommitMode::Read,
+                &mut page_batch,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Fills the specified range with zeros.
+    pub(super) fn fill_zeros(&self, range: Range<usize>) -> Result<()> {
+        if range.is_empty() {
+            return Ok(());
+        }
+        if range.end > self.size() {
+            return_errno_with_message!(Errno::EINVAL, "the range to fill exceeds the VMO size");
+        }
+
+        static ZERO_PAGE: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+        let mut current_offset = range.start;
+        while current_offset < range.end {
+            let page_remaining = PAGE_SIZE - current_offset % PAGE_SIZE;
+            let write_len = (range.end - current_offset).min(page_remaining);
+            let mut reader = VmReader::from(&ZERO_PAGE[..write_len]).to_fallible();
+
+            self.write(current_offset, &mut reader)?;
+            current_offset += write_len;
+        }
+
+        Ok(())
+    }
+
+    /// Writes data to pages without dirty tracking.
+    ///
+    /// Used for anonymous VMO writes where pages are always in the `UpToDate`
+    /// state.
+    fn write_anonymous_pages(
+        &self,
+        range: &Range<usize>,
+        page_offset: &mut usize,
+        reader: &mut VmReader,
+        page_batch: &mut Vec<(usize, CachePage)>,
+    ) -> Result<()> {
+        let page_idx_range = get_page_idx_range(range);
+        let mut current_idx = page_idx_range.start;
+
+        while current_idx < page_idx_range.end {
+            self.collect_pages(
+                current_idx,
+                page_idx_range.end,
+                CommitMode::Read,
+                page_batch,
+            )?;
+
+            for (_, page) in page_batch.iter() {
+                page.writer().skip(*page_offset).write_fallible(reader)?;
+                *page_offset = 0;
+            }
+
+            // `current_idx < page_idx_range.end` guarantees at least one page is successfully
+            // collected here.
+            current_idx = page_batch.last().unwrap().0 + 1;
+        }
+
+        Ok(())
+    }
+
+    /// Writes data to pages with backend dirty tracking.
+    ///
+    /// Each page is locked before writing to ensure correct state transitions
+    /// and marked dirty for later writeback.
+    fn write_pages_with_backend(
+        &self,
+        range: &Range<usize>,
+        page_offset: &mut usize,
+        reader: &mut VmReader,
+        commit_mode: CommitMode,
+        page_batch: &mut Vec<(usize, CachePage)>,
+    ) -> Result<()> {
+        let page_idx_range = get_page_idx_range(range);
+        let mut current_idx = page_idx_range.start;
+
+        while current_idx < page_idx_range.end {
+            self.collect_pages(current_idx, page_idx_range.end, commit_mode, page_batch)?;
+
+            // `current_idx < page_idx_range.end` guarantees at least one page is successfully
+            // collected here.
+            let mut next_idx = page_batch.last().unwrap().0 + 1;
+
+            for (idx, page) in page_batch.drain(..) {
+                let locked_page = page.lock();
+
+                let state = locked_page.state();
+                if state.is_evicted() {
+                    // Retry. We will not see this page again because we've acquired the page lock.
+                    next_idx = idx;
+                    continue;
+                }
+
+                let written_size = match locked_page
+                    .writer()
+                    .skip(*page_offset)
+                    .write_fallible(reader)
+                {
+                    Ok(written_size) => written_size,
+                    Err((err, written_size)) => {
+                        // If the page is not initialized, keep it as it is on a partial write.
+                        if written_size > 0 && state.is_up_to_date() {
+                            locked_page.set_dirty();
+                        }
+                        return Err(Error::from(err));
+                    }
+                };
+
+                if written_size > 0 {
+                    locked_page.set_dirty();
+                }
+
+                *page_offset = 0;
+            }
+
+            current_idx = next_idx;
+        }
+
+        Ok(())
+    }
+
+    /// Collects a batch of committed pages from `start_idx` to `end_idx`.
+    ///
+    /// Returns up to a small batch of consecutive committed pages. The
+    /// caller receives only successfully committed pages and never needs to
+    /// deal with [`VmoCommitError`] directly.
+    ///
+    /// This helper keeps the returned pages alive, but it does not pin them in
+    /// the `XArray`. Callers must still serialize against `evict_range()` /
+    /// `invalidate_range()` with a higher-level invalidation lock before they
+    /// take per-page locks, otherwise buffered writes may dirty a page that has
+    /// already been detached from the page cache.
+    fn collect_pages(
+        &self,
+        start_idx: usize,
+        end_idx: usize,
+        commit_mode: CommitMode,
+        pages: &mut Vec<(usize, CachePage)>,
+    ) -> Result<()> {
+        let end_idx = end_idx.min(start_idx + pages.capacity());
+        pages.clear();
+        let range = (start_idx * PAGE_SIZE)..(end_idx * PAGE_SIZE);
+        let mut current_range = range.clone();
+
+        'retry: loop {
+            let mut operate =
+                |commit_fn: &mut dyn FnMut() -> Result<(usize, CachePage), VmoCommitError>| {
+                    let (idx, page) = commit_fn()?;
+                    pages.push((idx, page));
+                    Ok(())
+                };
+            match self.try_operate_on_range_internal(&current_range, &mut operate, commit_mode) {
+                Ok(()) => break 'retry,
+                Err(err) => {
+                    let (idx, page) = self.handle_commit_error(err, commit_mode)?;
+                    pages.push((idx, page));
+                    current_range.start = (idx + 1) * PAGE_SIZE;
+                    if current_range.start >= range.end {
+                        break 'retry;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handles a commit error by performing the necessary I/O or initialization.
+    ///
+    /// Returns the page index and page that were recovered.
+    fn handle_commit_error(
+        &self,
+        err: VmoCommitError,
+        commit_mode: CommitMode,
+    ) -> Result<(usize, CachePage)> {
+        match err {
+            VmoCommitError::Err(e) => Err(e),
+            VmoCommitError::NeedIo { index } => {
+                Ok((index, self.commit_on_internal(index, commit_mode)?))
+            }
+            VmoCommitError::WaitUntilInit { index, page } => {
+                page.ensure_init(|locked_page| {
+                    self.as_backed_vmo()
+                        .unwrap()
+                        .backend
+                        .read_page(index, locked_page)
+                })?;
+                Ok((index, page))
+            }
+        }
+    }
+}
+
+/// A wrapper around a VMO with a backend that provides specialized operations.
+///
+/// This structure is created by calling [`Vmo::as_backed_vmo()`] and provides
+/// access to backend-specific functionality like reading from storage and
+/// managing dirty pages.
+pub struct BackedVmo<'a> {
+    vmo: &'a Vmo,
+    backend: Arc<dyn PageCacheBackend>,
+}
+
+enum PageSelection {
+    Flush,
+    Evict,
+}
+
+impl PageSelection {
+    fn should_collect(&self, page: &CachePage) -> bool {
+        let state = page.state();
+        match self {
+            PageSelection::Flush if state.is_dirty() => true,
+            PageSelection::Flush if state.is_uninit() => false,
+            PageSelection::Flush if let Some(locked_page) = page.try_lock_guard() => {
+                locked_page.is_writing_back()
+            }
+            // We need to wait for all the pages that are being written back to finish before
+            // returning from `flush()`. But we don't know whether this page is being writing back
+            // because `try_lock_guard()` fails. So let's be conservative and collect this page.
+            PageSelection::Flush => true,
+            PageSelection::Evict => state.is_up_to_date(),
+        }
+    }
+}
+
+impl<'a> BackedVmo<'a> {
+    /// Writes back dirty pages in the specified byte range to the backend storage.
+    pub(super) fn flush_dirty_pages(&self, range: &Range<usize>) -> Result<()> {
+        if range.start >= self.size() {
+            return Ok(());
+        }
+
+        let mut locked_rmap = self.rmap.lock();
+
+        let page_idx_range = get_page_idx_range(range);
+        let pages_to_flush = self.collect_pages_if(&page_idx_range, PageSelection::Flush);
+        if pages_to_flush.is_empty() {
+            return Ok(());
+        }
+
+        // We must lock and mark all pages as up-to-date before freezing them in the page table. A
+        // concurrent page fault caused by a write operation will synchronize via the page table
+        // lock. Either the mapped item will be freezed below or the page fault handler will see the
+        // page as up to date and be blocked on the page lock.
+        let mut locked_dirty_pages = Vec::new();
+        let mut maybe_writing_back_pages = Vec::new();
+        for (idx, page) in pages_to_flush {
+            if !page.state().is_dirty() {
+                maybe_writing_back_pages.push(page);
+                continue;
+            }
+            let locked_page = page.lock();
+            if locked_page.state().is_dirty() {
+                locked_page.set_up_to_date();
+                locked_dirty_pages.push((idx, locked_page));
+            } else if locked_page.is_writing_back() {
+                maybe_writing_back_pages.push(locked_page.unlock());
+            }
+        }
+
+        locked_rmap.freeze(page_idx_range.start * PAGE_SIZE..page_idx_range.end * PAGE_SIZE);
+
+        // As long as the pages are locked and their state is `UpToDate`, no one can write to them.
+        // Therefore, we can release the reverse-mapping lock now.
+        drop(locked_rmap);
+
+        let mut io_batch = IoBatch::with_capacity(locked_dirty_pages.len());
+        for (idx, locked_page) in locked_dirty_pages {
+            self.backend
+                .write_page_async(idx, locked_page, &mut io_batch)?;
+        }
+        io_batch.wait_all()?;
+
+        for page in maybe_writing_back_pages {
+            let locked_page = page.lock();
+            locked_page.wait_until_finish_writing_back();
+        }
+
+        Ok(())
+    }
+
+    /// Removes up-to-date (clean) pages in the specified byte range from the page cache.
+    ///
+    /// Only pages in the `UpToDate` state are removed. Dirty and uninitialized
+    /// pages are left in place.
+    pub(super) fn evict_up_to_date_pages(&self, range: &Range<usize>) -> Result<()> {
+        if range.start >= self.size() {
+            return Ok(());
+        }
+
+        let mut locked_rmap = self.rmap.lock();
+
+        let page_idx_range = get_page_idx_range(range);
+        let up_to_date_pages = self.collect_pages_if(&page_idx_range, PageSelection::Evict);
+        if up_to_date_pages.is_empty() {
+            return Ok(());
+        }
+
+        // We need to lock all pages and ensure they are up to date under the page lock. In
+        // addition, we mark pages to be removed as `Evicted` before unmapping them in the page
+        // table. A concurrent page fault will synchronize via the page table lock. Either the
+        // mapped item will be unmapped below or the page fault handler will see the page as removed
+        // and be blocked on the page lock.
+        let locked_up_to_date_pages = up_to_date_pages
+            .into_iter()
+            .filter_map(|(idx, page)| {
+                let locked_page = page.lock();
+                if !locked_page.state().is_up_to_date() {
+                    return None;
+                }
+                locked_page.set_evicted();
+                Some((idx, locked_page))
+            })
+            .collect::<Vec<_>>();
+        if locked_up_to_date_pages.is_empty() {
+            return Ok(());
+        }
+
+        locked_rmap.unmap(page_idx_range.start * PAGE_SIZE..page_idx_range.end * PAGE_SIZE);
+
+        // As long as the pages are locked and their state is `Evicted`, no one can read from them.
+        // Therefore, we can release the reverse-mapping lock now.
+        drop(locked_rmap);
+
+        for (idx, page) in locked_up_to_date_pages {
+            page.wait_until_finish_writing_back();
+            let mut locked_pages = self.pages.lock();
+            let mut cursor_mut = locked_pages.cursor_mut(idx as u64);
+            let removed_page = cursor_mut.remove();
+            // The page won't be evicted because it has already been marked as `Evicted`. It won't
+            // be decommitted either, as the caller should hold a file system lock that prevents
+            // concurrent resizing.
+            //
+            // TODO: If we allowing pages to be evicted without holding the file system lock, the
+            // old page may be decommitted and replaced by another page. In this case, we must
+            // reload and recheck the page before removing it.
+            debug_assert_eq!(removed_page.unwrap().paddr(), page.paddr());
+        }
+
+        Ok(())
+    }
+
+    /// Decommits pages with a backend in the specified byte range.
+    ///
+    /// Dirty pages in the range are discarded without being written back. If a
+    /// page is already under writeback, decommit waits for that writeback to
+    /// finish before removing the page from the `XArray`.
+    pub(super) fn decommit_pages(
+        &self,
+        mut locked_rmap: MutexGuard<Rmap>,
+        locked_pages: LockedXArray<CachePage>,
+        range: &Range<usize>,
+    ) -> Result<()> {
+        // Do not check `self.size()` here. It contains the new size, however, we want to decommit
+        // pages outside of the new range. See `PageCache::resize` for a concrete example.
+
+        // We remove pages before unmapping them in the page table. So a concurrent page fault will
+        // synchronize via the page table lock. Either the mapped item will be unmapped below or the
+        // page fault handler will see the new size after acquiring the lock in `self.pages`.
+        let page_idx_range = get_page_idx_range(range);
+        let removed_pages = self.remove_pages_in(locked_pages, &page_idx_range);
+        if removed_pages.is_empty() {
+            return Ok(());
+        }
+
+        locked_rmap.unmap(page_idx_range.start * PAGE_SIZE..page_idx_range.end * PAGE_SIZE);
+
+        drop(locked_rmap);
+
+        for (_, page) in removed_pages {
+            let locked_page = page.lock();
+            locked_page.wait_until_finish_writing_back();
+        }
+
+        Ok(())
+    }
+
+    /// Commits a page at the given index for a VMO with a backend.
+    fn commit_on_internal(&self, page_idx: usize, commit_mode: CommitMode) -> Result<CachePage> {
+        let mut locked_pages = self.pages.lock();
+        if page_idx >= self.size().div_ceil(PAGE_SIZE) {
+            return_errno_with_message!(Errno::EINVAL, "the offset is outside the VMO");
+        }
+
+        let mut cursor = locked_pages.cursor_mut(page_idx as u64);
+
+        if let Some(page) = cursor.load() {
+            let page = page.clone();
+            drop(locked_pages);
+
+            if !commit_mode.skips_backend_read() {
+                page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+                return Ok(page);
+            }
+
+            return Ok(page);
+        };
+
+        // The page is within the file bounds - need to allocate a cache page.
+        let uninit_page = CachePage::alloc_uninit()?;
+        cursor.store(uninit_page.clone());
+        drop(locked_pages);
+
+        if commit_mode.skips_backend_read() {
+            // The page will be completely overwritten, no need to read.
+            Ok(uninit_page)
+        } else {
+            // Read the page from the backend storage.
+            uninit_page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+            Ok(uninit_page)
+        }
+    }
+
+    /// Attempts to commit a page using a cursor, without blocking on I/O.
+    fn try_commit_with_cursor(
+        &self,
+        cursor: &mut Cursor<'_, CachePage>,
+        commit_mode: CommitMode,
+    ) -> Result<(usize, CachePage), VmoCommitError> {
+        let page_idx = cursor.index() as usize;
+
+        let Some(page) = cursor.load() else {
+            return Err(VmoCommitError::NeedIo { index: page_idx });
+        };
+
+        // Check if the page is initialized.
+        if !commit_mode.skips_backend_read() && page.state().is_uninit() {
+            return Err(VmoCommitError::WaitUntilInit {
+                index: page_idx,
+                page: page.clone(),
+            });
+        }
+
+        Ok((page_idx, page.clone()))
+    }
+
+    /// Collects pages in the specified page index range.
+    fn collect_pages_if(
+        &self,
+        page_idx_range: &Range<usize>,
+        cond: PageSelection,
+    ) -> Vec<(usize, CachePage)> {
+        if page_idx_range.is_empty() {
+            return Vec::new();
+        }
+
+        let mut collected_pages = Vec::new();
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = self
+            .pages
+            .cursor(&preempt_guard, page_idx_range.start as u64);
+        let mut index = page_idx_range.start;
+
+        loop {
+            if let Some(page) = cursor.load()
+                && cond.should_collect(&page)
+            {
+                collected_pages.push((index, page.clone()));
+            }
+
+            let Some(next_index) = cursor.next_present() else {
+                break;
+            };
+            index = next_index as usize;
+            if index >= page_idx_range.end {
+                break;
+            }
+        }
+
+        collected_pages
+    }
+
+    /// Removes pages in the specified page index range.
+    fn remove_pages_in(
+        &self,
+        mut locked_pages: LockedXArray<CachePage>,
+        page_idx_range: &Range<usize>,
+    ) -> Vec<(usize, CachePage)> {
+        if page_idx_range.is_empty() {
+            return Vec::new();
+        }
+
+        let mut removed_pages = Vec::new();
+
+        let mut cursor_mut = locked_pages.cursor_mut(page_idx_range.start as u64);
+        let mut index = page_idx_range.start;
+
+        loop {
+            if let Some(page) = cursor_mut.remove() {
+                removed_pages.push((index, page.clone()));
+            }
+
+            let Some(next_index) = cursor_mut.next_present() else {
+                break;
+            };
+            index = next_index as usize;
+            if index >= page_idx_range.end {
+                break;
+            }
+        }
+
+        removed_pages
+    }
+}
+
+impl Deref for BackedVmo<'_> {
+    type Target = Vmo;
+
+    fn deref(&self) -> &Self::Target {
+        self.vmo
+    }
+}
+
+/// Gets the page index range that contains the offset range of VMO.
+pub fn get_page_idx_range(vmo_offset_range: &Range<usize>) -> Range<usize> {
+    let start = vmo_offset_range.start.align_down(PAGE_SIZE);
+    let end = vmo_offset_range.end.align_up(PAGE_SIZE);
+    (start / PAGE_SIZE)..(end / PAGE_SIZE)
+}
+
+/// The status of writable mappings of a VMO, i.e., shared mappings that may
+/// include the `PROT_WRITE` permission.
+///
+/// Internally, it uses an `AtomicIsize` counter with the following rules:
+///
+/// - **Positive values**: number of active writable mappings.
+/// - **Zero**: no writable mappings, and writable mappings are still allowed.
+/// - **Negative values**: writable mappings are denied.
+#[derive(Debug, Default)]
+pub struct WritableMappingStatus(AtomicIsize);
+
+impl WritableMappingStatus {
+    /// Builds a new writable mapping.
+    ///
+    /// Fails with `EPERM` if writable mappings have been denied.
+    pub fn map(&self) -> Result<()> {
+        // Increase unless negative
+        self.0
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v >= 0).then(|| v + 1)
+            })
+            .map_err(|_| Error::with_message(Errno::EPERM, "writable mappings have been denied"))?;
+        Ok(())
+    }
+
+    /// Denies any future writable mapping.
+    ///
+    /// Fails with `EBUSY` if there are still active writable mappings.
+    pub fn deny(&self) -> Result<()> {
+        // Decrease unless positive
+        self.0
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v <= 0).then_some(-1)
+            })
+            .map_err(|_| {
+                Error::with_message(Errno::EBUSY, "there are still active writable mappings")
+            })?;
+        Ok(())
+    }
+
+    /// Increments the writable mapping counter.
+    ///
+    /// Typically used when splitting an existing mapping, or forking a process.
+    pub fn increment(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrements the writable mapping counter.
+    ///
+    /// Typically used when unmapping a region, exiting a process, or merging mappings.
+    pub fn decrement(&self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}

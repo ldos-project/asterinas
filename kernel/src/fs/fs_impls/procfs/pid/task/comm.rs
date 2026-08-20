@@ -4,38 +4,36 @@ use super::TidDirOps;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
+    process::posix_thread::AsPosixThread,
+    thread::Thread,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/comm` (and also `/proc/[pid]/comm`).
-pub struct CommFileOps(TidDirOps);
+pub(super) struct CommFileOps(TidDirOps);
 
 impl CommFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3336>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r, u+w))
     }
 }
 
-impl FileOps for CommFileOps {
+impl ProcFileOps for CommFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
-        let Some(process) = self.0.process() else {
-            return_errno_with_message!(Errno::ESRCH, "the process does not exist");
+        let Some(thread) = self.0.thread() else {
+            return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
         };
 
-        let vmar_guard = process.lock_vmar();
-        let Some(vmar) = vmar_guard.as_ref() else {
-            // According to Linux behavior, return an empty string
-            // if the process is a zombie process.
-            return Ok(0);
-        };
-
-        let executable_file_name = vmar.process_vm().executable_file().name();
-        let mut comm = executable_file_name.as_bytes().to_vec();
-        comm.truncate(TASK_COMM_LEN - 1);
+        let posix_thread = thread.as_posix_thread().unwrap();
+        let mut comm = posix_thread.thread_name().lock().as_bytes().to_vec();
         comm.push(b'\n');
 
         let mut vm_reader = VmReader::from(&comm[offset.min(comm.len())..]);
@@ -52,5 +50,3 @@ impl FileOps for CommFileOps {
         );
     }
 }
-
-const TASK_COMM_LEN: usize = 16;

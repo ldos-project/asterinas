@@ -18,8 +18,8 @@ use crate::{
     error::AccessDeniedSnafu,
     io::IoMem,
     mm::{
-        Frame, HasPaddr, MAX_USERSPACE_VADDR, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame,
-        VmReader, VmWriter,
+        Frame, MAX_USERSPACE_VADDR, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame, VmReader,
+        VmWriter,
         frame::FrameRef,
         io::Fallible,
         kspace::KERNEL_PAGE_TABLE,
@@ -46,8 +46,7 @@ pub struct VmMappingRequest {
 pub trait VmMappingPolicy: Sync + Send {
     /// Get the level of page that should be mapped in request to a fault at
     /// `req.page_aligned_addr`.
-    fn get_page_level(&self, req: &VmMappingRequest)
-    -> core::result::Result<PagingLevel, RPCError>;
+    fn get_page_level(&self, req: &VmMappingRequest) -> Result<PagingLevel, RPCError>;
 }
 
 /// Default [`VmMappingPolicy`] implementation that always maps base pages.
@@ -56,10 +55,7 @@ struct VmMappingPolicyBasePagesOnly {}
 
 #[orpc_impl]
 impl VmMappingPolicy for VmMappingPolicyBasePagesOnly {
-    fn get_page_level(
-        &self,
-        _req: &VmMappingRequest,
-    ) -> core::result::Result<PagingLevel, RPCError> {
+    fn get_page_level(&self, _req: &VmMappingRequest) -> Result<PagingLevel, RPCError> {
         Ok(1)
     }
 }
@@ -548,8 +544,9 @@ impl<'a> CursorMut<'a> {
         let end_va = self.virt_addr() + len;
         let mut num_unmapped: usize = 0;
         loop {
-            // SAFETY: It is safe to un-map memory in the userspace. And the
-            // un-mapped items are dropped after TLB flushes.
+            // SAFETY:
+            // 1. It is safe to unmap memory in the userspace.
+            // 2. We drop the unmapped items only after flushing TLB entries, which is safe.
             let Some(frag) = (unsafe { self.pt_cursor.take_next(end_va - self.virt_addr()) })
             else {
                 break; // No more mappings in the range.

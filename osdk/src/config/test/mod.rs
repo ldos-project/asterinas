@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use std::{
-    fs::{self, File},
-    path::PathBuf,
-};
+use std::fs::{self, File};
 
 use super::*;
 
@@ -37,9 +34,14 @@ fn conditional_manifest() {
             .unwrap()
             .contains(&String::from("-machine q35",))
     );
+    assert_eq!(
+        scheme.qemu.as_ref().unwrap().log_file.as_deref(),
+        Some(Path::new("qemu-serial.log"))
+    );
 
     // Iommu
-    let scheme = toml_manifest.get_scheme(Some("iommu".to_owned()));
+    let mut scheme = toml_manifest.get_scheme(Some("iommu".to_owned())).clone();
+    scheme.inherit(&toml_manifest.default_scheme);
     assert!(
         scheme
             .qemu
@@ -49,6 +51,10 @@ fn conditional_manifest() {
             .as_ref()
             .unwrap()
             .contains(&String::from("-device ioh3420,id=pcie.0,chassis=1",))
+    );
+    assert_eq!(
+        scheme.qemu.as_ref().unwrap().log_file.as_deref(),
+        Some(Path::new("qemu-serial.log"))
     );
 
     // Tdx

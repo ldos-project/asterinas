@@ -87,11 +87,22 @@ test_mount_bind_file() {
 
 echo "Start ext2 fs test......"
 test_ext2 "/ext2" "test_file.txt"
+./ext2/fallocate
+./ext2/file_io
 ./ext2/mknod
+./ext2/namei
 ./ext2/open_dir
+./ext2/open_unlink
+./ext2/permissions
+./ext2/readdir
 ./ext2/rename
 ./ext2/rmdir
+./ext2/shared_block_device
+./ext2/short_rw
+./ext2/sparse
+./ext2/symlink
 ./ext2/unix_socket
+./ext2/xattr
 echo "All ext2 fs test passed."
 
 echo "Start fdatasync test......"
@@ -102,13 +113,18 @@ echo "Start mount bind file test......"
 test_mount_bind_file
 echo "All mount bind file test passed."
 
+./getcwd/getcwd
+
 ./inotify/inotify_align
+./inotify/inotify_o_path
 ./inotify/inotify_poll
 ./inotify/inotify_unlink
 
 ./isolation/chroot
 ./isolation/pivot_root
 
+./mount/listmount
+./mount/mount_api
 ./mount/mount_move
 
 ./overlayfs/ovl_test
@@ -119,12 +135,26 @@ echo "All mount bind file test passed."
 ./procfs/getdents
 ./procfs/mountstats
 ./procfs/pid_mem
+./procfs/proc_fd_open_fifo_after_setid
+./procfs/proc_sys_kernel
 ./procfs/tid
 
+./pseudofs/fallocate
 ./pseudofs/memfd_access_err
+./pseudofs/memfd_create
 ./pseudofs/pseudo_dentry
 ./pseudofs/pseudo_dev_id
 ./pseudofs/pseudo_inode
 ./pseudofs/pseudo_mount
 
+./rename/same_inode
+
+./statx/btime
+
 ./symlink/symlink
+
+./sync/sync
+
+./tmpfile/tmpfile
+
+./utimensat/utimensat

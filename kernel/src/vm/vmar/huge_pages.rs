@@ -39,10 +39,7 @@ pub(super) struct VmMappingPolicyGreedyHugeMapping {}
 
 #[orpc_impl]
 impl VmMappingPolicy for VmMappingPolicyGreedyHugeMapping {
-    fn get_page_level(
-        &self,
-        req: &VmMappingRequest,
-    ) -> core::result::Result<PagingLevel, RPCError> {
+    fn get_page_level(&self, req: &VmMappingRequest) -> Result<PagingLevel, RPCError> {
         Ok(
             // Check if the address is aligned to a level 2 page. If it is not aligned, it cannot be
             // mapped at a level larger than 1.

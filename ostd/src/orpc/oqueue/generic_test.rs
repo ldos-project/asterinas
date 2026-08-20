@@ -3,7 +3,6 @@
 #![allow(missing_docs)]
 #![allow(unused)]
 
-use alloc::sync::Arc;
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
@@ -13,7 +12,6 @@ use orpc_macros::select;
 
 use super::*;
 use crate::{
-    prelude::Vec,
     sync::{Mutex, WaitQueue},
     task::{Task, TaskOptions},
     timer::Jiffies,

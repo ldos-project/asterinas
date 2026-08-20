@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::IFNAME_SIZE;
+use aster_bigtcp::{iface::InterfaceName, wire::EthernetAddress};
+
 use crate::{
     net::socket::netlink::message::{Attribute, CAttrHeader, ContinueRead},
     prelude::*,
@@ -84,7 +85,12 @@ enum LinkAttrClass {
 
 #[derive(Debug)]
 pub enum LinkAttr {
-    Name(CString),
+    // FIXME: Linux link-layer addresses have device-specific lengths.
+    // Using `EthernetAddress` may be inappropriate
+    // once Asterinas supports other network device types.
+    Address(EthernetAddress),
+    Broadcast(EthernetAddress),
+    Name(InterfaceName),
     Mtu(u32),
     TxqLen(u32),
     LinkMode(u8),
@@ -94,6 +100,8 @@ pub enum LinkAttr {
 impl LinkAttr {
     fn class(&self) -> LinkAttrClass {
         match self {
+            LinkAttr::Address(_) => LinkAttrClass::ADDRESS,
+            LinkAttr::Broadcast(_) => LinkAttrClass::BROADCAST,
             LinkAttr::Name(_) => LinkAttrClass::IFNAME,
             LinkAttr::Mtu(_) => LinkAttrClass::MTU,
             LinkAttr::TxqLen(_) => LinkAttrClass::TXQLEN,
@@ -110,6 +118,8 @@ impl Attribute for LinkAttr {
 
     fn payload_as_bytes(&self) -> &[u8] {
         match self {
+            LinkAttr::Address(address) => &address.0,
+            LinkAttr::Broadcast(address) => &address.0,
             LinkAttr::Name(name) => name.as_bytes_with_nul(),
             LinkAttr::Mtu(mtu) => mtu.as_bytes(),
             LinkAttr::TxqLen(txq_len) => txq_len.as_bytes(),
@@ -133,18 +143,20 @@ impl Attribute for LinkAttr {
         };
 
         let res = match (class, payload_len) {
-            (LinkAttrClass::IFNAME, 1..=IFNAME_SIZE) => {
-                let (name, namelen) =
-                    reader.read_cstring_until_end(IFNAME_SIZE.min(payload_len))?;
-                if namelen != payload_len {
-                    reader.skip_some(payload_len - namelen);
-                }
-                if name.as_bytes().len() == IFNAME_SIZE {
+            (LinkAttrClass::IFNAME, 1..=InterfaceName::MAX_BYTES_WITH_NUL) => {
+                let mut name_bytes = [0u8; InterfaceName::MAX_BYTES_WITH_NUL];
+
+                let mut writer = VmWriter::from(&mut name_bytes[..payload_len]);
+                reader.read(&mut writer)?;
+
+                if !name_bytes.contains(&0) {
                     return Ok(ContinueRead::skipped_with_error(
                         Errno::ERANGE,
                         "the link attribute is invalid",
                     ));
                 }
+
+                let name = InterfaceName::from_bytes_until_nul(&name_bytes);
                 Self::Name(name)
             }
             (LinkAttrClass::MTU, 4) => Self::Mtu(reader.read_val_opt::<u32>()?.unwrap()),

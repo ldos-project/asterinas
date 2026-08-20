@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Iv, Key, Mac};
 use crate::{
-    layers::bio::{BLOCK_SIZE, BlockId, BlockLog, Buf, BufMut, BufRef},
+    layers::bio::{BlockLog, Buf, BufMut, BufRef},
     os::{Aead, HashMap, Mutex, RwLock},
     prelude::*,
 };
@@ -891,8 +891,8 @@ impl<L: BlockLog> AppendDataBuf<L> {
             node_queue: Vec::with_capacity(node_queue_cap),
             node_queue_cap,
             entry_queue: Vec::with_capacity(entry_queue_cap),
-            start_pos,
             entry_queue_cap,
+            start_pos,
             storage,
         }
     }
@@ -973,6 +973,7 @@ impl<L: BlockLog> AppendDataBuf<L> {
         self.flush_node_queue()?;
         debug_assert!(self.node_queue.is_empty());
 
+        #[expect(clippy::drain_collect, reason = "keep `entry_queue`'s capacity")]
         let all_cached_entries: Vec<MhtNodeEntry> = self.entry_queue.drain(..).collect();
         self.start_pos += all_cached_entries.len();
         Ok(all_cached_entries)

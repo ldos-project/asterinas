@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::{const_assert, sync::RwMutexReadGuard};
+use aster_util::fixed_str::FixedCStr;
+use ostd::sync::RwMutexReadGuard;
 use spin::Once;
 
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
     process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread},
-    util::padded,
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// The UTS namespace.
@@ -24,14 +25,14 @@ impl UtsNamespace {
 
         INIT.call_once(|| {
             let uts_name = UtsName {
-                sysname: padded(UtsName::SYSNAME.as_bytes()),
+                sysname: UtsField::from_bytes_until_nul(UtsName::SYSNAME.as_bytes()),
                 // Reference: <https://elixir.bootlin.com/linux/v6.16/source/init/Kconfig#L408>.
-                nodename: padded(b"(none)"),
-                release: padded(UtsName::RELEASE.as_bytes()),
-                version: padded(UtsName::VERSION.as_bytes()),
-                machine: padded(UtsName::MACHINE.as_bytes()),
+                nodename: UtsField::from_bytes_until_nul(b"(none)"),
+                release: UtsField::from_bytes_until_nul(UtsName::RELEASE.as_bytes()),
+                version: UtsField::from_bytes_until_nul(UtsName::VERSION.as_bytes()),
+                machine: UtsField::from_bytes_until_nul(UtsName::MACHINE.as_bytes()),
                 // Reference: <https://elixir.bootlin.com/linux/v6.16/source/include/linux/uts.h#L17>.
-                domainname: padded(b"(none)"),
+                domainname: UtsField::from_bytes_until_nul(b"(none)"),
             };
 
             let owner = UserNamespace::get_init_singleton().clone();
@@ -54,7 +55,11 @@ impl UtsNamespace {
         owner: Arc<UserNamespace>,
         posix_thread: &PosixThread,
     ) -> Result<Arc<Self>> {
-        owner.check_cap(CapSet::SYS_ADMIN, posix_thread)?;
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            owner.as_ref(),
+            posix_thread,
+            CapSet::SYS_ADMIN,
+        ))?;
         Ok(Self::new(*self.uts_name.read(), owner))
     }
 
@@ -65,74 +70,56 @@ impl UtsNamespace {
 
     /// Sets a new hostname for the UTS namespace.
     ///
-    /// This method will fail with `EPERM` if the caller does not have the SYS_ADMIN capability
-    /// in the owner user namespace.
-    pub fn set_hostname(&self, addr: Vaddr, len: usize, ctx: &Context) -> Result<()> {
-        self.owner.check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
-
-        let new_host_name = copy_uts_field_from_user(addr, len as _, ctx)?;
-        debug!(
-            "set host name: {:?}",
-            CStr::from_bytes_until_nul(new_host_name.as_bytes()).unwrap()
-        );
-        self.uts_name.write().nodename = new_host_name;
+    /// This method will fail with `EPERM` if the POSIX thread does not have the
+    /// SYS_ADMIN capability in the owner user namespace.
+    pub fn set_hostname(&self, new_host_name: UtsField, posix_thread: &PosixThread) -> Result<()> {
+        self.check_set_permission(posix_thread)?;
+        self.set_hostname_field(new_host_name);
         Ok(())
     }
 
     /// Sets a new domain name for the UTS namespace.
     ///
-    /// This method will fail with `EPERM` if the caller does not have the SYS_ADMIN capability
-    /// in the owner user namespace.
-    pub fn set_domainname(&self, addr: Vaddr, len: usize, ctx: &Context) -> Result<()> {
-        self.owner.check_cap(CapSet::SYS_ADMIN, ctx.posix_thread)?;
-
-        let new_domain_name = copy_uts_field_from_user(addr, len as _, ctx)?;
-        debug!(
-            "set domain name: {:?}",
-            CStr::from_bytes_until_nul(new_domain_name.as_bytes()).unwrap()
-        );
-        self.uts_name.write().domainname = new_domain_name;
+    /// This method will fail with `EPERM` if the POSIX thread does not have the
+    /// SYS_ADMIN capability in the owner user namespace.
+    pub fn set_domainname(
+        &self,
+        new_domain_name: UtsField,
+        posix_thread: &PosixThread,
+    ) -> Result<()> {
+        self.check_set_permission(posix_thread)?;
+        self.set_domainname_field(new_domain_name);
         Ok(())
     }
+
+    fn check_set_permission(&self, posix_thread: &PosixThread) -> Result<()> {
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            self.owner.as_ref(),
+            posix_thread,
+            CapSet::SYS_ADMIN,
+        ))
+    }
+
+    fn set_hostname_field(&self, new_host_name: UtsField) {
+        debug!("set host name: {:?}", new_host_name.as_cstr());
+        self.uts_name.write().nodename = new_host_name;
+    }
+
+    fn set_domainname_field(&self, new_domain_name: UtsField) {
+        debug!("set domain name: {:?}", new_domain_name.as_cstr());
+        self.uts_name.write().domainname = new_domain_name;
+    }
 }
-
-fn copy_uts_field_from_user(addr: Vaddr, len: u32, ctx: &Context) -> Result<[u8; UTS_FIELD_LEN]> {
-    if len.cast_signed() < 0 {
-        return_errno_with_message!(Errno::EINVAL, "the buffer length cannot be negative");
-    }
-
-    let user_space = ctx.user_space();
-    let mut reader = user_space.reader(addr, len as usize)?;
-
-    // UTS fields represent C strings, which must be nul-terminated.
-    // Therefore, the user-provided buffer length cannot exceed `UTS_FIELD_LEN - 1`
-    // to ensure space for the terminating nul byte.
-    if reader.remain() > UTS_FIELD_LEN - 1 {
-        return_errno_with_message!(Errno::EINVAL, "the UTS name is too long");
-    }
-
-    let mut buffer = [0u8; UTS_FIELD_LEN];
-
-    // Partial reads are acceptable,
-    // but an error is returned if no bytes can be read successfully.
-    if let Err((err, 0)) = reader.read_fallible(&mut VmWriter::from(buffer.as_mut_slice())) {
-        return Err(err.into());
-    }
-
-    Ok(buffer)
-}
-
-const UTS_FIELD_LEN: usize = 65;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
 pub struct UtsName {
-    sysname: [u8; UTS_FIELD_LEN],
-    nodename: [u8; UTS_FIELD_LEN],
-    release: [u8; UTS_FIELD_LEN],
-    version: [u8; UTS_FIELD_LEN],
-    machine: [u8; UTS_FIELD_LEN],
-    domainname: [u8; UTS_FIELD_LEN],
+    sysname: UtsField,
+    nodename: UtsField,
+    release: UtsField,
+    version: UtsField,
+    machine: UtsField,
+    domainname: UtsField,
 }
 
 impl UtsName {
@@ -173,27 +160,35 @@ impl UtsName {
         const PREEMPT_FLAGS: &str = "";
         const VERSION: &str =
             const_format::formatcp!("#{BUILD_VERSION} {SMP_FLAGS}{PREEMPT_FLAGS}{BUILD_TIMESTAMP}");
-        const_assert!(VERSION.len() <= 64);
+        assert!(VERSION.len() <= UtsField::MAX_BYTES);
         VERSION
     };
 
     /// The machine name.
-    pub const MACHINE: &str = {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "x86_64")] {
-                "x86_64"
-            } else if #[cfg(target_arch = "riscv64")] {
-                "riscv64"
-            } else if #[cfg(target_arch = "loongarch64")] {
-                "loongarch64"
-            } else if #[cfg(target_arch = "aarch64")] {
-                "aarch64"
-            } else {
-                compile_error!("unsupported target")
-            }
-        }
+    pub const MACHINE: &str = cfg_select! {
+        target_arch = "x86_64" => "x86_64",
+        target_arch = "riscv64" => "riscv64",
+        target_arch = "loongarch64" => "loongarch64",
+        target_arch = "aarch64" => "aarch64",
+        _ => compile_error!("unsupported target"),
     };
+
+    /// Returns the hostname.
+    pub fn nodename(&self) -> &UtsField {
+        &self.nodename
+    }
+
+    /// Returns the NIS domain name.
+    pub fn domainname(&self) -> &UtsField {
+        &self.domainname
+    }
 }
+
+/// The storage byte length of a UTS field, including the trailing nul.
+const UTS_FIELD_LEN: usize = 65;
+
+/// A nul-terminated UTS field.
+pub type UtsField = FixedCStr<UTS_FIELD_LEN>;
 
 impl NsCommonOps for UtsNamespace {
     const TYPE: NsType = NsType::Uts;

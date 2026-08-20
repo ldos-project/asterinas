@@ -46,21 +46,17 @@ pub trait SignalContext {
 }
 
 /// Handles a pending signal for the current process.
-pub fn handle_pending_signal(
-    user_ctx: &mut UserContext,
-    ctx: &Context,
-    pre_syscall_ret: Option<usize>,
-) {
+pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
     // FIXME: This function may handle or suppress only one signal per trap, delaying
     // other pending unmasked signals until the next trap. Consider a looped scan.
     //
     // For details, see <https://github.com/asterinas/asterinas/pull/2984/#discussion_r3137275994>.
-    let syscall_restart = if let Some(pre_syscall_ret) = pre_syscall_ret
+    let syscall_restart = if let Some(orig_syscall_ret) = ctx.thread_local.orig_syscall_ret()
         && user_ctx.syscall_ret() == -(Errno::ERESTARTSYS as i32) as usize
     {
         // We should never return `ERESTARTSYS` to the userspace.
         user_ctx.set_syscall_ret(-(Errno::EINTR as i32) as usize);
-        Some(pre_syscall_ret)
+        Some(orig_syscall_ret)
     } else {
         None
     };
@@ -90,7 +86,7 @@ pub fn handle_pending_signal(
     };
 
     let (signal, sig_action) = if dequeued.num() != SIGKILL {
-        match ctx.posix_thread.ptrace_stop(dequeued, ctx) {
+        match ctx.posix_thread.ptrace_stop(dequeued, ctx, user_ctx) {
             PtraceStopResult::Continued(Some(dequeued)) => {
                 // Note that this `dequeued` object outputted by `ptrace_stop`
                 // might be different from the input `dequeued` object
@@ -120,7 +116,7 @@ pub fn handle_pending_signal(
                     _ => return,
                 }
             }
-            PtraceStopResult::NotTraced(dequeued) => (dequeued.unwrap(), sig_action),
+            PtraceStopResult::NotTraced(dequeued) => (dequeued.unwrap().unwrap(), sig_action),
         }
     } else {
         (dequeued.unwrap(), sig_action)
@@ -146,7 +142,7 @@ pub fn handle_pending_signal(
                 sig_dispositions.set_default(sig_num);
             }
 
-            if let Some(pre_syscall_ret) = syscall_restart
+            if let Some(orig_syscall_ret) = syscall_restart
                 && flags.contains(SigActionFlags::SA_RESTART)
             {
                 #[cfg(target_arch = "x86_64")]
@@ -156,7 +152,7 @@ pub fn handle_pending_signal(
                 #[cfg(target_arch = "loongarch64")]
                 const SYSCALL_INSTR_LEN: usize = 4; // syscall
 
-                user_ctx.set_syscall_ret(pre_syscall_ret);
+                user_ctx.set_syscall_ret(orig_syscall_ret);
                 user_ctx
                     .set_instruction_pointer(user_ctx.instruction_pointer() - SYSCALL_INSTR_LEN);
             }
@@ -179,7 +175,7 @@ pub fn handle_pending_signal(
                 // FIXME: Linux converts a signal-frame setup failure into a SIGSEGV delivery,
                 // instead of killing the process directly.
                 // This can be observed in LTP test `signal06`.
-                do_exit_group(TermStatus::Killed(SIGSEGV));
+                do_exit_group(TermStatus::Killed(SIGSEGV), ctx, user_ctx);
             }
         }
         SigAction::Dfl if ctx.process.is_init_process() => {
@@ -199,7 +195,7 @@ pub fn handle_pending_signal(
                         sig_num.sig_name()
                     );
                     // The signal terminates the current process. Therefore, we should exit here.
-                    do_exit_group(TermStatus::Killed(sig_num));
+                    do_exit_group(TermStatus::Killed(sig_num), ctx, user_ctx);
                 }
                 SigDefaultAction::Ign => {}
                 SigDefaultAction::Stop => ctx.process.stop(sig_num),
@@ -355,8 +351,8 @@ pub fn handle_user_signal(
     };
 
     let mut ucontext = ucontext_t {
-        uc_sigmask: mask_to_restore.into(),
         uc_stack,
+        uc_sigmask: mask_to_restore.into(),
         ..Default::default()
     };
 
@@ -364,12 +360,13 @@ pub fn handle_user_signal(
     ucontext.uc_mcontext.copy_user_regs_from(user_ctx);
 
     // Clone and reset the FPU context.
-    let fpu_context = ctx.thread_local.fpu().clone_context();
+    let supp = ctx.thread_local.supp_user_context();
+    let fpu_context = supp.fpu().get();
     let fpu_context_bytes = fpu_context.as_bytes();
-    ctx.thread_local.fpu().set_context(FpuContext::new());
+    supp.fpu().set(FpuContext::new());
 
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             // Align the FPU context address to the 64-byte boundary so that the
             // user program can use the XSAVE/XRSTOR instructions at that address,
             // if necessary.
@@ -386,7 +383,8 @@ pub fn handle_user_signal(
 
             const UC_FP_XSTATE: u64 = 1 << 0;
             ucontext.uc_flags = UC_FP_XSTATE;
-        } else if #[cfg(target_arch = "riscv64")] {
+        }
+        target_arch = "riscv64" => {
             // Reference:
             // <https://elixir.bootlin.com/linux/v6.17.5/source/arch/riscv/include/uapi/asm/ptrace.h#L94-L98>,
             // <https://elixir.bootlin.com/linux/v6.17.5/source/arch/riscv/include/uapi/asm/ptrace.h#L69-L77>.
@@ -399,7 +397,8 @@ pub fn handle_user_signal(
                 align_of::<ucontext_t>(),
             );
             let fpu_context_addr = (ucontext_addr as usize) + size_of::<ucontext_t>();
-        } else if #[cfg(target_arch = "loongarch64")] {
+        }
+        target_arch = "loongarch64" => {
             // FIXME: It seems that we need to allocate an `sctx_info` structure.
             // Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L848>
             let ucontext_addr = alloc_aligned_in_user_stack(
@@ -410,7 +409,8 @@ pub fn handle_user_signal(
             // TODO: Set the flags in the context structure.
             // Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L805>
             let fpu_context_addr = (ucontext_addr as usize) + size_of::<ucontext_t>();
-        } else {
+        }
+        _ => {
             compile_error!("unsupported target");
         }
     }
@@ -426,11 +426,12 @@ pub fn handle_user_signal(
     let retaddr = if flags.contains(SigActionFlags::SA_RESTORER) {
         restorer_addr
     } else {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "riscv64")] {
+        cfg_select! {
+            target_arch = "riscv64" => {
                 ctx.user_space().vmar().process_vm().vdso_base()
                     + crate::vdso::__VDSO_RT_SIGRETURN_OFFSET
-            } else {
+            }
+            _ => {
                 // Note that this should already be rejected at the `rt_sigaction` system call.
                 return_errno_with_message!(
                     Errno::EINVAL,
@@ -439,12 +440,14 @@ pub fn handle_user_signal(
             }
         }
     };
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             stack_pointer = write_u64_to_user_stack(stack_pointer, retaddr as u64)?;
-        } else if #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))] {
+        }
+        any(target_arch = "riscv64", target_arch = "loongarch64") => {
             user_ctx.set_ra(retaddr);
-        } else {
+        }
+        _ => {
             compile_error!("unsupported target");
         }
     }
@@ -464,12 +467,13 @@ pub fn handle_user_signal(
         user_ctx.set_arguments(sig_num, 0, 0);
     }
     // Perform CPU architecture-dependent logic.
-    cfg_if::cfg_if! {
-        if #[cfg(target_arch = "x86_64")] {
+    cfg_select! {
+        target_arch = "x86_64" => {
             // Clear the DF flag. This is to conform to x86-64 calling conventions.
             const X86_RFLAGS_DF: usize = 1 << 10; // Bit 10 is the DF flag.
             user_ctx.general_regs_mut().rflags &= !X86_RFLAGS_DF;
         }
+        _ => {},
     }
 
     Ok(())

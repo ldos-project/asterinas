@@ -22,9 +22,11 @@
 //!   into the `inventory` registry.
 //! - At early boot the `dispatch` module builds a lookup table from the
 //!   registry, tokenizes the kernel command line, groups recognized
-//!   occurrences and calls the corresponding setup functions. Unrecognized
-//!   tokens are forwarded to the init process as `argv` (bare tokens) or
-//!   `envp` (`key=value`).
+//!   occurrences and calls the corresponding setup functions in
+//!   command-line order (sorted by the last occurrence position of each
+//!   parameter). Early parameters are dispatched before regular ones.
+//!   Unrecognized tokens are forwarded to the init process as `argv`
+//!   (bare tokens) or `envp` (`key=value`).
 //!
 //! Relationship to components
 //! - This crate integrates with the component initialization system. The cmdline
@@ -47,6 +49,7 @@
 //! ```
 #![no_std]
 #![deny(unsafe_code)]
+#![feature(int_from_ascii)]
 
 extern crate alloc;
 
@@ -58,6 +61,7 @@ macro_rules! __log_prefix {
 }
 
 mod dispatch;
+mod early;
 pub mod parse;
 pub mod types;
 mod unimplemented;
@@ -125,7 +129,7 @@ macro_rules! define_kv_param_early {
 ///
 /// The stored value type `S::Value` must implement
 /// [`crate::parse::ParseRepeatableParamValue`]. This crate provides a default
-/// implementation for `Vec<T>` where `T: FromStr`.
+/// implementation for `Vec<T>` where `T: ParseParamValue`.
 ///
 /// # Examples
 ///

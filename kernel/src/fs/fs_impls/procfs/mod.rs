@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use template::{
-    DirOps, ListedEntry, ProcDir, ReaddirEntry, StaticDirEntry, keyed_readdir_entries,
+    ListedEntry, ProcDir, ProcDirOps, ReaddirEntry, StaticDirEntry, keyed_readdir_entries,
     listed_entries_from_table, lookup_child_from_table, sequential_readdir_entries,
     visit_readdir_entries,
 };
@@ -121,6 +121,8 @@ impl FileSystem for ProcFs {
 struct ProcFsType;
 
 impl FsType for ProcFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "proc"
     }
@@ -129,7 +131,7 @@ impl FsType for ProcFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(ProcFs::new())
     }
 
@@ -148,8 +150,7 @@ impl RootDirOps {
         ProcDir::new_root(Self, fs, PROC_ROOT_INO, sb, mkmod!(a+rx))
     }
 
-    #[expect(clippy::type_complexity)]
-    const STATIC_ENTRIES: &'static [StaticDirEntry<fn(Weak<dyn Inode>) -> Arc<dyn Inode>>] = &[
+    const STATIC_ENTRIES: &'static [StaticEntry] = &[
         ("cmdline", InodeType::File, CmdLineFileOps::new_inode),
         ("cpuinfo", InodeType::File, CpuInfoFileOps::new_inode),
         (
@@ -173,7 +174,7 @@ impl RootDirOps {
     ];
 }
 
-impl DirOps for RootDirOps {
+impl ProcDirOps for RootDirOps {
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         if let Ok(pid) = name.parse::<Pid>() {
             let pid_entry = {
@@ -273,3 +274,6 @@ impl DirOps for RootDirOps {
         pid_entry.is_none_or(|pid_entry| pid_entry.type_().is_none())
     }
 }
+
+type StaticEntry = StaticDirEntry<fn(Weak<dyn Inode>) -> Arc<dyn Inode>>;
+type StaticEntryWithOps<T> = StaticDirEntry<fn(&T, Weak<dyn Inode>) -> Arc<dyn Inode>>;

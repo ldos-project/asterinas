@@ -18,6 +18,11 @@ use crate::{
     process::{Gid, Uid},
 };
 
+pub(super) fn init() {
+    // Touch the mount node to trigger the initialization of all singletons.
+    let _ = SockFs::mount_node();
+}
+
 pub struct SockFs {
     _private: (),
 }
@@ -48,13 +53,15 @@ impl SockFs {
     pub fn mount_node() -> &'static Arc<Mount> {
         static SOCKFS_MOUNT: Once<Arc<Mount>> = Once::new();
 
-        SOCKFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()))
+        SOCKFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()).unwrap())
     }
 }
 
 pub(super) struct SockFsType;
 
 impl FsType for SockFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "sockfs"
     }
@@ -63,7 +70,7 @@ impl FsType for SockFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         return_errno_with_message!(Errno::EINVAL, "sockfs cannot be mounted");
     }
 

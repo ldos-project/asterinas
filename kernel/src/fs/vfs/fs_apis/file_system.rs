@@ -40,7 +40,7 @@ pub trait FileSystem: Any + Sync + Send {
     }
 
     /// Sets the flags of this file system.
-    fn set_fs_flags(&self, _flags: FsFlags, _data: Option<CString>, _ctx: &Context) -> Result<()> {
+    fn set_fs_flags(&self, _flags: FsFlags, _data: Option<&str>, _ctx: &Context) -> Result<()> {
         // TODO: Remove the default empty implementation in the future.
         warn!("setting file system flags is not implemented");
         Ok(())
@@ -158,7 +158,6 @@ impl From<FsFlags> for u32 {
 
 define_atomic_version_of_integer_like_type!(FsFlags, {
     /// An atomic version of `FsFlags`.
-    #[expect(dead_code)]
     #[derive(Debug)]
     pub struct AtomicFsFlags(AtomicU32);
 });

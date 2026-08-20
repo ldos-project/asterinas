@@ -1,2 +1,3 @@
 XattrTest.TrustedNamespaceWithCapSysAdmin
-XattrTest.XattrWithOPath
+XattrTest.TrustedNamespaceWithCapSysAdminInNewUserns
+XattrTest.WriteRemovesSecurityCapability

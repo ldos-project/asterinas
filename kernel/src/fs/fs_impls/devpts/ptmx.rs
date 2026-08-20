@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::time::Duration;
+
 use device_id::{DeviceId, MajorId, MinorId};
 
-use super::*;
+use super::{BLOCK_SIZE, DevPts, PTMX_INO};
 use crate::{
-    device::DevtmpfsInodeMeta,
+    device::{Device, DeviceType, DevtmpfsInodeMeta},
     fs::{
-        file::{AccessMode, FileIo, StatusFlags},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         vfs::{
-            file_system::SuperBlock,
-            inode::{Extension, InodeIo},
+            file_system::{FileSystem, SuperBlock},
+            inode::{Extension, FileOps, Inode, Metadata},
         },
     },
+    prelude::*,
+    process::{Gid, Uid},
 };
 
 /// Same major number with Linux.
@@ -35,15 +39,16 @@ struct Inner(Weak<DevPts>);
 impl Ptmx {
     pub fn new(fs: Weak<DevPts>, sb: &SuperBlock) -> Arc<Self> {
         let inner = Inner(fs.clone());
+        let metadata = Metadata::new_device(
+            PTMX_INO,
+            mkmod!(a+rw),
+            BLOCK_SIZE,
+            &inner,
+            sb.container_dev_id,
+        );
         Arc::new(Self {
-            metadata: RwLock::new(Metadata::new_device(
-                PTMX_INO,
-                mkmod!(a+rw),
-                super::BLOCK_SIZE,
-                &inner,
-                sb.container_dev_id,
-            )),
             inner,
+            metadata: RwLock::new(metadata),
             extension: Extension::new(),
         })
     }
@@ -55,7 +60,7 @@ impl Ptmx {
 
 // Many methods are left to do nothing because every time the ptmx is being opened,
 // it returns the pty master. So the ptmx can not be used at upper layer.
-impl InodeIo for Ptmx {
+impl FileOps for Ptmx {
     fn read_at(
         &self,
         _offset: usize,
@@ -84,8 +89,8 @@ impl Inode for Ptmx {
         Ok(())
     }
 
-    fn metadata(&self) -> Metadata {
-        *self.metadata.read()
+    fn metadata(&self) -> Result<Metadata> {
+        Ok(*self.metadata.read())
     }
 
     fn extension(&self) -> &Extension {
@@ -160,7 +165,7 @@ impl Inode for Ptmx {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.inner.open())
     }
 }
@@ -178,7 +183,7 @@ impl Device for Inner {
         None
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         let devpts = self.0.upgrade().unwrap();
         Ok(devpts.create_master_slave_pair()?.0)
     }

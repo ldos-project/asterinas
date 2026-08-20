@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use hashbrown::HashMap;
-use id_alloc::IdAlloc;
-use spin::Once;
+use ostd::sync::{RwMutexReadGuard, RwMutexWriteGuard};
+use sparse_id_alloc::SparseIdAlloc;
 
 use super::try_get_mnt_ns_inode;
 use crate::{
@@ -18,10 +18,40 @@ use crate::{
                 dentry::{Dentry, DentryKey},
                 mount_namespace::MountNamespace,
             },
+            registry::FsAndRoot,
         },
     },
     prelude::*,
 };
+
+/// Provides synchronized access to mount topology.
+pub(super) struct MountTopology {
+    _private: (),
+}
+
+fn global_mount_topology() -> &'static RwMutex<MountTopology> {
+    static MOUNT_TOPOLOGY: RwMutex<MountTopology> = RwMutex::new(MountTopology { _private: () });
+    &MOUNT_TOPOLOGY
+}
+
+impl MountTopology {
+    /// Acquires the write side of the mount topology lock.
+    ///
+    /// Use this for operations that may change the mount topology,
+    /// including the parent-child links, mountpoints, mount propagation state,
+    /// or namespace-visible mount trees.
+    pub(super) fn write_lock() -> RwMutexWriteGuard<'static, Self> {
+        global_mount_topology().write()
+    }
+
+    /// Acquires the read side of the mount topology lock.
+    ///
+    /// Use this for operations that need a stable view of mount topology
+    /// without changing it.
+    pub(super) fn read_lock() -> RwMutexReadGuard<'static, Self> {
+        global_mount_topology().read()
+    }
+}
 
 /// Controls how recursive mount-tree cloning handles mount-namespace files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,19 +75,64 @@ pub enum MountPropType {
     // TODO: Implement other propagation types.
 }
 
-static ID_ALLOCATOR: Once<SpinLock<IdAlloc>> = Once::new();
+/// 32-bit recyclable mount IDs.
+///
+/// IDs start at 1; 0 is never issued and denotes an invalid mount.
+/// Exhaustion returns `ENOMEM`.
+/// Reference: <https://elixir.bootlin.com/linux/v6.17/source/fs/namespace.c#L282>
+static MOUNT_ID_ALLOCATOR: SpinLock<SparseIdAlloc> =
+    SpinLock::new(SparseIdAlloc::new(1, i32::MAX as u32));
 
-/// The reserved mount ID, which represents an invalid mount.
-static RESERVED_MOUNT_ID: usize = 0;
+/// The first 64-bit unique mount ID.
+///
+/// The minimum keeps unique IDs above the recyclable ID range, ensuring
+/// the two ID spaces never overlap numerically.
+///
+/// This value is chosen to align with Linux.
+/// Reference: <https://elixir.bootlin.com/linux/v6.17/source/fs/namespace.c#L73>
+pub const MNT_UNIQUE_ID_MIN: u64 = (1 << 31) + 1;
 
-pub(super) fn init() {
-    // TODO: Make it configurable.
-    const MAX_MOUNT_NUM: usize = 10000;
+/// Monotonically increasing 64-bit unique mount IDs.
+static NEXT_FREE_UNIQUE_ID: AtomicU64 = AtomicU64::new(MNT_UNIQUE_ID_MIN);
 
-    let mut id_allocator = IdAlloc::with_capacity(MAX_MOUNT_NUM);
-    let _ = id_allocator.alloc_specific(RESERVED_MOUNT_ID).unwrap(); // Reserve mount ID 0.
+pub(super) fn init() {}
 
-    ID_ALLOCATOR.call_once(|| SpinLock::new(id_allocator));
+/// A mount's pair of identifiers.
+///
+/// Allocates from [`MOUNT_ID_ALLOCATOR`] and [`NEXT_FREE_UNIQUE_ID`] on
+/// construction; on drop, releases the recyclable ID back to the pool.
+/// The unique ID is monotonic and is not freed.
+pub(super) struct MountId {
+    recyclable_id: u32,
+    unique_id: u64,
+}
+
+impl MountId {
+    /// Allocates a new pair of mount identifiers.
+    ///
+    /// Returns `None` if the recyclable ID range is exhausted.
+    pub(super) fn alloc() -> Option<Self> {
+        let recyclable_id = MOUNT_ID_ALLOCATOR.lock().alloc()?;
+        let unique_id = NEXT_FREE_UNIQUE_ID.fetch_add(1, Ordering::Relaxed);
+        Some(Self {
+            recyclable_id,
+            unique_id,
+        })
+    }
+
+    pub(super) fn recyclable_id(&self) -> u32 {
+        self.recyclable_id
+    }
+
+    pub(super) fn unique_id(&self) -> u64 {
+        self.unique_id
+    }
+}
+
+impl Drop for MountId {
+    fn drop(&mut self) {
+        MOUNT_ID_ALLOCATOR.lock().free(self.recyclable_id);
+    }
 }
 
 bitflags! {
@@ -70,6 +145,8 @@ bitflags! {
         const NODEV          = 1 << 2;
         /// Disallow program execution.
         const NOEXEC         = 1 << 3;
+        /// Do not follow symlinks.
+        const NOSYMFOLLOW    = 1 << 8;
         /// Do not update access times.
         const NOATIME        = 1 << 10;
         /// Do not update directory access times.
@@ -164,14 +241,15 @@ define_atomic_version_of_integer_like_type!(PerMountFlags, {
 /// Each `Mount` can be viewed as a node in the mount tree, maintaining
 /// mount-related information and the structure of the mount tree.
 pub struct Mount {
-    /// Global unique identifier for the mount node.
-    id: usize,
+    /// Pair of recyclable and unique mount identifiers; the recyclable
+    /// half is returned to the pool when the `Mount` drops.
+    id: MountId,
     /// Root dentry.
     root_dentry: Arc<Dentry>,
     /// Mountpoint dentry. A mount node can be mounted on one dentry of another mount node,
     /// which makes the mount being the child of the mount node.
     mountpoint: RwLock<Option<Arc<Dentry>>>,
-    /// The associated FS.
+    /// The associated mounted filesystem.
     fs: Arc<dyn FileSystem>,
     /// The mount source (e.g., a device path like "/dev/vda" or a filesystem name like "proc").
     ///
@@ -207,17 +285,50 @@ impl Mount {
     pub(in crate::fs) fn new_root(
         fs: Arc<dyn FileSystem>,
         mnt_ns: Weak<MountNamespace>,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>> {
         let source = fs.name().to_string();
-        Self::new(fs, PerMountFlags::default(), None, mnt_ns, Some(source))
+        let root_dentry = Dentry::new_root(fs.root_inode());
+        Self::new(
+            root_dentry,
+            fs,
+            PerMountFlags::default(),
+            None,
+            mnt_ns,
+            Some(source),
+        )
     }
 
     /// Creates a pseudo mount node with an associated FS.
     ///
     /// This pseudo mount is not mounted on other mount nodes, has no parent, and does not
     /// belong to any mount namespace.
-    pub(in crate::fs) fn new_pseudo(fs: Arc<dyn FileSystem>) -> Arc<Self> {
-        Self::new(fs, PerMountFlags::KERNMOUNT, None, Weak::new(), None)
+    pub(in crate::fs) fn new_pseudo(fs: Arc<dyn FileSystem>) -> Result<Arc<Self>> {
+        let root_dentry = Dentry::new_root(fs.root_inode());
+        Self::new(
+            root_dentry,
+            fs,
+            PerMountFlags::KERNMOUNT,
+            None,
+            Weak::new(),
+            None,
+        )
+    }
+
+    /// Creates a mount node that is not attached to the mount tree.
+    //
+    // FIXME: Linux creates detached mounts in an anonymous mount namespace
+    // and moves them into the target namespace when they are attached. Asterinas
+    // currently records the caller's namespace here because `Mount::mnt_ns` is
+    // immutable. This should be changed once mount namespaces can be updated
+    // during attach.
+    pub fn new_detached(
+        fs_and_root: FsAndRoot,
+        flags: PerMountFlags,
+        mnt_ns: Weak<MountNamespace>,
+        source: Option<String>,
+    ) -> Result<Arc<Self>> {
+        let (fs, root_dentry) = fs_and_root.into_parts();
+        Self::new(root_dentry, fs, flags, None, mnt_ns, source)
     }
 
     /// The internal constructor.
@@ -229,32 +340,50 @@ impl Mount {
     /// exist without a mountpoint, ensuring uniformity and security, while all other
     /// mount nodes must be explicitly assigned a mountpoint to maintain structural integrity.
     fn new(
+        root_dentry: Arc<Dentry>,
         fs: Arc<dyn FileSystem>,
         flags: PerMountFlags,
         parent_mount: Option<Weak<Mount>>,
         mnt_ns: Weak<MountNamespace>,
         source: Option<String>,
-    ) -> Arc<Self> {
-        let id = ID_ALLOCATOR.get().unwrap().lock().alloc().unwrap();
+    ) -> Result<Arc<Self>> {
+        let id = MountId::alloc()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "mount ID space exhausted"))?;
 
-        Arc::new_cyclic(|weak_self| Self {
+        let mount = Arc::new_cyclic(|weak_self| Self {
             id,
-            root_dentry: Dentry::new_root(fs.root_inode()),
+            root_dentry,
             mountpoint: RwLock::new(None),
-            parent: RwLock::new(parent_mount),
-            children: RwLock::new(HashMap::new()),
-            propagation: RwLock::new(MountPropType::default()),
             fs,
             source,
+            parent: RwLock::new(parent_mount),
+            children: RwLock::new(HashMap::new()),
             mnt_ns,
+            propagation: RwLock::new(MountPropType::default()),
             flags: AtomicPerMountFlags::new(flags),
             this: weak_self.clone(),
-        })
+        });
+        // `upgrade` returns `None` for pseudo mounts (no namespace) and for
+        // mounts still being built by `MountNamespace::new_with_root` (the
+        // namespace is a `UniqueArc` at that point). The latter are
+        // registered by `new_with_root` after the namespace is finalized.
+        if let Some(ns) = mount.mnt_ns.upgrade() {
+            ns.register_mount(&mount);
+        }
+        Ok(mount)
     }
 
-    /// Gets the mount ID.
-    pub fn id(&self) -> usize {
-        self.id
+    /// Gets the recyclable 32-bit mount ID.
+    pub fn id(&self) -> u32 {
+        self.id.recyclable_id()
+    }
+
+    /// Gets the unique 64-bit mount ID.
+    ///
+    /// Unique IDs start at [`MNT_UNIQUE_ID_MIN`], increase monotonically,
+    /// and are never reused.
+    pub fn unique_id(&self) -> u64 {
+        self.id.unique_id()
     }
 
     /// Returns the mount source.
@@ -274,26 +403,29 @@ impl Mount {
     ///
     /// If the source is provided by user, it will be recorded in the new mount.
     ///
-    /// Return the mounted child mount.
+    /// Returns the mounted child mount.
     pub(super) fn do_mount(
         self: &Arc<Self>,
-        fs: Arc<dyn FileSystem>,
+        fs_and_root: FsAndRoot,
         flags: PerMountFlags,
         mountpoint: &Arc<Dentry>,
         source: Option<String>,
+        _topology: &mut MountTopology,
     ) -> Result<Arc<Self>> {
         if mountpoint.type_() != InodeType::Dir {
             return_errno!(Errno::ENOTDIR);
         }
 
         let key = mountpoint.key();
+        let (fs, root_dentry) = fs_and_root.into_parts();
         let child_mount = Self::new(
+            root_dentry,
             fs,
             flags,
             Some(Arc::downgrade(self)),
             self.mnt_ns.clone(),
             source,
-        );
+        )?;
         self.children.write().insert(key, child_mount.clone());
         child_mount.set_mountpoint(mountpoint);
 
@@ -303,14 +435,18 @@ impl Mount {
     /// Unmounts a child mount node from the mountpoint and returns it.
     ///
     /// The mountpoint should belong to this mount node, or an error is returned.
-    pub(super) fn do_unmount(&self, mountpoint: &Dentry) -> Result<Arc<Self>> {
+    pub(super) fn do_unmount(
+        &self,
+        mountpoint: &Dentry,
+        topology: &mut MountTopology,
+    ) -> Result<Arc<Self>> {
         let child_mount = self
             .children
             .write()
             .remove(&mountpoint.key())
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "can not find child mount"))?;
 
-        child_mount.clear_mountpoint();
+        child_mount.clear_topology_link(topology);
 
         Ok(child_mount)
     }
@@ -321,20 +457,31 @@ impl Mount {
     /// have no parent and children. We should set the parent and children manually.
     ///
     /// The new mount will belong to the given mount namespace.
-    fn clone_mount(&self, root_dentry: &Arc<Dentry>, new_ns: &Weak<MountNamespace>) -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| Self {
-            id: ID_ALLOCATOR.get().unwrap().lock().alloc().unwrap(),
+    fn clone_mount(
+        &self,
+        root_dentry: &Arc<Dentry>,
+        new_ns: &Weak<MountNamespace>,
+    ) -> Result<Arc<Self>> {
+        let id = MountId::alloc()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "mount ID space exhausted"))?;
+
+        let mount = Arc::new_cyclic(|weak_self| Self {
+            id,
             root_dentry: root_dentry.clone(),
             mountpoint: RwLock::new(None),
-            parent: RwLock::new(None),
-            children: RwLock::new(HashMap::new()),
-            propagation: RwLock::new(MountPropType::default()),
             fs: self.fs.clone(),
             source: self.source.clone(),
+            parent: RwLock::new(None),
+            children: RwLock::new(HashMap::new()),
             mnt_ns: new_ns.clone(),
+            propagation: RwLock::new(MountPropType::default()),
             flags: AtomicPerMountFlags::new(self.flags.load(Ordering::Relaxed)),
             this: weak_self.clone(),
-        })
+        });
+        if let Some(ns) = mount.mnt_ns.upgrade() {
+            ns.register_mount(&mount);
+        }
+        Ok(mount)
     }
 
     /// Clones a mount tree starting from the specified root `Dentry`.
@@ -356,10 +503,11 @@ impl Mount {
         new_ns: &Weak<MountNamespace>,
         recursive: bool,
         mnt_ns_file_copying: MountNsFileCopying,
-    ) -> Arc<Self> {
-        let new_root_mount = self.clone_mount(root_dentry, new_ns);
+        _topology: &MountTopology,
+    ) -> Result<Arc<Self>> {
+        let new_root_mount = self.clone_mount(root_dentry, new_ns)?;
         if !recursive {
-            return new_root_mount;
+            return Ok(new_root_mount);
         }
 
         let mut stack = vec![self.this()];
@@ -379,7 +527,7 @@ impl Mount {
                     continue;
                 }
                 let new_child_mount =
-                    old_child_mount.clone_mount(old_child_mount.root_dentry(), new_ns);
+                    old_child_mount.clone_mount(old_child_mount.root_dentry(), new_ns)?;
                 let key = mountpoint.key();
                 new_parent_mount
                     .children
@@ -392,11 +540,16 @@ impl Mount {
             }
         }
 
-        new_root_mount
+        Ok(new_root_mount)
     }
 
     /// Sets the propagation type of this mount.
-    pub(super) fn set_propagation(&self, prop: MountPropType, recursive: bool) {
+    pub(super) fn set_propagation(
+        &self,
+        prop: MountPropType,
+        recursive: bool,
+        _topology: &mut MountTopology,
+    ) {
         *self.propagation.write() = prop;
         if !recursive {
             return;
@@ -410,7 +563,7 @@ impl Mount {
     }
 
     /// Detaches the mount node from the parent mount node.
-    pub(super) fn detach_from_parent(&self) {
+    pub(super) fn detach_from_parent(&self, topology: &mut MountTopology) {
         if let Some(parent) = self.parent() {
             let parent = parent.upgrade().unwrap();
             let child = parent
@@ -419,13 +572,24 @@ impl Mount {
                 .remove(&self.mountpoint().unwrap().key());
 
             if let Some(child) = child {
-                child.clear_mountpoint();
+                child.clear_topology_link(topology);
             }
         }
     }
 
+    /// Clears this mount node's topology link.
+    ///
+    /// The parent pointer and mountpoint describe the same topology edge, so
+    /// they must be cleared together while holding the mount topology lock.
+    ///
+    /// This only mutates this mount node's own link state.
+    pub(super) fn clear_topology_link(&self, _topology: &mut MountTopology) {
+        self.set_parent(None);
+        self.clear_mountpoint();
+    }
+
     /// Attaches the mount node to the mountpoint.
-    fn attach_to_path(&self, target_path: &Path) {
+    fn attach_to_path(&self, target_path: &Path, _topology: &mut MountTopology) {
         let key = target_path.dentry.key();
         target_path
             .mount_node()
@@ -437,9 +601,9 @@ impl Mount {
     }
 
     /// Grafts the mount node tree to the mountpoint.
-    pub(super) fn graft_mount_tree(&self, target_path: &Path) {
-        self.detach_from_parent();
-        self.attach_to_path(target_path);
+    pub(super) fn graft_mount_tree(&self, target_path: &Path, topology: &mut MountTopology) {
+        self.detach_from_parent(topology);
+        self.attach_to_path(target_path, topology);
     }
 
     /// Gets a child mount node from the mountpoint if any.
@@ -458,7 +622,7 @@ impl Mount {
     }
 
     /// Sets the mountpoint.
-    pub(super) fn set_mountpoint(&self, dentry: &Arc<Dentry>) {
+    fn set_mountpoint(&self, dentry: &Arc<Dentry>) {
         let mut mountpoint = self.mountpoint.write();
         if let Some(mountpoint) = mountpoint.as_deref() {
             mountpoint.dec_mount_count();
@@ -469,7 +633,7 @@ impl Mount {
     }
 
     /// Clears the mountpoint.
-    pub(super) fn clear_mountpoint(&self) {
+    fn clear_mountpoint(&self) {
         let mut mountpoint = self.mountpoint.write();
         if let Some(mountpoint) = mountpoint.as_deref() {
             mountpoint.dec_mount_count();
@@ -488,15 +652,10 @@ impl Mount {
         &self,
         mount_flags: PerMountFlags,
         fs_flags: Option<FsFlags>,
-        data: Option<CString>,
+        data: Option<&str>,
         ctx: &Context,
+        _topology: &mut MountTopology,
     ) -> Result<()> {
-        // TODO: This lock is a workaround to guarantee the atomicity of remount operation.
-        // We need to re-design the lock mechanism of `Mount` and file system in the future.
-        static REMOUNT_LOCK: Mutex<()> = Mutex::new(());
-
-        let _guard = REMOUNT_LOCK.lock();
-
         if let Some(flags) = fs_flags {
             self.fs.set_fs_flags(flags, data, ctx)?;
         }
@@ -529,7 +688,11 @@ impl Mount {
     }
 
     /// Returns whether `self` is `ancestor` or a descendant of it in the mount tree.
-    pub(super) fn is_equal_or_descendant_of(&self, ancestor: &Arc<Self>) -> bool {
+    pub(super) fn is_equal_or_descendant_of(
+        &self,
+        ancestor: &Arc<Self>,
+        _topology: &MountTopology,
+    ) -> bool {
         let mut current = self.this();
         loop {
             if Arc::ptr_eq(&current, ancestor) {
@@ -549,11 +712,12 @@ impl Mount {
     }
 
     /// Gets the associated FS.
-    pub(in crate::fs) fn fs(&self) -> &Arc<dyn FileSystem> {
+    pub fn fs(&self) -> &Arc<dyn FileSystem> {
         &self.fs
     }
 
-    pub(in crate::fs) fn flags(&self) -> PerMountFlags {
+    /// Gets the associated mount flags.
+    pub fn flags(&self) -> PerMountFlags {
         self.flags.load(Ordering::Relaxed)
     }
 
@@ -561,7 +725,7 @@ impl Mount {
     ///
     /// In some cases we may need to reset the parent of
     /// the created Mount, such as move mount.
-    pub(super) fn set_parent(&self, mount: Option<&Arc<Mount>>) {
+    fn set_parent(&self, mount: Option<&Arc<Mount>>) {
         let mut parent = self.parent.write();
         *parent = mount.map(Arc::downgrade);
     }
@@ -570,6 +734,7 @@ impl Mount {
     pub(super) fn find_corresponding_mount(
         &self,
         mnt_ns: &Arc<MountNamespace>,
+        _topology: &MountTopology,
     ) -> Option<Arc<Self>> {
         // Collect the ancestors from self to the root mount (The root mount is not included).
         let mut ancestors = VecDeque::new();
@@ -587,12 +752,8 @@ impl Mount {
                 .children
                 .read()
                 .get(&mount_point.key())
-                .cloned();
-            if let Some(child_mount) = child_mount {
-                target_mount = child_mount;
-            } else {
-                return None;
-            }
+                .cloned()?;
+            target_mount = child_mount;
         }
 
         Some(target_mount)
@@ -615,6 +776,13 @@ impl Debug for Mount {
 
 impl Drop for Mount {
     fn drop(&mut self) {
-        ID_ALLOCATOR.get().unwrap().lock().free(self.id);
+        self.clear_mountpoint();
+        // `upgrade` returns `None` for pseudo mounts (no namespace) and for
+        // mounts whose namespace is itself being dropped (the `mounts` map
+        // will be freed in a moment).
+        if let Some(ns) = self.mnt_ns.upgrade() {
+            ns.deregister_mount(self.id.unique_id());
+        }
+        // The recyclable ID is returned to the pool by `MountId`'s `Drop`.
     }
 }

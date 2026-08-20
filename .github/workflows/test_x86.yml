@@ -18,7 +18,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['ldosproject/asterinas:0.17.2-ldos-20260728', 'ldosproject/osdk:0.17.2-ldos-20260728']
+        image: ['ldosproject/asterinas:0.18.0-ldos-20260818', 'ldosproject/osdk:0.18.0-ldos-20260818']
     steps:
       - uses: actions/checkout@v4
       - name: Run OSDK tests
@@ -72,7 +72,7 @@ jobs:
   boot-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
     strategy:
       fail-fast: false
@@ -93,7 +93,7 @@ jobs:
   regression-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -124,7 +124,7 @@ jobs:
   conformance-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -178,7 +178,7 @@ jobs:
   #       include:
   #         - name: arm-cross-boot
   #           runs_on: ubuntu-24.04-arm
-  #           image: ldosproject/asterinas:0.17.2-ldos-20260728
+  #           image: ldosproject/asterinas:0.18.0-ldos-20260818
   #           auto_test: boot
   #           enable_kvm: false
   #   runs-on: ${{ matrix.runs_on }}
@@ -191,3 +191,27 @@ jobs:
   #       with:
   #         auto_test: ${{ matrix.auto_test }}
   #         enable_kvm: ${{ matrix.enable_kvm }}
+
+  # xfstests:
+  #   runs-on: ubuntu-latest
+  #   container:
+  #     image: ldosproject/asterinas:0.18.0-ldos-20260818
+  #     options: -v /dev:/dev --privileged
+  #     volumes:
+  #       - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
+  #       - /usr/local/lib/android:/usr/local/lib/android
+  #       - /usr/share/dotnet:/usr/share/dotnet
+  #   timeout-minutes: 30
+  #   steps:
+  #     - name: Free disk space
+  #       run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
+  #     - uses: actions/checkout@v4
+  #     - name: Run xfstests
+  #       uses: ./.github/actions/test
+  #       with:
+  #         auto_test: 'conformance'
+  #         conformance_test_suite: 'xfstests'
+  #         release: true
+  #         mem: '12G'
+  #         xfstests_disk_size: '2G'
+  #         xfstests_runlist: '/opt/xfstests/short.list'

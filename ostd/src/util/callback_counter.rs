@@ -144,23 +144,11 @@ mod test {
         drop(incrementer);
 
         counter.decrement_and_check();
-        assert_eq!(
-            counter
-                .inner
-                .count
-                .load(core::sync::atomic::Ordering::Relaxed),
-            1
-        );
+        assert_eq!(counter.inner.count.load(Ordering::Relaxed), 1);
         assert!(!called.load(Ordering::SeqCst));
 
         counter.decrement_and_check();
-        assert_eq!(
-            counter
-                .inner
-                .count
-                .load(core::sync::atomic::Ordering::Relaxed),
-            0
-        );
+        assert_eq!(counter.inner.count.load(Ordering::Relaxed), 0);
         assert!(called.load(Ordering::SeqCst));
     }
 }

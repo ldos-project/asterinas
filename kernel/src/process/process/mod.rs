@@ -5,6 +5,8 @@ use core::{
     time::Duration,
 };
 
+use ostd::timer::Jiffies;
+
 use self::timer_manager::PosixTimerManager;
 use super::{
     pid_table::{self, PidTable},
@@ -125,7 +127,6 @@ pub struct Process {
     /// Instead of letting the init process to reap all orphan zombie processes,
     /// a subreaper can reap orphan zombie processes among its descendants.
     is_child_subreaper: AtomicBool,
-
     /// Whether the process has a subreaper that will reap it when the
     /// process becomes orphaned.
     ///
@@ -140,15 +141,16 @@ pub struct Process {
     sig_queues: SigQueues,
     /// The signal that the process should receive when parent process exits.
     parent_death_signal: AtomicSigNum,
-
     /// The signal that should be sent to the parent when this process exits.
     exit_signal: AtomicSigNum,
 
+    // Time
     /// A profiling clock measures the user CPU time and kernel CPU time of the current process.
     prof_clock: Arc<ProfClock>,
-
     /// A manager that manages timer resources and utilities of the process.
     timer_manager: PosixTimerManager,
+    /// Process start time since boot.
+    start_time: Jiffies,
 
     // Namespaces
     /// The user namespace
@@ -234,36 +236,40 @@ impl Process {
         sig_dispositions: Arc<Mutex<SigDispositions>>,
         user_ns: Arc<UserNamespace>,
     ) -> Arc<Self> {
-        // SIGCHID does not interrupt pauser. Child process will
-        // resume paused parent when doing exit.
-        let children_wait_queue = WaitQueue::new();
+        Arc::new_cyclic(|process_ref: &Weak<Process>| {
+            // SIGCHID does not interrupt pauser. Child process will
+            // resume paused parent when doing exit.
+            let children_wait_queue = WaitQueue::new();
 
-        let prof_clock = ProfClock::new();
+            let prof_clock = ProfClock::new();
+            let timer_manager = PosixTimerManager::new(&prof_clock, process_ref);
 
-        Arc::new_cyclic(|process_ref: &Weak<Process>| Self {
-            pid,
-            tasks: Mutex::new(TaskSet::new()),
-            vmar: Mutex::new(Some(vmar)),
-            children_wait_queue,
-            pidfile_pollee: Pollee::new(),
-            status: ProcessStatus::default(),
-            parent: ParentProcess::new(Weak::new()),
-            children: Mutex::new(Some(BTreeMap::new())),
-            process_group: Mutex::new(None),
-            reaped_children_stats: Mutex::new(ReapedChildrenStats::default()),
-            is_child_subreaper: AtomicBool::new(false),
-            has_child_subreaper: AtomicBool::new(false),
-            sig_dispositions: Mutex::new(sig_dispositions),
-            sig_queues: SigQueues::new(),
-            parent_death_signal: AtomicSigNum::new_empty(),
-            exit_signal: AtomicSigNum::new_empty(),
-            resource_limits,
-            cgroup: RcuOption::new(None),
-            nice: AtomicNice::new(nice),
-            oom_score_adj: AtomicI16::new(oom_score_adj),
-            timer_manager: PosixTimerManager::new(&prof_clock, process_ref),
-            prof_clock,
-            user_ns: Mutex::new(user_ns),
+            Self {
+                pid,
+                vmar: Mutex::new(Some(vmar)),
+                children_wait_queue,
+                pidfile_pollee: Pollee::new(),
+                tasks: Mutex::new(TaskSet::new()),
+                status: ProcessStatus::default(),
+                parent: ParentProcess::new(Weak::new()),
+                children: Mutex::new(Some(BTreeMap::new())),
+                process_group: Mutex::new(None),
+                reaped_children_stats: Mutex::new(ReapedChildrenStats::default()),
+                resource_limits,
+                cgroup: RcuOption::new(None),
+                nice: AtomicNice::new(nice),
+                oom_score_adj: AtomicI16::new(oom_score_adj),
+                is_child_subreaper: AtomicBool::new(false),
+                has_child_subreaper: AtomicBool::new(false),
+                sig_dispositions: Mutex::new(sig_dispositions),
+                sig_queues: SigQueues::new(),
+                parent_death_signal: AtomicSigNum::new_empty(),
+                exit_signal: AtomicSigNum::new_empty(),
+                prof_clock,
+                timer_manager,
+                start_time: Jiffies::elapsed(),
+                user_ns: Mutex::new(user_ns),
+            }
         })
     }
 
@@ -294,6 +300,11 @@ impl Process {
     /// Gets the timer resources and utilities of the process.
     pub fn timer_manager(&self) -> &PosixTimerManager {
         &self.timer_manager
+    }
+
+    /// Returns the process start time since boot.
+    pub fn start_time(&self) -> Jiffies {
+        self.start_time
     }
 
     pub fn tasks(&self) -> &Mutex<TaskSet> {
@@ -473,10 +484,9 @@ impl Process {
         // Lock order: PID table -> group of process -> group inner -> session inner
         let mut pid_table = pid_table::pid_table_mut();
 
-        let process = pid_table.get_process(pid).ok_or(Error::with_message(
-            Errno::ESRCH,
-            "the process to set the PGID does not exist",
-        ))?;
+        let process = pid_table.get_process(pid).ok_or_else(|| {
+            Error::with_message(Errno::ESRCH, "the process to set the PGID does not exist")
+        })?;
 
         let current_session = if self.pid == process.pid() {
             // There is no need to check if the session is the same in this case.

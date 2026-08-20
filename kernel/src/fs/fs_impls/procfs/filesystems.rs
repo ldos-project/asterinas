@@ -5,17 +5,17 @@ use aster_util::printer::{VmPrinter, VmPrinterError};
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::{inode::Inode, registry::FsProperties},
     },
     prelude::*,
 };
 
 /// Represents the inode at /proc/filesystems.
-pub struct FileSystemsFileOps;
+pub(super) struct FileSystemsFileOps;
 
 impl FileSystemsFileOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/filesystems.c#L259>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L549-L550>
@@ -23,11 +23,11 @@ impl FileSystemsFileOps {
     }
 }
 
-impl FileOps for FileSystemsFileOps {
+impl ProcFileOps for FileSystemsFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 
-        crate::fs::vfs::registry::with_iter(|iter| -> core::result::Result<(), VmPrinterError> {
+        crate::fs::vfs::registry::with_iter(|iter| -> Result<(), VmPrinterError> {
             for (fs_name, fs_type) in iter {
                 if fs_type.properties().contains(FsProperties::NEED_DISK) {
                     writeln!(printer, "\t{}", fs_name)?;

@@ -78,13 +78,81 @@ END_TEST()
 FN_TEST(pidfd_send_signal_process)
 {
 	TEST_SUCC(pidfd_send_signal(process_pidfd, sig, &siginfo, 0));
-	TEST_SUCC(waitid(P_PID, process_pid, NULL, WNOWAIT | WEXITED));
+	TEST_SUCC(waitid(P_PID, process_pid, NULL, WEXITED));
 }
 END_TEST()
 
 FN_SETUP(cleanup_process)
 {
 	CHECK(close(process_pidfd));
+}
+END_SETUP()
+
+/* ==========================
+ *   Tests for NULL siginfo
+ * ========================== */
+
+int null_info_child_pid;
+int null_info_pidfd;
+
+FN_SETUP(create_null_info_process)
+{
+	null_info_child_pid = CHECK(fork());
+	if (null_info_child_pid == 0) {
+		while (1) {
+			usleep(100);
+		}
+	}
+
+	null_info_pidfd = CHECK(pidfd_open(null_info_child_pid, 0));
+}
+END_SETUP()
+
+FN_TEST(pidfd_send_signal_null_info)
+{
+	TEST_SUCC(pidfd_send_signal(null_info_pidfd, SIGTERM, NULL, 0));
+	TEST_SUCC(waitid(P_PID, null_info_child_pid, NULL, WEXITED));
+}
+END_TEST()
+
+FN_SETUP(cleanup_null_info_process)
+{
+	CHECK(close(null_info_pidfd));
+}
+END_SETUP()
+
+/* ==========================
+ *  Tests for null signal (0)
+ * ========================== */
+
+int null_sig_child_pid;
+int null_sig_pidfd;
+
+FN_SETUP(create_null_sig_process)
+{
+	null_sig_child_pid = CHECK(fork());
+	if (null_sig_child_pid == 0) {
+		while (1) {
+			usleep(100);
+		}
+	}
+
+	null_sig_pidfd = CHECK(pidfd_open(null_sig_child_pid, 0));
+}
+END_SETUP()
+
+FN_TEST(pidfd_send_signal_null_signal)
+{
+	// Signal 0 is a null signal used for permission/existence checks
+	TEST_SUCC(pidfd_send_signal(null_sig_pidfd, 0, NULL, 0));
+}
+END_TEST()
+
+FN_SETUP(cleanup_null_sig_process)
+{
+	CHECK(kill(null_sig_child_pid, SIGKILL));
+	CHECK(waitid(P_PID, null_sig_child_pid, NULL, WEXITED));
+	CHECK(close(null_sig_pidfd));
 }
 END_SETUP()
 
@@ -142,10 +210,11 @@ FN_TEST(pidfd_send_signal_self_thread_group)
 
 	pid = TEST_SUCC(fork());
 	if (pid == 0) {
-		CHECK(pthread_create(&thread, NULL,
-				     &pidfd_send_signal_self_child_thread,
-				     NULL));
-		CHECK(pthread_join(thread, NULL));
+		CHECK_WITH(pthread_create(&thread, NULL,
+					  &pidfd_send_signal_self_child_thread,
+					  NULL),
+			   _ret == 0);
+		CHECK_WITH(pthread_join(thread, NULL), _ret == 0);
 
 		exit(0);
 	}
@@ -179,11 +248,13 @@ FN_TEST(pidfd_send_signal_self_process_group_non_main_thread)
 	if (pid == 0) {
 		CHECK(setpgid(0, 0));
 
-		CHECK(pthread_create(
-			&thread, NULL,
-			pidfd_send_signal_self_process_group_child_thread,
-			NULL));
-		CHECK(pthread_join(thread, NULL));
+		CHECK_WITH(
+			pthread_create(
+				&thread, NULL,
+				pidfd_send_signal_self_process_group_child_thread,
+				NULL),
+			_ret == 0);
+		CHECK_WITH(pthread_join(thread, NULL), _ret == 0);
 
 		exit(0);
 	}
@@ -228,7 +299,7 @@ FN_SETUP(create_thread)
 {
 	static char path[256];
 
-	CHECK(pthread_create(&thread, NULL, thread_func, NULL));
+	CHECK_WITH(pthread_create(&thread, NULL, thread_func, NULL), _ret == 0);
 
 	while (thread_tid == 0) {
 		usleep(100);

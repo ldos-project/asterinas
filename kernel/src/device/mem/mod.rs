@@ -20,8 +20,6 @@
 
 mod file;
 
-use alloc::sync::Arc;
-
 use device_id::{DeviceId, MajorId, MinorId};
 use file::MemFile;
 pub use file::{getrandom, geturandom};
@@ -32,7 +30,7 @@ use super::{
     registry::char::{MajorIdOwner, acquire_major, register},
 };
 use crate::{
-    fs::file::{FileIo, mkmod},
+    fs::file::{PerOpenFileOps, mkmod},
     prelude::*,
 };
 
@@ -78,7 +76,7 @@ impl Device for MemDevice {
         })
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         Ok(Box::new(self.file))
     }
 }

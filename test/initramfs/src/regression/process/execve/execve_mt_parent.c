@@ -103,9 +103,11 @@ FN_TEST(exec_in_main_thread)
 		struct info info = { .should_sleep = true };
 
 		pthread_t tid1;
-		CHECK(pthread_create(&tid1, NULL, &thread_slave, &info));
+		CHECK_WITH(pthread_create(&tid1, NULL, &thread_slave, &info),
+			   _ret == 0);
 		pthread_t tid2;
-		CHECK(pthread_create(&tid2, NULL, &thread_slave, &info));
+		CHECK_WITH(pthread_create(&tid2, NULL, &thread_slave, &info),
+			   _ret == 0);
 
 		exec_child();
 	}
@@ -126,10 +128,12 @@ FN_TEST(exec_in_slave_thread)
 
 		pthread_t tid1;
 		struct info info1 = { .should_sleep = true };
-		CHECK(pthread_create(&tid1, NULL, &thread_slave, &info1));
+		CHECK_WITH(pthread_create(&tid1, NULL, &thread_slave, &info1),
+			   _ret == 0);
 		pthread_t tid2;
 		struct info info2 = { .should_sleep = false };
-		CHECK(pthread_create(&tid2, NULL, &thread_slave, &info2));
+		CHECK_WITH(pthread_create(&tid2, NULL, &thread_slave, &info2),
+			   _ret == 0);
 
 		pthread_join(tid1, NULL);
 		pthread_join(tid2, NULL);
@@ -153,17 +157,21 @@ FN_TEST(clone_files)
 	int pipefds[2];
 	TEST_SUCC(syscall(SYS_pipe2, pipefds, O_CLOEXEC));
 
-	// Duplicate the pipe fd to a high-value FD to prevent it from being reused.
+	// Duplicate the pipe fds to high-value FDs to prevent unrelated
+	// open operations during multi-threaded exec from reusing them.
 	int dupped_pipe_fd = 100;
+	int dupped_pipe_write_fd = 101;
 	TEST_SUCC(syscall(SYS_dup3, pipefds[0], dupped_pipe_fd, O_CLOEXEC));
+	TEST_SUCC(syscall(SYS_dup3, pipefds[1], dupped_pipe_write_fd, 0));
 	TEST_SUCC(close(pipefds[0]));
+	TEST_SUCC(close(pipefds[1]));
 
 	struct clone_args args = { .flags = CLONE_FILES,
 				   .exit_signal = SIGCHLD };
 	pid_t pid = TEST_SUCC(sys_clone3(&args));
 
 	if (pid == 0) {
-		CHECK(close(pipefds[1]));
+		CHECK(close(dupped_pipe_write_fd));
 		exit(EXIT_SUCCESS);
 	}
 
@@ -180,9 +188,11 @@ FN_TEST(clone_files)
 
 		struct info info = { .should_sleep = false };
 		pthread_t tid1;
-		CHECK(pthread_create(&tid1, NULL, &thread_slave, &info));
+		CHECK_WITH(pthread_create(&tid1, NULL, &thread_slave, &info),
+			   _ret == 0);
 		pthread_t tid2;
-		CHECK(pthread_create(&tid2, NULL, &thread_slave, &info));
+		CHECK_WITH(pthread_create(&tid2, NULL, &thread_slave, &info),
+			   _ret == 0);
 
 		pthread_join(tid1, NULL);
 		pthread_join(tid2, NULL);
@@ -193,6 +203,6 @@ FN_TEST(clone_files)
 		 _ret == pid && WIFEXITED(status) &&
 			 WEXITSTATUS(status) == 102);
 	TEST_SUCC(close(dupped_pipe_fd));
-	TEST_ERRNO(close(pipefds[1]), EBADF);
+	TEST_ERRNO(close(dupped_pipe_write_fd), EBADF);
 }
 END_TEST()

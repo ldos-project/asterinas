@@ -8,12 +8,13 @@ use crate::{
         file::mkmod,
         procfs::{
             pid::task::mountinfo::make_mount_point_path,
-            template::{FileOps, ProcFile},
+            template::{ProcFile, ProcFileOps},
         },
         vfs::{inode::Inode, path::PathResolver},
     },
     prelude::*,
     process::posix_thread::AsPosixThread,
+    thread::Thread,
 };
 
 /// A single entry in the `mountstats` file.
@@ -37,10 +38,10 @@ impl core::fmt::Display for MountStatsEntry<'_> {
 }
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/mountstats` (and also `/proc/[pid]/mountstats`).
-pub struct MountStatsFileOps(TidDirOps);
+pub(super) struct MountStatsFileOps(TidDirOps);
 
 impl MountStatsFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
 
@@ -80,7 +81,11 @@ impl MountStatsFileOps {
     }
 }
 
-impl FileOps for MountStatsFileOps {
+impl ProcFileOps for MountStatsFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let Some(thread) = self.0.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");

@@ -85,6 +85,8 @@ impl FileSystem for CgroupFs {
 pub(super) struct CgroupFsType;
 
 impl FsType for CgroupFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "cgroup2"
     }
@@ -93,7 +95,7 @@ impl FsType for CgroupFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(CgroupFs::singleton().clone())
     }
 

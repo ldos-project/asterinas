@@ -1,40 +1,48 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use aster_rights::ReadDupOp;
 
 use super::message::{MessageQueue, MessageReceiver};
 use crate::{
     events::IoEvents,
-    fs::{pseudofs::SockFs, vfs::path::Path},
+    fs::{
+        file::{FileCommon, StatusFlags},
+        pseudofs::SockFs,
+    },
     net::socket::{
         Socket,
         options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
         private::SocketPrivate,
         unix::{CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData},
         util::{
-            MessageHeader, SendRecvFlags, SockShutdownCmd, SocketAddr,
-            options::{GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet},
+            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
+            options::{
+                GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+            },
         },
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::{MultiRead, MultiWrite},
+    util::{MultiRead, MultiWrite, net::SockType},
 };
 
 pub struct UnixDatagramSocket {
     local_receiver: MessageReceiver,
     remote_queue: RwLock<Option<Arc<MessageQueue>>>,
     options: RwLock<OptionSet>,
+    timeouts: SocketTimeouts,
     // Since datagram sockets are not connection-oriented, they typically lack well-defined peer
     // credentials. According to the Linux implementation, however, peer credentials are recorded
     // when a socket pair is created using the `socketpair` system call.
     peer_cred: Option<SocketCred>,
 
-    is_nonblocking: AtomicBool,
     is_write_shutdown: AtomicBool,
-    pseudo_path: Path,
+    common: FileCommon,
 }
 
 #[derive(Clone, Debug)]
@@ -73,14 +81,19 @@ impl UnixDatagramSocket {
     }
 
     fn new_raw(is_nonblocking: bool) -> Self {
+        let status_flags = if is_nonblocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
         Self {
             local_receiver: MessageReceiver::new(),
             remote_queue: RwLock::new(None),
             options: RwLock::new(OptionSet::new()),
+            timeouts: SocketTimeouts::new(),
             peer_cred: None,
-            is_nonblocking: AtomicBool::new(is_nonblocking),
             is_write_shutdown: AtomicBool::new(false),
-            pseudo_path: SockFs::new_path(),
+            common: FileCommon::new(SockFs::new_path(), status_flags),
         }
     }
 
@@ -89,7 +102,8 @@ impl UnixDatagramSocket {
         reader: &mut dyn MultiRead,
         mut aux_data: AuxiliaryData,
         remote: Option<UnixSocketAddr>,
-        _flags: SendRecvFlags,
+        _flags: SendFlags,
+        timeout: Option<Duration>,
     ) -> Result<usize> {
         if self.is_write_shutdown.load(Ordering::Relaxed) {
             return_errno_with_message!(Errno::EPIPE, "the socket is shut down for writing");
@@ -108,7 +122,9 @@ impl UnixDatagramSocket {
         let res = if self.is_nonblocking() {
             queue.try_send(reader, &mut aux_data, &self.local_receiver)
         } else {
-            queue.block_send(|| queue.try_send(reader, &mut aux_data, &self.local_receiver))
+            queue.block_send(timeout, || {
+                queue.try_send(reader, &mut aux_data, &self.local_receiver)
+            })
         };
 
         // A connected socket will automatically be disconnected if the remote has been closed.
@@ -156,11 +172,7 @@ impl Pollable for UnixDatagramSocket {
 
 impl SocketPrivate for UnixDatagramSocket {
     fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking.load(Ordering::Relaxed)
-    }
-
-    fn set_nonblocking(&self, nonblocking: bool) {
-        self.is_nonblocking.store(nonblocking, Ordering::Relaxed);
+        self.common.is_nonblocking()
     }
 }
 
@@ -231,7 +243,10 @@ impl Socket for UnixDatagramSocket {
         let options = self.options.read();
 
         // Deal with socket-level options
-        match options.socket.get_option(option, &self.local_receiver) {
+        match options
+            .socket
+            .get_option(option, &(&self.local_receiver, &self.timeouts))
+        {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res,
         }
@@ -245,7 +260,10 @@ impl Socket for UnixDatagramSocket {
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
         let mut options = self.options.write();
 
-        match options.socket.set_option(option, &self.local_receiver) {
+        match options
+            .socket
+            .set_option(option, &(&self.local_receiver, &self.timeouts))
+        {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // TODO: Deal with socket options from other levels
                 warn!("only socket-level options are supported");
@@ -262,7 +280,7 @@ impl Socket for UnixDatagramSocket {
         &self,
         reader: &mut dyn MultiRead,
         message_header: MessageHeader,
-        flags: SendRecvFlags,
+        flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -281,29 +299,37 @@ impl Socket for UnixDatagramSocket {
 
         let auxiliary_data = AuxiliaryData::from_control(control_messages)?;
 
-        self.do_send(reader, auxiliary_data, remote_addr, flags)
+        self.do_send(
+            reader,
+            auxiliary_data,
+            remote_addr,
+            flags,
+            self.timeouts.send_timeout(),
+        )
     }
 
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: SendRecvFlags,
-    ) -> Result<(usize, MessageHeader)> {
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (received_bytes, control_messages, peer_addr) =
-            self.block_on(IoEvents::IN, || self.local_receiver.try_recv(writer))?;
+        let (output, control_messages, peer_addr) =
+            self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
+                self.local_receiver.try_recv(writer, flags)
+            })?;
 
         let message_header = MessageHeader::new(Some(peer_addr.into()), control_messages);
 
-        Ok((received_bytes, message_header))
+        Ok((output, message_header))
     }
 
-    fn pseudo_path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 }
 
@@ -326,19 +352,31 @@ fn do_unix_getsockopt(option: &mut dyn SocketOption, socket: &UnixDatagramSocket
     Ok(())
 }
 
-impl GetSocketLevelOption for MessageReceiver {
+impl GetSocketLevelOption for (&MessageReceiver, &SocketTimeouts) {
+    fn socket_type(&self) -> SockType {
+        SockType::SOCK_DGRAM
+    }
+
     fn is_listening(&self) -> bool {
         false
     }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.1)
+    }
 }
 
-impl SetSocketLevelOption for MessageReceiver {
+impl SetSocketLevelOption for (&MessageReceiver, &SocketTimeouts) {
     fn set_pass_cred(&self, pass_cred: bool) {
         // TODO: According to the Linux man pages, "When this option is set and the socket
         // is not yet connected, a unique name in the abstract namespace will be generated
         // automatically." See <https://man7.org/linux/man-pages/man7/unix.7.html> for
         // details.
 
-        self.set_pass_cred(pass_cred);
+        self.0.set_pass_cred(pass_cred);
+    }
+
+    fn socket_timeouts(&self) -> Option<&SocketTimeouts> {
+        Some(self.1)
     }
 }

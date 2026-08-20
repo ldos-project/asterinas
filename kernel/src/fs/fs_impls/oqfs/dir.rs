@@ -39,7 +39,9 @@ use crate::{
         utils::DirentVisitor,
         vfs::{
             file_system::{FileSystem, SuperBlock},
-            inode::{Extension, Inode, InodeIo, Metadata, MknodType, RevalidationPolicy},
+            inode::{
+                Extension, FileOps, Inode, Metadata, MknodType, RenameMode, RevalidationPolicy,
+            },
             path::{is_dot, is_dotdot},
         },
     },
@@ -190,7 +192,7 @@ impl DirInode {
     }
 }
 
-impl InodeIo for DirInode {
+impl FileOps for DirInode {
     /// You can't read a dir
     fn read_at(
         &self,
@@ -210,12 +212,55 @@ impl InodeIo for DirInode {
     ) -> Result<usize> {
         Err(Error::new(Errno::EISDIR))
     }
+
+    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
+        let this = self.this();
+        let parent = self.parent_inode();
+
+        // Entries beyond `.` and `..` (reserved offsets 1 and 2), as `(name, type)`.
+        let children: Vec<(String, InodeType)> = if let Some(oqueue) = self.as_oqueue() {
+            self.warn_if_prefix_conflict(&oqueue);
+            leaf_file_names(&oqueue)
+                .into_iter()
+                .map(|name| (name.to_string(), InodeType::File))
+                .collect()
+        } else {
+            self.child_dir_names()
+                .into_iter()
+                .map(|name| (name, InodeType::Dir))
+                .collect()
+        };
+
+        let try_readdir = |cursor: &mut usize, visitor: &mut dyn DirentVisitor| -> Result<()> {
+            for (name, inode, next_offset) in [(".", &this, 1usize), ("..", &parent, 2usize)] {
+                if next_offset > *cursor {
+                    visitor.visit(name, inode.ino(), InodeType::Dir, next_offset)?;
+                    *cursor = next_offset;
+                }
+            }
+            for (index, (name, type_)) in children.iter().enumerate() {
+                let next_offset = 3 + index;
+                if next_offset > *cursor {
+                    // A placeholder inode number: real inodes are created on demand during lookup.
+                    visitor.visit(name, this.ino(), *type_, next_offset)?;
+                    *cursor = next_offset;
+                }
+            }
+            Ok(())
+        };
+
+        let mut cursor = offset;
+        match try_readdir(&mut cursor, visitor) {
+            Err(e) if cursor == offset => Err(e),
+            _ => Ok(cursor - offset),
+        }
+    }
 }
 
 #[inherit_methods(from = "self.common")]
 impl Inode for DirInode {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
@@ -281,49 +326,6 @@ impl Inode for DirInode {
         Ok(DirInode::new_dir(self.fs.clone(), child_prefix))
     }
 
-    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize> {
-        let this = self.this();
-        let parent = self.parent_inode();
-
-        // Entries beyond `.` and `..` (reserved offsets 1 and 2), as `(name, type)`.
-        let children: Vec<(String, InodeType)> = if let Some(oqueue) = self.as_oqueue() {
-            self.warn_if_prefix_conflict(&oqueue);
-            leaf_file_names(&oqueue)
-                .into_iter()
-                .map(|name| (name.to_string(), InodeType::File))
-                .collect()
-        } else {
-            self.child_dir_names()
-                .into_iter()
-                .map(|name| (name, InodeType::Dir))
-                .collect()
-        };
-
-        let try_readdir = |cursor: &mut usize, visitor: &mut dyn DirentVisitor| -> Result<()> {
-            for (name, inode, next_offset) in [(".", &this, 1usize), ("..", &parent, 2usize)] {
-                if next_offset > *cursor {
-                    visitor.visit(name, inode.ino(), InodeType::Dir, next_offset)?;
-                    *cursor = next_offset;
-                }
-            }
-            for (index, (name, type_)) in children.iter().enumerate() {
-                let next_offset = 3 + index;
-                if next_offset > *cursor {
-                    // A placeholder inode number: real inodes are created on demand during lookup.
-                    visitor.visit(name, this.ino(), *type_, next_offset)?;
-                    *cursor = next_offset;
-                }
-            }
-            Ok(())
-        };
-
-        let mut cursor = offset;
-        match try_readdir(&mut cursor, visitor) {
-            Err(e) if cursor == offset => Err(e),
-            _ => Ok(cursor - offset),
-        }
-    }
-
     fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
@@ -336,7 +338,13 @@ impl Inode for DirInode {
         Err(Error::new(Errno::EPERM))
     }
 
-    fn rename(&self, _old_name: &str, _target: &Arc<dyn Inode>, _new_name: &str) -> Result<()> {
+    fn rename(
+        &self,
+        _old_name: &str,
+        _target: &Arc<dyn Inode>,
+        _new_name: &str,
+        _mode: RenameMode,
+    ) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 

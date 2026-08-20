@@ -14,7 +14,7 @@ use ostd::util::id_set::Id;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
@@ -25,10 +25,10 @@ use crate::{
 };
 
 /// Represents the inode at `/proc/stat`.
-pub struct StatFileOps;
+pub(super) struct StatFileOps;
 
 impl StatFileOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference:
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/stat.c#L213>
         // <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/generic.c#L549-L550>
@@ -143,7 +143,7 @@ impl StatFileOps {
     }
 }
 
-impl FileOps for StatFileOps {
+impl ProcFileOps for StatFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 

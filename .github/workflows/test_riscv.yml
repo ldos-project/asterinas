@@ -2,7 +2,7 @@ name: "Test riscv64  "
 
 on:
   workflow_dispatch:
-  # Only run RISCV tests on main so we track it but don't use resources on every PR since we don't really care 
+  # Only run RISCV tests on main so we track it but don't use resources on every PR since we don't really care
   # right now.
   # pull_request:
   # push:
@@ -13,7 +13,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -40,7 +40,7 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.17.2-ldos-20260728
+      image: ldosproject/asterinas:0.18.0-ldos-20260818
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that

@@ -3,6 +3,8 @@
 use alloc::borrow::Cow;
 use core::{num::NonZeroU64, sync::atomic::Ordering};
 
+#[cfg(target_arch = "x86_64")]
+use ostd::arch::cpu::context::{FsBase, GsBase};
 use ostd::{
     arch::cpu::context::UserContext, cpu::CpuId, mm::VmIo, sync::RwArc, task::Task,
     user::UserContextApi,
@@ -10,7 +12,7 @@ use ostd::{
 
 use super::{
     Credentials, Pid, Process, pid_table,
-    posix_thread::{AsPosixThread, PosixThreadBuilder, ThreadName},
+    posix_thread::{AsPosixThread, PosixThreadBuilder},
     rlimit::ResourceLimits,
     signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
 };
@@ -31,7 +33,7 @@ use crate::{
     },
     sched::Nice,
     thread::{AsThread, Tid},
-    vm::vmar::Vmar,
+    vm::vmar::{Vmar, VmarHandle},
 };
 
 bitflags! {
@@ -236,6 +238,16 @@ impl CloneArgs {
             );
         }
 
+        // TODO: Support clone-family ptrace events and remove this check.
+        if !clone_flags.contains(CloneFlags::CLONE_UNTRACED)
+            && ctx.posix_thread.needs_ptrace_clone_stop(self)
+        {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "ptrace clone events are not supported currently"
+            );
+        }
+
         Ok(())
     }
 }
@@ -369,14 +381,22 @@ fn clone_child_task(
     // Clone system V semaphore
     clone_sysvsem(clone_flags)?;
 
+    // Clone VMAR
+    let child_vmar = thread_local
+        .vmar()
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .clone_handle();
+
     // Clone file table
     let child_file_table = clone_files(thread_local.borrow_file_table().unwrap(), clone_flags);
 
-    // Clone fs
+    // Clone FS
     let child_fs = clone_fs(&thread_local.borrow_fs(), clone_flags);
 
     // Clone FPU context
-    let child_fpu_context = thread_local.fpu().clone_context();
+    let child_fpu_context = thread_local.supp_user_context().fpu().get();
 
     // Clone namespaces
     let child_user_ns = thread_local.borrow_user_ns().clone();
@@ -398,19 +418,23 @@ fn clone_child_task(
             .switch_to_mnt_ns(child_ns_proxy.mnt_ns())?;
     }
 
-    let child_user_ctx = Box::new(clone_user_ctx(
+    #[cfg_attr(target_arch = "x86_64", expect(unused_mut))]
+    let mut child_user_ctx = Box::new(clone_user_ctx(
         parent_context,
         clone_args.stack,
         clone_args.stack_size,
-        clone_args.tls,
-        clone_flags,
     ));
+
+    #[cfg(target_arch = "x86_64")]
+    let (child_fs_base, child_gs_base) = clone_tls_regs(thread_local, clone_flags, clone_args.tls);
+    #[cfg(not(target_arch = "x86_64"))]
+    clone_tls_pointer(child_user_ctx.as_mut(), clone_flags, clone_args.tls);
 
     // Inherit sigmask from current thread
     let sig_mask = posix_thread.sig_mask().into();
 
     // Inherit the thread name.
-    let thread_name = posix_thread.thread_name().lock().clone();
+    let thread_name = *posix_thread.thread_name().lock();
 
     let child_tid = allocate_posix_tid();
     let child_task = {
@@ -419,16 +443,25 @@ fn clone_child_task(
             Credentials::new_from(&credentials)
         };
 
-        let mut thread_builder =
-            PosixThreadBuilder::new(child_tid, thread_name, child_user_ctx, credentials)
-                .process(posix_thread.weak_process().clone())
-                .sig_mask(sig_mask)
-                .file_table(child_file_table)
-                .fs(child_fs)
-                .fpu_context(child_fpu_context)
-                .user_ns(child_user_ns)
-                .ns_proxy(child_ns_proxy)
-                .default_timer_slack_ns(default_timer_slack_ns);
+        let mut thread_builder = PosixThreadBuilder::new(
+            child_tid,
+            thread_name,
+            child_user_ctx,
+            credentials,
+            child_vmar,
+        )
+        .process(posix_thread.weak_process().clone())
+        .sig_mask(sig_mask)
+        .file_table(child_file_table)
+        .fs(child_fs)
+        .fpu_context(child_fpu_context)
+        .user_ns(child_user_ns)
+        .ns_proxy(child_ns_proxy)
+        .default_timer_slack_ns(default_timer_slack_ns);
+        #[cfg(target_arch = "x86_64")]
+        {
+            thread_builder = thread_builder.fs_base(child_fs_base).gs_base(child_gs_base);
+        }
 
         // Deal with SETTID/CLEARTID flags
         clone_parent_settid(child_tid, clone_args.parent_tid, clone_flags)?;
@@ -473,13 +506,17 @@ fn clone_child_process(
     let child_vmar = clone_vmar(thread_local.vmar().borrow().as_ref().unwrap(), clone_flags)?;
 
     // Clone the user context
-    let child_user_ctx = Box::new(clone_user_ctx(
+    #[cfg_attr(target_arch = "x86_64", expect(unused_mut))]
+    let mut child_user_ctx = Box::new(clone_user_ctx(
         parent_context,
         clone_args.stack,
         clone_args.stack_size,
-        clone_args.tls,
-        clone_flags,
     ));
+
+    #[cfg(target_arch = "x86_64")]
+    let (child_fs_base, child_gs_base) = clone_tls_regs(thread_local, clone_flags, clone_args.tls);
+    #[cfg(not(target_arch = "x86_64"))]
+    clone_tls_pointer(child_user_ctx.as_mut(), clone_flags, clone_args.tls);
 
     // Clone the file table
     let child_file_table = clone_files(thread_local.borrow_file_table().unwrap(), clone_flags);
@@ -494,7 +531,7 @@ fn clone_child_process(
     clone_sysvsem(clone_flags)?;
 
     // Clone FPU context
-    let child_fpu_context = thread_local.fpu().clone_context();
+    let child_fpu_context = thread_local.supp_user_context().fpu().get();
 
     // Clone the namespaces
     let child_user_ns = clone_user_ns(clone_flags, thread_local)?;
@@ -531,32 +568,38 @@ fn clone_child_process(
     let child_tid = allocate_posix_tid();
 
     let child = {
+        let child_vmar_arc = child_vmar.clone_arc();
+
         let mut child_thread_builder = {
-            let thread_name = {
-                let executable_path = child_vmar.process_vm().executable_file();
-                thread_local
-                    .borrow_fs()
-                    .resolver()
-                    .read()
-                    .make_abs_path(executable_path)
-                    .into_string()
-            };
-            let child_thread_name = ThreadName::new_from_executable_path(&thread_name);
+            // Inherit the parent's thread name
+            let child_thread_name = *ctx.posix_thread.thread_name().lock();
 
             let credentials = {
                 let credentials = ctx.posix_thread.credentials();
                 Credentials::new_from(&credentials)
             };
 
-            PosixThreadBuilder::new(child_tid, child_thread_name, child_user_ctx, credentials)
-                .sig_mask(child_sig_mask)
-                .file_table(child_file_table)
-                .fs(child_fs)
-                .fpu_context(child_fpu_context)
-                .user_ns(child_user_ns.clone())
-                .ns_proxy(child_ns_proxy)
-                .default_timer_slack_ns(default_timer_slack_ns)
+            PosixThreadBuilder::new(
+                child_tid,
+                child_thread_name,
+                child_user_ctx,
+                credentials,
+                child_vmar,
+            )
+            .sig_mask(child_sig_mask)
+            .file_table(child_file_table)
+            .fs(child_fs)
+            .fpu_context(child_fpu_context)
+            .user_ns(child_user_ns.clone())
+            .ns_proxy(child_ns_proxy)
+            .default_timer_slack_ns(default_timer_slack_ns)
         };
+        #[cfg(target_arch = "x86_64")]
+        {
+            child_thread_builder = child_thread_builder
+                .fs_base(child_fs_base)
+                .gs_base(child_gs_base);
+        }
 
         // Deal with SETTID/CLEARTID flags
         clone_parent_settid(child_tid, clone_args.parent_tid, clone_flags)?;
@@ -567,7 +610,7 @@ fn clone_child_process(
 
         create_child_process(
             child_tid,
-            child_vmar,
+            child_vmar_arc,
             child_resource_limits,
             child_nice,
             child_oom_score_adj,
@@ -626,11 +669,11 @@ fn clone_parent_settid(
     Ok(())
 }
 
-fn clone_vmar(parent_vmar: &Arc<Vmar>, clone_flags: CloneFlags) -> Result<Arc<Vmar>> {
+fn clone_vmar(parent_vmar: &VmarHandle, clone_flags: CloneFlags) -> Result<VmarHandle> {
     // If CLONE_VM is set, the child and parent share the same VMAR.
     // Otherwise, the child has a copy of the parent's VMAR.
     if clone_flags.contains(CloneFlags::CLONE_VM) {
-        Ok(parent_vmar.clone())
+        Ok(parent_vmar.clone_handle())
     } else {
         Ok(Vmar::fork_from(parent_vmar)?)
     }
@@ -640,8 +683,6 @@ fn clone_user_ctx(
     parent_context: &UserContext,
     new_sp: Option<NonZeroU64>,
     stack_size: Option<NonZeroU64>,
-    tls: u64,
-    clone_flags: CloneFlags,
 ) -> UserContext {
     let mut child_context = parent_context.clone();
     // The return value in the child thread is zero.
@@ -656,11 +697,32 @@ fn clone_user_ctx(
             child_context.set_stack_pointer(new_sp.get() as usize);
         }
     }
+
+    child_context
+}
+
+#[cfg(target_arch = "x86_64")]
+fn clone_tls_regs(
+    thread_local: &ThreadLocal,
+    clone_flags: CloneFlags,
+    tls: u64,
+) -> (FsBase, GsBase) {
+    let supp = thread_local.supp_user_context();
+    let child_fs_base = if clone_flags.contains(CloneFlags::CLONE_SETTLS) {
+        FsBase::new(tls as usize)
+    } else {
+        supp.fs_base().get()
+    };
+    let child_gs_base = supp.gs_base().get();
+
+    (child_fs_base, child_gs_base)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn clone_tls_pointer(child_context: &mut UserContext, clone_flags: CloneFlags, tls: u64) {
     if clone_flags.contains(CloneFlags::CLONE_SETTLS) {
         child_context.set_tls_pointer(tls as usize);
     }
-
-    child_context
 }
 
 fn clone_fs(parent_fs: &Arc<ThreadFsInfo>, clone_flags: CloneFlags) -> Arc<ThreadFsInfo> {
@@ -679,7 +741,7 @@ fn clone_files(parent_file_table: &RwArc<FileTable>, clone_flags: CloneFlags) ->
     if clone_flags.contains(CloneFlags::CLONE_FILES) {
         parent_file_table.clone()
     } else {
-        RwArc::new(parent_file_table.read().clone())
+        FileTable::fork_from(&parent_file_table.read())
     }
 }
 
@@ -725,16 +787,20 @@ fn clone_pidfd(
     };
 
     // Since `write_val` may sleep, we cannot hold the file table lock during its execution.
-    // FIXME: Should we remove the file from the file table if the write operation fails?
     match ctx
         .user_space()
         .write_val(pidfd_addr, &RawFileDesc::from(fd))
     {
         Ok(()) => Ok(()),
         Err(err) => {
-            let file_table = ctx.thread_local.borrow_file_table();
-            let mut file_table_locked = file_table.unwrap().write();
-            file_table_locked.close_file(fd);
+            // FIXME: Introduce reserved FDs to ensure that the file is never visible to user space
+            // before `write_val` succeeds and cleanup closes the exact reserved FD below.
+            let closed_file = {
+                let file_table = ctx.thread_local.borrow_file_table();
+                let mut file_table_locked = file_table.unwrap().write();
+                file_table_locked.close_file(fd)
+            };
+            drop(closed_file);
             Err(err.into())
         }
     }

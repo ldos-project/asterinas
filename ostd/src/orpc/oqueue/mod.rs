@@ -632,7 +632,7 @@ pub type RefProducer<T> = GenericRefProducer<<T as Element>::Descriptor>;
 /// takes ownership.
 pub struct Consumer<T: 'static> {
     oqueue: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
+    _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T> Drop for Consumer<T> {
@@ -693,7 +693,7 @@ impl<T: Send + 'static> Consumer<T> {
 /// dropped.
 pub struct InlineConsumer<T: 'static> {
     oqueue: Arc<implementation::OQueueImplementation<LifetimelessElementDescriptor<T>>>,
-    _phantom: PhantomData<core::cell::Cell<()>>,
+    _phantom: PhantomData<Cell<()>>,
 }
 
 impl<T> Drop for InlineConsumer<T> {
@@ -720,7 +720,7 @@ pub struct StrongObserver<U> {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
     observer_id: ObserverKey,
     convert_to_inline: ConvertToInlineFn<U>,
-    _phantom: PhantomData<core::cell::Cell<U>>,
+    _phantom: PhantomData<Cell<U>>,
 }
 
 impl<U> Drop for StrongObserver<U> {
@@ -813,7 +813,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
 pub struct InlineStrongObserver {
     oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
     inline_observer_id: InlineObserverKey,
-    _phantom: PhantomData<core::cell::Cell<()>>,
+    _phantom: PhantomData<Cell<()>>,
 }
 
 impl Drop for InlineStrongObserver {
@@ -930,13 +930,7 @@ mod test {
     use core::assert_matches;
 
     use super::*;
-    use crate::{
-        orpc::oqueue::{generic_test, registry},
-        prelude::*,
-        static_path,
-        sync::SpinLock,
-        trace_structured_data,
-    };
+    use crate::{prelude::*, static_path, sync::SpinLock, trace_structured_data};
 
     #[derive(Debug, Clone, PartialEq, Eq, Element)]
     struct Message {
@@ -1273,7 +1267,7 @@ mod test {
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
-        let received: Arc<SpinLock<alloc::vec::Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
+        let received: Arc<SpinLock<Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
 
         let inline_consumer = consumer
             .consume_inline({
@@ -1304,7 +1298,7 @@ mod test {
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
             .unwrap();
 
-        let observed_ids: Arc<SpinLock<alloc::vec::Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
+        let observed_ids: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
 
         let inline_observer = observer
             .strong_observe_inline({
@@ -1337,7 +1331,7 @@ mod test {
             .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
             .unwrap();
 
-        let observed_ids: Arc<SpinLock<alloc::vec::Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
+        let observed_ids: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
 
         let inline_observer = observer
             .strong_observe_inline({
@@ -1365,8 +1359,7 @@ mod test {
         let queue = ConsumableOQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
 
-        let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
-            Arc::new(SpinLock::new(Vec::new()));
+        let observed_messages: Arc<SpinLock<Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
 
         let inline_observer = queue
             .attach_inline_strong_observer({
@@ -1396,8 +1389,7 @@ mod test {
         let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
 
-        let observed_messages: Arc<SpinLock<alloc::vec::Vec<Message>>> =
-            Arc::new(SpinLock::new(Vec::new()));
+        let observed_messages: Arc<SpinLock<Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
 
         let inline_observer = queue
             .attach_inline_strong_observer({

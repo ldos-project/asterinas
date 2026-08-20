@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::sync::SpinLock;
-
 use super::file::PtySlaveFile;
 use crate::{
     device::{
@@ -13,7 +11,7 @@ use crate::{
         },
     },
     events::IoEvents,
-    fs::file::FileIo,
+    fs::file::PerOpenFileOps,
     prelude::*,
     process::signal::Pollee,
     util::{
@@ -121,7 +119,7 @@ impl TtyDriver for PtyDriver {
         None
     }
 
-    fn open(tty: Arc<Tty<Self>>) -> Result<Box<dyn FileIo>> {
+    fn open(tty: Arc<Tty<Self>>) -> Result<Box<dyn PerOpenFileOps>> {
         Ok(Box::new(PtySlaveFile::new(tty)?))
     }
 

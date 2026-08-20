@@ -9,7 +9,7 @@ use aster_bigtcp::{
 use super::{connected::ConnectedStream, init::InitStream, observer::StreamObserver};
 use crate::{
     events::IoEvents,
-    net::iface::{BoundPort, Iface, TcpConnection},
+    net::iface::{BoundTcpPort, Iface, TcpConnection},
     prelude::*,
 };
 
@@ -26,11 +26,11 @@ pub(super) enum ConnResult {
 
 impl ConnectingStream {
     pub(super) fn new(
-        bound_port: BoundPort,
+        bound_port: BoundTcpPort,
         remote_endpoint: IpEndpoint,
         option: &RawTcpOption,
         observer: StreamObserver,
-    ) -> core::result::Result<Self, (Error, BoundPort)> {
+    ) -> Result<Self, (Error, BoundTcpPort)> {
         let tcp_conn =
             match TcpConnection::new_connect(bound_port, remote_endpoint, option, observer) {
                 Ok(tcp_conn) => tcp_conn,
@@ -82,9 +82,10 @@ impl ConnectingStream {
                 self.remote_endpoint,
                 true,
             )),
-            ConnectState::Refused => ConnResult::Refused(InitStream::new_refused(
-                self.tcp_conn.into_bound_port().unwrap(),
-            )),
+            ConnectState::Refused => {
+                let bound_port = self.tcp_conn.into_bound_port().unwrap();
+                ConnResult::Refused(InitStream::new_refused(bound_port))
+            }
         }
     }
 
@@ -100,7 +101,7 @@ impl ConnectingStream {
         self.tcp_conn.iface()
     }
 
-    pub(super) fn bound_port(&self) -> &BoundPort {
+    pub(super) fn bound_port(&self) -> &BoundTcpPort {
         self.tcp_conn.bound_port()
     }
 

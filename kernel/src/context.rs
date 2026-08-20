@@ -7,7 +7,7 @@ use core::cell::Ref;
 use inherit_methods_macro::inherit_methods;
 use ostd::{
     error::PageFaultSnafu,
-    mm::{Fallible, PodAtomic, VmIo, VmReader, VmWriter},
+    mm::{Fallible, PodAtomic, VmIo},
     task::Task,
 };
 
@@ -18,22 +18,22 @@ use crate::{
         posix_thread::{PosixThread, ThreadLocal},
     },
     thread::Thread,
-    vm::vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, Vmar},
+    vm::vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, Vmar, VmarHandle},
 };
 
 /// The context that can be accessed from the current POSIX thread.
 #[derive(Clone)]
 pub struct Context<'a> {
-    pub process: Arc<Process>,
-    pub thread_local: &'a ThreadLocal,
-    pub posix_thread: &'a PosixThread,
-    pub thread: &'a Thread,
+    pub(crate) process: Arc<Process>,
+    pub(crate) thread_local: &'a ThreadLocal,
+    pub(crate) posix_thread: &'a PosixThread,
+    pub(crate) thread: &'a Thread,
     pub task: &'a Task,
 }
 
 impl Context<'_> {
     /// Gets the userspace of the current task.
-    pub fn user_space(&self) -> CurrentUserSpace<'_> {
+    pub(crate) fn user_space(&self) -> CurrentUserSpace<'_> {
         CurrentUserSpace(self.thread_local.vmar().borrow())
     }
 }
@@ -48,7 +48,7 @@ impl Context<'_> {
 // code lints (for *lots of* types that are recursively reached via `CurrentUserSpace`'s APIs). As
 // a workaround, we mark the type as `pub(crate)`. We can restore it to `pub` once the compiler bug
 // is resolved.
-pub(crate) struct CurrentUserSpace<'a>(Ref<'a, Option<Arc<Vmar>>>);
+pub(crate) struct CurrentUserSpace<'a>(Ref<'a, Option<VmarHandle>>);
 
 /// Gets the [`CurrentUserSpace`] from the current task.
 ///
@@ -90,14 +90,7 @@ impl<'a> CurrentUserSpace<'a> {
 
     /// Takes a snapshot of the current VMAR identity.
     pub fn vmar_snapshot(&self) -> VmarSnapshot {
-        VmarSnapshot::from(Arc::downgrade(self.0.as_ref().unwrap()))
-    }
-
-    /// Returns whether the VMAR is shared with other processes or threads.
-    pub fn is_vmar_shared(&self) -> bool {
-        // If the VMAR is not shared, its reference count should be exactly 2:
-        // one reference is held by `ThreadLocal` and the other by `ProcessVm` in `Process`.
-        Arc::strong_count(self.0.as_ref().unwrap()) > 2
+        VmarSnapshot::from(self.0.as_ref().unwrap().clone_weak())
     }
 
     /// Creates a reader to read data from the user space of the current task.

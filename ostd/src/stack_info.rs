@@ -27,7 +27,7 @@ pub struct Location {
     pub column: u32,
 }
 
-impl fmt::Display for Location {
+impl Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -179,9 +179,9 @@ mod test {
             r#"
 Context for manual checking:
 {}
-The above line should be parsed by: 
-cargo osdk enhance-log -b target/osdk/ostd/ostd-osdk-bin qemu.log 
-and generate a stack trace with the top frame 
+The above line should be parsed by:
+cargo osdk enhance-log -b target/osdk/ostd/ostd-osdk-bin qemu.log
+and generate a stack trace with the top frame
 `ostd::stack_info::test::stack_info_for_manual_checking`.
 "#,
             context

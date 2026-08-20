@@ -17,7 +17,7 @@ use crate::{
         file::{InodeMode, InodeType, StatusFlags, mkmod},
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, Inode, InodeIo, Metadata},
+            inode::{Extension, FileOps, Inode, Metadata},
         },
     },
     prelude::*,
@@ -72,7 +72,7 @@ impl MetadataInode {
     }
 }
 
-impl InodeIo for MetadataInode {
+impl FileOps for MetadataInode {
     fn read_at(
         &self,
         offset: usize,
@@ -95,7 +95,7 @@ impl InodeIo for MetadataInode {
 #[inherit_methods(from = "self.common")]
 impl Inode for MetadataInode {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;

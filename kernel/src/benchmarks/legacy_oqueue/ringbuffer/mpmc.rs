@@ -123,7 +123,7 @@ unsafe impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> Send
 // ostd is very simple, and misaligned allocations can lead to fragmentation because the allocator
 // doesn't coalesce often enough.
 fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
-    let elem_size = core::mem::size_of::<Slot<T>>();
+    let elem_size = size_of::<Slot<T>>();
     let total_size = elem_size * len;
 
     if total_size < 4096 {
@@ -696,8 +696,8 @@ impl<T: Copy + Send + 'static, const WEAK_OBSERVERS: bool> MPMCOQueue<T, true, W
 
             let oqueue = self.get_this()?;
             Ok(Box::new(MPMCStrongObserver {
-                observer_id,
                 oqueue,
+                observer_id,
                 _phantom: PhantomData,
             }) as _)
         }

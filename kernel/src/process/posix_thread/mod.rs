@@ -3,6 +3,7 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
+use aster_util::fixed_str::FixedCStr;
 use ostd::{
     sync::{RoArc, RwMutexReadGuard, Waker},
     task::Task,
@@ -29,9 +30,10 @@ use crate::{
 
 pub mod alien_access;
 mod builder;
+mod cpu_sync;
 mod exit;
 pub mod futex;
-mod name;
+mod personality;
 mod posix_thread_ext;
 pub mod ptrace;
 mod robust_list;
@@ -40,7 +42,7 @@ mod thread_local;
 pub use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
-pub use name::{MAX_THREAD_NAME_LEN, ThreadName};
+pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;
 pub use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
@@ -74,12 +76,11 @@ pub struct PosixThread {
     /// when enqueuing a signal, along with the reason why the thread is paused.
     signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
 
+    // Time
     /// A profiling clock measures the user CPU time and kernel CPU time in the thread.
     prof_clock: Arc<ProfClock>,
-
     /// A manager that manages timers based on the user CPU time of the current thread.
     virtual_timer_manager: Arc<TimerManager>,
-
     /// A manager that manages timers based on the profiling clock of the current thread.
     prof_timer_manager: Arc<TimerManager>,
 
@@ -94,14 +95,17 @@ pub struct PosixThread {
     /// The default timer slack value for this thread.
     default_timer_slack_ns: AtomicU64,
 
+    // Ptrace
     /// Status of being traced.
     tracee_status: Once<TraceeStatus>,
-
     /// Threads traced by this thread.
     tracees: Once<Mutex<BTreeMap<Tid, Arc<Thread>>>>,
 
     /// Exit code of this thread.
     exit_code: AtomicU32,
+
+    /// The personality value for this thread.
+    personality: AtomicU32,
 }
 
 impl PosixThread {
@@ -385,6 +389,20 @@ impl ContextPthreadAdminApi for Context<'_> {
     fn credentials_mut(&self) -> Credentials<ReadWriteOp> {
         self.posix_thread.credentials.dup().restrict()
     }
+}
+
+const MAX_THREAD_NAME_LEN: usize = 16;
+pub type ThreadName = FixedCStr<MAX_THREAD_NAME_LEN>;
+
+/// Derives a thread name from the last component of an executable path.
+///
+/// The name is truncated to fit within [`ThreadName`].
+pub fn derive_thread_name(exec_path: &str) -> ThreadName {
+    let Some(path) = exec_path.split('/').next_back() else {
+        return ThreadName::new_zeroed();
+    };
+
+    ThreadName::from_str_truncated(path)
 }
 
 /// The TID of the first POSIX thread (i.e., the main thread of the init process).

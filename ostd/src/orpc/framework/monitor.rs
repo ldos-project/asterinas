@@ -78,8 +78,8 @@ mod tests {
 
     fn spawn_server() -> Arc<TestServer> {
         let server = TestServer::new_with(|orpc_internal, _| TestServer {
-            orpc_internal,
             monitor: TestStateMonitor::new(Path::test()),
+            orpc_internal,
         });
         server.monitor.start(server.clone(), TestState { x: 0 });
         server

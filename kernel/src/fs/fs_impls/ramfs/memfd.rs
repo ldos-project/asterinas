@@ -6,7 +6,6 @@ use alloc::format;
 use core::time::Duration;
 
 use align_ext::AlignExt;
-use aster_block::bio::BioWaiter;
 use aster_rights::Rights;
 use inherit_methods_macro::inherit_methods;
 use spin::Once;
@@ -18,16 +17,20 @@ use crate::{
         tmpfs::TmpFs,
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, FallocMode, Inode, InodeIo, Metadata},
-            page_cache::{CachePage, PageCacheBackend},
+            inode::{Extension, FallocMode, FileOps, Inode, Metadata},
             path::{Mount, Path},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
     prelude::*,
     process::{Gid, Uid},
-    vm::{perms::VmPerms, vmo::Vmo},
+    vm::{page_cache::Vmo, perms::VmPerms},
 };
+
+pub(super) fn init() {
+    // Touch the mount node to trigger the initialization of all singletons.
+    let _ = MemfdTmpFs::mount_node();
+}
 
 /// Maximum file name length for `memfd_create`, excluding the final `\0` byte.
 ///
@@ -35,7 +38,7 @@ use crate::{
 pub const MAX_MEMFD_NAME_LEN: usize = 249;
 
 pub struct MemfdInode {
-    inode: Arc<RamInode>,
+    inode: RamInode,
     name: String,
     seals: Mutex<FileSeals>,
 }
@@ -93,14 +96,7 @@ impl MemfdInode {
 }
 
 #[inherit_methods(from = "self.inode")]
-impl PageCacheBackend for MemfdInode {
-    fn read_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter>;
-    fn write_page_async(&self, idx: usize, frame: &CachePage) -> Result<BioWaiter>;
-    fn npages(&self) -> usize;
-}
-
-#[inherit_methods(from = "self.inode")]
-impl InodeIo for MemfdInode {
+impl FileOps for MemfdInode {
     fn read_at(
         &self,
         offset: usize,
@@ -152,7 +148,7 @@ impl InodeIo for MemfdInode {
 
 #[inherit_methods(from = "self.inode")]
 impl Inode for MemfdInode {
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn size(&self) -> usize;
     fn atime(&self) -> Duration;
     fn set_atime(&self, time: Duration);
@@ -236,36 +232,41 @@ impl MemfdInodeHandle for InodeHandle {
         if name.len() > MAX_MEMFD_NAME_LEN {
             return_errno_with_message!(Errno::EINVAL, "the memfd name is too long");
         }
-        let (allow_sealing, executable) = if memfd_flags.contains(MemfdFlags::MFD_NOEXEC_SEAL) {
-            (true, false)
-        } else {
-            (memfd_flags.contains(MemfdFlags::MFD_ALLOW_SEALING), true)
-        };
 
-        let mode = if executable {
-            mkmod!(a+rwx)
-        } else {
-            mkmod!(a+rw)
-        };
+        let memfd_inode = Arc::new_cyclic(|weak_self| {
+            let (allow_sealing, executable) = if memfd_flags.contains(MemfdFlags::MFD_NOEXEC_SEAL) {
+                (true, false)
+            } else {
+                (memfd_flags.contains(MemfdFlags::MFD_ALLOW_SEALING), true)
+            };
 
-        let mut seals = FileSeals::empty();
-        if !allow_sealing {
-            seals |= FileSeals::F_SEAL_SEAL;
-        }
-        if !executable {
-            seals |= FileSeals::F_SEAL_EXEC;
-        }
+            let mode = if executable {
+                mkmod!(a+rwx)
+            } else {
+                mkmod!(a+rw)
+            };
 
-        let memfd_inode = Arc::new_cyclic(|weak_self| MemfdInode {
-            inode: RamInode::new_file_detached_in_memfd(
+            let ram_inode = RamInode::new_file_detached_in_memfd(
                 weak_self,
                 MemfdTmpFs::singleton().sb().container_dev_id,
                 mode,
                 Uid::new_root(),
                 Gid::new_root(),
-            ),
-            name,
-            seals: Mutex::new(seals),
+            );
+
+            let mut seals = FileSeals::empty();
+            if !allow_sealing {
+                seals |= FileSeals::F_SEAL_SEAL;
+            }
+            if !executable {
+                seals |= FileSeals::F_SEAL_EXEC;
+            }
+
+            MemfdInode {
+                inode: ram_inode,
+                name,
+                seals: Mutex::new(seals),
+            }
         });
 
         let path = MemfdTmpFs::new_path(memfd_inode);
@@ -316,7 +317,7 @@ impl MemfdTmpFs {
     pub(self) fn singleton() -> &'static Arc<TmpFs> {
         static MEMFD_TMPFS: Once<Arc<TmpFs>> = Once::new();
 
-        MEMFD_TMPFS.call_once(TmpFs::new)
+        MEMFD_TMPFS.call_once(TmpFs::new_tmpfs)
     }
 
     pub(self) fn new_path(memfd_inode: Arc<MemfdInode>) -> Path {
@@ -329,7 +330,7 @@ impl MemfdTmpFs {
     fn mount_node() -> &'static Arc<Mount> {
         static MEMFD_TMPFS_MOUNT: Once<Arc<Mount>> = Once::new();
 
-        MEMFD_TMPFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()))
+        MEMFD_TMPFS_MOUNT.call_once(|| Mount::new_pseudo(Self::singleton().clone()).unwrap())
     }
 }
 

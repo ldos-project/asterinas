@@ -243,7 +243,7 @@ pub fn global_heap_allocator_slot_map(_attr: TokenStream, item: TokenStream) -> 
     // Rewrite the input `const fn __any_name__(layout: Layout) -> Option<SlotInfo> { ... }` to
     // `const extern "Rust" fn __global_heap_slot_info_from_layout(layout: Layout) -> Option<SlotInfo> { ... }`.
 
-    let item = parse_macro_input!(item as syn::ItemFn);
+    let item = parse_macro_input!(item as ItemFn);
     let fn_name = &item.sig.ident;
 
     // Reject if the input is not a `const fn`.
@@ -253,12 +253,47 @@ pub fn global_heap_allocator_slot_map(_attr: TokenStream, item: TokenStream) -> 
     );
 
     quote!(
-        /// SAFETY: The name does not collide with other symbols.
+        // SAFETY: The name does not collide with other symbols.
         #[unsafe(no_mangle)]
         const extern "Rust" fn __global_heap_slot_info_from_layout(
             layout: ::core::alloc::Layout,
         ) -> ::core::option::Option<::ostd::mm::heap::SlotInfo> {
             #fn_name(layout)
+        }
+
+        #item
+    )
+    .into()
+}
+
+/// A macro attribute to register a parser for early command line arguments.
+///
+/// The attributed function will be used to parse the early command line
+/// arguments. The function takes a single parameter of type `&str` and
+/// returns an `EarlyCmdline` struct.
+///
+/// Note that the function will be called during an early boot stage. It
+/// must not cause soundness issues even if OSTD has not been fully initialized
+/// (e.g., the heap may be unavailable). OSDK enforces this by only allowing
+/// the function to be `const`.
+#[proc_macro_attribute]
+pub fn early_cmdline_parser(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemFn);
+    let fn_name = &item.sig.ident;
+
+    // Reject if the input is not a `const fn`.
+    assert!(
+        item.sig.constness.is_some(),
+        "the annotated function must be `const`"
+    );
+
+    quote!(
+        // SAFETY: The name does not collide with other symbols.
+        #[unsafe(no_mangle)]
+        const extern "Rust" fn __early_cmdline_parser(
+            cmdline: &str,
+        ) -> ::ostd::boot::EarlyCmdline {
+            #fn_name(cmdline)
         }
 
         #item
@@ -361,7 +396,7 @@ pub fn ktest(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let fn_name = &input.sig.ident;
     let fn_ktest_item_name = Ident::new(
-        &format!("{}_ktest_item_{}", &input.sig.ident, &fn_id),
+        &format!("{}_ktest_item_{}", input.sig.ident, fn_id),
         proc_macro2::Span::call_site(),
     );
 

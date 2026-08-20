@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::collections::btree_map::BTreeMap;
-
 use aster_util::ranged_integer::RangedU32;
 use id_alloc::IdAlloc;
 
@@ -33,7 +31,7 @@ impl<T> IpcIds<T> {
     }
 
     /// Calls `op` with the object identified by `id`.
-    pub(super) fn with<R, F>(&self, id: IpcId, op: F) -> core::result::Result<R, IdNotExistError>
+    pub(super) fn with<R, F>(&self, id: IpcId, op: F) -> Result<R, IdNotExistError>
     where
         F: FnOnce(&T) -> R,
     {

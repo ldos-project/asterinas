@@ -5,7 +5,7 @@ use aster_util::printer::VmPrinter;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::inode::Inode,
     },
     prelude::*,
@@ -13,16 +13,16 @@ use crate::{
 };
 
 /// Represents the inode at `/proc/sys/kernel/cap_last_cap`.
-pub struct CapLastCapFileOps;
+pub(super) struct CapLastCapFileOps;
 
 impl CapLastCapFileOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/kernel/sysctl.c#L1701>
         ProcFile::new(Self, parent, mkmod!(a+r))
     }
 }
 
-impl FileOps for CapLastCapFileOps {
+impl ProcFileOps for CapLastCapFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 

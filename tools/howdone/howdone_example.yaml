@@ -6,7 +6,7 @@ commands:
   hostname: hostname
   dirty.diff: git diff --stat HEAD
   git_status.txt: git status
-  ps-ax.txt: 
+  ps-ax.txt:
     command: ps ax
     when: before
   df.txt: df

@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! signalfd implementation for Linux compatibility
+//! signalfd implementation for Linux compatibility.
 //!
 //! The signalfd mechanism allows receiving signals via file descriptor,
 //! enabling better integration with event loops.
 //! See <https://man7.org/linux/man-pages/man2/signalfd.2.html>.
 
-use core::{
-    fmt::Display,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{fmt::Display, sync::atomic::Ordering};
 
 use bitflags::bitflags;
 use ostd::mm::VmIo;
@@ -19,11 +16,10 @@ use crate::{
     events::IoEvents,
     fs::{
         file::{
-            CreationFlags, FileLike, StatusFlags,
+            AccessMode, CreationFlags, FileCommon, FileLike, StatusFlags,
             file_table::{FdFlags, RawFileDesc, get_file_fast},
         },
         pseudofs::AnonInodeFs,
-        vfs::path::Path,
     },
     prelude::*,
     process::{
@@ -37,7 +33,7 @@ use crate::{
     },
 };
 
-/// Creates a new signalfd or updates an existing one according to the given mask
+/// Creates a new signalfd or updates an existing one according to the given mask.
 pub fn sys_signalfd(
     fd: RawFileDesc,
     mask_ptr: Vaddr,
@@ -47,7 +43,7 @@ pub fn sys_signalfd(
     sys_signalfd4(fd, mask_ptr, sizemask, 0, ctx)
 }
 
-/// Creates a new signalfd or updates an existing one according to the given mask and flags
+/// Creates a new signalfd or updates an existing one according to the given mask and flags.
 pub fn sys_signalfd4(
     raw_fd: RawFileDesc,
     mask_ptr: Vaddr,
@@ -61,7 +57,7 @@ pub fn sys_signalfd4(
     );
 
     if sizemask != size_of::<SigMask>() {
-        return Err(Error::with_message(Errno::EINVAL, "invalid mask size"));
+        return_errno_with_message!(Errno::EINVAL, "invalid mask size");
     }
 
     let mut mask = ctx.user_space().read_val::<SigMask>(mask_ptr)?;
@@ -114,68 +110,67 @@ fn update_existing_signalfd(
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
     let signal_file = file
         .downcast_ref::<SignalFile>()
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "File descriptor is not a signalfd"))?;
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "the file is not a signal file"))?;
 
-    if signal_file.mask().load(Ordering::Relaxed) != new_mask {
-        signal_file.update_signal_mask(new_mask)?;
-    }
+    signal_file.update_signal_mask(new_mask);
     signal_file.set_non_blocking(non_blocking);
     Ok(raw_fd)
 }
 
 bitflags! {
-    /// Signal file descriptor creation flags
+    /// Signal file descriptor creation flags.
     struct SignalFileFlags: u32 {
         const O_CLOEXEC = CreationFlags::O_CLOEXEC.bits();
         const O_NONBLOCK = StatusFlags::O_NONBLOCK.bits();
     }
 }
 
-/// Signal file implementation
+/// Signal file implementation.
 ///
 /// Represents a file that can be used to receive signals
 /// as readable events.
 struct SignalFile {
-    /// Atomic signal mask for filtering signals
+    /// An atomic signal mask for filtering signals.
     signals_mask: AtomicSigMask,
-    /// Non-blocking mode flag
-    non_blocking: AtomicBool,
-    /// The pseudo path associated with this signalfd file.
-    pseudo_path: Path,
+    /// The common state for this signalfd file.
+    common: FileCommon,
 }
 
 impl SignalFile {
-    /// Create a new signalfd instance
+    /// Creates a new signalfd instance.
     fn new(mask: AtomicSigMask, non_blocking: bool) -> Self {
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[signalfd]".to_string());
+        let status_flags = if non_blocking {
+            StatusFlags::O_NONBLOCK
+        } else {
+            StatusFlags::empty()
+        };
 
         Self {
             signals_mask: mask,
-            non_blocking: AtomicBool::new(non_blocking),
-            pseudo_path,
+            common: FileCommon::new(pseudo_path, status_flags),
         }
     }
 
-    fn mask(&self) -> &AtomicSigMask {
-        &self.signals_mask
+    fn signal_mask(&self) -> SigMask {
+        self.signals_mask.load(Ordering::Relaxed)
     }
 
-    fn update_signal_mask(&self, new_mask: SigMask) -> Result<()> {
+    fn update_signal_mask(&self, new_mask: SigMask) {
         self.signals_mask.store(new_mask, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn set_non_blocking(&self, non_blocking: bool) {
-        self.non_blocking.store(non_blocking, Ordering::Relaxed);
     }
 
     fn is_non_blocking(&self) -> bool {
-        self.non_blocking.load(Ordering::Relaxed)
+        self.common.is_nonblocking()
     }
 
-    /// Check current readable I/O events
+    fn set_non_blocking(&self, non_blocking: bool) {
+        (self as &dyn FileLike).update_status_nonblock(non_blocking);
+    }
+
+    /// Checks current readable I/O events.
     fn check_io_events(&self, posix_thread: &PosixThread) -> IoEvents {
-        let mask = self.signals_mask.load(Ordering::Relaxed);
+        let mask = self.signal_mask();
         if posix_thread.pending_signals().intersects(mask) {
             IoEvents::IN
         } else {
@@ -183,10 +178,10 @@ impl SignalFile {
         }
     }
 
-    /// Attempt non-blocking read operation
+    /// Attempts non-blocking read operation.
     fn try_read(&self, writer: &mut VmWriter, thread: &PosixThread) -> Result<usize> {
-        // Mask is inverted to get the signals that are not blocked
-        let mask = !self.signals_mask.load(Ordering::Relaxed);
+        // We invert `signal_mask` to get the signals that are not blocked.
+        let mask = !self.signal_mask();
         let max_signals = writer.avail() / size_of::<SignalfdSiginfo>();
         let mut count = 0;
 
@@ -201,7 +196,7 @@ impl SignalFile {
         }
 
         if count == 0 {
-            return_errno!(Errno::EAGAIN);
+            return_errno_with_message!(Errno::EAGAIN, "no signals are pending");
         }
         Ok(count * size_of::<SignalfdSiginfo>())
     }
@@ -209,10 +204,8 @@ impl SignalFile {
 
 impl Pollable for SignalFile {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        let current = current_thread!();
-        let Some(posix_thread) = current.as_posix_thread() else {
-            return IoEvents::empty();
-        };
+        let thread = current_thread!();
+        let posix_thread = thread.as_posix_thread().unwrap();
 
         if let Some(poller) = poller {
             posix_thread.register_signalfd_poller(poller, mask);
@@ -225,13 +218,11 @@ impl Pollable for SignalFile {
 impl FileLike for SignalFile {
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
         if writer.avail() < size_of::<SignalfdSiginfo>() {
-            return_errno_with_message!(Errno::EINVAL, "Buffer too small for siginfo structure");
+            return_errno_with_message!(Errno::EINVAL, "the signal buffer is too small");
         }
 
         let thread = current_thread!();
-        let posix_thread = thread
-            .as_posix_thread()
-            .ok_or_else(|| Error::with_message(Errno::ESRCH, "Not a POSIX thread"))?;
+        let posix_thread = thread.as_posix_thread().unwrap();
 
         // Fast path: There are already pending signals or the signalfd is non-blocking.
         // So we don't need to create and register the poller.
@@ -252,25 +243,13 @@ impl FileLike for SignalFile {
         }
     }
 
-    fn write(&self, _reader: &mut VmReader) -> Result<usize> {
-        return_errno_with_message!(Errno::EBADF, "signalfd does not support write operations");
+    fn access_mode(&self) -> AccessMode {
+        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/signalfd.c#L276>.
+        AccessMode::O_RDWR
     }
 
-    fn status_flags(&self) -> StatusFlags {
-        if self.is_non_blocking() {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        }
-    }
-
-    fn set_status_flags(&self, new_flags: StatusFlags) -> Result<()> {
-        self.set_non_blocking(new_flags.contains(StatusFlags::O_NONBLOCK));
-        Ok(())
-    }
-
-    fn path(&self) -> &Path {
-        &self.pseudo_path
+    fn common(&self) -> &FileCommon {
+        &self.common
     }
 
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
@@ -289,14 +268,14 @@ impl FileLike for SignalFile {
             }
         }
 
-        let mut flags = self.status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common.status_flags().bits() | self.access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }
 
         Box::new(FdInfo {
             flags,
-            sigmask: self.mask().load(Ordering::Relaxed).into(),
+            sigmask: self.signal_mask().into(),
         })
     }
 }

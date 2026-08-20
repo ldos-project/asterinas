@@ -38,22 +38,17 @@
 //! For the TDX architecture specification see Intel's
 //! [TDX Module Specification](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-trust-domain-extensions.html).
 
-use alloc::sync::Arc;
-use core::{
-    mem::{offset_of, size_of},
-    time::Duration,
-};
+use core::{mem::offset_of, time::Duration};
 
 use aster_util::{field_ptr, safe_ptr::SafePtr};
 use device_id::{DeviceId, MinorId};
 use ostd::{
     const_assert,
-    mm::{FrameAllocOptions, HasPaddr, HasSize, PAGE_SIZE, USegment, VmIo, dma::DmaCoherent},
+    mm::{FrameAllocOptions, HasPaddr, HasSize, USegment, VmIo, dma::DmaCoherent},
     sync::{RwMutexWriteGuard, WaitQueue},
 };
 use spin::Once;
 use tdx_guest::{
-    SHARED_MASK,
     tdcall::{self, TdCallError},
     tdvmcall::{self, TdVmcallError},
 };
@@ -62,8 +57,8 @@ use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char::register},
     events::IoEvents,
     fs::{
-        file::{FileIo, StatusFlags},
-        vfs::inode::InodeIo,
+        file::{PerOpenFileOps, StatusFlags},
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
@@ -101,7 +96,7 @@ impl Device for TdxGuest {
         Some(DevtmpfsInodeMeta::new("tdx_guest"))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         Ok(Box::new(TdxGuestFile))
     }
 }
@@ -159,7 +154,7 @@ impl Pollable for TdxGuestFile {
     }
 }
 
-impl InodeIo for TdxGuestFile {
+impl FileOps for TdxGuestFile {
     fn read_at(
         &self,
         _offset: usize,
@@ -179,7 +174,7 @@ impl InodeIo for TdxGuestFile {
     }
 }
 
-impl FileIo for TdxGuestFile {
+impl PerOpenFileOps for TdxGuestFile {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "seek is not supported")
     }
@@ -188,7 +183,7 @@ impl FileIo for TdxGuestFile {
         false
     }
 
-    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+    fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
         dispatch_ioctl!(match raw_ioctl {
@@ -265,7 +260,8 @@ pub fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
 
     // FIXME: The `get_quote` API from the `tdx_guest` crate should have been marked `unsafe`
     // because it has no way to determine if the input physical address is safe or not.
-    tdvmcall::get_quote((buf.paddr() as u64) | SHARED_MASK, buf.size() as u64)?;
+    let shared_mask = tdx_guest::shared_mask();
+    tdvmcall::get_quote((buf.paddr() as u64) | shared_mask, buf.size() as u64)?;
 
     // Poll for the quote to be ready.
     let status_ptr = field_ptr!(&header_ptr, TdxQuoteHdr, status);

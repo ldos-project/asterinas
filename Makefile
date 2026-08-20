@@ -3,7 +3,7 @@
 # =========================== Makefile options. ===============================
 
 # Global build options.
-OSDK_TARGET_ARCH ?= x86_64
+TARGET_ARCH ?= x86_64
 BENCHMARK ?= none
 BOOT_METHOD ?= grub-rescue-iso
 BOOT_PROTOCOL ?= multiboot2
@@ -22,7 +22,7 @@ FEATURES ?=
 ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
 BASELINE_ASTERINAS ?= 0
-RUSTFLAGS ?= 
+RUSTFLAGS ?=
 COVERAGE ?= 0
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
@@ -56,6 +56,11 @@ CONFORMANCE_TEST_WORKDIR ?= /tmp
 # - `kselftest` treats each entry as a blocklist file relative to its runner
 #   directory, and appends that file directly.
 EXTRA_BLOCKLISTS ?= ""
+# Parameters for xfstests.
+XFSTESTS_RUNLIST ?= /opt/xfstests/short.list
+XFSTESTS_DISK_SIZE ?= 12G
+XFSTESTS_TEST_DEV ?= /dev/vdd
+XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
 # End of auto test features.
@@ -90,12 +95,12 @@ AUTO_INSTALL ?= true
 
 # Cachix binary cache settings
 CACHIX_AUTH_TOKEN ?=
-RELEASE_CACHIX_NAME ?= 
-RELEASE_SUBSTITUTER ?= 
-RELEASE_TRUSTED_PUBLIC_KEY ?= 
-DEV_CACHIX_NAME ?= 
-DEV_SUBSTITUTER ?= 
-DEV_TRUSTED_PUBLIC_KEY ?= 
+RELEASE_CACHIX_NAME ?=
+RELEASE_SUBSTITUTER ?=
+RELEASE_TRUSTED_PUBLIC_KEY ?=
+DEV_CACHIX_NAME ?=
+DEV_SUBSTITUTER ?=
+DEV_TRUSTED_PUBLIC_KEY ?=
 # End of Cachix binary cache settings
 
 # Python formatting settings
@@ -112,18 +117,21 @@ EXTRA_PYTHON_FILES= \
 
 # ========================= End of Makefile options. ==========================
 
+export OSDK_TARGET_ARCH=$(TARGET_ARCH)
+
 SHELL := /bin/bash
 
 CARGO_OSDK := ~/.cargo/bin/cargo-osdk
 
 # Common arguments for `cargo osdk` `build`, `run` and `test` commands.
-CARGO_OSDK_COMMON_ARGS := --target-arch=$(OSDK_TARGET_ARCH)
+CARGO_OSDK_COMMON_ARGS :=
 # The build arguments also apply to the `cargo osdk run` command.
-CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
+CARGO_OSDK_BUILD_ARGS := --kcmd-args="loglevel=$(LOG_LEVEL)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="earlycon"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
 CARGO_OSDK_TEST_ARGS :=
 # Common arguments for all `cargo clippy` and `cargo osdk clippy` commands.
-CLIPPY_COMMON_ARGS := 
+CLIPPY_COMMON_ARGS :=
 
 # Rust Cache
 CARGO_CACHE := $(DOCKER_RUST_CACHE_LOCATION)/cargo
@@ -147,6 +155,11 @@ ENABLE_CONFORMANCE_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TEST_WORKDIR)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
+ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
+endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
@@ -171,7 +184,7 @@ CARGO_OSDK_COMMON_ARGS += --profile release-lto
 OSTD_TASK_STACK_SIZE_IN_PAGES = 8
 else ifeq ($(RELEASE), 1)
 CARGO_OSDK_COMMON_ARGS += --release
-	ifeq ($(OSDK_TARGET_ARCH), riscv64)
+	ifeq ($(TARGET_ARCH), riscv64)
 	# FIXME: Unwinding in RISC-V seems to cost more stack space, so we increase
 	# the stack size for it. This may need further investigation.
 	# See https://github.com/asterinas/asterinas/pull/2383#discussion_r2307673156
@@ -209,9 +222,9 @@ BOOT_METHOD = qemu-direct
 endif
 
 ifeq ($(SCHEME), "")
-	ifeq ($(OSDK_TARGET_ARCH), riscv64)
+	ifeq ($(TARGET_ARCH), riscv64)
 	SCHEME = riscv
-	else ifeq ($(OSDK_TARGET_ARCH), loongarch64)
+	else ifeq ($(TARGET_ARCH), loongarch64)
 	SCHEME = loongarch
 	endif
 endif
@@ -240,7 +253,7 @@ endif
 
 ifeq ($(BASELINE_ASTERINAS), 1)
 RUSTFLAGS += --cfg=baseline_asterinas
-CLIPPY_COMMON_ARGS += --cfg=baseline_asterinas -A unused-imports -A dead-code -A unfulfilled-lint-expectations
+CLIPPY_COMMON_ARGS += --cfg=baseline_asterinas -A unused-imports -A dead-code -A unfulfilled-lint-expectations -A redundant-imports
 endif
 
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's
@@ -250,14 +263,14 @@ CARGO_OSDK_COMMON_ARGS += --grub-mkrescue=/usr/bin/grub-mkrescue --grub-boot-pro
 else ifeq ($(BOOT_PROTOCOL), linux-efi-pe64)
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol="linux"
 else ifeq ($(BOOT_PROTOCOL), linux-legacy32)
-CARGO_OSDK_COMMON_ARGS += --linux-x86-legacy-boot --grub-boot-protocol="linux"
+CARGO_OSDK_COMMON_ARGS += --linux-x86-legacy-boot --grub-boot-protocol="linux" --strip-elf
 else
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol=$(BOOT_PROTOCOL)
 endif
 
 ifeq ($(ENABLE_KVM), 1)
 	ifeq ($(KVM_EXISTS), 1)
-		ifeq ($(OSDK_TARGET_ARCH), x86_64)
+		ifeq ($(TARGET_ARCH), x86_64)
 			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
 		endif
 	endif
@@ -476,19 +489,20 @@ docs: $(CARGO_OSDK)
 	@# Include --document-private-items to fully check internal documentation.
 	@RUSTDOCFLAGS="-Dwarnings --document-private-items -Arustdoc::private_intra_doc_links" \
 		cargo osdk doc -p aster-kernel --no-deps
-	@if [ "$(OSDK_TARGET_ARCH)" = "x86_64" ]; then \
+	@if [ "$(TARGET_ARCH)" = "x86_64" ]; then \
 		cd ostd/libs/linux-bzimage/setup && RUSTDOCFLAGS="-Dwarnings" cargo osdk doc --no-deps; \
 	fi
 
-.PHONY: book
-book: book/mermaid.min.js book/mermaid-init.js
-	@cd book && mdbook build
-
-book/mermaid.min.js book/mermaid-init.js:
-	@mdbook-mermaid install book/
-
 .PHONY: format
 format:
+	@# Trim trailing whitespace from all git-tracked, non-patch files
+	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
+	@git --git-dir=$$PWD/.git ls-files --no-directory | \
+		grep -v '[.]patch$$' | \
+		grep -v '^.claude/skills/aster-code-review$$' `# This is a symbolic link` | \
+		xargs sed -i 's/ *$$//'
+	@
+	@# Format the code using various tools
 	@./tools/format_all.sh
 	@nixfmt ./distro
 	@$(MAKE) --no-print-directory -C test/initramfs format
@@ -499,8 +513,12 @@ format:
 check: private WORKSPACE_MEMBER_DIRS = \
     $(shell ./tools/print_workspace_members.sh)
 check: $(CARGO_OSDK)
-	@# Check formatting issues of the Rust code
-	@./tools/format_all.sh --check
+	@# Check if any git-tracked, non-patch files contain trailing whitespace
+	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
+	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | xargs grep -I -d skip ' $$' ; then \
+		echo "Error: Files (as listed above) contain trailing whitespaces"; \
+		exit 1; \
+	fi
 	@
 	@# Check if all workspace members enable workspace lints
 	@for dir in $(WORKSPACE_MEMBER_DIRS); do \
@@ -510,8 +528,14 @@ check: $(CARGO_OSDK)
 		fi; \
 	done
 	@
+	@# Check formatting issues of the Rust code
+	@./tools/format_all.sh --check
+	@
 	@# Check compilation of the Rust code
-	@OSDK_TARGET_ARCH="$(OSDK_TARGET_ARCH)" ./tools/clippy_check.sh workspace -- $(CLIPPY_COMMON_ARGS)
+	@./tools/clippy_check.sh workspace -- $(CLIPPY_COMMON_ARGS)
+	@
+	@# Check formatting issues of Nix files under distro directory
+	@nixfmt --check ./distro
 	@
 	@# Check formatting issues of the C code and Nix files (regression tests)
 	@$(MAKE) --no-print-directory -C test/initramfs check

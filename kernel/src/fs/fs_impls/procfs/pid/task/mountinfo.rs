@@ -6,7 +6,7 @@ use super::TidDirOps;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{FileOps, ProcFile},
+        procfs::template::{ProcFile, ProcFileOps},
         vfs::{
             file_system::FsFlags,
             inode::Inode,
@@ -15,6 +15,7 @@ use crate::{
     },
     prelude::*,
     process::posix_thread::AsPosixThread,
+    thread::Thread,
 };
 
 /// A helper function to create the mount point path for a given mount (used by `mounts`,
@@ -43,10 +44,11 @@ pub(super) fn make_mount_point_path(
 
 /// A single entry in the mountinfo file.
 struct MountInfoEntry<'a> {
-    /// A unique ID for the mount (but not guaranteed to be unique across reboots).
-    mount_id: usize,
-    /// The ID of the parent mount (or self if it has no parent).
-    parent_id: usize,
+    /// The recyclable mount ID (matches [`Mount::id`]); reused after the
+    /// mount is dropped.
+    mount_id: u32,
+    /// The recyclable ID of the parent mount (or self if it has no parent).
+    parent_id: u32,
     /// The major device ID of the filesystem.
     major: u32,
     /// The minor device ID of the filesystem.
@@ -74,21 +76,21 @@ impl core::fmt::Display for MountInfoEntry<'_> {
             self.parent_id,
             self.major,
             self.minor,
-            &self.root,
-            &self.mount_point,
-            &self.mount_flags,
-            &self.fs_type,
-            &self.source,
-            &self.fs_flags,
+            self.root,
+            self.mount_point,
+            self.mount_flags,
+            self.fs_type,
+            self.source,
+            self.fs_flags,
         )
     }
 }
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/mountinfo` (and also `/proc/[pid]/mountinfo`).
-pub struct MountInfoFileOps(TidDirOps);
+pub(super) struct MountInfoFileOps(TidDirOps);
 
 impl MountInfoFileOps {
-    pub fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(dir: &TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/base.c#L3352>
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
@@ -109,6 +111,9 @@ impl MountInfoFileOps {
             let mount_id = mount.id();
             let parent = mount.parent().and_then(|parent| parent.upgrade());
             let parent_id = parent.as_ref().map_or(mount_id, |p| p.id());
+            let container_dev_id = mount.fs().sb().container_dev_id;
+            let major = container_dev_id.major().get() as u32;
+            let minor = container_dev_id.minor().get();
             let is_resolver_root_mount = Arc::ptr_eq(&mount, path_resolver.root().mount_node());
             let root = if is_resolver_root_mount {
                 path_resolver.root().dentry().path_name()
@@ -125,10 +130,6 @@ impl MountInfoFileOps {
             let fs_type = mount.fs().name();
             let source = mount.source().unwrap_or("none");
             let fs_flags = mount.fs().flags();
-
-            // The following fields are dummy for now.
-            let major = 0;
-            let minor = 0;
 
             let entry = MountInfoEntry {
                 mount_id,
@@ -150,7 +151,11 @@ impl MountInfoFileOps {
     }
 }
 
-impl FileOps for MountInfoFileOps {
+impl ProcFileOps for MountInfoFileOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.0.thread()
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let Some(thread) = self.0.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");

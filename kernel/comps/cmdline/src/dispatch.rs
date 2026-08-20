@@ -9,11 +9,14 @@ use alloc::{
     collections::BTreeMap,
     ffi::CString,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
 use component::{ComponentInitError, init_component};
 use spin::Once;
+
+use crate::early::is_early_param;
 
 /// The arguments passed to the init process, extracted from the kernel command line.
 #[derive(Debug, PartialEq)]
@@ -117,8 +120,8 @@ fn dispatch_params(cmdline: &str) -> InitprocArgs {
     }
 
     // Step 2: Tokenize the kernel command line and group recognized param by normalized name.
-    let mut grouped: BTreeMap<String, Vec<Option<&str>>> = BTreeMap::new();
-    for arg in split_arg(cmdline) {
+    let mut grouped: BTreeMap<String, (Vec<Option<&str>>, usize)> = BTreeMap::new();
+    for (pos, arg) in split_arg(cmdline).enumerate() {
         // Everything after "--" goes to init.
         if kcmdline_end {
             result.argv.push(CString::new(arg).unwrap());
@@ -138,7 +141,16 @@ fn dispatch_params(cmdline: &str) -> InitprocArgs {
 
         if registry.contains_key(normalized.as_str()) {
             // Group by normalized name
-            grouped.entry(normalized).or_default().push(value);
+            grouped
+                .entry(normalized)
+                .and_modify(|occurrences| {
+                    occurrences.0.push(value);
+                    occurrences.1 = pos;
+                })
+                .or_insert_with(|| (vec![value], pos));
+        } else if is_early_param(normalized.as_str()) {
+            // Handled by OSTD during bootstrap: do not forward to init
+            continue;
         } else {
             // Unknown parameter: forward to init
             if key.contains('.') {
@@ -160,15 +172,23 @@ fn dispatch_params(cmdline: &str) -> InitprocArgs {
     }
 
     // Step 3: Dispatch each group to its handler.
-    let (early_params, params): (Vec<_>, Vec<_>) = grouped
+    let (mut early_params, mut params): (Vec<_>, Vec<_>) = grouped
         .iter()
-        .filter_map(|(name, occurrences)| registry.get(name.as_str()).map(|p| (*p, occurrences)))
-        .partition(|(p, _)| p.early);
+        .filter_map(|(name, occurrences)| {
+            registry
+                .get(name.as_str())
+                .map(|param| (*param, occurrences.1, occurrences.0.as_slice()))
+        })
+        .partition(|(param, _, _)| param.early);
+
+    for pending_params in [&mut early_params, &mut params] {
+        pending_params.sort_by_key(|(_, last_pos, _)| *last_pos);
+    }
 
     early_params
         .into_iter()
         .chain(params)
-        .for_each(|(param, occurrences)| (param.setup_fn)(occurrences));
+        .for_each(|(param, _, occurrences)| (param.setup_fn)(occurrences));
 
     result
 }
@@ -205,6 +225,13 @@ mod tests {
     }
 
     #[ktest]
+    fn early_params_not_forwarded() {
+        let args = dispatch_params("earlycon loglevel=3");
+        assert!(args.argv().is_empty());
+        assert!(args.envp().is_empty());
+    }
+
+    #[ktest]
     fn registered_params_not_forwarded() {
         static TEST_VARIABLE: Once<u32> = Once::new();
         static TEST_VARIABLE_REPEATED: Once<Vec<String>> = Once::new();
@@ -215,5 +242,50 @@ mod tests {
         let args = dispatch_params("log_level=4 console=ttyS0 console=ttyS1");
         assert!(args.argv().is_empty());
         assert!(args.envp().is_empty());
+    }
+
+    #[ktest]
+    fn registered_params_dispatched_by_last_position() {
+        use core::sync::atomic::{AtomicU8, Ordering};
+
+        struct SetOne;
+        struct SetTwo;
+
+        static VALUE: AtomicU8 = AtomicU8::new(0);
+        static SET_ONE: SetOne = SetOne;
+        static SET_TWO: SetTwo = SetTwo;
+
+        impl crate::parse::ParamStorage for SetOne {
+            type Value = bool;
+
+            fn store_param(&self, value: Self::Value) {
+                if value {
+                    VALUE.store(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        impl crate::parse::ParamStorage for SetTwo {
+            type Value = bool;
+
+            fn store_param(&self, value: Self::Value) {
+                if value {
+                    VALUE.store(2, Ordering::Relaxed);
+                }
+            }
+        }
+
+        crate::define_flag_param!("test_set_one", SET_ONE);
+        crate::define_flag_param!("test_set_two", SET_TWO);
+
+        let args = dispatch_params("test_set_one test_set_two");
+        assert!(args.argv().is_empty());
+        assert!(args.envp().is_empty());
+        assert_eq!(VALUE.load(Ordering::Relaxed), 2);
+
+        let args = dispatch_params("test_set_two test_set_one");
+        assert!(args.argv().is_empty());
+        assert!(args.envp().is_empty());
+        assert_eq!(VALUE.load(Ordering::Relaxed), 1);
     }
 }

@@ -16,13 +16,14 @@ use core::{
 use aster_block::{
     BlockDeviceMeta, EXTENDED_DEVICE_ID_ALLOCATOR, PartitionInfo, PartitionNode,
     bio::{
-        Bio, BioEnqueueError, BioStatus, BioType, BioWaiter, BlockDeviceCompletionStats,
-        SubmittedBio, bio_segment_pool_init,
+        Bio, BioEnqueueError, BioStatus, BioType, BlockDeviceCompletionStats, SubmittedBio,
+        bio_segment_pool_init,
     },
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
+use io_util::batch::IoBatch;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef};
 #[cfg(not(baseline_asterinas))]
@@ -36,7 +37,7 @@ use ostd::{
 };
 use snafu::ResultExt;
 
-use super::{BlockFeatures, VirtioBlockConfig, VirtioBlockFeature};
+use super::{BlockFeatures, VirtioBlockConfig};
 #[cfg(not(baseline_asterinas))]
 use crate::device::block::{server_traits, server_traits::BlockIOObservable as _};
 use crate::{
@@ -47,7 +48,7 @@ use crate::{
     },
     id_alloc::SyncIdAlloc,
     queue::VirtQueue,
-    transport::{ConfigManager, VirtioTransport},
+    transport::{ConfigManager, DeviceTransport},
 };
 
 /// The number of minor device numbers allocated for each virtio disk,
@@ -112,7 +113,7 @@ impl BlockDevice {
     }
 
     /// Creates a new VirtIO-Block driver and registers it.
-    pub(crate) fn init(transport: Box<dyn VirtioTransport>) -> Result<(), VirtioDeviceError> {
+    pub(crate) fn init(device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
         let index = NR_BLOCK_DEVICE.fetch_add(1, Ordering::Relaxed);
         let id = DeviceId::new(
             VIRTIO_BLOCK_MAJOR_ID.get().unwrap().get(),
@@ -122,7 +123,7 @@ impl BlockDevice {
 
         // The inner device inherits this ID; it is the single source of truth
         // and is used to tag I/O completion stats.
-        let device = DeviceInner::init(transport, id)?;
+        let device = DeviceInner::init(device_transport, id)?;
 
         // Each bio request includes an additional 1 request and 1 response descriptor,
         // therefore this upper bound is set to (QUEUE_SIZE - 2).
@@ -146,7 +147,6 @@ impl BlockDevice {
             use ostd::orpc::framework::spawn_thread;
 
             let block_device_server = Self::new_with(|orpc_internal, weak_self| BlockDevice {
-                orpc_internal,
                 device,
                 queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
@@ -154,6 +154,7 @@ impl BlockDevice {
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
+                orpc_internal,
             });
 
             // Thread 2: Handle requests from the OQueue and enqueue them
@@ -192,14 +193,12 @@ impl BlockDevice {
     }
 
     /// Negotiate features for the device specified bits 0~23
-    pub(crate) fn negotiate_features(features: u64) -> u64 {
-        let mut support_features = BlockFeatures::from_bits_truncate(features);
-        support_features.remove(BlockFeatures::MQ);
-        support_features.bits
+    pub(crate) fn negotiate_features(device_features: u64) -> u64 {
+        BlockFeatures::negotiated_with_device(device_features).bits()
     }
 
-    pub fn submit(&self, bio: Bio) -> Result<BioWaiter, BioEnqueueError> {
-        bio.submit(self)
+    pub fn submit(&self, bio: Bio, io_batch: &mut IoBatch) -> Result<(), BioEnqueueError> {
+        bio.submit(self, io_batch)
     }
 }
 
@@ -304,9 +303,9 @@ impl aster_block::BlockDevice for BlockDevice {
 #[derive(Debug)]
 struct DeviceInner {
     config_manager: ConfigManager<VirtioBlockConfig>,
-    features: VirtioBlockFeature,
+    features: BlockFeatures,
     queue: SpinLock<VirtQueue>,
-    transport: SpinLock<Box<dyn VirtioTransport>>,
+    transport: SpinLock<DeviceTransport>,
     block_requests: Arc<DmaStream>,
     block_responses: Arc<DmaStream>,
     id_allocator: SyncIdAlloc,
@@ -324,21 +323,31 @@ impl DeviceInner {
     /// Creates and inits the device with the given `id` (assigned by the outer
     /// [`BlockDevice`] via standard device ID allocation).
     fn init(
-        mut transport: Box<dyn VirtioTransport>,
+        mut device_transport: DeviceTransport,
         id: DeviceId,
     ) -> Result<Arc<Self>, VirtioDeviceError> {
-        let config_manager = VirtioBlockConfig::new_manager(transport.as_ref());
+        let config_manager = VirtioBlockConfig::new_manager(device_transport.as_ref());
 
         let config = config_manager.read_config();
         debug!("virio_blk_config = {:?}", config);
 
-        let block_size = config_manager.block_size();
+        let features =
+            BlockFeatures::negotiated_with_device(device_transport.read_device_features());
+
+        let block_size = if features.contains(BlockFeatures::BLK_SIZE) {
+            config_manager.block_size()
+        } else {
+            // Fall back to standard sector size SECTOR_SIZE (512 bytes)
+            // Reference:
+            // <https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html#x1-2790004>
+            VirtioBlockConfig::sector_size()
+        };
         if block_size != VirtioBlockConfig::sector_size() {
             ostd::error!("block size {} is not supported yet", block_size);
             return UnsupportedConfigSnafu.fail();
         }
 
-        let num_queues = transport.num_queues();
+        let num_queues = device_transport.num_queues();
         if num_queues != 1 {
             // TODO: Support Multi-Queue Block IO Queueing Mechanism
             // (`BlkFeatures::MQ`) to accelerate multi-processor requests for
@@ -348,9 +357,7 @@ impl DeviceInner {
             );
         }
 
-        let features = VirtioBlockFeature::new(transport.as_ref());
-
-        let queue = VirtQueue::new(0, Self::QUEUE_SIZE, transport.as_mut())?;
+        let queue = VirtQueue::new(0, Self::QUEUE_SIZE, device_transport.as_mut())?;
 
         let block_requests = Arc::new(DmaStream::alloc(1, false).context(ResourceAllocSnafu)?);
         let block_responses = Arc::new(DmaStream::alloc(1, false).context(ResourceAllocSnafu)?);
@@ -363,14 +370,14 @@ impl DeviceInner {
             config_manager,
             features,
             queue: SpinLock::new(queue),
-            transport: SpinLock::new(transport),
+            transport: SpinLock::new(device_transport),
             block_requests,
             block_responses,
             id_allocator: SyncIdAlloc::with_capacity(Self::QUEUE_SIZE as usize),
             submitted_requests: SpinLock::new(BTreeMap::new()),
+            device_id: id,
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
-            device_id: id,
         });
 
         let cloned_device = device.clone();
@@ -385,12 +392,8 @@ impl DeviceInner {
 
         {
             let mut transport = device.transport.lock();
-            transport
-                .register_cfg_callback(Box::new(handle_config_change))
-                .unwrap();
-            transport
-                .register_queue_callback(0, Box::new(handle_irq), false)
-                .unwrap();
+            transport.register_cfg_callback(Box::new(handle_config_change))?;
+            transport.register_queue_callback(0, Box::new(handle_irq), false)?;
             transport.finish_init();
         }
 
@@ -424,7 +427,7 @@ impl DeviceInner {
                 Ok(RespStatus::Ok) => {}
                 _ => {
                     // Completes the bio request with an error
-                    complete_request.bio_request.bios().for_each(|bio| {
+                    complete_request.bio_request.into_bios().for_each(|bio| {
                         bio.complete(BioStatus::IoError);
                     });
                     continue;
@@ -446,8 +449,7 @@ impl DeviceInner {
 
             // Completes the bio request
             // let req_type = complete_request.bio_request.type_();
-            complete_request.bio_request.bios().for_each(|bio| {
-                bio.complete(BioStatus::Complete);
+            complete_request.bio_request.into_bios().for_each(|bio| {
                 #[cfg(not(baseline_asterinas))]
                 {
                     let pages = bio
@@ -459,6 +461,7 @@ impl DeviceInner {
                         .fetch_sub(1, Ordering::Relaxed);
                     bio.report_statistics();
                 }
+                bio.complete(BioStatus::Complete);
             });
         }
     }
@@ -571,7 +574,10 @@ impl DeviceInner {
                     .iter()
                     .map(|segment| segment.inner_dma_slice())
             });
-            inputs.extend(dma_slices_iter);
+            for dma_slice in dma_slices_iter {
+                dma_slice.sync_to_device().unwrap();
+                inputs.push(dma_slice);
+            }
             inputs
         };
 
@@ -605,8 +611,8 @@ impl DeviceInner {
     /// Flushes any cached data from the guest to the persistent storage on the host.
     /// This will be ignored if the device doesn't support the `VIRTIO_BLK_F_FLUSH` feature.
     fn flush(&self, bio_request: BioRequest) {
-        if self.features.support_flush {
-            bio_request.bios().for_each(|bio| {
+        if !self.features.contains(BlockFeatures::FLUSH) {
+            bio_request.into_bios().for_each(|bio| {
                 bio.complete(BioStatus::Complete);
             });
             return;

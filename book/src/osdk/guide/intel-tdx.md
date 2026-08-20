@@ -7,7 +7,7 @@ Intel TDX can provide a more secure environment for your OS.
 
 Please make sure your server supports Intel TDX.
 
-See [this guide](https://github.com/canonical/tdx/tree/noble-24.04?tab=readme-ov-file#4-setup-host-os)
+See [this guide](https://github.com/canonical/tdx#4-setup-host-os)
 or other materials to enable Intel TDX in host OS.
 
 To verify the TDX host status, you can type:
@@ -32,7 +32,7 @@ Therefore, it is recommended to use a Docker image to deploy the environment.
 Run a TDX Docker container:
 
 ```bash
-docker run -it --privileged --network=host -v /dev:/dev ldosproject/osdk:0.17.2-ldos-20260728
+docker run -it --privileged --network=host -v /dev:/dev ldosproject/osdk:0.18.0-ldos-20260818
 ```
 
 ## Edit `OSDK.toml` for Intel TDX support
@@ -60,7 +60,7 @@ qemu.args = '''\
     -drive file=target/osdk/asterinas/asterinas.qcow2,if=virtio,format=qcow2 \
     -monitor telnet:127.0.0.1:9001,server,nowait \
     -bios /root/ovmf/release/OVMF.fd \
-    -object '{ \"qom-type\": \"tdx-guest\", \"id\": \"tdx0\", \"sept-ve-disable\": true, \"quote-generation-socket\": { \"type\": \"vsock\", \"cid\": \"2\", \"port\": \"4050\" } }' \
+    -object '{ \"qom-type\": \"tdx-guest\", \"id\": \"tdx0\", \"sept-ve-disable\": true, \"quote-generation-socket\": { \"type\": \"vsock\", \"cid\": \"1\", \"port\": \"4050\" } }' \
     -cpu host,-kvm-steal-time,pmu=off \
     -machine q35,kernel-irqchip=split,confidential-guest-support=tdx0 \
     -smp 1 \

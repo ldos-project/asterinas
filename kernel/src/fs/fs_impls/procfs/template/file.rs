@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![short_vis_path::add(procfs)]
+
 use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
@@ -7,24 +9,25 @@ use inherit_methods_macro::inherit_methods;
 use super::Common;
 use crate::{
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags},
         procfs::{BLOCK_SIZE, ProcFs},
         vfs::{
             file_system::FileSystem,
-            inode::{Extension, Inode, InodeIo, Metadata, SymbolicLink},
+            inode::{Extension, FileOps, Inode, Metadata, SymbolicLink},
         },
     },
     prelude::*,
     process::{Gid, Uid},
+    thread::Thread,
 };
 
-pub struct ProcFile<F: FileOps> {
+pub(in procfs) struct ProcFile<F: ProcFileOps> {
     inner: F,
     common: Common,
 }
 
-impl<F: FileOps> ProcFile<F> {
-    pub fn new(file: F, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
+impl<F: ProcFileOps> ProcFile<F> {
+    pub(in procfs) fn new(file: F, parent: Weak<dyn Inode>, mode: InodeMode) -> Arc<Self> {
         let common = {
             let fs = parent.upgrade().unwrap().fs();
             let procfs = fs.downcast_ref::<ProcFs>().unwrap();
@@ -42,12 +45,12 @@ impl<F: FileOps> ProcFile<F> {
         })
     }
 
-    pub fn inner(&self) -> &F {
+    pub(in procfs) fn inner(&self) -> &F {
         &self.inner
     }
 }
 
-impl<F: FileOps + 'static> InodeIo for ProcFile<F> {
+impl<F: ProcFileOps + 'static> FileOps for ProcFile<F> {
     fn read_at(
         &self,
         offset: usize,
@@ -68,9 +71,8 @@ impl<F: FileOps + 'static> InodeIo for ProcFile<F> {
 }
 
 #[inherit_methods(from = "self.common")]
-impl<F: FileOps + 'static> Inode for ProcFile<F> {
+impl<F: ProcFileOps + 'static> Inode for ProcFile<F> {
     fn size(&self) -> usize;
-    fn metadata(&self) -> Metadata;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
@@ -86,6 +88,11 @@ impl<F: FileOps + 'static> Inode for ProcFile<F> {
     fn ctime(&self) -> Duration;
     fn set_ctime(&self, time: Duration);
     fn fs(&self) -> Arc<dyn FileSystem>;
+
+    fn metadata(&self) -> Result<Metadata> {
+        let owner_thread = self.inner.owner_thread();
+        Ok(self.common.metadata_with_owner(owner_thread))
+    }
 
     fn resize(&self, _new_size: usize) -> Result<()> {
         // Resizing files under `/proc` will succeed, but will do nothing.
@@ -113,12 +120,17 @@ impl<F: FileOps + 'static> Inode for ProcFile<F> {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         self.inner.open(access_mode, status_flags)
     }
 }
 
-pub trait FileOps: Sync + Send {
+pub(in procfs) trait ProcFileOps: Sync + Send {
+    /// Returns the thread whose credentials own this procfs inode.
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        None
+    }
+
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize>;
 
     fn write_at(&self, _offset: usize, _reader: &mut VmReader) -> Result<usize> {
@@ -129,16 +141,29 @@ pub trait FileOps: Sync + Send {
         &self,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         None
     }
 }
 
-pub trait FileOpsByHandle: Sync + Send {
-    fn open(&self, access_mode: AccessMode, status_flags: StatusFlags) -> Result<Box<dyn FileIo>>;
+pub(in procfs) trait ProcFileOpsByHandle: Sync + Send {
+    /// Returns the thread whose credentials own this procfs inode.
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        None
+    }
+
+    fn open(
+        &self,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+    ) -> Result<Box<dyn PerOpenFileOps>>;
 }
 
-impl<T: FileOpsByHandle> FileOps for T {
+impl<T: ProcFileOpsByHandle> ProcFileOps for T {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        ProcFileOpsByHandle::owner_thread(self)
+    }
+
     fn read_at(&self, _offset: usize, _writer: &mut VmWriter) -> Result<usize> {
         unreachable!("`read_at` is never called when `open` returns `Some(_)`")
     }
@@ -151,13 +176,13 @@ impl<T: FileOpsByHandle> FileOps for T {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.open(access_mode, status_flags))
     }
 }
 
 /// Reads a string from `reader` and parses it as an `i32`.
-pub fn read_i32_from(reader: &mut VmReader) -> Result<(i32, usize)> {
+pub(in procfs) fn read_i32_from(reader: &mut VmReader) -> Result<(i32, usize)> {
     /// Worst case buffer size needed for holding an integer.
     ///
     /// The longest possible string is `"-2147483648\n\0"`,
@@ -170,6 +195,25 @@ pub fn read_i32_from(reader: &mut VmReader) -> Result<(i32, usize)> {
         .ok()
         .map(|str| str.trim())
         .and_then(|str| str.parse::<i32>().ok())
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "the value is not a valid integer"))?;
+
+    Ok((val, read_bytes))
+}
+
+/// Reads a string from `reader` and parses it as a `u64`.
+pub(in procfs) fn read_u64_from(reader: &mut VmReader) -> Result<(u64, usize)> {
+    /// Worst case buffer size needed for holding a `u64`.
+    ///
+    /// The longest possible string is `"18446744073709551615\n\0"`,
+    /// whose length is 23 bytes.
+    const BUF_SIZE_U64: usize = 23;
+
+    let (cstr, read_bytes) = reader.read_cstring_until_end(BUF_SIZE_U64 - 1)?;
+    let val = cstr
+        .to_str()
+        .ok()
+        .map(|str| str.trim())
+        .and_then(|str| str.parse::<u64>().ok())
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "the value is not a valid integer"))?;
 
     Ok((val, read_bytes))

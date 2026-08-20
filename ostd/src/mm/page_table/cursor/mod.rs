@@ -106,7 +106,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         guard: &'rcu dyn InAtomicMode,
         va: &Range<Vaddr>,
     ) -> Result<Self, PageTableError> {
-        if !is_valid_range::<C>(va) || va.is_empty() {
+        if !is_valid_range::<C>(va) {
             return Err(PageTableError::InvalidVaddrRange(va.start, va.end));
         }
         if !va.start.is_multiple_of(C::BASE_PAGE_SIZE) || !va.end.is_multiple_of(C::BASE_PAGE_SIZE)
@@ -214,9 +214,12 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
         split_huge: bool,
     ) -> Option<Vaddr> {
         assert_eq!(len % C::BASE_PAGE_SIZE, 0);
+        assert!(
+            len <= self.barrier_va.end - self.va,
+            "len exceeds remaining cursor range"
+        );
 
         let end = self.va + len;
-        assert!(end <= self.barrier_va.end);
         debug_assert_eq!(end % C::BASE_PAGE_SIZE, 0);
 
         let rcu_guard = self.rcu_guard;
@@ -264,6 +267,13 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
                     continue;
                 }
             }
+        }
+
+        // If the last entry is absent or empty, but `barrier_va.end` sits in
+        // the middle, `self.move_forward()` will set `self.va` to exceed
+        // `barrier_va.end`. We fix it and ensure `self.va <= barrier_va.end`.
+        if self.va > self.barrier_va.end {
+            self.va = self.barrier_va.end;
         }
 
         None
@@ -458,9 +468,8 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
             0,
             "cursor virtual address not aligned for mapping"
         );
-        let end = self.0.va + size;
         assert!(
-            end <= self.0.barrier_va.end,
+            size <= self.0.barrier_va.end - self.0.va,
             "cursor virtual address out-of-bound for mapping"
         );
 
@@ -521,9 +530,10 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     /// # Safety
     ///
     /// The caller should ensure that:
-    ///  - the range being unmapped does not affect kernel's memory safety.
-    ///  - the items mapped in `PageTableFrag` must outlive any TLB entries
-    ///    that cache the mappings.
+    ///  - the range being unmapped does not affect kernel's memory safety;
+    ///  - there is no memory access to the unmapped range after dropping the
+    ///    items in `PageTableFrag` but before flushing TLB entries that cache
+    ///    the mappings.
     ///
     /// # Panics
     ///

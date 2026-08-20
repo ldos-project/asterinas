@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::{
-    fmt,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -47,7 +46,7 @@ pub struct LazyDelete<T> {
     delete_fn: Option<Box<dyn FnOnce(&mut T) + Send + Sync>>,
 }
 
-impl<T: fmt::Debug> fmt::Debug for LazyDelete<T> {
+impl<T: Debug> Debug for LazyDelete<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LazyDelete")
             .field("obj", &self.obj)

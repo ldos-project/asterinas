@@ -42,8 +42,7 @@ use core::{
     any::Any,
     cell::{Cell, UnsafeCell},
     fmt::Debug,
-    mem::{ManuallyDrop, MaybeUninit, size_of},
-    result::Result,
+    mem::{ManuallyDrop, MaybeUninit},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -420,7 +419,7 @@ impl MetaSlot {
     /// # Safety
     ///
     /// The caller should ensure that:
-    ///  - the reference count is `0` (so we are the sole owner of the frame);
+    ///  - the reference count is `0` or [`REF_COUNT_UNIQUE`] (so we are the sole owner of the frame);
     ///  - the metadata is initialized;
     pub(super) unsafe fn drop_meta_in_place(&self) {
         let paddr = self.frame_paddr();

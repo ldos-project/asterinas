@@ -2,7 +2,7 @@
 
 NIXOS_TEST_SUITE ?=
 NIXOS_TEST_CASE ?=
-NIXOS_TEST_TIMEOUT ?= 5min
+NIXOS_TEST_TIMEOUT ?= 10min
 
 # Generated configuration file name
 TEST_CONFIG_FILE_NAME := _configuration_for_test.nix
@@ -89,6 +89,7 @@ run_nixos: check-test-name
 
 .PHONY: check
 check:
+	@cargo fmt --check
 	@cargo clippy -- -D warnings
 
 .PHONY: format

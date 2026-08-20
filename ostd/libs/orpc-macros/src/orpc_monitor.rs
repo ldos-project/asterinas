@@ -39,7 +39,7 @@ impl MethodDefinition {
         match self_argument {
             Some(syn::FnArg::Receiver(_)) => (),
             _ => {
-                return Err(syn::Error::new(
+                return Err(Error::new(
                     self_argument.span(),
                     "Monitor methods must have a self argument.",
                 ));
@@ -289,7 +289,7 @@ The documentation for [`Self::{method_name}`] is:\n\n",
     };
 
     let impl_without_our_attrs = {
-        syn::ItemImpl {
+        ItemImpl {
             items: method_definitions
                 .iter()
                 .map(|d| d.definition.clone().into())

@@ -15,7 +15,7 @@ use super::{
 use crate::{
     fs::file::{InodeMode, InodeType},
     prelude::*,
-    vm::vmo::Vmo,
+    vm::page_cache::PageCache,
 };
 
 pub(super) const DENTRY_SIZE: usize = 32; // directory entry size
@@ -85,7 +85,7 @@ pub(super) struct RawExfatDentry {
 }
 
 impl TryFrom<RawExfatDentry> for ExfatDentry {
-    type Error = crate::error::Error;
+    type Error = Error;
     fn try_from(dentry: RawExfatDentry) -> Result<Self> {
         let dentry_bytes = dentry.as_bytes();
         #[expect(clippy::match_overlapping_arm)]
@@ -243,17 +243,17 @@ impl ExfatDentrySet {
             checksum: 0,
             attribute: attrs,
             reserved1: 0,
-            create_utc_offset: dos_time.utc_offset,
-            create_date: dos_time.date,
             create_time: dos_time.time,
-            create_time_cs: dos_time.increment_10ms,
-            modify_utc_offset: dos_time.utc_offset,
-            modify_date: dos_time.date,
+            create_date: dos_time.date,
             modify_time: dos_time.time,
-            modify_time_cs: dos_time.increment_10ms,
-            access_utc_offset: dos_time.utc_offset,
-            access_date: dos_time.date,
+            modify_date: dos_time.date,
             access_time: dos_time.time,
+            access_date: dos_time.date,
+            create_time_cs: dos_time.increment_10ms,
+            modify_time_cs: dos_time.increment_10ms,
+            create_utc_offset: dos_time.utc_offset,
+            modify_utc_offset: dos_time.utc_offset,
+            access_utc_offset: dos_time.utc_offset,
             reserved2: [0; 7],
         });
 
@@ -277,7 +277,7 @@ impl ExfatDentrySet {
         Self::new(dentries, false)
     }
 
-    pub(super) fn read_from(page_cache: &Vmo, offset: usize) -> Result<Self> {
+    pub(super) fn read_from(page_cache: &PageCache, offset: usize) -> Result<Self> {
         let mut iter = ExfatDentryIterator::new(page_cache, offset, None)?;
         let primary_dentry_result = iter.next();
 
@@ -442,13 +442,13 @@ pub(super) struct ExfatDentryIterator<'a> {
     /// The dentry position in current inode.
     entry: u32,
     /// The page cache of the iterated inode.
-    page_cache: &'a Vmo,
+    page_cache: &'a PageCache,
     /// Remaining size that can be iterated. If none, iterate through the whole cluster chain.
     size: Option<usize>,
 }
 
 impl<'a> ExfatDentryIterator<'a> {
-    pub fn new(page_cache: &'a Vmo, offset: usize, size: Option<usize>) -> Result<Self> {
+    pub fn new(page_cache: &'a PageCache, offset: usize, size: Option<usize>) -> Result<Self> {
         if size.is_some() && !size.unwrap().is_multiple_of(DENTRY_SIZE) {
             return_errno_with_message!(Errno::EINVAL, "remaining size unaligned to dentry size")
         }

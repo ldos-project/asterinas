@@ -2,6 +2,7 @@
 
 use alloc::{boxed::Box, format};
 
+use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::OQueueError;
 use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
@@ -12,7 +13,7 @@ use snafu::Snafu;
 /// This should match the Linux error numbers as defined in `errno.h` and similar.
 #[expect(clippy::upper_case_acronyms)]
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
 pub enum Errno {
     /// Operation not permitted
     EPERM = 1,
@@ -490,7 +491,7 @@ impl From<aster_block::bio::BioStatus> for Error {
     fn from(err_status: aster_block::bio::BioStatus) -> Self {
         match err_status {
             aster_block::bio::BioStatus::NotSupported => {
-                Error::with_message(Errno::EIO, "I/O operation is not supported")
+                Error::with_message(Errno::EOPNOTSUPP, "I/O operation is not supported")
             }
             aster_block::bio::BioStatus::NoSpace => {
                 Error::with_message(Errno::ENOSPC, "Insufficient space on device")
@@ -499,6 +500,20 @@ impl From<aster_block::bio::BioStatus> for Error {
                 Error::with_message(Errno::EIO, "I/O operation fails")
             }
             status => panic!("Can not convert the status: {:?} to an error", status),
+        }
+    }
+}
+
+impl From<io_util::IoError> for Error {
+    fn from(error: io_util::IoError) -> Self {
+        match error {
+            io_util::IoError::Unsupported => {
+                Error::with_message(Errno::EOPNOTSUPP, "I/O operation is not supported")
+            }
+            io_util::IoError::OutOfSpace => {
+                Error::with_message(Errno::ENOSPC, "Insufficient space on device")
+            }
+            io_util::IoError::Failed => Error::with_message(Errno::EIO, "I/O operation fails"),
         }
     }
 }

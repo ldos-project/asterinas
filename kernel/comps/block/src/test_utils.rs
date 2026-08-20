@@ -16,12 +16,12 @@ use crate::{
 pub struct FakeBlockDevice;
 
 impl BlockDevice for FakeBlockDevice {
-    fn enqueue(&self, bio: SubmittedBio) -> core::result::Result<(), BioEnqueueError> {
+    fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         bio.complete(BioStatus::Complete);
         Ok(())
     }
 
-    fn metadata(&self) -> crate::BlockDeviceMeta {
+    fn metadata(&self) -> BlockDeviceMeta {
         todo!()
     }
 
@@ -51,7 +51,7 @@ impl MemoryDisk {
 }
 
 impl BlockDevice for MemoryDisk {
-    fn enqueue(&self, bio: SubmittedBio) -> core::result::Result<(), BioEnqueueError> {
+    fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         let bio_type = bio.type_();
         if bio_type == BioType::Flush {
             bio.complete(BioStatus::Complete);

@@ -3,7 +3,7 @@
 <!--
 Put system calls such as
 unshare, setns, clone (with namespace flags), chroot, pivot_root, prctl,
-capset, seccomp, landlock_create_ruleset, landlock_add_rule, 
+capset, seccomp, landlock_create_ruleset, landlock_add_rule,
 landlock_restrict_self, and bpf
 under this category.
 -->
@@ -20,7 +20,6 @@ Partially-supported operations:
 * `PR_GET_DUMPABLE` and `PR_SET_DUMPABLE` because coredump is not supported
 
 Unsupported operations:
-* `PR_CAP_AMBIENT`, `PR_CAPBSET_READ` and `PR_CAPBSET_DROP`
 * `PR_GET_ENDIAN` and `PR_SET_ENDIAN`
 * `PR_GET_FP_MODE` and `PR_SET_FP_MODE`
 * `PR_GET_FPEMU` and `PR_SET_FPEMU`
@@ -29,7 +28,6 @@ Unsupported operations:
 * `PR_MCE_KILL` and `PR_MCE_KILL_GET`
 * `PR_SET_MM` and `PR_SET_VMA`
 * `PR_MPX_ENABLE_MANAGEMENT` and `PR_MPX_DISABLE_MANAGEMENT`
-* `PR_GET_NO_NEW_PRIVS` and `PR_SET_NO_NEW_PRIVS`
 * `PR_PAC_RESET_KEYS`
 * `PR_SET_PTRACER`
 * `PR_GET_SECCOMP` and `PR_SET_SECCOMP`
@@ -74,8 +72,6 @@ Supported functionality in SCML:
 ```
 
 Unsupported flags:
-* `CLONE_NEWCGROUP`
-* `CLONE_NEWIPC`
 * `CLONE_NEWNET`
 * `CLONE_NEWPID`
 * `CLONE_NEWTIME`
@@ -96,8 +92,6 @@ Supported functionality in SCML:
 ```
 
 Unsupported flags:
-* `CLONE_NEWCGROUP`
-* `CLONE_NEWIPC`
 * `CLONE_NEWNET`
 * `CLONE_NEWPID`
 * `CLONE_NEWTIME`

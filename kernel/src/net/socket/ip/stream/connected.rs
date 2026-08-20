@@ -10,8 +10,8 @@ use super::observer::StreamObserver;
 use crate::{
     events::IoEvents,
     net::{
-        iface::{BoundPort, Iface, RawTcpSocketExt, TcpConnection},
-        socket::util::{LingerOption, SendRecvFlags, SockShutdownCmd},
+        iface::{BoundTcpPort, Iface, RawTcpSocketExt, TcpConnection},
+        socket::util::{LingerOption, RecvFlags, SendFlags, SockShutdownCmd},
     },
     prelude::*,
     process::signal::{Pollee, Poller},
@@ -72,11 +72,24 @@ impl ConnectedStream {
     pub(super) fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
-        _flags: SendRecvFlags,
+        flags: RecvFlags,
     ) -> Result<(usize, NeedIfacePoll)> {
+        let mut trunc_len = if flags.contains(RecvFlags::MSG_TRUNC) {
+            Some(writer.sum_lens())
+        } else {
+            None
+        };
         let result = self
             .tcp_conn
-            .recv(|socket_buffer| writer.write(&mut VmReader::from(&*socket_buffer)));
+            .recv(flags.receive_behavior(), |socket_buffer| {
+                if let Some(remaining) = trunc_len.as_mut() {
+                    let recv_len = socket_buffer.len().min(*remaining);
+                    *remaining -= recv_len;
+                    Ok(recv_len)
+                } else {
+                    writer.write(&mut VmReader::from(socket_buffer))
+                }
+            });
 
         match result {
             Ok((recv_bytes, need_poll)) => Ok((recv_bytes.get(), need_poll)),
@@ -98,7 +111,7 @@ impl ConnectedStream {
     pub(super) fn try_send(
         &self,
         reader: &mut dyn MultiRead,
-        _flags: SendRecvFlags,
+        _flags: SendFlags,
     ) -> Result<(usize, NeedIfacePoll)> {
         let result = self
             .tcp_conn
@@ -131,7 +144,7 @@ impl ConnectedStream {
         self.tcp_conn.iface()
     }
 
-    pub(super) fn bound_port(&self) -> &BoundPort {
+    pub(super) fn bound_port(&self) -> &BoundTcpPort {
         self.tcp_conn.bound_port()
     }
 

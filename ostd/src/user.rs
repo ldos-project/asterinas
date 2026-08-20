@@ -2,16 +2,17 @@
 
 //! User mode.
 
-use crate::arch::{cpu::context::UserContext, trap::TrapFrame};
+use crate::{
+    arch::{cpu::context::UserContext, trap::TrapFrame},
+    irq::DisabledLocalIrqGuard,
+};
 
-/// Specific architectures need to implement this trait. This should only used in [`UserMode`]
+/// The internal interface that every CPU architecture-specific [`UserContext`] implements.
 ///
-/// Only visible in `ostd`.
+/// This should only used in [`UserMode`]. It is only visible in `ostd`.
 pub(crate) trait UserContextApiInternal {
     /// Starts executing in the user mode.
-    fn execute<F>(&mut self, has_kernel_event: F) -> ReturnReason
-    where
-        F: FnMut() -> bool;
+    fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason;
 
     /// Uses the information inside CpuContext to build a trapframe
     fn as_trap_frame(&self) -> TrapFrame;
@@ -19,12 +20,6 @@ pub(crate) trait UserContextApiInternal {
 
 /// The common interface that every CPU architecture-specific [`UserContext`] implements.
 pub trait UserContextApi {
-    /// Gets the trap number of this interrupt.
-    fn trap_number(&self) -> usize;
-
-    /// Gets the trap error code of this interrupt.
-    fn trap_error_code(&self) -> usize;
-
     /// Sets the instruction pointer
     fn set_instruction_pointer(&mut self, ip: usize);
 
@@ -44,20 +39,26 @@ pub trait UserContextApi {
 /// space safely.
 ///
 /// Here is a sample code on how to use `UserMode`.
-///  
-/// ```no_run
-/// use ostd::task::Task;
 ///
-/// let current = Task::current();
-/// let user_ctx = current.user_ctx()
-///     .expect("the current task is not associated with a user context");
-/// let mut user_mode = UserMode::new(UserContext::clone(user_ctx));
+/// ```no_run
+/// # fn handle_return(_reason: crate::user::ReturnReason) {}
+/// #
+/// use crate::{
+///     arch::cpu::context::UserContext,
+///     user::{DummyUserHooks, UserMode},
+/// };
+///
+/// let user_ctx = UserContext::default();
+/// let mut user_mode = UserMode::new(user_ctx);
+///
+/// // Note: Users should activate a suitable `VmSpace` before to support
+/// // user-mode execution.
+///
 /// loop {
 ///     // Execute in the user space until some interesting events occur.
-///     // Note: users should activate a suitable `VmSpace` before to support
-///     // user-mode execution.
-///     let return_reason = user_mode.execute(|| false);
-///     todo!("handle the event, e.g., syscall");
+///     let return_reason = user_mode.execute(&DummyUserHooks);
+///     // Handle the event, e.g., a system call.
+///     handle_return(return_reason);
 /// }
 /// ```
 pub struct UserMode {
@@ -87,12 +88,9 @@ impl UserMode {
     /// and updating the user-mode CPU context,
     /// this method can be invoked again to go back to the user space.
     #[track_caller]
-    pub fn execute<F>(&mut self, has_kernel_event: F) -> ReturnReason
-    where
-        F: FnMut() -> bool,
-    {
+    pub fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
         crate::task::atomic_mode::might_sleep();
-        self.context.execute(has_kernel_event)
+        self.context.execute(hooks)
     }
 
     /// Returns an immutable reference the user-mode CPU context.
@@ -106,9 +104,9 @@ impl UserMode {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
 /// A reason as to why the control of the CPU is returned from
 /// the user space to the kernel.
+#[derive(Debug, Eq, PartialEq)]
 pub enum ReturnReason {
     /// A system call is issued by the user space.
     UserSyscall,
@@ -117,3 +115,26 @@ pub enum ReturnReason {
     /// A kernel event is pending
     KernelEvent,
 }
+
+/// Hooks that will be called during [`UserMode::execute`].
+pub trait UserModeHooks {
+    /// Checks whether a kernel event is pending.
+    ///
+    /// This method will be called after user space is interrupted
+    /// by external interrupts. If the result is `true`,
+    /// [`UserMode::execute`] will return with [`ReturnReason::KernelEvent`].
+    fn has_kernel_event(&self) -> bool {
+        false
+    }
+
+    /// Prepares user space execution.
+    ///
+    /// This method will be called just before entering user space.
+    /// Local IRQs are disabled and will only be enabled after entering user space.
+    fn pre_user_run(&self, _guard: &DisabledLocalIrqGuard) {}
+}
+
+/// A struct that provides dummy (no-op) user mode hooks.
+pub struct DummyUserHooks;
+
+impl UserModeHooks for DummyUserHooks {}

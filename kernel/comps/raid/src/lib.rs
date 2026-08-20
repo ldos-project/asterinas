@@ -35,7 +35,7 @@ pub mod selection_policies;
 #[cfg(not(baseline_asterinas))]
 pub mod server_traits;
 
-use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, string::String, sync::Arc, vec::Vec};
 #[cfg(baseline_asterinas)]
 use core::sync::atomic::AtomicUsize;
 use core::{
@@ -46,13 +46,12 @@ use core::{
 
 use aster_block::{
     BlockDevice, BlockDeviceMeta, DeviceId, MajorIdOwner,
-    bio::{
-        Bio, BioEnqueueError, BioSegment, BioStatus, BioType, BioWaiter, ParentGuard, SubmittedBio,
-    },
+    bio::{Bio, BioEnqueueError, BioSegment, BioStatus, BioType, ParentGuard, SubmittedBio},
     id::Sid,
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use device_id::MinorId;
+use io_util::batch::IoBatch;
 use ostd::orpc::orpc_server;
 use snafu::{ResultExt as _, Snafu, ensure};
 use spin::Once;
@@ -83,7 +82,7 @@ pub struct Raid1Device {
     /// target. When present, only the admitted members are offered to the
     /// selection policy.
     #[cfg(not(baseline_asterinas))]
-    admission: Option<Arc<crate::heimdall::Heimdall>>,
+    admission: Option<Arc<heimdall::Heimdall>>,
 
     /// Cached list of all member indices (`0..members.len()`), used as the
     /// candidate set when no admission policy is active. Avoids a per-read
@@ -137,7 +136,7 @@ impl Raid1Device {
         name: &str,
         members: Vec<Arc<dyn BlockDevice>>,
         #[cfg(not(baseline_asterinas))] selection_policy: Arc<dyn SelectionPolicy>,
-        #[cfg(not(baseline_asterinas))] admission: Option<Arc<crate::heimdall::Heimdall>>,
+        #[cfg(not(baseline_asterinas))] admission: Option<Arc<heimdall::Heimdall>>,
     ) -> Result<DeviceId, Raid1DeviceError> {
         ensure!(members.len() >= 2, NotEnoughMembersSnafu);
 
@@ -154,7 +153,6 @@ impl Raid1Device {
 
         #[cfg(not(baseline_asterinas))]
         let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
-            orpc_internal,
             members,
             queue,
             metadata,
@@ -163,6 +161,7 @@ impl Raid1Device {
             all_indices,
             name: name.to_owned(),
             id,
+            orpc_internal,
         });
         #[cfg(baseline_asterinas)]
         let device = Arc::new_cyclic(|_weak_self| Raid1Device {
@@ -192,39 +191,6 @@ impl Raid1Device {
             BioType::Read => self.process_read_async(request),
             BioType::Write => self.process_write_async(request),
             BioType::Flush => self.process_flush(request),
-        }
-    }
-
-    /// Processes read requests synchronously.
-    /// Asterinas Baseline Version, i.e., not selecting read member, just use device 0.
-    ///
-    /// Each `SubmittedBio` in the merged `BioRequest` is assigned to device 0
-    /// and submitted with `Bio::submit`. Completion of the parent is reported
-    /// after the child finishes.
-    #[expect(dead_code)]
-    #[cfg(baseline_asterinas)]
-    fn process_read(&self, request: BioRequest) {
-        for parent in request.bios() {
-            // Baseline Asterinas should use round robin policy
-            let member = self.members
-                [self.read_cursor.fetch_add(1, Ordering::Relaxed) % self.members.len()]
-            .clone();
-            let child = Bio::new(
-                BioType::Read,
-                parent.sid_range().start,
-                Self::clone_segments(parent),
-                None,
-            );
-            match child.submit(&*member) {
-                Ok(waiter) => {
-                    let status = match waiter.wait() {
-                        Some(s) => s,
-                        None => BioStatus::IoError,
-                    };
-                    parent.complete(status);
-                }
-                Err(_) => parent.complete(BioStatus::IoError),
-            }
         }
     }
 
@@ -267,44 +233,11 @@ impl Raid1Device {
             .unwrap()
     }
 
-    #[expect(dead_code)]
-    #[cfg(not(baseline_asterinas))]
-    fn process_read(&self, request: BioRequest) {
-        // Submit all children first to overlap device I/O.
-        let mut pending: alloc::vec::Vec<(SubmittedBio, BioWaiter)> = alloc::vec::Vec::new();
-
-        for mut parent in request.into_bios() {
-            let member = self.select_member(&mut parent);
-            let child = Bio::new(
-                // Child BIO mirrors the parent’s type, range, and buffers.
-                BioType::Read,
-                parent.sid_range().start,
-                Self::clone_segments(&parent),
-                None,
-            );
-            match child.submit(&*member) {
-                Ok(waiter) => pending.push((parent, waiter)),
-                Err(_) => todo!("Failed to submit child BIO, Don't know what to do"),
-            }
-        }
-
-        // Wait for each submitted child and complete the corresponding parent.
-        for (parent, waiter) in pending.into_iter() {
-            let status = match waiter.wait() {
-                // Guaranteed to be Complete on success when Some is returned.
-                Some(s) => s,
-                None => BioStatus::IoError,
-            };
-            // Report the completion status to the upper layer.
-            parent.complete(status);
-        }
-    }
-
     /// Processes read requests asynchronously.
     ///
     /// Each `SubmittedBio` in the merged `BioRequest` is assigned to a read
     /// member by the selection policy (device 0 if asterinas baseline) and submitted with `Bio::submit` to overlap device
-    /// I/O. Completion of the parent is reported after the child finishes.    
+    /// I/O. Completion of the parent is reported after the child finishes.
     fn process_read_async(&self, request: BioRequest) {
         for parent in request.into_bios() {
             // `select_member` needs `&mut parent` (to compute `num_pages`); the
@@ -321,35 +254,16 @@ impl Raid1Device {
             let start_sid = parent.sid_range().start;
             let segments = parent.segments().to_vec();
             let guard = ParentGuard::new(parent);
-            let child = Bio::new_with_closure(
+            let child = Bio::new(
                 BioType::Read,
                 start_sid,
                 segments,
-                move |child_bio: &SubmittedBio| {
-                    guard.complete(child_bio.status());
-                },
+                Some(Box::new(move |status| {
+                    guard.complete(status);
+                })),
             );
-            let _ = child.submit(&*member);
-        }
-    }
-
-    /// Completes all the parents with the same status.
-    #[expect(dead_code)]
-    fn complete_all(&self, request: BioRequest, status: BioStatus) {
-        for parent in request.bios() {
-            parent.complete(status);
-        }
-    }
-
-    /// Processes write requests by fanning out to all mirrors and aggregating
-    /// the results (all must succeed).
-    #[expect(dead_code)]
-    fn process_write(&self, request: BioRequest) {
-        for parent in request.bios() {
-            // Submit the same write to all members.
-            let status =
-                self.fanout_to_members(parent, BioType::Write, || Self::clone_segments(parent));
-            parent.complete(status);
+            // We can use a throw-away IoBatch because all handling is in the callback.
+            let _ = child.submit(&*member, &mut IoBatch::new());
         }
     }
 
@@ -360,7 +274,7 @@ impl Raid1Device {
     /// failure) completes the parent. Any failed member marks the write as
     /// `IoError`; all members must succeed for `Complete` to be reported.
     fn process_write_async(&self, request: BioRequest) {
-        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use core::sync::atomic::{AtomicBool, AtomicUsize};
 
         use ostd::sync::{LocalIrqDisabled, SpinLock};
 
@@ -379,12 +293,12 @@ impl Raid1Device {
             for member in &self.members {
                 let member = member.clone();
 
-                let child = Bio::new_with_closure(BioType::Write, start_sid, segments.clone(), {
+                let child = Bio::new(BioType::Write, start_sid, segments.clone(), {
                     let remaining = remaining.clone();
                     let had_error = had_error.clone();
                     let guard = guard.clone();
-                    move |child_bio: &SubmittedBio| {
-                        if child_bio.status() != BioStatus::Complete {
+                    Some(Box::new(move |status| {
+                        if status != BioStatus::Complete {
                             had_error.store(true, Ordering::Release);
                         }
                         // If that's the last device completing the Bio
@@ -399,13 +313,13 @@ impl Raid1Device {
                                 g.complete(status);
                             }
                         }
-                    }
+                    }))
                 });
 
                 // On submission failure the callback never fires (see `Bio::submit`),
                 // so the dispatch thread accounts for this member here using the
                 // loop-level `remaining`/`had_error`/`guard`.
-                if member.submit(child).is_err() {
+                if member.submit(child, &mut IoBatch::new()).is_err() {
                     had_error.store(true, Ordering::Release);
                     if remaining.fetch_sub(1, Ordering::AcqRel) == 1
                         && let Some(g) = guard.lock().take()
@@ -419,8 +333,8 @@ impl Raid1Device {
 
     /// Propagates a flush to all members and completes after they finish.
     fn process_flush(&self, request: BioRequest) {
-        for parent in request.bios() {
-            let status = self.fanout_to_members(parent, BioType::Flush, Vec::new);
+        for parent in request.into_bios() {
+            let status = self.fanout_to_members(&parent, BioType::Flush, Vec::new);
             parent.complete(status);
         }
     }
@@ -438,15 +352,14 @@ impl Raid1Device {
     where
         F: FnMut() -> Vec<BioSegment>,
     {
-        let mut waiter = BioWaiter::new();
+        let mut io_batch = IoBatch::new();
         let mut submission_failed = false;
 
         for member in &self.members {
             // Build a child BIO for this member.
             let child = Bio::new(bio_type, parent.sid_range().start, segments_builder(), None);
-            match member.submit(child) {
-                Ok(child_waiter) => waiter.concat(child_waiter),
-                Err(_) => submission_failed = true,
+            if member.submit(child, &mut io_batch).is_err() {
+                submission_failed = true
             }
         }
 
@@ -457,12 +370,8 @@ impl Raid1Device {
             None
         };
 
-        if waiter.nreqs() > 0 {
-            // Wait for all children; success is Some(Complete), otherwise None.
-            let wait_result = waiter.wait();
-            if wait_result.is_none() {
-                aggregated_status = Some(BioStatus::IoError);
-            }
+        if io_batch.wait_all().is_err() {
+            aggregated_status = Some(BioStatus::IoError);
         }
 
         // Default to success if no errors were observed.
@@ -492,6 +401,7 @@ impl Raid1Device {
     }
 
     /// Clones segments from a parent BIO for use by a child BIO.
+    #[expect(dead_code)]
     fn clone_segments(parent: &SubmittedBio) -> Vec<BioSegment> {
         parent.segments().to_vec()
     }

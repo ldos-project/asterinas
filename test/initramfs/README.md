@@ -63,9 +63,9 @@ entry format.
 The test suite supports building for multiple architectures, including `x86_64` and `riscv64`. You can specify the desired architecture by running:
 
 ```bash
-make kernel OSDK_TARGET_ARCH=x86_64
+make kernel TARGET_ARCH=x86_64
 # or
-make kernel OSDK_TARGET_ARCH=riscv64
+make kernel TARGET_ARCH=riscv64
 ```
 
 The build artifacts (initramfs) can be found in the `test/initramfs/build` directory after the compilation.
@@ -151,7 +151,7 @@ times. This increases the initramfs load time very significantly.
 When enabled, the `python` binary is available and a small selection of packages (see
 `test/initramfs/nix/initramfs.nix`). The generated launchers for Python scripts do not work on
 busybox, but in many cases you can run the same tool using `python -m <package>`. (Notably, the
-CBOR2 tool is `python -m cbor2.tool`.) 
+CBOR2 tool is `python -m cbor2.tool`.)
 
 `pip` is installed, but most normal operations depend on network access which require separate
 configuration. You should use a virtual environment (`python -m venv`) if you wish to use `pip`.

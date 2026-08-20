@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
-
 use aster_systree::SysBranchNode;
 use spin::Once;
 
@@ -12,6 +10,7 @@ use crate::{
     },
     prelude::*,
     process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread},
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// The cgroup namespace for the unified cgroup hierarchy.
@@ -41,7 +40,11 @@ impl CgroupNamespace {
         owner: Arc<UserNamespace>,
         posix_thread: &PosixThread,
     ) -> Result<Arc<Self>> {
-        owner.check_cap(CapSet::SYS_ADMIN, posix_thread)?;
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            owner.as_ref(),
+            posix_thread,
+            CapSet::SYS_ADMIN,
+        ))?;
 
         let root: Arc<dyn CgroupSysNode> = match current_cgroup {
             Some(current_cgroup) => current_cgroup,

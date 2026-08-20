@@ -19,12 +19,15 @@ use ostd::{
 
 use crate::{
     fs::{
-        file::{AccessMode, FileIo, InodeMode, InodeType, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         pseudofs::AnonDeviceId,
         utils::{DirentCounter, DirentVisitor, NAME_MAX},
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
-            inode::{Extension, FallocMode, Inode, InodeIo, Metadata, MknodType, SymbolicLink},
+            inode::{
+                Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
+                SymbolicLink,
+            },
             path::{FsPath, Path},
             registry::{FsCreationCtx, FsProperties, FsType},
             xattr::{XATTR_VALUE_MAX_LEN, XattrName, XattrNamespace, XattrSetFlags},
@@ -32,7 +35,7 @@ use crate::{
     },
     prelude::*,
     process::{Gid, Uid},
-    vm::vmo::Vmo,
+    vm::page_cache::Vmo,
 };
 
 const OVERLAY_FS_MAGIC: u64 = 0x794C7630;
@@ -468,10 +471,10 @@ impl OverlayInode {
         upper.resize(new_size)
     }
 
-    pub fn metadata(&self) -> Metadata {
-        let mut metadata = self.get_top_valid_inode().metadata();
+    pub fn metadata(&self) -> Result<Metadata> {
+        let mut metadata = self.get_top_valid_inode().metadata()?;
         metadata.ino = self.ino;
-        metadata
+        Ok(metadata)
     }
 
     pub fn ino(&self) -> u64 {
@@ -524,7 +527,13 @@ impl OverlayInode {
         upper.write_link(target)
     }
 
-    pub fn rename(&self, _old_name: &str, _target: &Arc<dyn Inode>, _new_name: &str) -> Result<()> {
+    pub fn rename(
+        &self,
+        _old_name: &str,
+        _target: &Arc<dyn Inode>,
+        _new_name: &str,
+        _mode: RenameMode,
+    ) -> Result<()> {
         // TODO: Support the rename operation based on the `redirect_mode` feature,
         // rename the upper only may unexpectedly reveal the lower inodes.
         return_errno_with_message!(
@@ -555,7 +564,7 @@ impl OverlayInode {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>>;
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>>;
     pub fn get_xattr(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize>;
     pub fn list_xattr(
         &self,
@@ -945,7 +954,7 @@ fn is_opaque_dir(inode: &Arc<dyn Inode>) -> Result<bool> {
 }
 
 #[inherit_methods(from = "self")]
-impl InodeIo for OverlayInode {
+impl FileOps for OverlayInode {
     fn read_at(
         &self,
         offset: usize,
@@ -958,13 +967,14 @@ impl InodeIo for OverlayInode {
         reader: &mut VmReader,
         status_flags: StatusFlags,
     ) -> Result<usize>;
+    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize>;
 }
 
 #[inherit_methods(from = "self")]
 impl Inode for OverlayInode {
     fn size(&self) -> usize;
     fn resize(&self, new_size: usize) -> Result<()>;
-    fn metadata(&self) -> Metadata;
+    fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn type_(&self) -> InodeType;
@@ -987,13 +997,18 @@ impl Inode for OverlayInode {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>>;
-    fn readdir_at(&self, offset: usize, visitor: &mut dyn DirentVisitor) -> Result<usize>;
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>>;
     fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()>;
     fn unlink(&self, name: &str) -> Result<()>;
     fn rmdir(&self, name: &str) -> Result<()>;
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>>;
-    fn rename(&self, old_name: &str, target: &Arc<dyn Inode>, new_name: &str) -> Result<()>;
+    fn rename(
+        &self,
+        old_name: &str,
+        target: &Arc<dyn Inode>,
+        new_name: &str,
+        mode: RenameMode,
+    ) -> Result<()>;
     fn read_link(&self) -> Result<SymbolicLink>;
     fn write_link(&self, target: &str) -> Result<()>;
     fn sync_all(&self) -> Result<()>;
@@ -1159,6 +1174,8 @@ struct OverlaySB;
 pub(super) struct OverlayFsType;
 
 impl FsType for OverlayFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "overlay"
     }
@@ -1167,13 +1184,12 @@ impl FsType for OverlayFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         let mut lower = Vec::new();
         let mut upper = "";
         let mut work = "";
 
         let args = fs_creation_ctx.args().ok_or(Error::new(Errno::EINVAL))?;
-        let args = args.to_string_lossy();
         let entries = args.split(',');
 
         for entry in entries {
@@ -1227,7 +1243,7 @@ impl FsType for OverlayFsType {
 // TODO: Enrich the tests to cover more cases.
 #[cfg(ktest)]
 mod tests {
-    use ostd::{mm::VmIo, prelude::ktest};
+    use ostd::prelude::ktest;
 
     use super::*;
     use crate::fs::{
@@ -1240,6 +1256,7 @@ mod tests {
             RamFs::new(),
             Arc::downgrade(MountNamespace::get_init_singleton()),
         )
+        .unwrap()
     }
 
     fn create_overlay_fs() -> Arc<dyn FileSystem> {
@@ -1561,7 +1578,10 @@ mod tests {
         let f1 = root.lookup("f1").unwrap();
         assert_eq!(f1.size(), 0);
         f1.resize(PAGE_SIZE).unwrap();
-        f1.page_cache().unwrap().write_val(0, &3u8).unwrap();
+        f1.page_cache()
+            .unwrap()
+            .write(0, &mut VmReader::from([3].as_slice()).to_fallible())
+            .unwrap();
         f1.set_atime(Duration::default());
         f1.sync_data().unwrap();
         let mut data = [0u8; 1];

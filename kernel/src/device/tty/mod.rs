@@ -7,7 +7,7 @@ use self::{line_discipline::LineDiscipline, termio::CFontOp};
 use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta},
     events::IoEvents,
-    fs::file::{FileIo, StatusFlags},
+    fs::file::{PerOpenFileOps, StatusFlags},
     prelude::*,
     process::{
         JobControl, Terminal, broadcast_signal_async,
@@ -229,17 +229,30 @@ impl<D: TtyDriver> Tty<D> {
 
         dispatch_ioctl!(match raw_ioctl {
             cmd @ GetTermios => {
-                let termios = *self.ldisc.lock().termios();
+                let ldisc = self.ldisc.lock();
+                let termios = ldisc.termios();
 
-                cmd.write(&termios)?;
+                cmd.write(termios)?;
+            }
+            cmd @ GetTermios2 => {
+                let ldisc = self.ldisc.lock();
+                let termios = ldisc.termios();
+
+                cmd.write(termios)?;
             }
             cmd @ SetTermios => {
                 let termios = cmd.read()?;
 
                 let mut ldisc = self.ldisc.lock();
-                let old_termios = ldisc.termios();
-                self.driver().on_termios_change(old_termios, &termios);
+                self.driver().on_termios_change(ldisc.termios(), &termios);
                 ldisc.set_termios(termios);
+            }
+            cmd @ SetTermios2 => {
+                let termios2 = cmd.read()?;
+
+                let mut ldisc = self.ldisc.lock();
+                self.driver().on_termios_change(ldisc.termios(), &termios2);
+                ldisc.set_termios2(termios2);
             }
             cmd @ SetTermiosWait => {
                 let termios = cmd.read()?;
@@ -251,19 +264,36 @@ impl<D: TtyDriver> Tty<D> {
                 //    <https://elixir.bootlin.com/linux/v5.10.247/source/drivers/tty/pty.c#L137-L148>.
                 //  - We don't currently have an output buffer for other TTYs.
                 let mut ldisc = self.ldisc.lock();
-                let old_termios = ldisc.termios();
-                self.driver().on_termios_change(old_termios, &termios);
+                self.driver().on_termios_change(ldisc.termios(), &termios);
                 ldisc.set_termios(termios);
+            }
+            cmd @ SetTermios2Wait => {
+                let termios2 = cmd.read()?;
+
+                // TODO: If applicable, wait for the output buffer to drain. (See comments above.)
+                let mut ldisc = self.ldisc.lock();
+                self.driver().on_termios_change(ldisc.termios(), &termios2);
+                ldisc.set_termios2(termios2);
             }
             cmd @ SetTermiosFlush => {
                 let termios = cmd.read()?;
 
                 // TODO: If applicable, wait for the output buffer to drain. (See comments above.)
                 let mut ldisc = self.ldisc.lock();
-                let old_termios = ldisc.termios();
-                self.driver().on_termios_change(old_termios, &termios);
-                ldisc.set_termios(termios);
                 ldisc.drain_input();
+                self.driver().on_termios_change(ldisc.termios(), &termios);
+                ldisc.set_termios(termios);
+
+                self.pollee.invalidate();
+            }
+            cmd @ SetTermios2Flush => {
+                let termios2 = cmd.read()?;
+
+                // TODO: If applicable, wait for the output buffer to drain. (See comments above.)
+                let mut ldisc = self.ldisc.lock();
+                ldisc.drain_input();
+                self.driver().on_termios_change(ldisc.termios(), &termios2);
+                ldisc.set_termios2(termios2);
 
                 self.pollee.invalidate();
             }
@@ -330,7 +360,7 @@ impl<D: TtyDriver> Device for Tty<D> {
         self.driver.devtmpfs_meta(self.index)
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         D::open(self.weak_self.upgrade().unwrap())
     }
 }

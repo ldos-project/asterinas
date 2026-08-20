@@ -54,7 +54,7 @@ use crate::tree::RootNode;
 static SINGLETON: Once<Arc<SysTree<RootNode>>> = Once::new();
 
 #[init_component]
-fn init() -> core::result::Result<(), ComponentInitError> {
+fn init() -> Result<(), ComponentInitError> {
     SINGLETON.call_once(|| Arc::new(SysTree::new()));
     Ok(())
 }
@@ -78,7 +78,7 @@ pub fn init_for_ktest() {
 /// An owned string or a static reference to string.
 pub type SysStr = Cow<'static, str>;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 #[derive(Debug)]
 pub enum Error {

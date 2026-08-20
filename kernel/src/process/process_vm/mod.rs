@@ -12,10 +12,11 @@
 mod heap;
 mod init_stack;
 
+use core::ops::Range;
 #[cfg(target_arch = "riscv64")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ostd::{sync::MutexGuard, task::disable_preempt};
+use ostd::task::disable_preempt;
 
 pub use self::{
     heap::{Heap, LockedHeap},
@@ -24,7 +25,11 @@ pub use self::{
         aux_vec::{AuxKey, AuxVec},
     },
 };
-use crate::{fs::vfs::path::Path, prelude::*, vm::vmar::Vmar};
+use crate::{
+    fs::vfs::path::Path,
+    prelude::*,
+    vm::vmar::{Vmar, VmarHandle},
+};
 
 /*
  * The user's virtual memory space layout looks like below.
@@ -66,6 +71,10 @@ pub struct ProcessVm {
     init_stack: InitStack,
     /// The user heap
     heap: Heap,
+    /// The code range from the executable file.
+    code_range: SpinLock<Range<Vaddr>>,
+    /// The data range from the executable file.
+    data_range: SpinLock<Range<Vaddr>>,
     /// The executable file.
     executable_file: Path,
     /// The base address for vDSO segment
@@ -88,6 +97,8 @@ impl ProcessVm {
         Self {
             init_stack: InitStack::new(),
             heap: Heap::new_uninitialized(),
+            code_range: SpinLock::new(0..0),
+            data_range: SpinLock::new(0..0),
             executable_file,
             #[cfg(target_arch = "riscv64")]
             vdso_base: AtomicUsize::new(0),
@@ -99,6 +110,8 @@ impl ProcessVm {
         Self {
             init_stack: process_vm.init_stack.clone(),
             heap: Heap::fork_from(heap_guard),
+            code_range: SpinLock::new(process_vm.code_range.lock().clone()),
+            data_range: SpinLock::new(process_vm.data_range.lock().clone()),
             executable_file: process_vm.executable_file.clone(),
             #[cfg(target_arch = "riscv64")]
             vdso_base: AtomicUsize::new(process_vm.vdso_base.load(Ordering::Relaxed)),
@@ -113,6 +126,16 @@ impl ProcessVm {
     /// Returns the user heap.
     pub fn heap(&self) -> &Heap {
         &self.heap
+    }
+
+    /// Returns the code range from the executable file.
+    pub fn code_range(&self) -> Range<Vaddr> {
+        self.code_range.lock().clone()
+    }
+
+    /// Returns the data range from the executable file.
+    pub fn data_range(&self) -> Range<Vaddr> {
+        self.data_range.lock().clone()
     }
 
     /// Returns a reference to the executable `Path`.
@@ -142,6 +165,16 @@ impl ProcessVm {
             .map_and_init_heap(vmar, data_segment_size, heap_base)
     }
 
+    /// Updates the code range from the executable file.
+    pub(super) fn set_code_range(&self, range: Range<Vaddr>) {
+        *self.code_range.lock() = range;
+    }
+
+    /// Updates the data range from the executable file.
+    pub(super) fn set_data_range(&self, range: Range<Vaddr>) {
+        *self.data_range.lock() = range;
+    }
+
     /// Returns the base address for vDSO segment.
     #[cfg(target_arch = "riscv64")]
     pub(super) fn vdso_base(&self) -> Vaddr {
@@ -169,10 +202,6 @@ pub struct ProcessVmarGuard<'a> {
 /// A snapshot of the process VMAR identity.
 ///
 /// This type is used only for identity comparison.
-//
-// NOTE: Upgrading the `Weak<Vmar>` in the snapshot is not permitted,
-// as this will cause the `Vmar` to be dropped in the wrong context,
-// and break the reference count used in `CurrentUserSpace::is_vmar_shared`.
 #[derive(Clone, Debug)]
 pub struct VmarSnapshot(Weak<Vmar>);
 
@@ -234,18 +263,12 @@ impl<'a> ProcessVmarGuard<'a> {
 
     /// Sets a new VMAR for the binding process.
     ///
+    /// This method will return the old VMAR.
+    ///
     /// If the `new_vmar` is `None`, this method will remove the
     /// current VMAR.
-    pub(super) fn set_vmar(&mut self, new_vmar: Option<Arc<Vmar>>) {
-        *self.inner = new_vmar;
-    }
-
-    /// Duplicates a new VMAR from the binding process.
-    ///
-    /// This method should only be used to clone the VMAR in the `Process`
-    /// and store it in the `ThreadLocal`.
-    pub(super) fn dup_vmar(&self) -> Option<Arc<Vmar>> {
-        self.inner.as_ref().cloned()
+    pub(super) fn set_vmar(&mut self, new_vmar: Option<Arc<Vmar>>) -> Option<Arc<Vmar>> {
+        core::mem::replace(&mut *self.inner, new_vmar)
     }
 
     /// Returns a reader for reading contents from
@@ -260,16 +283,28 @@ impl<'a> ProcessVmarGuard<'a> {
 
 /// Activates the [`Vmar`] in the current process's context.
 ///
-/// Returns a [`ProcessVmarGuard`] that keeps the process VMAR lock held.
-pub(super) fn activate_vmar<'a>(ctx: &'a Context<'a>, new_vmar: Arc<Vmar>) -> ProcessVmarGuard<'a> {
+/// Returns a [`ProcessVmarGuard`] that keeps the process VMAR lock held and the old [`Vmar`].
+pub(super) fn activate_vmar<'a>(
+    ctx: &'a Context<'a>,
+    new_vmar: VmarHandle,
+) -> (ProcessVmarGuard<'a>, VmarHandle) {
+    let vmar_arc = new_vmar.clone_arc();
+
     let mut vmar_guard = ctx.process.lock_vmar();
+
     // Disable preemption because `thread_local::vmar()` will be borrowed during a context switch.
-    let _preempt_guard = disable_preempt();
+    let old_vmar = {
+        let _preempt_guard = disable_preempt();
+        let old_vmar = ctx
+            .thread_local
+            .vmar()
+            .borrow_mut()
+            .replace(new_vmar)
+            .unwrap();
+        vmar_arc.vm_space().activate();
+        old_vmar
+    };
+    vmar_guard.set_vmar(Some(vmar_arc));
 
-    *ctx.thread_local.vmar().borrow_mut() = Some(new_vmar.clone());
-    new_vmar.vm_space().activate();
-
-    vmar_guard.set_vmar(Some(new_vmar));
-
-    vmar_guard
+    (vmar_guard, old_vmar)
 }

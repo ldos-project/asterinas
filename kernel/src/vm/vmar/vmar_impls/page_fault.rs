@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![short_vis_path::add(vmar)]
+
 use serde::Serialize;
 
 use super::{Interval, RssDelta, Vmar};
@@ -69,7 +71,7 @@ impl PageFaultInfo {
     }
 
     /// Returns whether this page fault is forced.
-    pub(in crate::vm::vmar) fn is_forced(&self) -> bool {
+    pub(in vmar) fn is_forced(&self) -> bool {
         self.is_forced
     }
 

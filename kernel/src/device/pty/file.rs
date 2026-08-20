@@ -6,8 +6,8 @@ use crate::{
     device::PtySlave,
     events::IoEvents,
     fs::{
-        file::{FileIo, StatusFlags},
-        vfs::inode::InodeIo,
+        file::{PerOpenFileOps, SettableStatusFlags, StatusFlags},
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
@@ -60,7 +60,7 @@ impl Pollable for PtySlaveFile {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents;
 }
 
-impl InodeIo for PtySlaveFile {
+impl FileOps for PtySlaveFile {
     fn read_at(
         &self,
         _offset: usize,
@@ -80,15 +80,20 @@ impl InodeIo for PtySlaveFile {
     }
 }
 
-#[inherit_methods(from = "self.0")]
-impl FileIo for PtySlaveFile {
-    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32>;
-
+impl PerOpenFileOps for PtySlaveFile {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a TTY");
     }
 
     fn is_offset_aware(&self) -> bool {
         false
+    }
+
+    fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
+        self.0.ioctl(raw_ioctl)
+    }
+
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
     }
 }

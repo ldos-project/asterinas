@@ -85,6 +85,8 @@ impl FileSystem for ConfigFs {
 pub(super) struct ConfigFsType;
 
 impl FsType for ConfigFsType {
+    type Key = ();
+
     fn name(&self) -> &'static str {
         "configfs"
     }
@@ -93,7 +95,7 @@ impl FsType for ConfigFsType {
         FsProperties::empty()
     }
 
-    fn create(&self, _fs_creation_ctx: &FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+    fn create(&self, _fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
         Ok(ConfigFs::singleton().clone())
     }
 

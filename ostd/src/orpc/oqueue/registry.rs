@@ -293,11 +293,7 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{
-        orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, LifetimelessElementDescriptor},
-        path, path_pattern,
-        prelude::*,
-    };
+    use crate::{orpc::oqueue::ConsumableOQueue as _, path, path_pattern, prelude::*};
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())

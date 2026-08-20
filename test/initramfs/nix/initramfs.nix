@@ -28,6 +28,7 @@ let
   resolv_conf = pkgs.callPackage ./resolv_conf.nix { dnsServer = dnsServer; };
   # Whether the initramfs should include evtest, a common tool to debug input devices (`/dev/input/eventX`)
   is_evtest_included = false;
+
   all_pkgs = [ busybox dropbear openssh etc resolv_conf ]
     ++ lib.optionals enablePython [ python3 ]
     ++ lib.optionals (benchmark != null) [ benchmark.package ]
@@ -76,7 +77,7 @@ in stdenvNoCC.mkDerivation {
     ''}
 
     ${lib.optionalString (conformance != null) ''
-      cp -r "${conformance.package}"/opt/* $out/opt/
+      cp -r "${conformance.package}"/* $out/
     ''}
 
     ${lib.optionalString
@@ -92,12 +93,10 @@ in stdenvNoCC.mkDerivation {
 
     mkdir -p $out/nix/store
 
-    ${
-      lib.optionalString enablePython ''
-        cp -r ${python3} $out/nix/store/
-        cp ${python3}/bin/* $out/bin/
-      ''
-    }    
+    ${lib.optionalString enablePython ''
+      cp -r ${python3} $out/nix/store/
+      cp ${python3}/bin/* $out/bin/
+    ''}
 
     # Use `writeClosure` to retrieve all dependencies of the specified packages.
     # This will generate a text file containing the complete closure of the packages,

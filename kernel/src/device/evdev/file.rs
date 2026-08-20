@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Weak;
 use core::{
     fmt::Debug,
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -12,17 +11,13 @@ use aster_input::{
     input_dev::InputEvent,
 };
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
-use ostd::{
-    mm::{VmReader, VmWriter},
-    sync::Mutex,
-};
 
 use super::EvdevDevice;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{FileIo, StatusFlags},
-        vfs::inode::InodeIo,
+        file::{PerOpenFileOps, SettableStatusFlags, StatusFlags},
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
@@ -361,7 +356,7 @@ impl Pollable for EvdevFile {
     }
 }
 
-impl InodeIo for EvdevFile {
+impl FileOps for EvdevFile {
     fn read_at(
         &self,
         _offset: usize,
@@ -410,7 +405,7 @@ impl InodeIo for EvdevFile {
     }
 }
 
-impl FileIo for EvdevFile {
+impl PerOpenFileOps for EvdevFile {
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is an evdev file");
     }
@@ -419,7 +414,7 @@ impl FileIo for EvdevFile {
         false
     }
 
-    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+    fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
         dispatch_ioctl!(match raw_ioctl {
@@ -501,6 +496,10 @@ impl FileIo for EvdevFile {
         });
 
         Ok(0)
+    }
+
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
     }
 }
 

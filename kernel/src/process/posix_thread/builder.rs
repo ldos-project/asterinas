@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64};
 
+#[cfg(target_arch = "x86_64")]
+use ostd::arch::cpu::context::{FsBase, GsBase};
 use ostd::{
     arch::cpu::context::{FpuContext, UserContext},
     cpu::CpuSet,
@@ -16,12 +18,13 @@ use crate::{
     prelude::*,
     process::{
         Credentials, NsProxy, Process, UserNamespace,
-        posix_thread::name::ThreadName,
+        posix_thread::{ThreadName, thread_local::SuppUserContext},
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
     thread::{Thread, Tid, task},
     time::{TimerManager, clocks::ProfClock},
+    vm::vmar::VmarHandle,
 };
 
 /// The builder to build a POSIX thread
@@ -32,6 +35,7 @@ pub struct PosixThreadBuilder {
     user_ctx: Box<UserContext>,
     process: Weak<Process>,
     credentials: Credentials,
+    vmar: VmarHandle,
 
     // Optional part
     set_child_tid: Vaddr,
@@ -41,7 +45,7 @@ pub struct PosixThreadBuilder {
     sig_mask: AtomicSigMask,
     sig_queues: SigQueues,
     sched_policy: SchedPolicy,
-    fpu_context: FpuContext,
+    supp_user_context: SuppUserContext,
     user_ns: Option<Arc<UserNamespace>>,
     ns_proxy: Option<Arc<NsProxy>>,
     default_timer_slack_ns: u64,
@@ -53,6 +57,7 @@ impl PosixThreadBuilder {
         thread_name: ThreadName,
         user_ctx: Box<UserContext>,
         credentials: Credentials,
+        vmar: VmarHandle,
     ) -> Self {
         Self {
             tid,
@@ -60,6 +65,7 @@ impl PosixThreadBuilder {
             user_ctx,
             process: Weak::new(),
             credentials,
+            vmar,
             set_child_tid: 0,
             clear_child_tid: 0,
             file_table: None,
@@ -67,7 +73,7 @@ impl PosixThreadBuilder {
             sig_mask: AtomicSigMask::new_empty(),
             sig_queues: SigQueues::new(),
             sched_policy: SchedPolicy::Fair(Nice::default()),
-            fpu_context: FpuContext::new(),
+            supp_user_context: SuppUserContext::new(),
             user_ns: None,
             ns_proxy: None,
             default_timer_slack_ns: 50_000, // 50 usec default slack
@@ -104,9 +110,27 @@ impl PosixThreadBuilder {
         self
     }
 
-    pub fn fpu_context(mut self, fpu_context: FpuContext) -> Self {
-        self.fpu_context = fpu_context;
-        self
+    pub fn fpu_context(self, fpu_context: FpuContext) -> Self {
+        Self {
+            supp_user_context: self.supp_user_context.with_fpu_context(fpu_context),
+            ..self
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn fs_base(self, fs_base: FsBase) -> Self {
+        Self {
+            supp_user_context: self.supp_user_context.with_fs_base(fs_base),
+            ..self
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn gs_base(self, gs_base: GsBase) -> Self {
+        Self {
+            supp_user_context: self.supp_user_context.with_gs_base(gs_base),
+            ..self
+        }
     }
 
     pub fn user_ns(mut self, user_ns: Arc<UserNamespace>) -> Self {
@@ -130,6 +154,7 @@ impl PosixThreadBuilder {
             user_ctx,
             process,
             credentials,
+            vmar,
             thread_name,
             set_child_tid,
             clear_child_tid,
@@ -138,13 +163,13 @@ impl PosixThreadBuilder {
             sig_mask,
             sig_queues,
             sched_policy,
-            fpu_context,
+            supp_user_context,
             user_ns,
             ns_proxy,
             default_timer_slack_ns,
         } = self;
 
-        let file_table = file_table.unwrap_or_else(|| RwArc::new(FileTable::new()));
+        let file_table = file_table.unwrap_or_else(FileTable::new);
 
         assert_eq!(user_ns.is_none(), ns_proxy.is_none());
         let user_ns = user_ns.unwrap_or_else(|| UserNamespace::get_init_singleton().clone());
@@ -152,8 +177,6 @@ impl PosixThreadBuilder {
 
         let fs = fs
             .unwrap_or_else(|| Arc::new(ThreadFsInfo::new(ns_proxy.mnt_ns().new_path_resolver())));
-
-        let vmar = process.upgrade().unwrap().lock_vmar().dup_vmar().unwrap();
 
         Arc::new_cyclic(|weak_task| {
             let posix_thread = {
@@ -182,6 +205,7 @@ impl PosixThreadBuilder {
                     tracee_status: Once::new(),
                     tracees: Once::new(),
                     exit_code: AtomicU32::new(0),
+                    personality: AtomicU32::new(0),
                 }
             };
 
@@ -199,7 +223,7 @@ impl PosixThreadBuilder {
                 vmar,
                 file_table,
                 fs,
-                fpu_context,
+                supp_user_context,
                 user_ns,
                 ns_proxy,
             );

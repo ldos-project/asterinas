@@ -62,6 +62,7 @@ let
   };
 in {
   boot.loader.grub.enable = true;
+  boot.loader.grub.configurationLimit = 1;
   boot.loader.grub.efiSupport = true;
   boot.loader.grub.device = "nodev";
   boot.loader.grub.efiInstallAsRemovable = true;
@@ -78,7 +79,7 @@ in {
   # TODO: Fix errors and warnings from systemd and remove this setting.
   environment.sessionVariables = { SYSTEMD_LOG_LEVEL = "crit"; };
   system.systemBuilderCommands = ''
-    echo "PATH=/bin:/nix/var/nix/profiles/system/sw/bin ostd.log_level=${config.aster_nixos.log-level} console=${config.aster_nixos.console} -- sh /init root=/dev/vda2 init=/nix/var/nix/profiles/system/stage-2-init rd.break=${
+    echo "PATH=/bin:/nix/var/nix/profiles/system/sw/bin earlycon loglevel=${config.aster_nixos.log-level} console=${config.aster_nixos.console} -- sh /init root=/dev/vda2 init=/nix/var/nix/profiles/system/stage-2-init rd.break=${
       if config.aster_nixos.break-into-stage-1-shell then "1" else "0"
     }"  > $out/kernel-params
     mv $out/init $out/stage-2-init

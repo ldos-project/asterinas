@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_rights::ReadWriteOp;
+#[cfg(target_arch = "x86_64")]
+use ostd::arch::cpu::context::{FsBase, GsBase};
 use ostd::{
     arch::cpu::context::{FpuContext, GeneralRegs, UserContext},
     mm::VmIo,
@@ -10,29 +12,28 @@ use ostd::{
 
 use super::process_vm::activate_vmar;
 use crate::{
-    fs::vfs::{
-        inode::Inode,
-        path::{Path, PathResolver},
-    },
+    fs::vfs::{inode::Inode, path::Path},
     prelude::*,
     process::{
-        ContextUnshareAdminApi, Credentials, Process, pid_table,
+        ContextUnshareAdminApi, Credentials, Gid, Process, Uid, pid_table,
         posix_thread::{
-            AsPosixThread, ContextPthreadAdminApi, ThreadLocal, ThreadName, sigkill_other_threads,
+            AsPosixThread, ContextPthreadAdminApi, ThreadLocal, ThreadName, ptrace::PtraceEvent,
+            sigkill_other_threads,
         },
         process_vm::{MAX_LEN_STRING_ARG, MAX_NR_STRING_ARGS, ProcessVm},
         program_loader::{ProgramToLoad, elf::ElfLoadInfo},
         signal::{
             HandlePendingSignal, PauseReason, SigStack,
-            constants::{SIGCHLD, SIGKILL, SIGTRAP},
-            signals::{kernel::KernelSignal, user::UserSignal},
+            constants::{SIGCHLD, SIGKILL},
+            signals::kernel::KernelSignal,
         },
     },
-    vm::vmar::Vmar,
+    vm::vmar::VmarHandle,
 };
 
 pub fn do_execve(
     elf_file: Path,
+    thread_name: ThreadName,
     argv_ptr_ptr: Vaddr,
     envp_ptr_ptr: Vaddr,
     ctx: &Context,
@@ -59,8 +60,8 @@ pub fn do_execve(
     let program_to_load =
         ProgramToLoad::build_from_file(elf_file.clone(), &path_resolver, argv, envp)?;
 
-    let new_vmar = Vmar::new(ProcessVm::new(elf_file.clone()));
-    let elf_load_info = program_to_load.load_to_vmar(new_vmar.as_ref(), &path_resolver)?;
+    let new_vmar = VmarHandle::new(ProcessVm::new(elf_file.clone()));
+    let elf_load_info = program_to_load.load_to_vmar(&new_vmar, &path_resolver)?;
 
     // Ensure no other thread is concurrently performing exit_group or execve.
     // If such an operation is in progress, return EAGAIN.
@@ -77,32 +78,26 @@ pub fn do_execve(
     sigkill_other_threads(ctx.task, &task_set);
     drop(task_set);
 
+    let former_tid = ctx.posix_thread.tid();
+
     // After this point, failures in subsequent operations are fatal: the process
     // state may be left inconsistent and it can never return to user mode.
 
     let res = do_execve_no_return(
         ctx,
         user_context,
-        &path_resolver,
         elf_file,
+        thread_name,
         new_vmar,
         &elf_load_info,
     );
 
-    if res.is_err() {
+    if res.is_ok() {
+        ctx.posix_thread
+            .ptrace_may_stop_on(PtraceEvent::Exec(former_tid), ctx, user_context);
+    } else {
         ctx.posix_thread
             .enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
-    } else {
-        // If the PTRACE_O_TRACEEXEC option is not in effect, all successful
-        // calls to execve(2) by the traced process will cause it to be sent
-        // a SIGTRAP signal, giving the parent a chance to gain control
-        // before the new program begins execution.
-        //
-        // Reference: <https://man7.org/linux/man-pages/man2/ptrace.2.html>
-        if ctx.posix_thread.is_traced() {
-            ctx.posix_thread
-                .enqueue_signal(Box::new(UserSignal::new_kill(SIGTRAP, ctx)));
-        }
     }
 
     ctx.process.tasks().lock().finish_execve();
@@ -151,9 +146,9 @@ fn read_cstring_vec(
 fn do_execve_no_return(
     ctx: &Context,
     user_context: &mut UserContext,
-    path_resolver: &PathResolver,
     elf_file: Path,
-    new_vmar: Arc<Vmar>,
+    thread_name: ThreadName,
+    new_vmar: VmarHandle,
     elf_load_info: &ElfLoadInfo,
 ) -> Result<()> {
     let Context {
@@ -172,9 +167,10 @@ fn do_execve_no_return(
     // while holding the process VMAR lock.
     // This prevents race conditions when checking access permissions while opening
     // `/proc/[pid]/mem` or `/proc/[pid]/maps`.
-    let vmar_guard = activate_vmar(ctx, new_vmar);
+    let (vmar_guard, old_vmar) = activate_vmar(ctx, new_vmar);
     apply_caps_from_exec(process, ctx.credentials_mut(), elf_file.inode())?;
     drop(vmar_guard);
+    drop(old_vmar);
 
     // After the program has been successfully loaded, the virtual memory of the current process
     // is initialized. Hence, it is necessary to clear the previously recorded robust list.
@@ -190,9 +186,8 @@ fn do_execve_no_return(
     // Unshare file descriptor table and close files with O_CLOEXEC flag.
     unshare_and_close_files(ctx);
 
-    // Update the process's executable path and set the thread name
-    let executable_path = path_resolver.make_abs_path(&elf_file).into_string();
-    *posix_thread.thread_name().lock() = ThreadName::new_from_executable_path(&executable_path);
+    // Set the thread name.
+    *posix_thread.thread_name().lock() = thread_name;
 
     // Unshare and reset signal dispositions to their default actions.
     unshare_and_reset_sigdispositions(process);
@@ -284,13 +279,22 @@ fn set_cpu_context(
     user_context: &mut UserContext,
     elf_load_info: &ElfLoadInfo,
 ) {
+    let supp = thread_local.supp_user_context();
+
     // Reset FPU context.
-    thread_local.fpu().set_context(FpuContext::new());
+    supp.fpu().set(FpuContext::new());
 
     // Reset general-purpose registers.
     *user_context.general_regs_mut() = GeneralRegs::default();
     // Clear the TLS pointer.
+    #[cfg(target_arch = "x86_64")]
+    {
+        supp.fs_base().set(FsBase::default());
+        supp.gs_base().set(GsBase::default());
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     user_context.set_tls_pointer(0);
+
     // Set the new instruction pointer to the ELF entry point.
     user_context.set_instruction_pointer(elf_load_info.entry_point as _);
     debug!("entry_point: 0x{:x}", elf_load_info.entry_point);
@@ -307,53 +311,59 @@ fn apply_caps_from_exec(
     credentials: Credentials<ReadWriteOp>,
     elf_inode: &Arc<dyn Inode>,
 ) -> Result<()> {
-    set_uid_from_elf(process, &credentials, elf_inode)?;
-    set_gid_from_elf(process, &credentials, elf_inode)?;
+    let mode = elf_inode.mode()?;
+    let no_new_privs = credentials.no_new_privs();
+    let set_uid = if mode.has_set_uid() && !no_new_privs {
+        Some(elf_inode.owner()?)
+    } else {
+        None
+    };
+    let set_gid = if mode.has_set_gid() && !no_new_privs {
+        Some(elf_inode.group()?)
+    } else {
+        None
+    };
+
+    // Clear the ambient capability set when executing a privileged file.
+    // Currently, only setuid/setgid files are considered privileged.
+    // TODO: Also clear ambient capabilities when executing files with file capabilities
+    // (security.capability xattr) once file capabilities are supported.
+    if set_uid.is_some() || set_gid.is_some() {
+        credentials.clear_ambient_capset();
+    }
+    apply_set_uid(process, &credentials, set_uid);
+    apply_set_gid(process, &credentials, set_gid);
     credentials.set_keep_capabilities(false)?;
 
     Ok(())
 }
 
-/// Sets the UID in the credentials according to the ELF inode.
+/// Applies the set-user-ID effect to the credentials.
 ///
-/// If the ELF inode has the `set_uid` bit, the effective UID is set to the same value as the ELF
-/// inode's UID.
-fn set_uid_from_elf(
-    current: &Process,
-    credentials: &Credentials<ReadWriteOp>,
-    elf_inode: &Arc<dyn Inode>,
-) -> Result<()> {
-    if elf_inode.mode()?.has_set_uid() {
-        let uid = elf_inode.owner()?;
-        credentials.set_euid(uid);
+/// If `set_uid` is `Some`, the effective UID is set to the given UID.
+fn apply_set_uid(current: &Process, credentials: &Credentials<ReadWriteOp>, set_uid: Option<Uid>) {
+    if let Some(owner) = set_uid {
+        credentials.set_euid(owner);
 
         current.clear_parent_death_signal();
     }
 
-    // No matter whether the ELF inode has `set_uid` bit, SUID should be reset.
+    // No matter whether the file has the set-user-ID bit, SUID should be reset.
     credentials.reset_suid();
-    Ok(())
 }
 
-/// Sets the GID in the credentials according to the ELF inode.
+/// Applies the set-group-ID effect to the credentials.
 ///
-/// If the ELF inode has the `set_gid` bit, the effective GID is set to the same value as the ELF
-/// inode's GID.
-fn set_gid_from_elf(
-    current: &Process,
-    credentials: &Credentials<ReadWriteOp>,
-    elf_inode: &Arc<dyn Inode>,
-) -> Result<()> {
-    if elf_inode.mode()?.has_set_gid() {
-        let gid = elf_inode.group()?;
-        credentials.set_egid(gid);
+/// If `set_gid` is `Some`, the effective GID is set to the given GID.
+fn apply_set_gid(current: &Process, credentials: &Credentials<ReadWriteOp>, set_gid: Option<Gid>) {
+    if let Some(group) = set_gid {
+        credentials.set_egid(group);
 
         current.clear_parent_death_signal();
     }
 
-    // No matter whether the ELF inode has `set_gid` bit, SGID should be reset.
+    // No matter whether the file has the set-group-ID bit, SGID should be reset.
     credentials.reset_sgid();
-    Ok(())
 }
 
 fn reset_vfork_child(process: &Process) {
@@ -368,11 +378,12 @@ fn reset_vfork_child(process: &Process) {
 fn unshare_and_close_files(ctx: &Context) {
     ctx.unshare_files();
 
-    ctx.thread_local
-        .borrow_file_table()
-        .unwrap()
-        .write()
-        .close_files_on_exec();
+    let closed_files = {
+        let file_table = ctx.thread_local.borrow_file_table();
+        let mut file_table_locked = file_table.unwrap().write();
+        file_table_locked.close_files_on_exec()
+    };
+    drop(closed_files);
 }
 
 fn unshare_and_reset_sigdispositions(process: &Process) {

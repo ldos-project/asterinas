@@ -3,13 +3,20 @@
 #![expect(dead_code)]
 #![expect(unused_variables)]
 
-use super::*;
+use core::time::Duration;
+
+use super::{BLOCK_SIZE, DevPts, FIRST_SLAVE_INO};
 use crate::{
-    device::PtySlave,
+    device::{Device, PtySlave},
     fs::{
-        file::{AccessMode, FileIo, StatusFlags},
-        vfs::inode::InodeIo,
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
+        vfs::{
+            file_system::FileSystem,
+            inode::{Extension, FileOps, Inode, Metadata},
+        },
     },
+    prelude::*,
+    process::{Gid, Uid},
 };
 
 /// Same major number with Linux, the minor number is the index of slave.
@@ -26,22 +33,23 @@ pub struct PtySlaveInode {
 impl PtySlaveInode {
     pub fn new(device: Arc<PtySlave>, fs: Weak<DevPts>) -> Arc<Self> {
         let devpts = fs.upgrade().unwrap();
+        let metadata = Metadata::new_device(
+            device.index() as u64 + FIRST_SLAVE_INO,
+            mkmod!(u+rw, g+w),
+            BLOCK_SIZE,
+            device.as_ref(),
+            devpts.sb().container_dev_id,
+        );
         Arc::new(Self {
-            metadata: RwLock::new(Metadata::new_device(
-                device.index() as u64 + FIRST_SLAVE_INO,
-                mkmod!(u+rw, g+w),
-                super::BLOCK_SIZE,
-                device.as_ref(),
-                devpts.sb().container_dev_id,
-            )),
             device,
+            metadata: RwLock::new(metadata),
             extension: Extension::new(),
             fs,
         })
     }
 }
 
-impl InodeIo for PtySlaveInode {
+impl FileOps for PtySlaveInode {
     fn read_at(
         &self,
         _offset: usize,
@@ -70,8 +78,8 @@ impl Inode for PtySlaveInode {
         Err(Error::new(Errno::EPERM))
     }
 
-    fn metadata(&self) -> Metadata {
-        *self.metadata.read()
+    fn metadata(&self) -> Result<Metadata> {
+        Ok(*self.metadata.read())
     }
 
     fn extension(&self) -> &Extension {
@@ -145,7 +153,7 @@ impl Inode for PtySlaveInode {
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<Result<Box<dyn FileIo>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         Some(self.device.open())
     }
 }

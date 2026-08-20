@@ -99,7 +99,7 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
 pub struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
     path: Path,
     command_consumer: Consumer<DataCaptureFileCommand<T>>,
-    block_device: Arc<dyn aster_block::BlockDevice>,
+    block_device: Arc<dyn BlockDevice>,
     start_bid: Bid,
     end_bid: Bid,
     server: Arc<DataCaptureFileServer<T>>,

@@ -36,7 +36,7 @@ pub struct OutstandingCounter {
 
 #[orpc_impl]
 impl shutdown::Shutdown for OutstandingCounter {
-    fn shutdown(&self) -> core::result::Result<(), RPCError> {
+    fn shutdown(&self) -> Result<(), RPCError> {
         self.shutdown_state.shutdown();
         Ok(())
     }
@@ -50,8 +50,8 @@ impl OutstandingCounter {
         reply_oqueue: impl OQueueBase<U>,
     ) -> Result<Arc<Self>, OQueueError> {
         let server = Self::new_with(|orpc_internal, _| Self {
-            orpc_internal,
             shutdown_state: Default::default(),
+            orpc_internal,
         });
 
         spawn_thread(server.clone(), {

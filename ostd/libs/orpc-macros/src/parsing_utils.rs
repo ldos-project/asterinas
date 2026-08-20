@@ -18,7 +18,7 @@ impl ORPCMethodKind<'_> {
     pub(crate) fn of(sig: &syn::Signature) -> Option<ORPCMethodKind<'_>> {
         let ret = &sig.output;
         if let syn::ReturnType::Type(_, typ) = ret
-            && let syn::Type::Path(syn::TypePath { qself: None, path }) = typ.as_ref()
+            && let Type::Path(syn::TypePath { qself: None, path }) = typ.as_ref()
         {
             let path_segment = &path.segments.last()?;
             let name = path_segment.ident.to_string();

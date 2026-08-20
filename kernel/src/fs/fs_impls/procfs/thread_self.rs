@@ -5,7 +5,7 @@ use alloc::format;
 use crate::{
     fs::{
         file::mkmod,
-        procfs::template::{ProcSym, SymOps},
+        procfs::template::{ProcSym, ProcSymOps},
         vfs::inode::{Inode, SymbolicLink},
     },
     prelude::*,
@@ -13,16 +13,16 @@ use crate::{
 };
 
 /// Represents the inode at `/proc/self-thread`.
-pub struct ThreadSelfSymOps;
+pub(super) struct ThreadSelfSymOps;
 
 impl ThreadSelfSymOps {
-    pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/thread_self.c#L50>
         ProcSym::new(Self, parent, mkmod!(a+rwx))
     }
 }
 
-impl SymOps for ThreadSelfSymOps {
+impl ProcSymOps for ThreadSelfSymOps {
     fn read_link(&self) -> Result<SymbolicLink> {
         let pid = current!().pid();
         let tid = current_thread!().as_posix_thread().unwrap().tid();

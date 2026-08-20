@@ -13,28 +13,15 @@ use crate::{
     device::{
         Device, DeviceType, DevtmpfsInodeMeta,
         registry::char,
-        tty::{
-            Tty,
-            hvc::hvc0_device,
-            serial::serial0_device,
-            vt::{VtDriver, tty1_device},
-        },
+        tty::{hvc::hvc0_device, serial::serial0_device, vt::active_vt},
     },
-    fs::file::{FileIo, mkmod},
+    fs::file::{PerOpenFileOps, mkmod},
     prelude::*,
-    process::{JobControl, Terminal},
 };
 
 /// Corresponds to `/dev/tty0` in the file system. This device represents the active virtual
 /// terminal.
 pub struct Tty0Device;
-
-impl Tty0Device {
-    fn active_vt(&self) -> &Arc<Tty<VtDriver>> {
-        // Currently there is only one virtual terminal `tty1`.
-        tty1_device()
-    }
-}
 
 impl Device for Tty0Device {
     fn type_(&self) -> DeviceType {
@@ -49,14 +36,8 @@ impl Device for Tty0Device {
         Some(DevtmpfsInodeMeta::new("tty0"))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
-        self.active_vt().open()
-    }
-}
-
-impl Terminal for Tty0Device {
-    fn job_control(&self) -> &JobControl {
-        self.active_vt().job_control()
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        active_vt().open()
     }
 }
 
@@ -78,7 +59,7 @@ impl Device for TtyDevice {
         Some(DevtmpfsInodeMeta::with_mode("tty", mkmod!(a+rw)))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(terminal) = current!().terminal() else {
             return_errno_with_message!(
                 Errno::ENOTTY,
@@ -93,7 +74,7 @@ impl Device for TtyDevice {
 /// Corresponds to `/dev/console` in the file system. This device represents a console to which
 /// system messages will be sent.
 pub struct SystemConsole {
-    inner: Arc<dyn Terminal>,
+    inner: Arc<dyn Device>,
 }
 
 impl SystemConsole {
@@ -140,7 +121,7 @@ impl Device for SystemConsole {
         Some(DevtmpfsInodeMeta::new("console"))
     }
 
-    fn open(&self) -> Result<Box<dyn FileIo>> {
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         self.inner.open()
     }
 }

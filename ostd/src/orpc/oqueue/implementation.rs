@@ -127,12 +127,12 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         len: usize,
         is_strong: bool,
         revocable: bool,
-    ) -> Result<ObserverKey, super::OQueueError>
+    ) -> Result<ObserverKey, OQueueError>
     where
         U: Copy + Send + 'static,
     {
         let mut ring_buffer = ObservationRingBuffer::new::<U>(query, len)
-            .map_err(|_| super::ResourceUnavailableSnafu.build())?;
+            .map_err(|_| ResourceUnavailableSnafu.build())?;
         ring_buffer.revocable = revocable;
 
         if is_strong {
@@ -153,8 +153,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attach a strong observer.
     pub(super) fn attach_strong_observer<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<D, U>,
-    ) -> Result<super::StrongObserver<U>, super::OQueueError>
+        query: ObservationQuery<D, U>,
+    ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -165,8 +165,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// falls too far behind.
     pub(super) fn attach_revocable_strong_observer<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<D, U>,
-    ) -> Result<super::StrongObserver<U>, super::OQueueError>
+        query: ObservationQuery<D, U>,
+    ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -175,9 +175,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 
     fn attach_strong_observer_inner<U>(
         self: &Arc<Self>,
-        query: super::ObservationQuery<D, U>,
+        query: ObservationQuery<D, U>,
         revocable: bool,
-    ) -> Result<super::StrongObserver<U>, super::OQueueError>
+    ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -199,10 +199,10 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     pub(super) fn attach_inline_strong_observer(
         self: &Arc<Self>,
         f: impl for<'a> Fn(&'a D::Element<'a>) + Send + 'static,
-    ) -> Result<InlineStrongObserver, super::OQueueError> {
+    ) -> Result<InlineStrongObserver, OQueueError> {
         let mut inner = self.inner.lock();
         let key = inner.inline_strong_observers.insert(Box::new(f));
-        Ok(super::InlineStrongObserver {
+        Ok(InlineStrongObserver {
             oqueue: self.clone(),
             inline_observer_id: key,
             _phantom: PhantomData,
@@ -223,7 +223,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         this: &dyn UntypedOQueueImplementation,
         observer_id: ObserverKey,
         f: Box<dyn Fn(&U) + Send + 'static>,
-    ) -> Result<InlineObserverKey, super::OQueueError> {
+    ) -> Result<InlineObserverKey, OQueueError> {
         let this: &Self = (this as &dyn Any).downcast_ref().unwrap();
         let mut inner = this.inner.lock();
 
@@ -264,8 +264,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     pub(super) fn attach_weak_observer<U>(
         self: &Arc<Self>,
         history_len: usize,
-        query: super::ObservationQuery<D, U>,
-    ) -> Result<super::WeakObserver<U>, super::OQueueError>
+        query: ObservationQuery<D, U>,
+    ) -> Result<super::WeakObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
@@ -338,7 +338,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attach an producer expecting references to the OQueue if it has no consumers.
     pub(super) fn attach_ref_producer(
         self: &Arc<Self>,
-    ) -> Result<super::GenericRefProducer<D>, super::OQueueError> {
+    ) -> Result<super::GenericRefProducer<D>, OQueueError> {
         if self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -448,7 +448,7 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
     /// Attach a by-value producer to the OQueue if this supports consumers.
     pub(super) fn attach_value_producer(
         self: &Arc<Self>,
-    ) -> Result<super::ValueProducer<T>, super::OQueueError> {
+    ) -> Result<super::ValueProducer<T>, OQueueError> {
         if !self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
@@ -458,16 +458,14 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
     }
 
     /// Attach a consumer to the OQueue if this does not support consumers.
-    pub(super) fn attach_consumer(
-        self: &Arc<Self>,
-    ) -> Result<super::Consumer<T>, super::OQueueError> {
+    pub(super) fn attach_consumer(self: &Arc<Self>) -> Result<super::Consumer<T>, OQueueError> {
         if !self.supports_consume {
             return super::UnsupportedSnafu.fail();
         }
         let mut inner = self.inner.lock();
         if inner.consumer_ring_buffer.is_none() {
-            let mut ring_buffer = RingBuffer::new::<T>(self.len)
-                .map_err(|_| super::ResourceUnavailableSnafu.build())?;
+            let mut ring_buffer =
+                RingBuffer::new::<T>(self.len).map_err(|_| ResourceUnavailableSnafu.build())?;
             let id = ring_buffer.new_strong_reader();
             assert_eq!(id, 0);
             inner.consumer_ring_buffer = Some(ring_buffer);

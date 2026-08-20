@@ -8,8 +8,8 @@ use aster_bigtcp::{
 use crate::{
     events::IoEvents,
     net::{
-        iface::{BoundPort, Iface, UdpSocket},
-        socket::util::{SendRecvFlags, datagram_common},
+        iface::{BoundUdpPort, Iface, UdpSocket},
+        socket::util::{RecvFlags, RecvOutput, SendFlags, datagram_common},
     },
     prelude::*,
     util::{MultiRead, MultiWrite},
@@ -32,7 +32,7 @@ impl BoundDatagram {
         self.bound_socket.iface()
     }
 
-    pub(super) fn bound_port(&self) -> &BoundPort {
+    pub(super) fn bound_port(&self) -> &BoundUdpPort {
         self.bound_socket.bound_port()
     }
 }
@@ -55,19 +55,25 @@ impl datagram_common::Bound for BoundDatagram {
     fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
-        _flags: SendRecvFlags,
-    ) -> Result<(usize, Self::Endpoint)> {
-        let result = self.bound_socket.recv(|packet, udp_metadata| {
-            let copied_res = writer
-                .write(&mut VmReader::from(packet))
-                .map_err(Into::into);
-            let endpoint = udp_metadata.endpoint;
-            (copied_res, endpoint)
-        });
+        flags: RecvFlags,
+    ) -> Result<(RecvOutput, Self::Endpoint)> {
+        let result = self
+            .bound_socket
+            .recv(flags.receive_behavior(), |packet, udp_metadata| {
+                let message_len = packet.len();
+                let copied_res = writer
+                    .write(&mut VmReader::from(packet))
+                    .map_err(Into::into);
+                let endpoint = udp_metadata.endpoint;
+                (copied_res, endpoint, message_len)
+            });
 
         match result {
-            Ok((Ok(res), endpoint)) => Ok((res, endpoint)),
-            Ok((Err(e), _)) => Err(e),
+            Ok((Ok(copied_len), endpoint, message_len)) => {
+                let output = RecvOutput::new_for_packet(flags, copied_len, message_len);
+                Ok((output, endpoint))
+            }
+            Ok((Err(e), _, _)) => Err(e),
             Err(RecvError::Exhausted) => {
                 return_errno_with_message!(Errno::EAGAIN, "the receive buffer is empty")
             }
@@ -81,7 +87,7 @@ impl datagram_common::Bound for BoundDatagram {
         &self,
         reader: &mut dyn MultiRead,
         remote: &Self::Endpoint,
-        _flags: SendRecvFlags,
+        _flags: SendFlags,
     ) -> Result<usize> {
         let result = self
             .bound_socket

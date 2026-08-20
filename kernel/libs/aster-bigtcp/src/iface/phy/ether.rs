@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_map::BTreeMap, string::String, sync::Arc};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
@@ -9,7 +9,7 @@ use smoltcp::{
     phy::{Device, DeviceCapabilities, TxToken},
     wire::{
         self, ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-        EthernetRepr, IpAddress, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Packet,
+        EthernetRepr, IpAddress, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Packet, Ipv6Packet,
     },
 };
 
@@ -17,8 +17,8 @@ use crate::{
     device::{NotifyDevice, WithDevice},
     ext::Ext,
     iface::{
-        Iface, InterfaceFlags, ScheduleNextPoll,
-        common::{IfaceCommon, InterfaceType},
+        Iface, InterfaceFlags, InterfaceName, ScheduleNextPoll,
+        common::{IfaceCommon, InterfaceType, IpPacket},
         iface::internal::IfaceInternal,
         time::get_network_timestamp,
     },
@@ -37,7 +37,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
         ether_addr: EthernetAddress,
         ip_cidr: Ipv4Cidr,
         gateway: Ipv4Address,
-        name: String,
+        name: InterfaceName,
         sched_poll: E::ScheduleNextPoll,
         flags: InterfaceFlags,
     ) -> Arc<Self> {
@@ -78,6 +78,10 @@ impl<D: WithDevice + 'static, E: Ext> Iface<E> for EtherIface<D, E>
 where
     D::Device: NotifyDevice,
 {
+    fn ethernet_addr(&self) -> Option<EthernetAddress> {
+        Some(self.ether_addr)
+    }
+
     fn poll(&self) {
         self.driver.with(|device| {
             let next_poll = self.common.poll(
@@ -102,7 +106,7 @@ impl<D, E: Ext> EtherIface<D, E> {
         data: &'pkt [u8],
         iface_cx: &mut Context,
         tx_token: T,
-    ) -> Option<(Ipv4Packet<&'pkt [u8]>, T)> {
+    ) -> Option<(IpPacket<'pkt>, T)> {
         match self.parse_ip_or_process_arp(data, iface_cx) {
             Ok(pkt) => Some((pkt, tx_token)),
             Err(Some(arp)) => {
@@ -117,7 +121,7 @@ impl<D, E: Ext> EtherIface<D, E> {
         &self,
         data: &'pkt [u8],
         iface_cx: &mut Context,
-    ) -> Result<Ipv4Packet<&'pkt [u8]>, Option<ArpRepr>> {
+    ) -> Result<IpPacket<'pkt>, Option<ArpRepr>> {
         // Parse the Ethernet header. Ignore the packet if the header is ill-formed.
         let frame = EthernetFrame::new_checked(data).map_err(|_| None)?;
         let repr = EthernetRepr::parse(&frame).map_err(|_| None)?;
@@ -130,7 +134,12 @@ impl<D, E: Ext> EtherIface<D, E> {
         // Ignore the Ethernet frame if the protocol is not supported.
         match repr.ethertype {
             EthernetProtocol::Ipv4 => {
-                Ok(Ipv4Packet::new_checked(frame.payload()).map_err(|_| None)?)
+                let pkt = Ipv4Packet::new_checked(frame.payload()).map_err(|_| None)?;
+                Ok(IpPacket::Ipv4(pkt))
+            }
+            EthernetProtocol::Ipv6 => {
+                let pkt = Ipv6Packet::new_checked(frame.payload()).map_err(|_| None)?;
+                Ok(IpPacket::Ipv6(pkt))
             }
             EthernetProtocol::Arp => {
                 let pkt = ArpPacket::new_checked(frame.payload()).map_err(|_| None)?;
@@ -213,6 +222,12 @@ impl<D, E: Ext> EtherIface<D, E> {
         // Resolve the next-hop IP address.
         let next_hop_ip = match iface_cx.route(&pkt.ip_repr().dst_addr(), iface_cx.now()) {
             Some(IpAddress::Ipv4(next_hop_ip)) => next_hop_ip,
+            Some(IpAddress::Ipv6(_)) => {
+                // FIXME: Currently, we drop outbound IPv6 packets because neighbor discovery is not
+                // implemented and we have no way to resolve the next-hop link-layer address.
+                ostd::debug!("IPv6 neighbor discovery is not implemented for Ethernet interfaces");
+                return Err(None);
+            }
             None => return Err(None),
         };
 
