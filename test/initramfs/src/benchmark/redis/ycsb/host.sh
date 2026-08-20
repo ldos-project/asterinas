@@ -17,17 +17,18 @@ stop_guest() {
 # Trap EXIT signal to ensure guest VM is stopped on script exit
 trap stop_guest EXIT
 
+export PATH=$PATH:$MVN_DIR/bin
+
 # Run YCSB + redis bench
 echo "Running YCSB bench connected to $GUEST_SERVER_IP_ADDRESS"
 
-# Locate workload location based on ycsb nix symlink
-WORKLOAD="$(dirname "$(readlink -f "$(command -v ycsb)")")/../share/ycsb/workloads/workloada"
+cd $YCSB_PATH/
 
 FIELDLENGTH=4096
 
 
 
-ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P "$WORKLOAD" \
+python3 ./bin/ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
   -p recordcount=4096 \
   -p fieldcount=1 \
   -p fieldlength=$FIELDLENGTH \
@@ -37,7 +38,7 @@ ycsb load redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P
 
 # Run many times to stress memory allocation
 for _ in $(seq 1 1); do
-  ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P "$WORKLOAD" \
+  python3 ./bin/ycsb run redis -p redis.host="$GUEST_SERVER_IP_ADDRESS" -p redis.port="6379" -P ./workloads/workloada \
     -p operationcount=4096 \
     -p recordcount=4096 \
     -p workload=site.ycsb.workloads.CoreWorkload \
