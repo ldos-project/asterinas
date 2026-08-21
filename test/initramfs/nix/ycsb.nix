@@ -35,14 +35,14 @@ maven.buildMavenPackage rec {
   installPhase = ''
     runHook preInstall
 
-    home="$out/share/ycsb"
-    mkdir -p "$home"
-    tar -xzf distribution/target/ycsb-*.tar.gz -C "$home" --strip-components=1
+    ycsb_dir="$out/share/ycsb"
+    mkdir -p "$ycsb_dir"
+    tar -xzf distribution/target/ycsb-*.tar.gz -C "$ycsb_dir" --strip-components=1
 
     mkdir -p "$out/bin"
-    makeWrapper "$home/bin/ycsb" "$out/bin/ycsb" \
+    makeWrapper "$ycsb_dir/bin/ycsb" "$out/bin/ycsb" \
       --prefix PATH : "${lib.makeBinPath [ jre python3 ]}" \
-      --set-default YCSB_HOME "$home"
+      --set-default YCSB_HOME "$ycsb_dir"
 
     runHook postInstall
   '';
