@@ -18,7 +18,7 @@ maven.buildMavenPackage rec {
 
   mvnHash = "sha256-PhplQ8Cep803JZzZslq39U2BKP0NGHqQzk9hkKPmlPw=";
 
-  # build just the distribution module, core, redis, and memcached 
+  # build just the distribution module, core, redis, and memcached
   # these are the only things needed by the benchmark
   # this creates the distribution tar file
   mvnParameters = lib.escapeShellArgs [
