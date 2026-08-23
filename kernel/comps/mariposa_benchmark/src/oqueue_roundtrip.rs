@@ -1,0 +1,430 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Benchmark for the round-trip latency of the kernel -> user -> kernel path over OQFS.
+//!
+//! A kernel thread produces a request into one OQueue and blocks; the userspace peer
+//! (`oqbench_server`) replies into a second OQueue; the kernel thread wakes on the reply. Four
+//! timestamps per iteration split each round trip into its transport and scheduler parts. The
+//! samples are buffered in memory during the run and written to the data capture device once it is
+//! over, so nothing but the round trip itself is measured.
+
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use aster_logger::println;
+use mariposa_data_capture::DataCaptureFile;
+use ostd::{
+    arch::read_tsc,
+    orpc::{
+        oqueue::{
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
+            OQueueRef, RefProducer, registry,
+        },
+        sync::{BlockOnMany, Blocker, TimeoutBlocker},
+    },
+    ostd_error,
+    timer::TIMER_FREQ,
+};
+use serde::{Deserialize, Serialize};
+use snafu::Snafu;
+use spin::once::Once;
+
+use crate::framework::{self, PREFIX};
+
+/// The name this benchmark reports itself under.
+const NAME: &str = "oqueue_roundtrip";
+
+/// Bounded wait for a signal from the userspace peer before giving up (ms).
+const PEER_SIGNAL_TIMEOUT_MS: u32 = 60_000;
+
+/// Upper bound on one [`RoundTripSample`]'s CBOR encoding, used to size the capture file.
+const MAX_SAMPLE_BYTES: usize = 96;
+
+/// Room to add on top of the samples for the file's header, which names the capture and the sample
+/// type, and for the block the terminator is written into.
+const CAPTURE_OVERHEAD_BYTES: usize = 8 * 1024;
+
+/// Master switch (`oqbench.enable`); the benchmark is inert unless set.
+static ENABLE: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("oqbench.enable", ENABLE);
+
+/// Measured iteration count (`oqbench.iterations`).
+static ITERATIONS: AtomicU32 = AtomicU32::new(1_000_000);
+aster_cmdline::define_kv_param!("oqbench.iterations", ITERATIONS);
+
+/// Per-reply timeout in milliseconds (`oqbench.timeout_ms`); a timeout is fatal.
+static TIMEOUT_MS: AtomicU32 = AtomicU32::new(10_000);
+aster_cmdline::define_kv_param!("oqbench.timeout_ms", TIMEOUT_MS);
+
+/// Request OQueue capacity (`oqbench.request_capacity`).
+static REQUEST_CAPACITY: AtomicU32 = AtomicU32::new(2);
+aster_cmdline::define_kv_param!("oqbench.request_capacity", REQUEST_CAPACITY);
+
+/// Reply OQueue capacity (`oqbench.reply_capacity`).
+static REPLY_CAPACITY: AtomicU32 = AtomicU32::new(2);
+aster_cmdline::define_kv_param!("oqbench.reply_capacity", REPLY_CAPACITY);
+
+/// Real-time priority for the kernel thread (`oqbench.rt_prio`, `1..=99`).
+/// Its presence is what selects real-time scheduling: unset means the fair policy.
+static RT_PRIO: Once<u32> = Once::new();
+aster_cmdline::define_kv_param!("oqbench.rt_prio", RT_PRIO);
+
+/// The userspace peer's synthetic work per request, in TSC cycles (`oqbench.peer_compute`). Consumed
+/// in userspace; registered here only so it is a recognized parameter and can be reported.
+static PEER_COMPUTE: AtomicU32 = AtomicU32::new(0);
+aster_cmdline::define_kv_param!("oqbench.peer_compute", PEER_COMPUTE);
+
+/// Number of competing busy-loop processes during the run (`oqbench.busy_procs`). Consumed in
+/// userspace; registered here only so it is a recognized parameter and can be reported.
+static BUSY_PROCS: AtomicU32 = AtomicU32::new(0);
+aster_cmdline::define_kv_param!("oqbench.busy_procs", BUSY_PROCS);
+
+/// What the kernel asks the peer to do next; mirrored by `Request` in `oqbench_server`.
+#[derive(Clone, Copy, Debug, Serialize)]
+enum Request {
+    /// Time the round trip identified by this sequence number.
+    Measure(u64),
+    /// Every sample is captured; the peer may shut the machine down.
+    Finished,
+    /// The run failed and the reason is on the console; the peer should shut down and say so.
+    Failed,
+}
+
+impl Request {
+    /// The request that ends a run, reporting whether it succeeded.
+    fn ending(outcome: &Result<(), Error>) -> Self {
+        match outcome {
+            Ok(()) => Self::Finished,
+            Err(_) => Self::Failed,
+        }
+    }
+}
+
+/// Status the userspace peer receives.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+enum PeerSignal {
+    /// Attached to every stream and ready to serve requests. Nothing is measured before this.
+    Ready,
+    /// The run's result has been read; the queues can be torn down.
+    Done,
+}
+
+#[ostd_error]
+#[derive(Debug, Snafu)]
+enum Error {
+    #[ostd(context(source))]
+    #[snafu(transparent)]
+    Framework { source: framework::Error },
+
+    #[snafu(display("oqbench.iterations must be non-zero ({context})"))]
+    ZeroIterations,
+
+    #[snafu(display("oqbench.rt_prio must be in 1..=99, got {rt_prio} ({context})"))]
+    BadRealTimePriority { rt_prio: u32 },
+
+    #[snafu(display(
+        "stale reply in the queue before producing seq {seq} (its seq={stale_seq}) ({context})"
+    ))]
+    StaleReply { seq: u64, stale_seq: u64 },
+
+    #[snafu(display(
+        "out-of-sequence reply: expected seq {seq}, got seq {replied_seq} ({context})"
+    ))]
+    OutOfSequence { seq: u64, replied_seq: u64 },
+
+    #[snafu(display(
+        "reply timeout at seq {seq} after {timeout_ms}ms ({elapsed} cycles) ({context})"
+    ))]
+    ReplyTimeout {
+        seq: u64,
+        timeout_ms: u32,
+        elapsed: u64,
+    },
+
+    #[snafu(display(
+        "the userspace peer did not send {expected:?} within {PEER_SIGNAL_TIMEOUT_MS}ms ({context})"
+    ))]
+    PeerSilent { expected: PeerSignal },
+
+    #[snafu(display(
+        "the userspace peer sent {received:?} while waiting for {expected:?} ({context})"
+    ))]
+    UnexpectedSignal {
+        expected: PeerSignal,
+        received: PeerSignal,
+    },
+}
+
+/// The four intervals one round trip decomposes into, in TSC cycles. This is the record written to
+/// the capture file, one per measured iteration.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct RoundTripSample {
+    /// The whole round trip, `t3 - t0`.
+    roundtrip: u64,
+    /// Waking the userspace peer, `t1 - t0`.
+    kernel_to_user: u64,
+    /// The peer's own work, `t2 - t1`.
+    compute: u64,
+    /// Waking the kernel thread again, `t3 - t2`.
+    user_to_kernel: u64,
+}
+
+/// The effective run configuration, snapshotted from the cmdline parameters and reported verbatim so
+/// a results file can be matched back to the run that produced it.
+#[derive(Clone, Copy, Debug)]
+struct Config {
+    iterations: u32,
+    timeout_ms: u32,
+    request_capacity: u32,
+    reply_capacity: u32,
+    rt_prio: Option<u8>,
+    #[expect(dead_code, reason = "read through the derived `Debug`")]
+    peer_compute: u32,
+    #[expect(dead_code, reason = "read through the derived `Debug`")]
+    busy_procs: u32,
+}
+
+impl Config {
+    /// Snapshots the parameters, failing on the first one that is unusable.
+    fn from_params() -> Result<Self, Error> {
+        let rt_prio = match RT_PRIO.get().copied() {
+            None => None,
+            Some(rt_prio) if (1..=99).contains(&rt_prio) => Some(rt_prio as u8),
+            Some(rt_prio) => return BadRealTimePrioritySnafu { rt_prio }.fail(),
+        };
+
+        let iterations = ITERATIONS.load(Ordering::Relaxed);
+        if iterations == 0 {
+            return ZeroIterationsSnafu.fail();
+        }
+
+        Ok(Self {
+            iterations,
+            timeout_ms: TIMEOUT_MS.load(Ordering::Relaxed),
+            request_capacity: REQUEST_CAPACITY.load(Ordering::Relaxed),
+            reply_capacity: REPLY_CAPACITY.load(Ordering::Relaxed),
+            rt_prio,
+            peer_compute: PEER_COMPUTE.load(Ordering::Relaxed),
+            busy_procs: BUSY_PROCS.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// The prepared kernel side of one benchmark run: the effective configuration and the two OQueue
+/// endpoints. Holding the producer and consumer keeps both queues (and their OQFS exports) alive for
+/// the whole run.
+pub struct OQueueRoundTrip {
+    config: Config,
+    producer: RefProducer<Request>,
+    consumer: Consumer<[u64; 3]>,
+    signals: Consumer<PeerSignal>,
+}
+
+/// Prepares a benchmark run, or returns `None` if `oqbench.enable` is not set or a parameter is
+/// unusable.
+pub fn prepare() -> Option<OQueueRoundTrip> {
+    if !ENABLE.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let config = Config::from_params()
+        .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"))
+        .ok()?;
+    let (producer, consumer, signals) =
+        setup_queues(config.request_capacity, config.reply_capacity);
+    Some(OQueueRoundTrip {
+        config,
+        producer,
+        consumer,
+        signals,
+    })
+}
+
+/// Creates and exports the three OQueues on the `oqbench` OQFS subtree: the request queue
+/// (kernel -> user, exported as `strong_observe`), the reply queue (user -> kernel, exported as
+/// `produce`), and the control queue the peer reports its [`PeerSignal`]s on.
+fn setup_queues(
+    request_capacity: u32,
+    reply_capacity: u32,
+) -> (
+    RefProducer<Request>,
+    Consumer<[u64; 3]>,
+    Consumer<PeerSignal>,
+) {
+    let request_path = ostd::path!(oqbench.request);
+    let request_oqueue = OQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
+    registry::register(&request_path, &request_oqueue.as_any_oqueue());
+    let request_producer = request_oqueue
+        .attach_ref_producer()
+        .expect("the oqbench request OQueue always allows a ref producer");
+
+    let reply_path = ostd::path!(oqbench.reply);
+    let reply_oqueue =
+        ConsumableOQueueRef::<[u64; 3]>::new(reply_capacity as usize, reply_path.clone());
+    registry::register_producible(&reply_path, &reply_oqueue);
+    let reply_consumer = reply_oqueue
+        .attach_consumer()
+        .expect("the oqbench reply OQueue always allows attaching its consumer");
+
+    // Two is enough for the whole run: the peer sends `Ready` once and `Done` once.
+    let control_path = ostd::path!(oqbench.control);
+    let control_oqueue = ConsumableOQueueRef::<PeerSignal>::new(2, control_path.clone());
+    registry::register_producible(&control_path, &control_oqueue);
+    let control_consumer = control_oqueue
+        .attach_consumer()
+        .expect("the oqbench control OQueue always allows attaching its consumer");
+
+    (request_producer, reply_consumer, control_consumer)
+}
+
+/// Blocks (without spinning) until receiving the `Ready` signal from the peer, giving up after
+/// [`PEER_SIGNAL_TIMEOUT_MS`].
+fn wait_for_signal(signals: &Consumer<PeerSignal>, expected: PeerSignal) -> Result<(), Error> {
+    let timeout = TimeoutBlocker::new();
+    let mut block_on_many = BlockOnMany::new();
+    timeout.arm_after(PEER_SIGNAL_TIMEOUT_MS as u64 * TIMER_FREQ / 1000);
+
+    loop {
+        if let Some(received) = signals.try_consume() {
+            if received != expected {
+                return UnexpectedSignalSnafu { expected, received }.fail();
+            }
+            return Ok(());
+        }
+        if timeout.should_try() {
+            return PeerSilentSnafu { expected }.fail();
+        }
+        let blockers: [&dyn Blocker; 2] = [signals, &*timeout];
+        block_on_many.block_on(blockers.into_iter());
+    }
+}
+
+impl OQueueRoundTrip {
+    /// The real-time priority the kernel thread should run at, or `None` for the fair policy.
+    pub fn rt_prio(&self) -> Option<u8> {
+        self.config.rt_prio
+    }
+
+    /// Determine the amount of space to reserve on the capture device for this run's samples.
+    pub fn capture_length(&self) -> usize {
+        // `iterations` is a `u32`, so this is at most ~4.1e11: no overflow on a 64-bit `usize`.
+        self.config.iterations as usize * MAX_SAMPLE_BYTES + CAPTURE_OVERHEAD_BYTES
+    }
+
+    /// Runs the benchmark and then tells the peer how it went.
+    pub fn run(self, capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>) {
+        let Self {
+            config,
+            producer,
+            consumer,
+            signals,
+        } = self;
+
+        // Wait for peer
+        if wait_for_signal(&signals, PeerSignal::Ready)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"))
+            .is_err()
+        {
+            return;
+        }
+
+        let outcome = measure(&config, &producer, &consumer, capture_file)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
+        producer.produce_ref(&Request::ending(&outcome));
+
+        let _ = wait_for_signal(&signals, PeerSignal::Done)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
+    }
+}
+
+/// Measures every iteration and captures the samples, or reports why it could not.
+fn measure(
+    config: &Config,
+    producer: &RefProducer<Request>,
+    consumer: &Consumer<[u64; 3]>,
+    capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>,
+) -> Result<(), Error> {
+    let timeout = TimeoutBlocker::new();
+    let timeout_jiffies = config.timeout_ms as u64 * TIMER_FREQ / 1000;
+    let mut block_on_many = BlockOnMany::new();
+
+    let measured = framework::run(config.iterations, capture_file, |seq| {
+        round_trip(
+            config,
+            producer,
+            consumer,
+            &timeout,
+            timeout_jiffies,
+            &mut block_on_many,
+            seq,
+        )
+    })?;
+
+    framework::report(NAME, config, measured);
+    Ok(())
+}
+
+/// Times one round trip: produce request `seq`, block until its reply arrives, and split the four
+/// timestamps into intervals.
+///
+/// This is the function specific to the oqueue round trip benchmark that is supplied to the run function
+/// in the framework.
+///
+/// An anomaly (a stale reply, an out-of-sequence reply, or no reply within the timeout) is reported
+/// and returned as `Err`, which ends the run.
+fn round_trip(
+    config: &Config,
+    producer: &RefProducer<Request>,
+    consumer: &Consumer<[u64; 3]>,
+    timeout: &TimeoutBlocker,
+    timeout_jiffies: u64,
+    block_on_many: &mut BlockOnMany,
+    seq: u64,
+) -> Result<RoundTripSample, Error> {
+    // A value consumable before this iteration's request is produced is a stale reply.
+    if let Some(stale) = consumer.try_consume() {
+        return StaleReplySnafu {
+            seq,
+            stale_seq: stale[0],
+        }
+        .fail();
+    }
+
+    let t0 = read_tsc();
+    producer.produce_ref(&Request::Measure(seq));
+    timeout.arm_after(timeout_jiffies);
+
+    let (t3, reply) = loop {
+        if let Some(reply) = consumer.try_consume() {
+            // Stamp t3 before any loop-exit work so its overhead is not counted.
+            let t3 = read_tsc();
+            if reply[0] != seq {
+                return OutOfSequenceSnafu {
+                    seq,
+                    replied_seq: reply[0],
+                }
+                .fail();
+            }
+            break (t3, reply);
+        }
+        if timeout.should_try() {
+            return ReplyTimeoutSnafu {
+                seq,
+                timeout_ms: config.timeout_ms,
+                elapsed: read_tsc().wrapping_sub(t0),
+            }
+            .fail();
+        }
+        let blockers: [&dyn Blocker; 2] = [consumer, timeout];
+        block_on_many.block_on(blockers.into_iter());
+    };
+    timeout.disarm();
+
+    let (t1, t2) = (reply[1], reply[2]);
+    Ok(RoundTripSample {
+        roundtrip: t3.wrapping_sub(t0),
+        kernel_to_user: t1.wrapping_sub(t0),
+        compute: t2.wrapping_sub(t1),
+        user_to_kernel: t3.wrapping_sub(t2),
+    })
+}

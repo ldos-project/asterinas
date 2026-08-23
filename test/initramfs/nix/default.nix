@@ -38,9 +38,11 @@ in rec {
   # The userspace RAID-1 selection policy server, always included (like `oqueue-reader`); it is
   # only exercised when booted with `raid.selection=userspace`.
   raid-policy-server = pkgs.callPackage ./raid-policy-server.nix { };
+  # The userspace peer of the OQFS round-trip microbenchmark.
+  oqbench-server = pkgs.callPackage ./oqbench-server.nix { };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
-    inherit busybox oqueue-reader raid-policy-server;
+    inherit busybox oqueue-reader raid-policy-server oqbench-server;
     benchmark = if enableBenchmarkTest then benchmark else null;
     conformance = if enableConformanceTest then conformance else null;
     regression = if enableRegressionTest then regression else null;

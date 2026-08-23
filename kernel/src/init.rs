@@ -201,6 +201,9 @@ fn first_kthread() {
     });
 
     #[cfg(not(baseline_asterinas))]
+    benchmarks::oqueue_roundtrip::init_after_init_process();
+
+    #[cfg(not(baseline_asterinas))]
     if kcmdline::get_kernel_cmd_line()
         .expect("no kernel command line")
         .get_module_arg_by_name::<bool>("vm", "hugepaged_enabled")

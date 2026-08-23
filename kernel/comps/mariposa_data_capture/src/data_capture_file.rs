@@ -18,7 +18,7 @@
 //! [`DataCaptureFile`] has a thread which will observe all OQueues attach via
 //! [`DataCaptureFile::register_observer`].
 
-use alloc::{string::ToString as _, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicBool};
 
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
@@ -35,6 +35,7 @@ use ostd::{
         sync::{BlockOnMany, Blocker},
     },
     path,
+    sync::WaitQueue,
 };
 use serde::Serialize;
 
@@ -61,6 +62,8 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
     /// Attach a new OQueue to the output. If output has already started, then the path will not
     /// appear in the block header.
     fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
+    /// Write values the caller already holds, without routing them through an OQueue.
+    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError>;
     /// Sync writes to disk.
     fn sync(&self) -> Result<(), RPCError>;
     /// Enable capturing to this file.
@@ -72,6 +75,7 @@ pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
 /// Command enum for DataCaptureFile operations
 enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
+    WriteValues(Box<dyn Iterator<Item = T> + Send>),
     Sync,
     Stop,
 }
@@ -82,10 +86,24 @@ impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileC
             Self::RegisterObserver(arg0) => {
                 f.debug_tuple("DataCaptureFileCommand").field(arg0).finish()
             }
+            Self::WriteValues(_) => write!(f, "WriteValues"),
             Self::Sync => write!(f, "Sync"),
             Self::Stop => write!(f, "Stop"),
         }
     }
+}
+
+/// Writes the block header if it has not been written yet, consuming the collected OQueue paths so
+/// later attachments no longer accumulate into it.
+fn write_header_once<T>(
+    writer: &mut ChunkingWriteWrapper,
+    name: &Path,
+    paths: &mut Option<Vec<Path>>,
+) -> Result<(), DataCaptureError> {
+    let Some(collected) = paths.take() else {
+        return Ok(());
+    };
+    writer.write_header::<T>(&name.to_string(), &collected)
 }
 
 #[orpc_server(DataCaptureFile<T>)]
@@ -94,6 +112,7 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     started: AtomicBool,
     stopped: AtomicBool,
+    stopped_wait_queue: WaitQueue,
 }
 
 pub struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
@@ -137,6 +156,14 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                             paths.push(path);
                         }
                     }
+                    DataCaptureFileCommand::WriteValues(values) => {
+                        write_header_once::<T>(&mut data_buf_handler, &self.path, &mut paths)?;
+                        for value in values {
+                            data_buf_handler.write_value(&value);
+                            data_buf_handler.flush_if_needed()?;
+                        }
+                        data_buf_handler.sync()?;
+                    }
                     DataCaptureFileCommand::Sync => {
                         data_buf_handler.sync()?;
                     }
@@ -145,6 +172,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         self.server
                             .stopped
                             .store(true, core::sync::atomic::Ordering::SeqCst);
+                        self.server.stopped_wait_queue.wake_all();
                         return Ok(());
                     }
                 }
@@ -160,13 +188,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                 // would leave the values in the OQueues and block them.
                 while let Ok(Some(v)) = o.try_strong_observe() {
                     if started {
-                        if paths.is_some() {
-                            data_buf_handler.write_header::<T>(
-                                &self.path.to_string(),
-                                paths.as_ref().unwrap(),
-                            )?;
-                            paths = None;
-                        }
+                        write_header_once::<T>(&mut data_buf_handler, &self.path, &mut paths)?;
 
                         data_buf_handler.write_value(&v);
                         data_buf_handler.flush_if_needed()?;
@@ -188,6 +210,12 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
         Ok(())
     }
 
+    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError> {
+        self.command_producer
+            .produce(DataCaptureFileCommand::WriteValues(values));
+        Ok(())
+    }
+
     fn sync(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::Sync);
         Ok(())
@@ -195,9 +223,11 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
 
     fn stop(&self) -> Result<(), RPCError> {
         self.command_producer.produce(DataCaptureFileCommand::Stop);
-        while !self.stopped.load(core::sync::atomic::Ordering::Relaxed) {
-            ostd::task::Task::yield_now();
-        }
+        self.stopped_wait_queue.wait_until(|| {
+            self.stopped
+                .load(core::sync::atomic::Ordering::SeqCst)
+                .then_some(())
+        });
         Ok(())
     }
 
@@ -242,6 +272,7 @@ impl DataCaptureFileBuilder {
                     command_oqueue,
                     started: AtomicBool::new(false),
                     stopped: AtomicBool::new(false),
+                    stopped_wait_queue: WaitQueue::new(),
                 });
 
                 spawn_thread(server.clone(), {

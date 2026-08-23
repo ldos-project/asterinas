@@ -1,0 +1,16 @@
+[package]
+name = "mariposa_benchmark"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ostd = { workspace = true }
+aster-logger = { workspace = true }
+aster-cmdline = { workspace = true }
+mariposa_data_capture = { workspace = true }
+serde = { workspace = true }
+snafu = { workspace = true }
+spin = { workspace = true }
+
+[lints]
+workspace = true

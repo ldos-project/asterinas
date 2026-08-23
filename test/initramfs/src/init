@@ -34,6 +34,22 @@ if grep -q 'raid.selection=userspace' /proc/cmdline; then
     raid_policy_server &
 fi
 
+# The OQFS round-trip microbenchmark: when booted with `oqbench.enable`, launch its userspace peer
+# (as root) and any `oqbench.busy_procs` competing busy-loop processes, both configured from
+# `/proc/cmdline`.
+if grep -q 'oqbench.enable' /proc/cmdline; then
+    oqbench_peer_compute=$(sed -n 's/.*oqbench\.peer_compute=\([0-9]*\).*/\1/p' /proc/cmdline)
+    oqbench_busy_procs=$(sed -n 's/.*oqbench\.busy_procs=\([0-9]*\).*/\1/p' /proc/cmdline)
+    i=0
+    while [ "$i" -lt "${oqbench_busy_procs:-0}" ]; do
+        sh -c 'while true; do :; done' &
+        i=$((i + 1))
+    done
+    oqbench_server --compute "${oqbench_peer_compute:-0}"
+    echo "oqbench: peer exited with status $?; powering off"
+    poweroff -f
+fi
+
 mount -t ext2 /dev/raid /raid1
 
 # When the init process starts,

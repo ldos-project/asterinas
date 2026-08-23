@@ -35,6 +35,7 @@ members = [
     "kernel/comps/i8042",
     "kernel/comps/input",
     "kernel/comps/logger",
+    "kernel/comps/mariposa_benchmark",
     "kernel/comps/mariposa_data_capture",
     "kernel/comps/mlsdisk",
     "kernel/comps/network",
@@ -87,6 +88,7 @@ default-members = [
     "kernel/comps/i8042",
     "kernel/comps/input",
     "kernel/comps/logger",
+    "kernel/comps/mariposa_benchmark",
     "kernel/comps/mariposa_data_capture",
     "kernel/comps/mlsdisk",
     "kernel/comps/network",
@@ -178,6 +180,7 @@ aster-systree = { path = "kernel/comps/systree" }
 aster-time = { path = "kernel/comps/time" }
 aster-uart = { path = "kernel/comps/uart" }
 aster-virtio = { path = "kernel/comps/virtio" }
+mariposa_benchmark = { path = "kernel/comps/mariposa_benchmark" }
 mariposa_data_capture = { path = "kernel/comps/mariposa_data_capture" }
 
 # Crates under kernel/libs
