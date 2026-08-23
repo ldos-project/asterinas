@@ -40,7 +40,6 @@ members = [
     "kernel/comps/mlsdisk",
     "kernel/comps/network",
     "kernel/comps/nvme",
-    "kernel/comps/oqueue_roundtrip_bench",
     "kernel/comps/pci",
     "kernel/comps/raid",
     "kernel/comps/softirq",
@@ -94,7 +93,6 @@ default-members = [
     "kernel/comps/mlsdisk",
     "kernel/comps/network",
     "kernel/comps/nvme",
-    "kernel/comps/oqueue_roundtrip_bench",
     "kernel/comps/pci",
     "kernel/comps/raid",
     "kernel/comps/softirq",
@@ -175,7 +173,6 @@ aster-logger = { path = "kernel/comps/logger" }
 aster-mlsdisk = { path = "kernel/comps/mlsdisk" }
 aster-network = { path = "kernel/comps/network" }
 aster-nvme = { path = "kernel/comps/nvme" }
-aster-oqueue-roundtrip-bench = { path = "kernel/comps/oqueue_roundtrip_bench" }
 aster-pci = { path = "kernel/comps/pci" }
 aster-raid = { path = "kernel/comps/raid" }
 aster-softirq = { path = "kernel/comps/softirq" }

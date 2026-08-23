@@ -195,7 +195,6 @@ dependencies = [
  "aster-logger",
  "aster-network",
  "aster-nvme",
- "aster-oqueue-roundtrip-bench",
  "aster-raid",
  "aster-rights",
  "aster-rights-proc",
@@ -316,15 +315,6 @@ dependencies = [
  "ostd-pod",
  "spin",
  "zerocopy",
-]
-
-[[package]]
-name = "aster-oqueue-roundtrip-bench"
-version = "0.1.0"
-dependencies = [
- "aster-cmdline",
- "aster-logger",
- "ostd",
 ]
 
 [[package]]
