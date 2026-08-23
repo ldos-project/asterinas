@@ -2,9 +2,9 @@
 
 Benchmarks for Mariposa. Each benchmark lives in its own module; `framework.rs` holds what they
 share — collecting a sample per iteration, capturing the samples, reporting the run, and giving up on
-it. 
+it.
 
-## `oqueue_roundtrip` — the OQFS kernel ↔ user round trip
+## `oqueue_roundtrip` — the OQFS kernel <-> user round trip
 
 Measures the latency of the kernel-triggered / userspace-served hot path over OQFS: a kernel thread
 produces a request into an OQueue, a userspace process observes it, computes, writes a reply into a
@@ -31,10 +31,10 @@ in TSC cycles:
 | `compute`        | `t2-t1`  | the peer's own work                        |
 | `user_to_kernel` | `t3-t2`  | the scheduler waking the kernel thread again |
 
-Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) ends the 
-benchmark immediately. 
+Any anomaly (a reply timeout, an out-of-sequence reply, a reply arriving before its request) ends the
+benchmark immediately.
 
-When the peer is ready, it signals the kernel benchmarking thread via a control OQueu. 
+When the peer is ready, it signals the kernel benchmarking thread via a control OQueue.
 
 ### Getting the results
 
@@ -49,7 +49,7 @@ The host CLI is the intended interface; see [`tools/oqbench/README.md`](../../..
 The always-on smoke test runs the whole pipeline at a small iteration count:
 
 ```
-make run_kernel AUTO_TEST=oqbench ENABLE_KVM=1
+make run_kernel AUTO_TEST=oqbench
 ```
 
 ### Command-line parameters

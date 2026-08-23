@@ -31,7 +31,7 @@ pub(crate) fn init_after_init_process() {
         return;
     };
 
-    // Setup scheduling for the benchmark thread. 
+    // Setup scheduling for the benchmark thread.
     let rt_prio = benchmark.rt_prio();
     let mut options = ThreadOptions::new(move || benchmark.run(capture_file));
     if let Some(rt_prio) = rt_prio {

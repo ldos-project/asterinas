@@ -13,6 +13,7 @@ use std::{
 };
 
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 
 /// Request stream path (kernel -> user); overridable with `--request-path`.
@@ -31,7 +32,9 @@ const MAX_RETRY_ATTEMPTS: u32 = 100;
 /// Delay between retries when waiting for an OQueue path to appear.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Clone, Copy, Debug)]
+/// What this peer tells the kernel about its own lifecycle. Mirrors `PeerSignal` in the kernel
+/// component.
+#[derive(Clone, Copy, Debug, Serialize)]
 enum Signal {
     Ready,
     Done,
@@ -46,11 +49,10 @@ enum Error {
     #[snafu(display("the request stream ended before the run reported a result"))]
     StreamEnded,
 
-    #[snafu(display("expected a two-element request array, got {fields:?}"))]
-    NotARequest { fields: Option<u64> },
-
-    #[snafu(display("unknown request kind {kind}"))]
-    UnknownRequestKind { kind: u8 },
+    #[snafu(display("could not decode a request: {source}"))]
+    DecodeRequest {
+        source: minicbor_serde::error::DecodeError,
+    },
 
     #[snafu(display("could not open {path}: {source}"))]
     OpenStream { path: String, source: io::Error },
@@ -65,8 +67,9 @@ enum Error {
     WriteReply { source: io::Error },
 }
 
-/// What the kernel is asking for. Mirrors `RequestKind` in the kernel component; the sequence number
-/// only accompanies a measurement.
+/// What the kernel is asking for. Mirrors `Request` in the kernel component, which serde puts on
+/// the wire; the derive here is what keeps the two ends in step.
+#[derive(Debug, Deserialize)]
 enum Request {
     /// Time this round trip.
     Measure(u64),
@@ -119,30 +122,16 @@ fn spin_for_cycles(cycles: u64) {
 
 /// Decodes one request from the front of `bytes`, returning `(request, consumed)`, or `Ok(None)` if
 /// `bytes` does not yet hold a complete one.
-///
-/// The kernel sends each request as the flat two-element array `[seq, kind]`, where `kind` is 0 for a
-/// measurement, 1 for a finished run and 2 for a failed one. `seq` is only meaningful for kind 0.
 fn decode_request(bytes: &[u8]) -> Result<Option<(Request, usize)>, Error> {
-    let mut decoder = minicbor::decode::Decoder::new(bytes);
-    let Ok(fields) = decoder.array() else {
+    // Skipping fails while `bytes` holds only part of a record, which is not an error: it means the
+    // rest has yet to be read. Only a whole record is handed to serde, so its errors are real ones.
+    let mut probe = minicbor::decode::Decoder::new(bytes);
+    if probe.skip().is_err() {
         return Ok(None);
-    };
-    if fields != Some(2) {
-        return NotARequestSnafu { fields }.fail();
     }
-    let Ok(seq) = decoder.u64() else {
-        return Ok(None);
-    };
-    let Ok(kind) = decoder.u8() else {
-        return Ok(None);
-    };
-    let request = match kind {
-        0 => Request::Measure(seq),
-        1 => Request::Finished,
-        2 => Request::Failed,
-        kind => return UnknownRequestKindSnafu { kind }.fail(),
-    };
-    Ok(Some((request, decoder.position())))
+    let consumed = probe.position();
+    let request = minicbor_serde::from_slice(&bytes[..consumed]).context(DecodeRequestSnafu)?;
+    Ok(Some((request, consumed)))
 }
 
 /// Encodes one reply as the fixed 3-element CBOR array `[seq, t1, t2]` into `out` (cleared first).
@@ -154,13 +143,7 @@ fn encode_reply(out: &mut Vec<u8>, seq: u64, t1: u64, t2: u64) {
 
 /// Tells the kernel where this peer is in its lifecycle.
 fn signal(control_file: &mut File, signal: Signal) -> Result<(), Error> {
-    // The kernel's `PeerSignal` is deserialized by serde, which puts a unit variant on the wire as
-    // its name, so that is what this has to send.
-    let name = match signal {
-        Signal::Ready => "Ready",
-        Signal::Done => "Done",
-    };
-    let encoded = minicbor::to_vec(name).expect("encoding a short string cannot fail");
+    let encoded = minicbor_serde::to_vec(signal).expect("encoding a unit variant cannot fail");
     control_file
         .write_all(&encoded)
         .context(SendSignalSnafu { signal })

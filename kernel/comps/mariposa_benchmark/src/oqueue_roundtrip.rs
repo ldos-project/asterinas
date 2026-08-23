@@ -16,7 +16,6 @@ use mariposa_data_capture::DataCaptureFile;
 use ostd::{
     arch::read_tsc,
     orpc::{
-        TupleSerialize,
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
             OQueueRef, RefProducer, registry,
@@ -26,7 +25,7 @@ use ostd::{
     ostd_error,
     timer::TIMER_FREQ,
 };
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use spin::once::Once;
 
@@ -80,46 +79,23 @@ aster_cmdline::define_kv_param!("oqbench.peer_compute", PEER_COMPUTE);
 static BUSY_PROCS: AtomicU32 = AtomicU32::new(0);
 aster_cmdline::define_kv_param!("oqbench.busy_procs", BUSY_PROCS);
 
-/// Which of the three things a [`Request`] is saying.
-#[derive(Clone, Copy, Debug)]
-enum RequestKind {
-    /// Time the round trip identified by the request's sequence number.
-    Measure = 0,
+/// What the kernel asks the peer to do next; mirrored by `Request` in `oqbench_server`.
+#[derive(Clone, Copy, Debug, Serialize)]
+enum Request {
+    /// Time the round trip identified by this sequence number.
+    Measure(u64),
     /// Every sample is captured; the peer may shut the machine down.
-    Finished = 1,
+    Finished,
     /// The run failed and the reason is on the console; the peer should shut down and say so.
-    Failed = 2,
-}
-
-impl Serialize for RequestKind {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u8(*self as u8)
-    }
-}
-
-#[derive(Clone, Copy, Debug, TupleSerialize)]
-struct Request {
-    seq: u64,
-    kind: RequestKind,
+    Failed,
 }
 
 impl Request {
-    /// A request to time the round trip numbered `seq`.
-    fn measure(seq: u64) -> Self {
-        Self {
-            seq,
-            kind: RequestKind::Measure,
-        }
-    }
-
     /// The request that ends a run, reporting whether it succeeded.
     fn ending(outcome: &Result<(), Error>) -> Self {
-        Self {
-            seq: 0,
-            kind: match outcome {
-                Ok(()) => RequestKind::Finished,
-                Err(_) => RequestKind::Failed,
-            },
+        match outcome {
+            Ok(()) => Self::Finished,
+            Err(_) => Self::Failed,
         }
     }
 }
@@ -209,25 +185,20 @@ struct Config {
 }
 
 impl Config {
-    /// Snapshots the parameters, along with the first thing wrong with them, if anything.
-    fn from_params() -> (Self, Option<Error>) {
-        let mut problem = None;
-
+    /// Snapshots the parameters, failing on the first one that is unusable.
+    fn from_params() -> Result<Self, Error> {
         let rt_prio = match RT_PRIO.get().copied() {
             None => None,
             Some(rt_prio) if (1..=99).contains(&rt_prio) => Some(rt_prio as u8),
-            Some(rt_prio) => {
-                problem = Some(BadRealTimePrioritySnafu { rt_prio }.build());
-                None
-            }
+            Some(rt_prio) => return BadRealTimePrioritySnafu { rt_prio }.fail(),
         };
 
         let iterations = ITERATIONS.load(Ordering::Relaxed);
         if iterations == 0 {
-            problem = problem.or_else(|| Some(ZeroIterationsSnafu.build()));
+            return ZeroIterationsSnafu.fail();
         }
 
-        let config = Self {
+        Ok(Self {
             iterations,
             timeout_ms: TIMEOUT_MS.load(Ordering::Relaxed),
             request_capacity: REQUEST_CAPACITY.load(Ordering::Relaxed),
@@ -235,8 +206,7 @@ impl Config {
             rt_prio,
             peer_compute: PEER_COMPUTE.load(Ordering::Relaxed),
             busy_procs: BUSY_PROCS.load(Ordering::Relaxed),
-        };
-        (config, problem)
+        })
     }
 }
 
@@ -245,24 +215,25 @@ impl Config {
 /// the whole run.
 pub struct OQueueRoundTrip {
     config: Config,
-    config_problem: Option<Error>,
     producer: RefProducer<Request>,
     consumer: Consumer<[u64; 3]>,
     signals: Consumer<PeerSignal>,
 }
 
-/// Prepares a benchmark run, or returns `None` if `oqbench.enable` is not set.
+/// Prepares a benchmark run, or returns `None` if `oqbench.enable` is not set or a parameter is
+/// unusable.
 pub fn prepare() -> Option<OQueueRoundTrip> {
     if !ENABLE.load(Ordering::Relaxed) {
         return None;
     }
 
-    let (config, config_problem) = Config::from_params();
+    let config = Config::from_params()
+        .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"))
+        .ok()?;
     let (producer, consumer, signals) =
         setup_queues(config.request_capacity, config.reply_capacity);
     Some(OQueueRoundTrip {
         config,
-        config_problem,
         producer,
         consumer,
         signals,
@@ -344,43 +315,35 @@ impl OQueueRoundTrip {
     pub fn run(self, capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>) {
         let Self {
             config,
-            config_problem,
             producer,
             consumer,
             signals,
         } = self;
 
-        // Every way this run can end says so on the console in one place and one form.
-        let report = |error: &Error| println!("{PREFIX}|error {NAME}: {error}");
-
         // Wait for peer
         if wait_for_signal(&signals, PeerSignal::Ready)
-            .inspect_err(report)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"))
             .is_err()
         {
             return;
         }
 
-        let outcome = measure(&config, config_problem, &producer, &consumer, capture_file)
-            .inspect_err(report);
+        let outcome = measure(&config, &producer, &consumer, capture_file)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
         producer.produce_ref(&Request::ending(&outcome));
 
-        let _ = wait_for_signal(&signals, PeerSignal::Done).inspect_err(report);
+        let _ = wait_for_signal(&signals, PeerSignal::Done)
+            .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
     }
 }
 
 /// Measures every iteration and captures the samples, or reports why it could not.
 fn measure(
     config: &Config,
-    config_problem: Option<Error>,
     producer: &RefProducer<Request>,
     consumer: &Consumer<[u64; 3]>,
     capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>,
 ) -> Result<(), Error> {
-    if let Some(problem) = config_problem {
-        return Err(problem);
-    }
-
     let timeout = TimeoutBlocker::new();
     let timeout_jiffies = config.timeout_ms as u64 * TIMER_FREQ / 1000;
     let mut block_on_many = BlockOnMany::new();
@@ -428,7 +391,7 @@ fn round_trip(
     }
 
     let t0 = read_tsc();
-    producer.produce_ref(&Request::measure(seq));
+    producer.produce_ref(&Request::Measure(seq));
     timeout.arm_after(timeout_jiffies);
 
     let (t3, reply) = loop {

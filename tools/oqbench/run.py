@@ -40,9 +40,6 @@ def parse_args():
         "--vcpus", type=int, default=1, metavar="N", help="guest vCPU count"
     )
     parser.add_argument(
-        "--no-kvm", action="store_true", help="run without KVM acceleration"
-    )
-    parser.add_argument(
         "--output",
         type=Path,
         default=Path("oqbench-samples.jsonl"),
@@ -67,7 +64,6 @@ def boot(args):
         "run_kernel",
         "KCMDARGS=" + " ".join(params),
         f"SMP={args.vcpus}",
-        f"ENABLE_KVM={0 if args.no_kvm else 1}",
     ]
     if subprocess.run(command, stdin=subprocess.DEVNULL).returncode != 0:
         sys.exit(f"make run_kernel failed; inspect {QEMU_LOG}")
