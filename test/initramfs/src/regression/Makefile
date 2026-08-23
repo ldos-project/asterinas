@@ -24,6 +24,7 @@ SUBDIRS := \
 	security \
 	time \
 	raid1 \
+	mariposa_data_capture \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)
 SUBDIRS += intel_tdx

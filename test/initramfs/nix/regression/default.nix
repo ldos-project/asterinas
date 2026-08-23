@@ -20,6 +20,7 @@ let
     "security"
     "time"
     "raid1"
+    "mariposa_data_capture"
   ];
 
   tdxAttest = callPackage ./tdx-attest.nix { };

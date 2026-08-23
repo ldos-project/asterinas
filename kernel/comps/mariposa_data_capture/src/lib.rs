@@ -23,6 +23,30 @@
 //! The set of OQueue paths is only for convenience, so it can be incomplete or missing. This may be
 //! because of set of OQueues was not known when output started.
 //!
+//! ## Userspace decoding example
+//!
+//! After the guest has written capture data (and synced), decode the device image
+//! on the host:
+//!
+//! `	ext
+//! python3 kernel/comps/mariposa_data_capture/python/decode_mariposa_data.py \
+//!     test/initramfs/build/capture.img --preview 5
+//! `
+//!
+//! Or dump every capture file to JSONL:
+//!
+//! `	ext
+//! python3 kernel/comps/mariposa_data_capture/python/decode_mariposa_data.py \
+//!     test/initramfs/build/capture.img --output-dir /tmp/capture-out
+//! `
+//!
+//! The regression suite also exercises this path end-to-end: with
+//! data_capture.regression_smoke=1 the kernel writes three known u32
+//! samples (42, 100, 200) to a capture file named 
+egression.smoke,
+//! and 	est/initramfs/src/regression/mariposa_data_capture checks that the
+//! guest-visible block device contains the format magic and those CBOR values.
+//!
 //! Note: The output format is not particularly space efficient because it includes the field names
 //! of structs every time they are serialized. If this becomes a problem there are a few options: 1)
 //! use [`#[serde(rename=...)`](https://serde.rs/field-attrs.html) to give shorter field names in

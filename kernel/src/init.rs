@@ -360,6 +360,7 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
     #[cfg(not(baseline_asterinas))]
     {
         data_capture::start_capture_devices();
+        data_capture::maybe_regression_smoke_capture();
     }
 
     crate::device::init_in_first_kthread();

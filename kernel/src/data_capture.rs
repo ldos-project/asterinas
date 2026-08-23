@@ -6,7 +6,7 @@ use core::{result::Result, time::Duration};
 
 use aster_block::BlockDevice;
 use ostd::{
-    error, ignore_err, info, new_server,
+    error, ignore_err, info, new_server, path,
     orpc::{
         framework::{notifier::Notifier as _, spawn_thread},
         oqueue::{Element, OQueueBase as _, ObservationQuery, registry::lookup_by_type},
@@ -108,6 +108,32 @@ pub(super) fn start_capture_devices() {
         DataCaptureManager::spawn(Duration::from_secs_f32(secs));
     }
 }
+
+/// When \data_capture.regression_smoke\ is set, write a tiny known capture so
+/// userspace regression tests can decode the on-disk format without needing a
+/// full scheduler/IO workload.
+pub(super) fn maybe_regression_smoke_capture() {
+    let enabled = kcmdline::get_kernel_cmd_line()
+        .and_then(|cl| cl.get_module_arg_by_name::<bool>("data_capture", "regression_smoke"))
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+
+    let Some(capture_file) = new_data_capture_file::<u32>(mariposa_data_capture::FileDescriptor {
+        path: path!(regression.smoke),
+        length: 64 * 1024,
+    }) else {
+        error!("[kernel] data_capture.regression_smoke enabled but no capture device");
+        return;
+    };
+
+    ignore_err!(capture_file.start());
+    ignore_err!(capture_file.write_values(Box::new([42u32, 100u32, 200u32].into_iter())));
+    ignore_err!(capture_file.sync());
+    info!("[kernel] Wrote data_capture regression smoke samples");
+}
+
 
 /// Create a new data capture file for OQueues.
 pub fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
