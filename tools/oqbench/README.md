@@ -27,7 +27,7 @@ tools/oqbench/run.py --rt-prio 50 --busy-procs 16 --vcpus 4 --output loaded.json
 
 One JSON object per round trip, with the four TSC-cycle fields `roundtrip`, `kernel_to_user`,
 `compute` and `user_to_kernel`. Divide by the TSC frequency (printed in the console metadata block,
-which the script echoes to stderr) for seconds. 
+which the script echoes to stderr) for seconds.
 
 ## Decoding a capture manually
 

@@ -62,7 +62,7 @@ in stdenvNoCC.mkDerivation {
     # when booted with `raid.selection=userspace`.
     cp ${raid-policy-server}/bin/raid_policy_server $out/usr/bin/raid_policy_server
 
-    # The userspace peer of the OQFS round-trip microbenchmark. 
+    # The userspace peer of the OQFS round-trip microbenchmark.
     cp ${oqbench-server}/bin/oqbench_server $out/usr/bin/oqbench_server
 
     cp -r ${etc}/* $out/etc/
