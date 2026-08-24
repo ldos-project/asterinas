@@ -11,7 +11,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20260818
+      image: ldosproject/asterinas:0.18.0-ldos-20260820
       options: -v /dev:/dev --privileged
     strategy:
       matrix:
