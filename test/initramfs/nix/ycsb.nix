@@ -3,7 +3,7 @@
 # Fetches the YCSB repo from https://github.com/ldos-project/YCSB/tree/mootch/mariposa-benchmark-branch,
 # and builds it in distribution mode
 
-{ lib, maven, jre, python3, fetchFromGitHub, makeWrapper }:
+{ lib, maven, jre, fetchFromGitHub, makeWrapper }:
 
 maven.buildMavenPackage rec {
   pname = "ycsb";
@@ -40,9 +40,10 @@ maven.buildMavenPackage rec {
     tar -xzf distribution/target/ycsb-*.tar.gz -C "$ycsb_dir" --strip-components=1
 
     mkdir -p "$out/bin"
+    # only jre pinned instead of python + jre
+    # ycsb only needs base python3 so just use the one on the host machine
     makeWrapper "$ycsb_dir/bin/ycsb" "$out/bin/ycsb" \
-      --prefix PATH : "${lib.makeBinPath [ jre python3 ]}" \
-      --set-default YCSB_HOME "$ycsb_dir"
+      --prefix PATH : "${lib.makeBinPath [ jre ]}"
 
     runHook postInstall
   '';
