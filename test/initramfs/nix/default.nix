@@ -67,4 +67,5 @@ in rec {
   redis = (pkgs.redis.overrideAttrs (_: { doCheck = false; })).override {
     withSystemd = false;
   };
+  ycsb = pkgs.callPackage ./ycsb.nix { };
 }

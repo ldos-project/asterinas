@@ -167,7 +167,8 @@ install_host_pkgs:
 		-A iperf3 \
 		-A libmemcached \
 		-A lmbench \
-		-A redis
+		-A redis \
+		-A ycsb
 
 nix_gc:
 	@nix-collect-garbage -d
