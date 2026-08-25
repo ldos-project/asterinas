@@ -673,7 +673,7 @@ impl<D: ElementDescriptor + 'static> ObservationRingBuffer<D> {
 pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
     /// Release any resources held by observer with the given ID. Using that `observer_id` again may
     /// produce UB.
-    fn detach_strong_observer(&self, observer_id: ObserverKey);
+    fn detach_observer(&self, observer_id: ObserverKey);
 
     /// Release any resources held by inline observer with the given key.
     fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey);
@@ -756,7 +756,7 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 assert_obj_safe!(UntypedOQueueImplementation);
 
 impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImplementation<D> {
-    fn detach_strong_observer(&self, observer_id: ObserverKey) {
+    fn detach_observer(&self, observer_id: ObserverKey) {
         let mut inner = self.inner.lock();
         inner.observer_ring_buffers.remove(observer_id);
     }

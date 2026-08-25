@@ -725,7 +725,7 @@ pub struct StrongObserver<U> {
 
 impl<U> Drop for StrongObserver<U> {
     fn drop(&mut self) {
-        self.oqueue.detach_strong_observer(self.observer_id);
+        self.oqueue.detach_observer(self.observer_id);
     }
 }
 
