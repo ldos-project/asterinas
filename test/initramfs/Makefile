@@ -201,7 +201,7 @@ $(EXT2_IMAGE):
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@fallocate -l 512M $(EXFAT_IMAGE)
+	@dd if=/dev/zero of=$(EXFAT_IMAGE) bs=512M count=1
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 $(LTP_DEV_IMAGE):
