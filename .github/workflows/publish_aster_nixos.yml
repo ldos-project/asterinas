@@ -14,7 +14,7 @@ jobs:
   push-cachix:
     runs-on: ubuntu-4-cores-150GB-ssd
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20260818
+      image: ldosproject/asterinas:0.18.0-ldos-20260820
       options: -v /dev:/dev --privileged
     timeout-minutes: 60
     steps:
@@ -95,7 +95,7 @@ jobs:
       - name: Build ISO
         uses: maus007/docker-run-action-fork@v1
         with:
-          image: ldosproject/asterinas:0.18.0-ldos-20260818
+          image: ldosproject/asterinas:0.18.0-ldos-20260820
           options: --privileged -v /dev:/dev -v ${{ github.workspace }}:/root/asterinas
           run: |
             export ASTER_BUILD_TIMESTAMP=`date '+%a %b %e %H:%M:%S %Z %Y'`
