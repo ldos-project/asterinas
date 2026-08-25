@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use aster_logger::println;
+use spin::Once;
 
 use super::{time, *};
-use crate::{kcmdline::KCmdlineArg, time::Clock as _};
+use crate::time::Clock as _;
+
+/// Returns true if any benchmark parameters have been set.
+pub fn is_benchmark_enabled() -> bool {
+    BENCH_NAME.get().is_some()
+}
 
 mod fn_call;
 #[cfg(not(baseline_asterinas))]
@@ -31,8 +37,8 @@ pub struct BenchmarkHarness {
 }
 
 impl BenchmarkHarness {
-    pub fn run(karg: &KCmdlineArg) {
-        let mut bench = Self::new(karg);
+    pub fn run() {
+        let mut bench = Self::new();
 
         fn_call::register_benchmarks(&mut bench);
         #[cfg(not(baseline_asterinas))]
@@ -41,22 +47,19 @@ impl BenchmarkHarness {
         bench.main();
     }
 
-    fn new(karg: &KCmdlineArg) -> Self {
-        let n_threads = karg
-            .get_module_arg_by_name::<usize>("bench", "n_threads")
-            .unwrap_or(ostd::cpu::num_cpus());
+    fn new() -> Self {
+        let n_threads = BENCH_N_THREADS.load(Ordering::Relaxed) as usize;
 
-        let n_repeat = karg
-            .get_module_arg_by_name::<usize>("bench", "n_repeat")
-            .unwrap_or(1);
+        let n_repeat = BENCH_N_REPEAT.load(Ordering::Relaxed) as usize;
         assert_ne!(n_repeat, 0);
 
         Self {
             n_threads,
             n_repeat,
-            benchmark: karg
-                .get_module_arg_by_name::<String>("bench", "benchmark")
-                .unwrap(),
+            benchmark: BENCH_NAME
+                .get()
+                .expect("missing bench.benchmark=... on kernel command line")
+                .clone(),
 
             benchmarks: vec![],
         }
@@ -107,3 +110,15 @@ impl BenchmarkHarness {
         }
     }
 }
+
+static BENCH_N_THREADS: AtomicU32 = AtomicU32::new(0);
+aster_cmdline::define_kv_param!("bench.n_threads", BENCH_N_THREADS);
+
+static BENCH_N_REPEAT: AtomicU32 = AtomicU32::new(1);
+aster_cmdline::define_kv_param!("bench.n_repeat", BENCH_N_REPEAT);
+
+static BENCH_NAME: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("bench.benchmark", BENCH_NAME);
+
+static BENCH_Q_TYPE: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("bench.q_type", BENCH_Q_TYPE);
