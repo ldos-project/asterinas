@@ -13,7 +13,7 @@ maven.buildMavenPackage rec {
     owner = "ldos-project";
     repo = "YCSB";
     rev = "6627681826fdc96facc7b777300d6c47b17e70bc";
-    hash = "sha256-OZrX8qK0MiKvif5ILSsU/RbQAS6yJzClw1jHjNq/oiU="; 
+    hash = "sha256-OZrX8qK0MiKvif5ILSsU/RbQAS6yJzClw1jHjNq/oiU=";
   };
 
   mvnHash = "sha256-PhplQ8Cep803JZzZslq39U2BKP0NGHqQzk9hkKPmlPw=";
