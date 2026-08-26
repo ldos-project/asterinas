@@ -31,7 +31,7 @@ pub use self::{
 #[cfg(not(baseline_asterinas))]
 use crate::orpc::framework::Server;
 use crate::{
-    arch::task::TaskContext,
+    arch::{cpu::context::FpuContext, task::TaskContext},
     irq::{DisabledLocalIrqGuard, InterruptLevel},
     prelude::*,
 };
@@ -39,6 +39,17 @@ use crate::{
 static PRE_SCHEDULE_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
+
+/// This trait is used by both POSIX threads and tasks to enter kernel FPU regions.
+/// The trait is required to access thread-local variables from the kernel crate.
+pub trait FpuContextAccess {
+    /// Entering the kernel fpu section
+    fn enter_kernel(&self);
+}
+
+type FpuContextHandler = fn(&mut dyn FnMut(&dyn FpuContextAccess));
+
+static FPU_CONTEXT_HANDLER: Once<FpuContextHandler> = Once::new();
 
 /// Injects a handler to be executed before scheduling.
 pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
@@ -48,6 +59,28 @@ pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
 /// Injects a handler to be executed after scheduling.
 pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
+}
+
+/// Registers a global handler for `fpu_begin` to bridge OSTD and kernel circular
+/// dependencies
+pub fn inject_fpu_context_handler(handler: FpuContextHandler) {
+    FPU_CONTEXT_HANDLER.call_once(|| handler);
+}
+
+/// Used to ensure that the handler for FpuContext has been registered before its first use.
+pub fn with_current_fpu_context<R>(f: impl FnOnce(&dyn FpuContextAccess) -> R) -> R {
+    try_with_current_fpu_context(f).expect("FPU context handler is not initialized")
+}
+
+/// Runs f with the current tasks FPU context, returning None if the handler is not registered
+pub fn try_with_current_fpu_context<R>(f: impl FnOnce(&dyn FpuContextAccess) -> R) -> Option<R> {
+    let handler = FPU_CONTEXT_HANDLER.get()?;
+    let mut f = Some(f);
+    let mut result = None;
+    handler(&mut |context| {
+        result = Some(f.take().unwrap()(context));
+    });
+    Some(result.expect("FPU context handler did not invoke callback"))
 }
 
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
@@ -64,6 +97,9 @@ pub struct Task {
 
     data: Box<dyn Any + Send + Sync>,
     local_data: ForceSync<Box<dyn Any + Send>>,
+
+    fpu_section_depth: ForceSync<Cell<usize>>,
+    kernel_fpu_context: ForceSync<Cell<Option<Box<FpuContext>>>>,
 
     ctx: SyncUnsafeCell<TaskContext>,
     /// kernel stack, note that the top is SyscallFrame/TrapFrame
@@ -153,6 +189,32 @@ impl Task {
     pub fn id(&self) -> NonZeroUsize {
         self.id
     }
+
+    /// Get the fpu_begin nesting number
+    pub fn fpu_section_depth(&self) -> usize {
+        unsafe { self.fpu_section_depth.get() }.get()
+    }
+
+    /// Set's the fpu nesting for kernel sace.
+    pub(crate) fn set_fpu_section_depth(&self, depth: usize) {
+        unsafe { self.fpu_section_depth.get() }.set(depth);
+    }
+
+    /// Operate on the kernel's fpu_context using f
+    pub(crate) fn with_kernel_fpu_context<R>(
+        &self,
+        f: impl FnOnce(&mut Option<Box<FpuContext>>) -> R,
+    ) -> R {
+        let context = unsafe { self.kernel_fpu_context.get() };
+        let mut context_value = context.take();
+        let result = f(&mut context_value);
+        context.set(context_value);
+        result
+    }
+}
+
+impl FpuContextAccess for Task {
+    fn enter_kernel(&self) {}
 }
 
 /// Options to create or spawn a new task.
@@ -260,6 +322,8 @@ impl TaskOptions {
             func: ForceSync::new(Cell::new(self.func)),
             data: self.data.unwrap_or_else(|| Box::new(())),
             local_data: ForceSync::new(self.local_data.unwrap_or_else(|| Box::new(()))),
+            fpu_section_depth: ForceSync::new(Cell::new(0)),
+            kernel_fpu_context: ForceSync::new(Cell::new(None)),
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
             switched_to_cpu: AtomicBool::new(false),
