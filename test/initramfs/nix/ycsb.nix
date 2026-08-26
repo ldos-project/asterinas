@@ -12,8 +12,8 @@ maven.buildMavenPackage rec {
   src = fetchFromGitHub {
     owner = "ldos-project";
     repo = "YCSB";
-    rev = "d050dfab3f6a0c28c50068f47884f0b83c95f250";
-    hash = "sha256-Dgbw7263+jwomBjoXnp93czeY2F9U5qUeP3pHmKlQDo=";
+    rev = "6627681826fdc96facc7b777300d6c47b17e70bc";
+    hash = "sha256-OZrX8qK0MiKvif5ILSsU/RbQAS6yJzClw1jHjNq/oiU="; 
   };
 
   mvnHash = "sha256-PhplQ8Cep803JZzZslq39U2BKP0NGHqQzk9hkKPmlPw=";
