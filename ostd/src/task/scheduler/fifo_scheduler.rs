@@ -6,6 +6,7 @@ use core::time::Duration;
 use super::{EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, info::CommonSchedInfo};
 use crate::{
     cpu::{CpuId, PinCurrentCpu, num_cpus},
+    info,
     sync::SpinLock,
     task::{Task, disable_preempt},
     util::id_set::Id,
@@ -52,7 +53,22 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
         };
 
         let mut rq = self.rq[target_cpu.as_usize()].disable_irq().lock();
-        if still_in_rq && let Err(_) = runnable.cpu().set_if_is_none(target_cpu) {
+
+        // Note: call set_if_is_none again to prevent a race condition.
+        let still_in_rq = still_in_rq && runnable.cpu().set_if_is_none(target_cpu).is_err();
+
+        if flags == EnqueueFlags::ForceSchedule {
+            // A forced task is placed at the front of the queue and should run next. If the task is
+            // still in the queue, the force is a no-op.
+            if still_in_rq {
+                info!("Failed to force schedule task");
+            } else {
+                rq.queue.push_front(runnable);
+                return Some(target_cpu);
+            }
+        }
+
+        if still_in_rq {
             return None;
         }
         rq.queue.push_back(runnable);

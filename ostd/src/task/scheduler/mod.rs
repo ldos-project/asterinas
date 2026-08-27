@@ -490,6 +490,9 @@ pub enum EnqueueFlags {
     Spawn,
     /// Wake a sleeping task.
     Wake,
+    /// Force a task to run next, effectively temporarily raising it's priority to the maximum
+    /// possible.
+    ForceSchedule,
 }
 
 /// Possible triggers of an `update_current` action.
@@ -573,6 +576,16 @@ pub(crate) fn unpark_target(runnable: Arc<Task>) {
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Wake);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
+    }
+}
+
+/// Unblocks a target task and force it to run immediate, giving up the CPU to it if needed
+/// (similarly to yielding).
+pub(crate) fn switch_to_target(runnable: Arc<Task>) {
+    let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::ForceSchedule);
+    if let Some(preempt_cpu_id) = preempt_cpu {
+        set_need_preempt(preempt_cpu_id);
+        might_preempt();
     }
 }
 
@@ -737,4 +750,78 @@ enum ReschedAction {
 /// Return the amount of time spent in idle
 pub fn idle_time() -> Duration {
     SCHEDULER.get().unwrap().idle_time()
+}
+
+#[cfg(ktest)]
+mod test {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::task::TaskOptions;
+
+    /// Test the expected scheduling behavior of unparking. It relies on the behavior of the ostd
+    /// default round-robin scheduler so it has a high-risk of becoming flake sure to scheduler
+    /// changes.
+    #[ktest]
+    fn unpark_task() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let cond = Arc::new(AtomicBool::new(false));
+
+        let test_task = TaskOptions::new({
+            let cond = cond.clone();
+            let counter = counter.clone();
+            move || {
+                park_current(|| cond.load(Ordering::Relaxed));
+
+                assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+            }
+        })
+        .spawn()
+        .unwrap();
+
+        // Make sure the task has had a chance to park.
+        Task::yield_now();
+
+        // Unpark the task. It will not actually preempt this one.
+        cond.store(true, Ordering::Relaxed);
+        unpark_target(test_task);
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 0);
+
+        // Yield to the now unparked thread.
+        Task::yield_now();
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 2);
+    }
+
+    /// This tests that switch_to_target causes a reschedule. It cannot test that things are
+    /// actually forced because the ktest environment has only a pure round-robin scheduler. It
+    /// relies on the behavior of the ostd default round-robin scheduler so it has a high-risk of
+    /// becoming flake sure to scheduler changes.
+    #[ktest]
+    fn switch_to_task() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let cond = Arc::new(AtomicBool::new(false));
+
+        let test_task = TaskOptions::new({
+            let cond = cond.clone();
+            let counter = counter.clone();
+            move || {
+                park_current(|| cond.load(Ordering::Relaxed));
+
+                assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 0);
+            }
+        })
+        .spawn()
+        .unwrap();
+
+        // Make sure the task has had a chance to park.
+        Task::yield_now();
+
+        // Switch to the task.
+        cond.store(true, Ordering::Relaxed);
+        switch_to_target(test_task);
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+    }
 }

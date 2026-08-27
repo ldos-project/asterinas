@@ -10,6 +10,7 @@ use core::{fmt, ops::Bound, sync::atomic::Ordering, time::Duration};
 use ostd::{
     arch::read_tsc as sched_clock,
     cpu::{CpuId, CpuSet, PinCurrentCpu, all_cpus},
+    info,
     irq::disable_local,
     sync::{LocalIrqDisabled, SpinLock},
     task::{
@@ -152,6 +153,9 @@ pub struct SchedAttr {
     last_cpu: AtomicCpuId,
     real_time: real_time::RealTimeAttr,
     fair: fair::FairAttr,
+    /// The policy before a forced schedule, if the thread's policy has been
+    /// temporarily changed by [`SchedAttr::set_forced_policy`].
+    prev_policy: SpinLock<Option<SchedPolicy>>,
 }
 
 impl SchedAttr {
@@ -171,6 +175,7 @@ impl SchedAttr {
                 SchedPolicy::Fair(nice) => nice,
                 _ => Nice::default(),
             }),
+            prev_policy: SpinLock::new(None),
         }
     }
 
@@ -195,6 +200,28 @@ impl SchedAttr {
             SchedPolicy::Fair(nice) => self.fair.update(nice),
             _ => {}
         });
+    }
+
+    /// Temporarily sets the highest real-time priority for a forced schedule.
+    ///
+    /// The current policy is saved, if not already saved, so that it can be
+    /// restored by [`SchedAttr::restore_forced_policy`].
+    fn set_forced_policy(&self) {
+        let mut prev = self.prev_policy.lock();
+        if prev.is_none() {
+            *prev = Some(self.policy());
+        }
+        self.set_policy(SchedPolicy::RealTime {
+            rt_prio: RealTimePriority::MIN,
+            rt_policy: RealTimePolicy::Fifo,
+        });
+    }
+
+    /// Restores the policy that was saved by [`SchedAttr::set_forced_policy`].
+    fn restore_forced_policy(&self) {
+        if let Some(policy) = self.prev_policy.lock().take() {
+            self.set_policy(policy);
+        }
     }
 
     pub fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
@@ -241,7 +268,24 @@ impl Scheduler for ClassScheduler {
         let mut rq = self.rqs[cpu.as_usize()].lock();
 
         // Note: call set_if_is_none again to prevent a race condition.
-        if still_in_rq && task.cpu().set_if_is_none(cpu).is_err() {
+        let still_in_rq = still_in_rq && task.cpu().set_if_is_none(cpu).is_err();
+
+        if flags == EnqueueFlags::ForceSchedule {
+            // A forced task is temporarily assigned the highest real-time priority and is placed at
+            // the front of the run queue. Its previous policy is restored on the next
+            // `update_current` of the task. If the task is still in the run queue, the force fails
+            // entirely and falls back to normal scheduling.
+            if still_in_rq {
+                info!("Failed to force schedule task: {:?}", task);
+            } else {
+                thread.sched_attr().set_forced_policy();
+                rq.real_time.enqueue_front(task);
+                thread.sched_attr().set_last_cpu(cpu);
+                return Some(cpu);
+            }
+        }
+
+        if still_in_rq {
             return None;
         }
 
@@ -402,6 +446,11 @@ impl LocalRunQueue for PerCpuClassRqSet {
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
         let (should_preempt, mut lookahead) = if let Some(((_, cur), rt)) = &mut self.current {
             rt.update();
+
+            // A forced schedule only lasts until the next `update_current` of
+            // the task: restore the original policy, if any.
+            cur.sched_attr().restore_forced_policy();
+
             let attr = &cur.sched_attr();
 
             match attr.policy_kind() {
