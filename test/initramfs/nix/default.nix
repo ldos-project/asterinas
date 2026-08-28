@@ -11,7 +11,7 @@ let
   else
     throw "Target arch ${target} not yet supported.";
 
-  # Pinned nixpkgs (nix version: 2.29.1, channel: nixos-25.05, release date: 2025-07-01)
+  # Pinned nixpkgs (nix version: 2.34.8, channel: nixos-26.05, release date: 2026-08-27)
   nixpkgs = fetchTarball {
     url =
       "https://github.com/NixOS/nixpkgs/archive/d57af924f160a5084293c71c2043f058bd1cdb60.tar.gz";
