@@ -318,7 +318,7 @@ impl crate::util::Aead for Aead {
         let _fpu_section = fpu_begin();
         #[cfg(not(target_arch = "x86_64"))]
         let _fpu_section = ();
-        let tag = aster_fpu::aead_encrypt(&_fpu_section, input, key, iv, aad, output)
+        let tag = aster_fpu::aes::aead_encrypt(&_fpu_section, input, key, iv, aad, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-gcm encryption failed"))?;
 
         let mut aead_mac = AeadMac::new_zeroed();
@@ -339,7 +339,7 @@ impl crate::util::Aead for Aead {
         let _fpu_section = fpu_begin();
         #[cfg(not(target_arch = "x86_64"))]
         let _fpu_section = ();
-        aster_fpu::aead_decrypt(&_fpu_section, input, key, iv, aad, mac, output)
+        aster_fpu::aes::aead_decrypt(&_fpu_section, input, key, iv, aad, mac, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-gcm decryption failed"))
     }
 }
@@ -377,7 +377,7 @@ impl crate::util::Skcipher for Skcipher {
         let _fpu_section = fpu_begin();
         #[cfg(not(target_arch = "x86_64"))]
         let _fpu_section = ();
-        aster_fpu::skcipher_encrypt(&_fpu_section, input, key, iv, output)
+        aster_fpu::aes::skcipher_encrypt(&_fpu_section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-ctr encryption failed"))
     }
 
@@ -392,7 +392,7 @@ impl crate::util::Skcipher for Skcipher {
         let _fpu_section = fpu_begin();
         #[cfg(not(target_arch = "x86_64"))]
         let _fpu_section = ();
-        aster_fpu::skcipher_decrypt(&_fpu_section, input, key, iv, output)
+        aster_fpu::aes::skcipher_decrypt(&_fpu_section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-ctr decryption failed"))
     }
 }

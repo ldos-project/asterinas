@@ -189,38 +189,20 @@ impl SelectionPolicy for LinnOSPolicy {
                 input[base + 6] = (latency_us % 10) as f32;
             }
 
-            // FPU math: disable preemption for the matrix multiplication.
-            // Kernel-space FPU state is not saved across a context switch, so a
-            // preempting user thread could clobber the floating-point
-            // accumulators mid-computation.
             let predicted_fast = {
-                let _guard = ostd::task::disable_preempt();
-
-                // Hidden layer: input (31) x hidden_weights (31x256) + bias (256) -> hidden_out (256)
+                let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
                 let hidden_weights = &self.hidden_layers[device_idx];
                 let hidden_bias = &self.hidden_biases[device_idx];
-                let mut hidden_out = [0.0f32; 256];
-                for j in 0..256 {
-                    let mut sum = hidden_bias[j];
-                    for i in 0..31 {
-                        sum += input[i] * hidden_weights[i][j];
-                    }
-                    // ReLU activation
-                    hidden_out[j] = if sum > 0.0 { sum } else { 0.0 };
-                }
-
-                // Output layer: hidden_out (256) x output_weights (256x2) + bias (2) -> output (2)
                 let output_weights = &self.output_layers[device_idx];
                 let output_bias = &self.output_biases[device_idx];
-                let mut output = [output_bias[0], output_bias[1]];
-                for k in 0..2 {
-                    for j in 0..256 {
-                        output[k] += hidden_out[j] * output_weights[j][k];
-                    }
-                }
-
-                // Argmax: output[0] < output[1] means fast, otherwise slow
-                output[0] < output[1]
+                aster_fpu::model::linnos(
+                    &section,
+                    &input,
+                    hidden_weights,
+                    hidden_bias,
+                    output_weights,
+                    output_bias,
+                )
             };
 
             if predicted_fast {
@@ -462,49 +444,23 @@ impl SelectionPolicy for LinnOSPlusPolicy {
                 input[base + 6] = (latency_us % 10) as f32;
             }
 
-            // FPU math: disable preemption for the matrix multiplication.
-            // Kernel-space FPU state is not saved across a context switch, so a
-            // preempting user thread could clobber the floating-point
-            // accumulators mid-computation.
             let predicted_fast = {
-                let _guard = ostd::task::disable_preempt();
-
-                // Hidden layer 1: input (31) x hidden1_weights (31x8) + bias (8) -> hidden1_out (8)
+                let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
                 let h1_weights = &self.hidden1_weights[device_idx];
                 let h1_bias = &self.hidden1_biases[device_idx];
-                let mut hidden1_out = [0.0f32; 8];
-                for j in 0..8 {
-                    let mut sum = h1_bias[j];
-                    for i in 0..31 {
-                        sum += input[i] * h1_weights[i][j];
-                    }
-                    hidden1_out[j] = if sum > 0.0 { sum } else { 0.0 };
-                }
-
-                // Hidden layer 2: hidden1_out (8) x hidden2_weights (8x8) + bias (8) -> hidden2_out (8)
                 let h2_weights = &self.hidden2_weights[device_idx];
                 let h2_bias = &self.hidden2_biases[device_idx];
-                let mut hidden2_out = [0.0f32; 8];
-                for j in 0..8 {
-                    let mut sum = h2_bias[j];
-                    for i in 0..8 {
-                        sum += hidden1_out[i] * h2_weights[i][j];
-                    }
-                    hidden2_out[j] = if sum > 0.0 { sum } else { 0.0 };
-                }
-
-                // Output layer: hidden2_out (8) x output_weights (8x2) + bias (2) -> output (2)
                 let out_weights = &self.output_weights[device_idx];
                 let out_bias = &self.output_biases[device_idx];
-                let mut output = [out_bias[0], out_bias[1]];
-                for k in 0..2 {
-                    for j in 0..8 {
-                        output[k] += hidden2_out[j] * out_weights[j][k];
-                    }
-                }
-
-                // Argmax: output[0] < output[1] means fast, otherwise slow
-                output[0] < output[1]
+                aster_fpu::model::linnos_plus(
+                    &section,
+                    &input,
+                    h1_weights,
+                    h1_bias,
+                    h2_weights,
+                    h2_bias,
+                    (out_weights, out_bias),
+                )
             };
 
             if predicted_fast {

@@ -344,6 +344,7 @@ name = "aster-raid"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-fpu",
  "aster-time",
  "aster-virtio",
  "device-id",
