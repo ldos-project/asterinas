@@ -19,7 +19,7 @@ jobs:
   validate_scmls:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    container: ldosproject/asterinas:0.18.0-ldos-20260826
+    container: ldosproject/asterinas:0.18.0-ldos-20260831
     steps:
       - uses: actions/checkout@v4
       - name: Validate SCML files with sctrace
