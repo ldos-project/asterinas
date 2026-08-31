@@ -125,7 +125,7 @@ x86_64_pkgs:
 		--argstr target x86_64 \
 		--arg enableBenchmarkTest true \
 		--arg enableConformanceTest true \
-		--arg enablePython true
+		--arg enablePython true \
 		--out-link /nix/var/nix/gcroots/auto/x86_64-pkgs \
 		-A busybox \
 		-A benchmark.fio \
