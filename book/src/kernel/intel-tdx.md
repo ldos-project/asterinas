@@ -66,7 +66,7 @@ The following result is an example:
 2. Run a Docker container as the development environment.
 
     ```bash
-    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.18.0-ldos-20260820
+    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas ldosproject/asterinas:0.18.0-ldos-20260826
     ```
 
 3. Inside the container,
