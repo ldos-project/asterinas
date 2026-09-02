@@ -2,7 +2,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use ostd::irq::DisabledLocalIrqGuard;
+use ostd::{irq::DisabledLocalIrqGuard, task::Task};
 
 /// A smart cache of one user-mode CPU register
 /// to minimize the expensive save/restore traffic
@@ -179,10 +179,24 @@ impl<R: UserReg> CpuSync<R> {
     /// the canonical value of the register `R` is loaded to the CPU hardware
     /// and the canonical value location is marked `OnCpu`.
     pub(super) fn before_user_exec(&self, guard: &DisabledLocalIrqGuard) {
+        assert!(Task::current().is_none_or(|task| task.fpu_section_depth() == 0));
         if self.location.get() == CanonicalValueLocation::InMemory {
             self.reg.borrow().restore_to_cpu_with_irq_disabled(guard);
         }
         self.location.set(CanonicalValueLocation::OnCpu);
+    }
+}
+
+/// We use this trait to ensure that user state is restorable while the kernel uses the FPU.
+impl ostd::task::FpuContextAccess for CpuSync<ostd::arch::cpu::context::FpuContext> {
+    /// Entering a kernel fpu context should save registers
+    fn enter_kernel(&self) {
+        if self.location.get() == CanonicalValueLocation::OnCpu {
+            self.reg.borrow_mut().save_from_cpu();
+        }
+        // Note that technically the transition should be to Both but this would require another
+        // function to set it after we enable the FPU which is just tedious.
+        self.location.set(CanonicalValueLocation::InMemory);
     }
 }
 

@@ -12,7 +12,6 @@ use ostd::{
         oqueue::{OQueueError, StrongObserver},
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
-    task::disable_preempt,
     timer::Jiffies,
 };
 
@@ -288,32 +287,12 @@ impl Heimdall {
     ///
     /// Returns `true` if the model output >= 0.5 (sigmoid(logit) >= 0.5 ⟺ logit >= 0).
     fn infer_device_speed(&self, device_idx: usize, batch: &[BlockDeviceCompletionStats]) -> bool {
-        let _guard = disable_preempt();
         let input = self.build_features(batch);
-
-        // fc1: input (INPUT_DIM) x fc1_weights (INPUT_DIM x HIDDEN_SIZE) + bias -> ReLU
         let w1 = &self.fc1_weights[device_idx];
         let b1 = &self.fc1_biases[device_idx];
-        let mut h1 = [0.0f32; HIDDEN_SIZE];
-        for j in 0..HIDDEN_SIZE {
-            let mut sum = b1[j];
-            for i in 0..INPUT_DIM {
-                sum += input[i] * w1[i][j];
-            }
-            h1[j] = if sum > 0.0 { sum } else { 0.0 }; // ReLU
-        }
-
-        // fc3: h1 (HIDDEN_SIZE) x fc3_weights (HIDDEN_SIZE) + bias -> Sigmoid
         let w3 = &self.fc3_weights[device_idx];
         let b3 = self.fc3_biases[device_idx];
-        let mut logit = b3;
-        for j in 0..HIDDEN_SIZE {
-            logit += h1[j] * w3[j];
-        }
-
-        // Sigmoid: 1 / (1 + exp(-x)).  Equivalent to: logit >= 0.
-        // We skip the actual sigmoid computation since we only need the
-        // threshold comparison at 0.5.
-        logit >= 0.0
+        let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
+        aster_fpu::model::heimdall(&section, &input, w1, b1, w3, b3)
     }
 }

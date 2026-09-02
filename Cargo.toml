@@ -55,6 +55,7 @@ members = [
     "kernel/libs/atomic-integer-wrapper",
     "kernel/libs/cpio-decoder",
     "kernel/libs/device-id",
+    "kernel/libs/fpu",
     "kernel/libs/io-util",
     "kernel/libs/jhash",
     "kernel/libs/keyable-arc",
@@ -104,6 +105,7 @@ default-members = [
     "kernel/libs/aster-fuse",
     "kernel/libs/aster-util",
     "kernel/libs/device-id",
+    "kernel/libs/fpu",
     "kernel/libs/io-util",
     "kernel/libs/ring-buffer",
     "kernel/libs/sparse-id-alloc",
@@ -230,14 +232,8 @@ volatile = "0.6.1"
 x86 = "0.52.0"
 
 # External dependencies only for safe crates (i.e., crates under kernel or osdk/deps directories)
-#
-# Enable `force-soft` feature to disable `AES-NI` and `CLMUL` intrinsics, ensuring that the implementation
-# relies solely on software, and in the software implementation, unsafe code is rarely used.
-# FIXME: to utilize `AES-NI` and `CLMUL` intrinsics, some specific flags must be added to `RUSTFLAGS`,
-# i.e. `-Ctarget-cpu=sandybridge -Ctarget-feature=+aes,+sse2,+sse4.1,+ssse3`.
-# This suggests that `Asterinas` should support saving and restoring the `FPU` state within the kernel context,
-# a capability it currently lacks.
-aes-gcm = { version = "0.9.4", features = ["force-soft"] }
+aster-fpu = { path = "kernel/libs/fpu" }
+aes-gcm = { version = "0.9.4" }
 bittle = "0.5.6"
 chrono = { version = "0.4.38", default-features = false }
 const_format = "0.2.35"

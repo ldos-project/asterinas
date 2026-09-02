@@ -93,6 +93,9 @@ pub(super) fn switch_to_task(next_task: Arc<Task>) {
 }
 
 fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
+    #[cfg(target_arch = "x86_64")]
+    crate::arch::cpu::kernel_fpu::before_switch(next_task);
+
     if let Some(handler) = PRE_SCHEDULE_HANDLER.get() {
         handler(irq_guard);
     }
@@ -117,6 +120,15 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
 ///
 /// This function must be called only once after switching to a task.
 pub(super) unsafe fn after_switching_to() {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(task) = Task::current()
+        && task.fpu_section_depth() > 0
+    {
+        task.with_kernel_fpu_context(|context| {
+            context.as_ref().unwrap().load();
+        });
+    }
+
     // Release the previous task.
     let prev = PREVIOUS_TASK_PTR.load();
     let prev = if !prev.is_null() {

@@ -552,11 +552,7 @@ impl FpuContext {
     pub fn save(&mut self) {
         let mem_addr = self.as_bytes_mut().as_mut_ptr();
 
-        if XSTATE_MAX_FEATURES.is_completed() {
-            unsafe { _xsave64(mem_addr, XFEATURE_MASK_USER_RESTORE) };
-        } else {
-            unsafe { _fxsave64(mem_addr) };
-        }
+        unsafe { save_fpu_state_to_area(mem_addr) };
 
         debug!("Save FPU context");
     }
@@ -565,13 +561,7 @@ impl FpuContext {
     pub fn load(&self) {
         let mem_addr = self.as_bytes().as_ptr();
 
-        if let Some(xstate_max_features) = XSTATE_MAX_FEATURES.get() {
-            let rs_mask = XFEATURE_MASK_USER_RESTORE & *xstate_max_features;
-
-            unsafe { _xrstor64(mem_addr, rs_mask) };
-        } else {
-            unsafe { _fxrstor64(mem_addr) };
-        }
+        unsafe { load_fpu_state_from_area(mem_addr) };
 
         debug!("Load FPU context");
     }
@@ -684,7 +674,29 @@ const XFEATURE_MASK_USER_RESTORE: u64 = 0b1110_0111;
 static XSAVE_AREA_SIZE: Once<usize> = Once::new();
 
 /// The max size in bytes of the XSAVE area.
-const MAX_XSAVE_AREA_SIZE: usize = 4096;
+pub(crate) const MAX_XSAVE_AREA_SIZE: usize = 4096;
+
+pub(in crate::arch) unsafe fn save_fpu_state_to_area(area: *mut u8) {
+    if XSTATE_MAX_FEATURES.is_completed() {
+        unsafe { _xsave64(area, XFEATURE_MASK_USER_RESTORE) };
+    } else {
+        unsafe { _fxsave64(area) };
+    }
+}
+
+pub(in crate::arch) unsafe fn load_fpu_state_from_area(area: *const u8) {
+    if let Some(xstate_max_features) = XSTATE_MAX_FEATURES.get() {
+        unsafe { _xrstor64(area, XFEATURE_MASK_USER_RESTORE & *xstate_max_features) };
+    } else {
+        unsafe { _fxrstor64(area) };
+    }
+}
+
+pub(in crate::arch) fn init_kernel_fpu_control_registers() {
+    unsafe { core::arch::asm!("fninit") };
+    let mxcsr = 0x1F80_u32;
+    unsafe { core::arch::asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack)) };
+}
 
 pub(in crate::arch) fn enable_essential_features() {
     use super::extension::{IsaExtensions, has_extensions};
