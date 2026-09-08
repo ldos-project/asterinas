@@ -647,11 +647,11 @@ impl<T: Send + 'static> Blocker for Consumer<T> {
     }
 
     fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.oqueue.read_wait_queue.enqueue(waker.clone())
+        self.oqueue.consume_wait_queue.enqueue(waker.clone())
     }
 
     fn remove(&self, key: WakerKey) {
-        self.oqueue.read_wait_queue.remove(key);
+        self.oqueue.consume_wait_queue.remove(key);
     }
 }
 
@@ -735,11 +735,11 @@ impl<U> Blocker for StrongObserver<U> {
     }
 
     fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.oqueue.enqueue_read_waker(waker)
+        self.oqueue.enqueue_observe_waker(waker)
     }
 
     fn remove(&self, key: WakerKey) {
-        self.oqueue.remove_read_waker(key)
+        self.oqueue.remove_observe_waker(key)
     }
 }
 

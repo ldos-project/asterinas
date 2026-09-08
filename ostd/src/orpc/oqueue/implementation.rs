@@ -66,8 +66,13 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     len: usize,
     supports_consume: bool,
     path: Option<Path>,
-    pub(super) put_wait_queue: WaitQueue,
-    pub(super) read_wait_queue: WaitQueue,
+    /// Wait queue for observers. Awoken when there are elements to observe.
+    observe_wait_queue: WaitQueue,
+    /// Wait queue for consumers. Awoken when there are elements to consume. This is
+    /// [switched-to](`WaitQueue::switch_to_one`), so it is separate from `observe_wait_queue`.
+    pub(super) consume_wait_queue: WaitQueue,
+    /// Wait queue for producers. Awoken when there is space for more elements.
+    produce_wait_queue: WaitQueue,
 }
 
 impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
@@ -95,8 +100,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             len,
             supports_consume,
             path,
-            put_wait_queue: WaitQueue::new(),
-            read_wait_queue: WaitQueue::new(),
+            observe_wait_queue: WaitQueue::new(),
+            consume_wait_queue: WaitQueue::new(),
+            produce_wait_queue: WaitQueue::new(),
         }
     }
 
@@ -297,7 +303,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 
     /// Produce a value by reference, blocking until it completes.
     pub(super) fn produce_ref<'a>(&self, v: &'a D::Element<'a>) {
-        self.put_wait_queue.wait_until(|| {
+        self.produce_wait_queue.wait_until(|| {
             if self.try_produce_ref(v) {
                 Some(())
             } else {
@@ -328,7 +334,11 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }
             drop(inner);
 
-            self.read_wait_queue.wake_all();
+            // Wake first then switch, because wake will not yield, but switch will. The other order
+            // would delay waking the observers.
+            self.observe_wait_queue.wake_all();
+            self.consume_wait_queue.switch_to_one();
+
             true
         } else {
             false
@@ -365,7 +375,7 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                 v = ret;
                 // TODO: PERFORMANCE: Using can_produce here and try_produce above requires 2
                 // acquires.
-                self.put_wait_queue
+                self.produce_wait_queue
                     .wait_until(|| if self.can_produce() { Some(()) } else { None })
             } else {
                 return;
@@ -406,7 +416,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             }
             drop(inner);
 
-            self.read_wait_queue.wake_all();
+            self.observe_wait_queue.wake_all();
+            self.consume_wait_queue.switch_to_one();
             Ok(())
         } else {
             Err(v)
@@ -415,7 +426,7 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
 
     /// Consume a value, blocking until it completes.
     pub(super) fn consume(&self) -> T {
-        self.read_wait_queue.wait_until(|| self.try_consume())
+        self.consume_wait_queue.wait_until(|| self.try_consume())
     }
 
     pub(super) fn can_consume(&self) -> bool {
@@ -439,8 +450,9 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                 .try_consume()
         };
         drop(inner);
+        // TODO: This should check if there is actually space to produce.
         if ret.is_some() {
-            self.put_wait_queue.wake_all();
+            self.produce_wait_queue.wake_all();
         }
         ret
     }
@@ -680,9 +692,13 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
     fn can_strong_observe(&self, observer_id: ObserverKey) -> bool;
 
-    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey;
+    /// Enqueue a waker for an observer into the wait queue. This is used to implement `Blocker` for
+    /// `StrongObserver`.
+    fn enqueue_observe_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey;
 
-    fn remove_read_waker(&self, key: WakerKey);
+    /// Remove a waker for an observer from the wait queue. This is used to implement `Blocker` for
+    /// `StrongObserver`.
+    fn remove_observe_waker(&self, key: WakerKey);
 
     /// Copy the next value available to the specified observer into `dest` if it is available. This
     /// returns `Ok(true)` if the value was copied, `Ok(false)` if there was not value available
@@ -791,8 +807,9 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };
         drop(inner);
+        // TODO: This should check if there is actually space to produce.
         if ret {
-            self.put_wait_queue.wake_all();
+            self.produce_wait_queue.wake_all();
         }
         Ok(ret)
     }
@@ -803,7 +820,7 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
         _type_id: TypeId,
         dest: *mut (),
     ) -> Result<(), OQueueError> {
-        self.read_wait_queue.wait_until(|| {
+        self.observe_wait_queue.wait_until(|| {
             // SAFETY: The requirements of try_strong_observe_into are the same as this function.
             let r = unsafe { self.try_strong_observe_into(observer_id, _type_id, dest) };
             if let Ok(false) = r { None } else { Some(r) }
@@ -836,7 +853,7 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
     }
 
     fn wait(&self, observer_id: ObserverKey, cursor: Cursor) {
-        self.read_wait_queue.wait_until(|| {
+        self.observe_wait_queue.wait_until(|| {
             if self.newest_cursor(observer_id) > cursor {
                 Some(())
             } else {
@@ -885,11 +902,11 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
             .is_none_or(|rb| rb.can_get_for_head(head_id))
     }
 
-    fn enqueue_read_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.read_wait_queue.enqueue(waker.clone())
+    fn enqueue_observe_waker(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
+        self.observe_wait_queue.enqueue(waker.clone())
     }
 
-    fn remove_read_waker(&self, key: WakerKey) {
-        self.read_wait_queue.remove(key);
+    fn remove_observe_waker(&self, key: WakerKey) {
+        self.observe_wait_queue.remove(key);
     }
 }
