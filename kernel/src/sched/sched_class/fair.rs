@@ -343,4 +343,10 @@ impl SchedClassRq for FairClassRq {
             UpdateFlags::Exit => !self.is_empty(),
         }
     }
+
+    fn remove(&mut self, task: &Arc<Task>) -> bool {
+        let len = self.entities.len();
+        self.entities.retain(|t| &t.0.0 != task);
+        self.entities.len() != len
+    }
 }

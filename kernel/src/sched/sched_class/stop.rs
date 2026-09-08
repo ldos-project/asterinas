@@ -51,6 +51,11 @@ impl SchedClassRq for StopClassRq {
         self.entity.is_none()
     }
 
+    fn remove(&mut self, _task: &Arc<Task>) -> bool {
+        // The stop task should never be modified. It's usually special.
+        false
+    }
+
     fn pick_next(&mut self) -> Option<Arc<Task>> {
         self.entity.take()
     }
