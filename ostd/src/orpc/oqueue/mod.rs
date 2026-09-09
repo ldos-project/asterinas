@@ -123,7 +123,7 @@ mod single_thread_ring_buffer;
 mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
-pub use export::{CborProducer, CborStrongObserve, OQueueExport, ProduceCborError};
+pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;

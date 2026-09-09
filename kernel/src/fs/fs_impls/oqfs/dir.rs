@@ -14,9 +14,10 @@
 //!
 //! A directory plays one of two roles:
 //!
-//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus [`strong_observe::FILE_NAME`] and/or
-//!   [`produce::FILE_NAME`], depending on which attachments the export currently carries (see
-//!   [`leaf_file_names`]); an export may carry either, or both, independently.
+//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus [`reader::STRONG_OBSERVE_FILE_NAME`],
+//!   [`reader::CONSUME_FILE_NAME`], and/or [`produce::FILE_NAME`], depending on which attachments
+//!   the export currently carries (see [`leaf_file_names`]); an export may carry any of them, or
+//!   any combination, independently.
 //! - **non-leaf** (including the root) — It lists the distinct next components of every exported
 //!   path that it is a prefix of.
 //!
@@ -32,7 +33,9 @@ use ostd::orpc::{
     path::{Path, PathComponentRef},
 };
 
-use super::{BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, produce, strong_observe};
+use super::{
+    BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, produce, reader, reader::ReaderKind,
+};
 use crate::{
     fs::{
         file::{InodeMode, InodeType, StatusFlags, mkmod},
@@ -58,8 +61,9 @@ fn live_export_paths() -> impl Iterator<Item = Path> {
 }
 
 /// Returns the fixed files served by an OQueue leaf directory: [`metadata::FILE_NAME`] plus
-/// [`strong_observe::FILE_NAME`] and/or [`produce::FILE_NAME`], depending on which attachments the
-/// export currently carries. Only the metadata file is listed if the export has disappeared.
+/// [`reader::STRONG_OBSERVE_FILE_NAME`], [`reader::CONSUME_FILE_NAME`], and/or [`produce::FILE_NAME`], depending
+/// on which attachments the export currently carries. Only the metadata file is listed if the
+/// export has disappeared.
 fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
     let Some(export) = registry::lookup_export(oqueue) else {
         return vec![metadata::FILE_NAME];
@@ -67,7 +71,10 @@ fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
 
     let mut names = Vec::new();
     if export.supports_observe() {
-        names.push(strong_observe::FILE_NAME);
+        names.push(reader::STRONG_OBSERVE_FILE_NAME);
+    }
+    if export.supports_consume() {
+        names.push(reader::CONSUME_FILE_NAME);
     }
     if export.supports_produce() {
         names.push(produce::FILE_NAME);
@@ -121,7 +128,7 @@ impl DirInode {
         // root, so owner-only `rx` lets root list and traverse while denying everyone else. This
         // has to match the leaf files: leaving directories world-traversable would let an
         // unprivileged process walk `/oqueues` and enumerate every exported OQueue and its path,
-        // even though it could not open `strong_observe` or `produce`.
+        // even though it could not open `strong_observe`, `consume`, or `produce`.
         let metadata = Metadata::new_dir(ino, mkmod!(u+rx), BLOCK_SIZE, container_dev_id);
         let fs_weak: Weak<dyn FileSystem> = fs.clone();
         Arc::new_cyclic(|weak_self| DirInode {
@@ -303,13 +310,22 @@ impl Inode for DirInode {
 
         if let Some(oqueue) = self.as_oqueue() {
             // This directory is an exported OQueue, so its children are the fixed files for its
-            // single direction (see `leaf_file_names`).
+            // attachments (see `leaf_file_names`).
             self.warn_if_prefix_conflict(&oqueue);
             if !leaf_file_names(&oqueue).contains(&name) {
                 return Err(Error::new(Errno::ENOENT));
             }
             return match name {
-                strong_observe::FILE_NAME => Ok(strong_observe::new_inode(self.fs.clone(), oqueue)),
+                reader::STRONG_OBSERVE_FILE_NAME => Ok(reader::new_inode(
+                    self.fs.clone(),
+                    oqueue,
+                    ReaderKind::StrongObserve,
+                )),
+                reader::CONSUME_FILE_NAME => Ok(reader::new_inode(
+                    self.fs.clone(),
+                    oqueue,
+                    ReaderKind::Consume,
+                )),
                 produce::FILE_NAME => Ok(produce::new_inode(self.fs.clone(), oqueue)),
                 metadata::FILE_NAME => Ok(metadata::new_inode(self.fs.clone(), oqueue)),
                 _ => Err(Error::new(Errno::ENOENT)),
