@@ -136,6 +136,15 @@ impl PrioArray {
         let prio = self.map.iter_ones().next()?;
         Some(prio as u8)
     }
+
+    fn enqueue_front(&mut self, thread: Arc<Task>, prio: u8) {
+        let queue = &mut self.queue[usize::from(prio)];
+        let is_empty = queue.is_empty();
+        queue.push_front(thread);
+        if is_empty {
+            self.map.set(usize::from(prio), true);
+        }
+    }
 }
 
 /// The per-cpu run queue for the REAL-TIME scheduling class.
@@ -181,6 +190,18 @@ impl RealTimeClassRq {
 
     fn swap_arrays(&mut self) {
         self.index = !self.index;
+    }
+
+    /// Enqueues the task at the front of the active array.
+    ///
+    /// Unlike [`SchedClassRq::enqueue`], which places the task in the
+    /// inactive array, this places the task at the very front of the run
+    /// queue, so that it is picked next by [`Self::pick_next`].
+    pub(super) fn enqueue_front(&mut self, task: Arc<Task>) {
+        let sched_attr = task.as_thread().unwrap().sched_attr();
+        let prio = sched_attr.real_time.prio.load(Relaxed);
+        self.active_array().enqueue_front(task, prio);
+        self.nr_running += 1;
     }
 }
 
