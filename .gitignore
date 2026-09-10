@@ -27,7 +27,7 @@ virtio-net.pcap
 .vscode/launch.bak
 
 # benchmark results
-/result_*.json
+/result_*.json*
 
 # howdone run results
 /run-*
