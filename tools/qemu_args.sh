@@ -49,6 +49,83 @@ fi
 VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
 VIRTIOFS_SOCKET=${VIRTIOFS_SOCKET:-"/tmp/vhostqemu/vfs.sock"}
 
+# --- Port allocation helpers ---
+# Ensure forwarded ports do not collide with other QEMU instances or
+# services already bound on the host.
+
+# Check if a TCP port is in use on the host.
+is_port_in_use() {
+    local port=$1
+    ss -tlnH "sport = :$port" 2>/dev/null | grep -q .
+}
+
+# Find a free port starting from `default_port`, skipping any port that
+# is either already bound on the host or already claimed in this invocation.
+# Usage: find_free_port <default_port> <claimed1> <claimed2> ...
+find_free_port() {
+    local default_port=$1
+    shift
+    local port=$default_port
+
+    while true; do
+        if is_port_in_use "$port"; then
+            port=$((port + 1))
+            if [ "$port" -gt 65535 ]; then
+                echo "Error: no available port found starting from $default_port" >&2
+                exit 1
+            fi
+            continue
+        fi
+
+        local collision=false
+        for claimed in "$@"; do
+            if [ "$port" = "$claimed" ]; then
+                collision=true
+                break
+            fi
+        done
+
+        if [ "$collision" = true ]; then
+            port=$((port + 1))
+            if [ "$port" -gt 65535 ]; then
+                echo "Error: no available port found starting from $default_port" >&2
+                exit 1
+            fi
+            continue
+        fi
+
+        break
+    done
+
+    echo $port
+}
+
+# Allocate all QEMU-forwarded ports.  For each service the caller passes
+# a string "ENV_VAR:default".  If the env var is set its value is used as
+# the starting port; otherwise the default is used.  The function ensures
+# no two allocated ports collide.
+#
+# Usage: allocate_qemu_ports "SSH_PORT:22" "NGINX_PORT:8080" ...
+allocate_qemu_ports() {
+    local claimed=()
+    local result=()
+
+    for entry in "$@"; do
+        local env_var="${entry%%:*}"
+        local default="${entry##*:}"
+
+        local start_port
+        eval "start_port=\${$env_var:-$default}"
+
+        local port
+        port=$(find_free_port "$start_port" "${claimed[@]+"${claimed[@]}"}")
+        claimed+=("$port")
+        result+=("$port")
+    done
+
+    echo "${result[@]}"
+}
+
 # Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
 # exactly three existing block devices (e.g.
 # RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
@@ -88,13 +165,25 @@ else
     RAID_CACHE="writeback"
 fi
 
-SSH_RAND_PORT=${SSH_PORT:-22}
-NGINX_RAND_PORT=${NGINX_PORT:-8080}
-REDIS_RAND_PORT=${REDIS_PORT:-6379}
-IPERF_RAND_PORT=${IPERF_PORT:-5201}
-LMBENCH_TCP_LAT_RAND_PORT=${LMBENCH_TCP_LAT_PORT:-31234}
-LMBENCH_TCP_BW_RAND_PORT=${LMBENCH_TCP_BW_PORT:-31236}
-MEMCACHED_RAND_PORT=${MEMCACHED_PORT:-11211}
+ALLOCATED_PORTS=($(allocate_qemu_ports \
+    "SSH_PORT:22" \
+    "NGINX_PORT:8080" \
+    "REDIS_PORT:6379" \
+    "IPERF_PORT:5201" \
+    "LMBENCH_TCP_LAT_PORT:31234" \
+    "LMBENCH_TCP_BW_PORT:31236" \
+    "MEMCACHED_PORT:11211" \
+    "VNC_PORT:42" \
+))
+
+SSH_RAND_PORT=${ALLOCATED_PORTS[0]}
+NGINX_RAND_PORT=${ALLOCATED_PORTS[1]}
+REDIS_RAND_PORT=${ALLOCATED_PORTS[2]}
+IPERF_RAND_PORT=${ALLOCATED_PORTS[3]}
+LMBENCH_TCP_LAT_RAND_PORT=${ALLOCATED_PORTS[4]}
+LMBENCH_TCP_BW_RAND_PORT=${ALLOCATED_PORTS[5]}
+MEMCACHED_RAND_PORT=${ALLOCATED_PORTS[6]}
+VNC_ALLOCATED_PORT=${ALLOCATED_PORTS[7]}
 
 # Optional QEMU arguments. Opt in them manually if needed.
 # QEMU_OPT_ARG_DUMP_PACKETS="-object filter-dump,id=filter0,netdev=net01,file=virtio-net.pcap"
@@ -196,7 +285,7 @@ COMMON_QEMU_ARGS="\
     -m ${MEM:-8G} \
     --no-reboot \
     -nographic \
-    -display vnc=0.0.0.0:${VNC_PORT:-42} \
+    -display vnc=0.0.0.0:${VNC_ALLOCATED_PORT} \
     -monitor chardev:mux \
     -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
     $NETDEV_ARGS \
