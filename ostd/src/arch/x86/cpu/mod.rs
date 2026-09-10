@@ -5,4 +5,6 @@
 pub mod context;
 pub mod cpuid;
 pub mod extension;
+/// Kernel FPU state management and scoped FPU access.
+pub mod kernel_fpu;
 pub mod local;

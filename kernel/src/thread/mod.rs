@@ -8,7 +8,7 @@ use aster_util::per_cpu_counter::PerCpuCounter;
 use ostd::{
     cpu::{AtomicCpuSet, CpuId, CpuSet},
     irq::DisabledLocalIrqGuard,
-    task::Task,
+    task::{FpuContextAccess, Task},
 };
 
 use crate::{
@@ -55,10 +55,22 @@ fn post_schedule_handler() {
     }
 }
 
+// This breaks a dependency of ostd on kernel for the fpu allowing us to get the current task's
+// thread_local for FPU state without having to include thread_local in ostd
+fn fpu_context_handler(callback: &mut dyn FnMut(&dyn FpuContextAccess)) {
+    let task = Task::current().expect("no current task");
+    if let Some(thread_local) = task.as_thread_local() {
+        callback(thread_local.supp_user_context().fpu());
+    } else {
+        callback(task.as_ref());
+    }
+}
+
 pub(super) fn init() {
     CONTEXT_SWITCH_COUNTER.call_once(PerCpuCounter::new);
     ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);
+    ostd::task::inject_fpu_context_handler(fpu_context_handler);
     ostd::mm::fault::inject_user_page_fault_handler(exception::page_fault_handler);
 }
 
