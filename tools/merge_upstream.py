@@ -148,7 +148,7 @@ if __name__ == "__main__":
         print(f"ldos_version: {ldos_version}")
         print(f"upstream_version: {upstream_version}")
 
-        out = run_cmd(["grep", "-rl", ldos_version, "."])
+        out = run_cmd(["git", "grep", "-rl", ldos_version, "."])
         files = out.split("\n")
 
         for f in files:
@@ -194,7 +194,7 @@ if __name__ == "__main__":
         print(f"ldos_version: {ldos_version}")
         print(f"upstream_version: {upstream_version}")
 
-        out = run_cmd(["grep", "-rl", upstream_version, "."])
+        out = run_cmd(["git", "grep", "-rl", upstream_version, "."])
         files = out.split("\n")
 
         for f in files:
