@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 
 /// Request stream path (kernel -> user); overridable with `--request-path`.
-const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/strong_observe";
+const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/consume";
 /// Reply produce file path (user -> kernel); overridable with `--reply-path`.
 const DEFAULT_REPLY_PATH: &str = "/oqueues/oqbench/reply/produce";
 /// Control produce file path (user -> kernel), carrying this peer's lifecycle signals; overridable
