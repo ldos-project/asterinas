@@ -14,11 +14,13 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use aster_logger::println;
 use mariposa_data_capture::DataCaptureFile;
 use ostd::{
-    arch::read_tsc, orpc::{
-        oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ValueProducer, registry,
-        }, sync::{BlockOnMany, Blocker, TimeoutBlocker},
-    }, ostd_error, timer::TIMER_FREQ,
+    arch::read_tsc,
+    orpc::{
+        oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ValueProducer, registry},
+        sync::{BlockOnMany, Blocker, TimeoutBlocker},
+    },
+    ostd_error,
+    timer::TIMER_FREQ,
 };
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
@@ -247,7 +249,8 @@ fn setup_queues(
     Consumer<PeerSignal>,
 ) {
     let request_path = ostd::path!(oqbench.request);
-    let request_oqueue = ConsumableOQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
+    let request_oqueue =
+        ConsumableOQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
     registry::register_producible(&request_path, &request_oqueue);
     let request_producer = request_oqueue
         .attach_value_producer()

@@ -18,10 +18,15 @@
 // the inline handler to participate in the `try_`/`can_` machinery to enable async publications
 // while inline handlers are attached.
 
-use alloc::{alloc::AllocError, boxed::Box, sync::Arc};
+use alloc::{
+    alloc::AllocError,
+    boxed::Box,
+    sync::{Arc, Weak},
+};
 use core::{
     any::{Any, TypeId},
     marker::PhantomData,
+    ops::DerefMut,
 };
 
 use log::warn;
@@ -39,6 +44,7 @@ use crate::{
         path::Path,
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue, WakerKey},
+    task::{Task, scheduler::switch_to_target},
 };
 
 new_key_type! {
@@ -71,6 +77,9 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     /// Wait queue for consumers. Awoken when there are elements to consume. This is
     /// [switched-to](`WaitQueue::switch_to_one`), so it is separate from `observe_wait_queue`.
     pub(super) consume_wait_queue: WaitQueue,
+    /// The last task to attach to this OQueue as a consumer. This is weak so as not to keep the
+    /// [`Task`] alive if no other consumer appears for a long period of time.
+    last_consumer: SpinLock<Option<Weak<Task>>>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
 }
@@ -102,6 +111,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             path,
             observe_wait_queue: WaitQueue::new(),
             consume_wait_queue: WaitQueue::new(),
+            last_consumer: SpinLock::new(None),
             produce_wait_queue: WaitQueue::new(),
         }
     }
@@ -334,14 +344,29 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }
             drop(inner);
 
-            // Wake first then switch, because wake will not yield, but switch will. The other order
-            // would delay waking the observers.
-            self.observe_wait_queue.wake_all();
-            self.consume_wait_queue.switch_to_one();
+            self.wake_after_produce();
 
             true
         } else {
             false
+        }
+    }
+
+    /// Wake observers and consumers after a successful produce.
+    fn wake_after_produce(&self) {
+        self.observe_wait_queue.wake_all();
+
+        // Try to wake a consumer which is blocked on this OQueue. If no OQueue was awoken and there
+        // was some task which consumed on this OQueue before, wake that.
+        if !self.consume_wait_queue.switch_to_one() {
+            let mut last_consumer = self.last_consumer.lock();
+            if let Some(task) = last_consumer.as_ref().and_then(Weak::upgrade) {
+                drop(last_consumer);
+
+                switch_to_target(task);
+            } else {
+                *last_consumer = None;
+            }
         }
     }
 
@@ -416,8 +441,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             }
             drop(inner);
 
-            self.observe_wait_queue.wake_all();
-            self.consume_wait_queue.switch_to_one();
+            self.wake_after_produce();
+
             Ok(())
         } else {
             Err(v)
@@ -450,6 +475,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                 .try_consume()
         };
         drop(inner);
+        *self.last_consumer.lock().deref_mut() =
+            Task::current().map(|t| Arc::downgrade(&t.cloned()));
         // TODO: This should check if there is actually space to produce.
         if ret.is_some() {
             self.produce_wait_queue.wake_all();
@@ -499,6 +526,12 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
         ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
         inner.inline_consumer = Some(inline_consumer);
         Ok(())
+    }
+
+    /// True if at least one consumer is currently attached to this OQueue.
+    pub(super) fn has_consumers(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.n_consumers > 0 || inner.inline_consumer.is_some()
     }
 }
 
@@ -807,7 +840,7 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };
         drop(inner);
-        // TODO: This should check if there is actually space to produce.
+        // TODO(#309):PERFORMANCE: This should check if there is actually space to produce.
         if ret {
             self.produce_wait_queue.wake_all();
         }
