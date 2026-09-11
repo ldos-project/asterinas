@@ -19,7 +19,7 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 #[cfg(not(baseline_asterinas))]
-use ostd::{orpc::oqueue::GenericOQueueRef, path};
+use ostd::path;
 use spin::Once;
 
 use crate::{
@@ -252,19 +252,19 @@ impl From<aster_block::bio::BlockDeviceCompletionStats> for BioCompletionStatsMe
 /// and decision consumer handed to [`selection_policies::UserspacePolicy`].
 #[cfg(not(baseline_asterinas))]
 fn setup_userspace_policy() -> (
-    ostd::orpc::oqueue::RefProducer<selection_policies::SelectionRequestMessage>,
+    ostd::orpc::oqueue::ValueProducer<selection_policies::SelectionRequestMessage>,
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
     use ostd::orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, registry,
+        ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _, registry,
     };
 
     let request_path = path!(raid1.selection_request);
-    let request_oqueue = GenericOQueueRef::new(SELECTION_QUEUE_CAPACITY, request_path.clone());
+    let request_oqueue = ConsumableOQueueRef::new(SELECTION_QUEUE_CAPACITY, request_path.clone());
     // Register the request queue so user space policy server can observe requests.
     registry::register(&request_path, &request_oqueue.as_any_oqueue());
     let request_producer = request_oqueue
-        .attach_ref_producer()
+        .attach_value_producer()
         .expect("the RAID-1 selection request OQueue always allows a ref producer");
 
     let decision_path = path!(raid1.decision);
