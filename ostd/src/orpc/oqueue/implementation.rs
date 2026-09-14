@@ -22,6 +22,7 @@ use alloc::{alloc::AllocError, boxed::Box, sync::Arc};
 use core::{
     any::{Any, TypeId},
     marker::PhantomData,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use log::warn;
@@ -58,10 +59,15 @@ new_key_type! {
 /// to support locking and lock-free implementation. It could even provide a way to use a
 /// hypothetical `dyn OQueueDynImplementation<T>` backend; however, `OQueueDynImplementation` would
 /// require quite a few type-erased unsafe operations.
+/// Note that creating an observer requires other synchronization with the producer to begin
+/// production. Otherwise, the producer will not see that the oqueue `has_observers`.
 pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     // TODO(arthurp): A number of methods perform allocation while this lock is held. Do we actually
     // want to disable IRQs?
     inner: SpinLock<OQueueInner<D>, LocalIrqDisabled>,
+    /// Advisory count of attached observers and consumers. Read lock-free to decide whether
+    /// producing is worth attempting. Intentionally racy — callers accept stale reads.
+    n_attached: AtomicUsize,
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
@@ -92,6 +98,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
                 inline_strong_observers: Default::default(),
                 inline_consumer: None,
             }),
+            n_attached: AtomicUsize::new(0),
             len,
             supports_consume,
             path,
@@ -112,11 +119,13 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         if inner.n_consumers == 0 {
             inner.consumer_ring_buffer = None;
         }
+        self.n_attached.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub(super) fn detach_inline_consumer(&self) {
         let mut inner = self.inner.lock();
         inner.inline_consumer = None;
+        self.n_attached.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Create a new ring buffer for values of type `U` and attach it to this `self` as an
@@ -147,6 +156,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 
         let mut inner = self.inner.lock();
         let observer_key = inner.observer_ring_buffers.insert(ring_buffer);
+        self.n_attached.fetch_add(1, Ordering::Relaxed);
         Ok(observer_key)
     }
 
@@ -202,6 +212,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     ) -> Result<InlineStrongObserver, OQueueError> {
         let mut inner = self.inner.lock();
         let key = inner.inline_strong_observers.insert(Box::new(f));
+        self.n_attached.fetch_add(1, Ordering::Relaxed);
         Ok(InlineStrongObserver {
             oqueue: self.clone(),
             inline_observer_id: key,
@@ -256,6 +267,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }
         });
         let key = inner.inline_strong_observers.insert(handler);
+        // Ensures before the strong observer gets dropped that the observers attached remains correct
+        this.n_attached.fetch_add(1, Ordering::Relaxed);
 
         Ok(key)
     }
@@ -309,6 +322,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attempt to produce a value by reference. This executes all the queries on `v` and places the
     /// query results into the appropriate observation ring buffers.
     pub(super) fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> bool {
+        if self.n_attached.load(Ordering::Relaxed) == 0 {
+            return true;
+        }
         let mut inner = self.inner.lock();
         assert!(inner.consumer_ring_buffer.is_none());
         // A slow observer must never block a producer, so drop any whose ring is full. As this is
@@ -347,9 +363,12 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         })
     }
 
-    /// True if at least one strong or weak observer is currently attached.
+    /// True if at least one observer or consumer is currently attached.
+    ///
+    /// Reads the advisory `n_attached` counter without acquiring the lock. This is
+    /// intentionally racy — callers accept stale values.
     pub(super) fn has_observers(&self) -> bool {
-        !self.inner.lock().observer_ring_buffers.is_empty()
+        self.n_attached.load(Ordering::Relaxed) > 0
     }
 }
 
@@ -376,6 +395,9 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
     /// Attempt to produce into the OQueue. This either succeeds or returns the value that would
     /// have been produced.
     pub(super) fn try_produce(&self, v: T) -> Result<(), T> {
+        if self.n_attached.load(Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
         let mut inner = self.inner.lock();
         // A slow observer must never block a producer, so drop any whose ring is full.
         inner.revoke_full_observers();
@@ -471,6 +493,7 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             inner.consumer_ring_buffer = Some(ring_buffer);
         }
         inner.n_consumers += 1;
+        self.n_attached.fetch_add(1, Ordering::Relaxed);
         drop(inner);
         Ok(super::Consumer {
             oqueue: self.clone(),
@@ -486,6 +509,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
         let mut inner = self.inner.lock();
         ensure!(inner.inline_consumer.is_none(), ResourceUnavailableSnafu);
         inner.inline_consumer = Some(inline_consumer);
+        self.n_attached.fetch_add(1, Ordering::Relaxed);
+        drop(inner);
         Ok(())
     }
 }
@@ -759,11 +784,13 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
     fn detach_observer(&self, observer_id: ObserverKey) {
         let mut inner = self.inner.lock();
         inner.observer_ring_buffers.remove(observer_id);
+        self.n_attached.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey) {
         let mut inner = self.inner.lock();
         inner.inline_strong_observers.remove(inline_observer_id);
+        self.n_attached.fetch_sub(1, Ordering::Relaxed);
     }
 
     unsafe fn try_strong_observe_into(
