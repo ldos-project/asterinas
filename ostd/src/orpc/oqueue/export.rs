@@ -24,7 +24,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    ConsumableOQueue as _, ConsumableOQueueRef, ElementDescriptor, GenericAnyOQueueRef,
+    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
     LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
     StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
 };
@@ -33,10 +33,11 @@ use super::{
 ///
 /// Stored in the export registry so consumers can enumerate and read queues by
 /// [`Path`](crate::orpc::path::Path) without naming the message type. An export can independently
-/// carry an observe attachment, a produce attachment, or both: [`register`](super::registry::register)
-/// / [`register_with`](super::registry::register_with) add an observe attachment, and
-/// [`register_producible`](super::registry::register_producible) adds a produce attachment. This is
-/// a factory: attaching mints a fresh per-reader (or per-writer) handle.
+/// carry an observe attachment, a produce attachment, and a consume attachment:
+/// [`register`](super::registry::register) / [`register_with`](super::registry::register_with) add
+/// an observe attachment, and [`register_producible`](super::registry::register_producible) adds a
+/// produce attachment and a consume attachment. This is a factory: attaching mints a fresh
+/// per-reader (or per-writer) handle.
 pub trait OQueueExport: Send + Sync {
     /// Returns the name of the message type, for use in file metadata.
     fn type_name(&self) -> &'static str;
@@ -56,11 +57,17 @@ pub trait OQueueExport: Send + Sync {
         false
     }
 
+    /// Returns whether this export carries a consume attachment, i.e. whether
+    /// [`attach_consumer`](Self::attach_consumer) can succeed.
+    fn supports_consume(&self) -> bool {
+        false
+    }
+
     /// Attaches a fresh observer and returns it as a CBOR record source.
     ///
     /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
     /// export that does not [`supports_observe`](Self::supports_observe).
-    fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError> {
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
 
@@ -69,6 +76,14 @@ pub trait OQueueExport: Send + Sync {
     /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
     /// export that does not [`supports_produce`](Self::supports_produce).
     fn attach_producer(&self) -> Result<Box<dyn CborProducer>, OQueueError> {
+        Err(UnsupportedSnafu.build())
+    }
+
+    /// Attaches a fresh consumer and returns it as a CBOR record source.
+    ///
+    /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
+    /// export that does not [`supports_consume`](Self::supports_consume).
+    fn attach_consumer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
 }
@@ -109,28 +124,32 @@ pub trait CborProducer: Send {
     fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError>;
 }
 
-/// A per-reader observer that yields CBOR-encoded records, with the message type erased.
-pub trait CborStrongObserve: Send {
-    /// Drains the next observed value without blocking and appends its CBOR record to `out`.
+/// A per-reader observer or consumer of CBOR-encoded records from an OQueue, with the message type
+/// erased.
+///
+/// Strong observe and consume can be combined in the CBOR layer (unlike the OQueue main interface),
+/// because the conversion to CBOR eliminates the Rust ownership semantics of consume.
+pub trait CborReader: Send {
+    /// Drains the next value without blocking and appends its CBOR record to `out`.
     ///
     /// Returns `Ok(true)` if a record was written, `Ok(false)` if nothing is currently available,
     /// and `Err` (typically [`OQueueError::Revoked`]) once the observer has been revoked (for
     /// example, because the reader fell too far behind).
-    fn try_strong_observe_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
+    fn try_read_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
 
-    /// Blocks until the next observed value is available, then appends its CBOR record to `out`.
+    /// Blocks until the next value is available, then appends its CBOR record to `out`.
     ///
-    /// Returns `Err` (typically [`OQueueError::Revoked`]) once the observer has been revoked (for
-    /// example, because the reader fell too far behind), which a reader treats as end-of-stream.
-    fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
+    /// Returns `Err` (typically [`OQueueError::Revoked`]) once the been revoked (for example,
+    /// because the observer fell too far behind), which a reader treats as end-of-stream.
+    fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 
-/// A closure that attaches a fresh observer to an OQueue and wraps it as a [`CborStrongObserve`].
-/// The observed type `U` (identity or a projection) is erased inside the closure.
-type AttachStrongObserveFn<T> = Box<
+/// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
+/// [`CborReader`]. The value type `U` (identity or a projection) is erased inside the closure.
+type AttachReaderFn<T> = Box<
     dyn Fn(
             &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-        ) -> Result<Box<dyn CborStrongObserve>, OQueueError>
+        ) -> Result<Box<dyn CborReader>, OQueueError>
         + Send
         + Sync,
 >;
@@ -147,13 +166,15 @@ type AttachProducerFn<T> = Box<
 
 /// The concrete [`OQueueExport`] for an OQueue with message type `T`.
 ///
-/// `observe` and `produce` are held separately (rather than through a direction discriminant) so
-/// an export can carry either, or both, independently of one another.
+/// `observe`, `produce`, and `consume` are held separately (rather than through a direction
+/// discriminant) so an export can carry any of them, or any combination, independently of one
+/// another.
 pub(super) struct OQueueExportHandle<T: 'static> {
     weak: WeakAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     type_name: &'static str,
-    observe: Option<AttachStrongObserveFn<T>>,
+    observe: Option<AttachReaderFn<T>>,
     produce: Option<AttachProducerFn<T>>,
+    consume: Option<AttachReaderFn<T>>,
 }
 
 impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
@@ -173,7 +194,11 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         self.produce.is_some()
     }
 
-    fn attach_strong_observer(&self) -> Result<Box<dyn CborStrongObserve>, OQueueError> {
+    fn supports_consume(&self) -> bool {
+        self.consume.is_some()
+    }
+
+    fn attach_strong_observer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
         let Some(attach_fn) = &self.observe else {
             return Err(UnsupportedSnafu.build());
         };
@@ -188,36 +213,68 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
         attach_fn(&oqueue)
     }
+
+    fn attach_consumer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
+        let Some(attach_fn) = &self.consume else {
+            return Err(UnsupportedSnafu.build());
+        };
+        let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
+        attach_fn(&oqueue)
+    }
 }
 
-/// A [`CborStrongObserve`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
+/// A [`CborReader`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
 /// record.
 struct CborStrongObserver<U> {
     observer: StrongObserver<U>,
 }
 
-impl<U: Copy + Send + Serialize + 'static> CborStrongObserver<U> {
-    /// Appends the CBOR record for `value` to `out`.
-    fn encode(&self, value: U, out: &mut Vec<u8>) {
-        // Encoding into a `Vec` writer is infallible, so the record is always appended whole.
-        value
-            .serialize(&mut Serializer::new(&mut *out))
-            .expect("CBOR encoding of an OQueue record into a Vec cannot fail");
-    }
+/// Appends the CBOR record for `value` to `out`.
+///
+/// Encoding into a `Vec` writer is infallible, so the record is always appended whole.
+fn encode_record<U: Serialize>(value: U, out: &mut Vec<u8>) {
+    value
+        .serialize(&mut Serializer::new(&mut *out))
+        .expect("CBOR encoding of an OQueue record into a Vec cannot fail");
 }
 
-impl<U: Copy + Send + Serialize + 'static> CborStrongObserve for CborStrongObserver<U> {
-    fn try_strong_observe_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
+impl<U: Copy + Send + Serialize + 'static> CborReader for CborStrongObserver<U> {
+    fn try_read_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
         let Some(value) = self.observer.try_strong_observe()? else {
             return Ok(false);
         };
-        self.encode(value, out);
+        encode_record(value, out);
         Ok(true)
     }
 
-    fn strong_observe_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
+    fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
         let value = self.observer.strong_observe()?;
-        self.encode(value, out);
+        encode_record(value, out);
+        Ok(())
+    }
+}
+
+/// A [`CborReader`] backed by a [`Consumer<T>`], encoding each consumed value as a CBOR record.
+///
+/// A `Consumer` holds a strong reference to the queue, so a consume stream never ends: `read_into`
+/// blocks until a value arrives, and no `Err` arm is reachable (the `Err` case exists for the
+/// observer, whose stream ends when the observer is revoked).
+struct CborConsumer<T: 'static> {
+    consumer: Consumer<T>,
+}
+
+impl<T: Send + Serialize + 'static> CborReader for CborConsumer<T> {
+    fn try_read_into(&self, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
+        let Some(value) = self.consumer.try_consume() else {
+            return Ok(false);
+        };
+        encode_record(value, out);
+        Ok(true)
+    }
+
+    fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError> {
+        let value = self.consumer.consume();
+        encode_record(value, out);
         Ok(())
     }
 }
@@ -226,7 +283,7 @@ impl<U: Copy + Send + Serialize + 'static> CborStrongObserve for CborStrongObser
 fn attach_cbor_observer<D: ElementDescriptor, U>(
     oqueue: &GenericAnyOQueueRef<D>,
     query: ObservationQuery<D, U>,
-) -> Result<Box<dyn CborStrongObserve>, OQueueError>
+) -> Result<Box<dyn CborReader>, OQueueError>
 where
     U: Copy + Send + Serialize + 'static,
 {
@@ -247,6 +304,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
             attach_cbor_observer(oqueue, ObservationQuery::identity())
         })),
         produce: None,
+        consume: None,
     }
 }
 
@@ -274,6 +332,7 @@ where
             )
         })),
         produce: None,
+        consume: None,
     }
 }
 
@@ -322,9 +381,9 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
     }
 }
 
-/// Builds a type-erased export handle carrying only a produce attachment for a
-/// [`super::ConsumableOQueue`]: it accepts values produced from userspace (see
-/// [`super::registry::register_producible`]).
+/// Builds a type-erased export handle carrying a produce attachment and a consume attachment for
+/// a [`super::ConsumableOQueue`]: it accepts values produced from userspace and streams values
+/// consumed from the queue (see [`super::registry::register_producible`]).
 ///
 /// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&GenericAnyOQueueRef<T>`) enforces at
 /// compile time that only a `ConsumableOQueue` can be made producible.
@@ -339,6 +398,10 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
             let producer = oqueue.attach_value_producer()?;
             Ok(Box::new(CborValueProducer { producer }) as Box<dyn CborProducer>)
         })),
+        consume: Some(Box::new(|oqueue| {
+            let consumer = oqueue.attach_consumer()?;
+            Ok(Box::new(CborConsumer { consumer }) as Box<dyn CborReader>)
+        })),
     }
 }
 
@@ -347,7 +410,7 @@ mod test {
     use super::*;
     use crate::{path, prelude::*};
 
-    /// Decode a self-delimiting CBOR stream of records, as produced by the observer.
+    /// Decode a self-delimiting CBOR stream of records, as produced by a reader.
     fn decode_records(buf: &[u8]) -> Vec<u64> {
         let mut de = minicbor_serde::Deserializer::new(buf);
         let mut records = Vec::new();
@@ -374,13 +437,16 @@ mod test {
             type_name: observe_only.type_name,
             observe: observe_only.observe,
             produce: produce_only.produce,
+            consume: produce_only.consume,
         };
         assert!(handle.supports_observe());
         assert!(handle.supports_produce());
+        assert!(handle.supports_consume());
 
         let observer = handle.attach_strong_observer().unwrap();
         let producer = handle.attach_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
+        let file_reader = handle.attach_consumer().unwrap();
 
         // A single userspace write through the produce attachment reaches both the consumer and
         // the independently attached observer.
@@ -391,7 +457,17 @@ mod test {
         assert_eq!(consumer.consume(), 7);
 
         let mut buf = Vec::new();
-        assert!(observer.try_strong_observe_into(&mut buf).unwrap());
+        assert!(observer.try_read_into(&mut buf).unwrap());
         assert_eq!(decode_records(&buf), [7]);
+
+        // The consume attachment streams the same values exclusively: the in-kernel consumer took
+        // `7`, so the next produced value is delivered to the file reader instead of the observer.
+        record.clear();
+        Serialize::serialize(&8usize, &mut Serializer::new(&mut record)).unwrap();
+        producer.produce_cbor(&record).unwrap();
+
+        buf.clear();
+        assert!(file_reader.try_read_into(&mut buf).unwrap());
+        assert_eq!(decode_records(&buf), [8]);
     }
 }

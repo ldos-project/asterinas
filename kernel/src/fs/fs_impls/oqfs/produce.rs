@@ -203,7 +203,7 @@ impl ProduceFile {
 
 impl FileOps for ProduceFile {
     /// This is the offset-free write function; see the analogous comment on
-    /// `strong_observe::StrongObserveFile::read_at`.
+    /// `reader::ReaderFile::read_at`.
     ///
     /// `_status_flags` (`O_NONBLOCK`) is intentionally not consulted: a write blocks until the
     /// OQueue has space rather than returning `EAGAIN`, which is fine given a produce-exposed

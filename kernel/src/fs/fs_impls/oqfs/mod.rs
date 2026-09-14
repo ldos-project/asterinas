@@ -17,7 +17,9 @@
 //!
 //! - `strong_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
 //!   [`ostd::orpc::oqueue::registry::register_with`]: a per-open CBOR stream of every value
-//!   produced after `open` (see [`strong_observe`]).
+//!   produced after `open` (see [`reader`]).
+//! - `consume` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register_producible`]:
+//!   a per-open CBOR stream that consumes the values produced after `open` (see [`reader`]).
 //! - `produce` — for an OQueue exported via
 //!   [`ostd::orpc::oqueue::registry::register_producible`]: a per-open handle that lets userspace
 //!   produce CBOR-encoded values into the OQueue (see [`produce`]).
@@ -27,7 +29,7 @@
 //! # Modules
 //!
 //! - [`dir`]: the volatile directory tree.
-//! - [`strong_observe`]: the `strong_observe` stream file.
+//! - [`reader`]: the `strong_observe` and `consume` stream files.
 //! - [`produce`]: the `produce` file.
 //! - [`metadata`]: the `metadata.yaml` file.
 
@@ -54,7 +56,7 @@ use crate::{
 mod dir;
 mod metadata;
 mod produce;
-mod strong_observe;
+mod reader;
 
 /// Magic number for the OQueue filesystem (`"oqfs"`).
 const OQUEUE_MAGIC: u64 = 0x6f71_6673;
@@ -244,7 +246,7 @@ mod tests {
 
     use super::*;
     use crate::fs::{
-        file::{AccessMode, StatusFlags},
+        file::{AccessMode, PerOpenFileOps, StatusFlags},
         vfs::inode::FileOps,
     };
 
@@ -286,15 +288,21 @@ mod tests {
         let leaf = queue_dir.lookup("0").unwrap();
         assert!(root.lookup("nonexistent").is_err());
 
-        // The leaf directory lists exactly the two observation files.
+        // The leaf directory lists exactly the two observation files: an observe-registered
+        // export has no consume attachment, so `consume` is not listed.
         let mut names = Vec::<String>::new();
         leaf.readdir_at(0, &mut names).unwrap();
-        assert!(names.iter().any(|name| name == strong_observe::FILE_NAME));
+        assert!(
+            names
+                .iter()
+                .any(|name| name == reader::STRONG_OBSERVE_FILE_NAME)
+        );
+        assert!(!names.iter().any(|name| name == reader::CONSUME_FILE_NAME));
         assert!(names.iter().any(|name| name == metadata::FILE_NAME));
 
         // `strong_observe` streams the values produced after it is opened.
         let stream = match leaf
-            .lookup(strong_observe::FILE_NAME)
+            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
             .unwrap()
             .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
         {
@@ -358,7 +366,7 @@ mod tests {
 
         // Open the stream (which attaches the observer) but never read from it.
         let stream = match leaf
-            .lookup(strong_observe::FILE_NAME)
+            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
             .unwrap()
             .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
         {
@@ -390,7 +398,6 @@ mod tests {
         ]);
         let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
         registry::register_producible(&path, &queue);
-        let consumer = queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
         let leaf = fs
@@ -402,12 +409,27 @@ mod tests {
             .lookup("0")
             .unwrap();
 
-        // The leaf directory is a one-way user-to-kernel tunnel: it lists `produce` (and
+        // The leaf directory is a user-to-kernel tunnel: it lists `produce` and `consume` (and
         // `metadata.yaml`), but not `strong_observe`.
         let mut names = Vec::<String>::new();
         leaf.readdir_at(0, &mut names).unwrap();
         assert!(names.iter().any(|name| name == produce::FILE_NAME));
-        assert!(!names.iter().any(|name| name == strong_observe::FILE_NAME));
+        assert!(names.iter().any(|name| name == reader::CONSUME_FILE_NAME));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == reader::STRONG_OBSERVE_FILE_NAME)
+        );
+
+        // Open `consume` (which attaches a consumer to the queue's ring) before producing.
+        let stream = match leaf
+            .lookup(reader::CONSUME_FILE_NAME)
+            .unwrap()
+            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
+        {
+            Some(Ok(stream)) => stream,
+            _ => panic!("opening consume should mint a stream handle"),
+        };
 
         let handle = match leaf
             .lookup(produce::FILE_NAME)
@@ -422,18 +444,98 @@ mod tests {
         let mut record = Vec::new();
         serde::Serialize::serialize(&7u32, &mut minicbor_serde::Serializer::new(&mut record))
             .unwrap();
-        let mut reader = VmReader::from(&record[..]).to_fallible();
+        let mut record_reader = VmReader::from(&record[..]).to_fallible();
         let written = handle
-            .write_at(0, &mut reader, StatusFlags::empty())
+            .write_at(0, &mut record_reader, StatusFlags::empty())
             .unwrap();
         assert_eq!(written, record.len());
 
-        assert_eq!(consumer.consume(), 7);
+        // The value is delivered to the attached consumer through the `consume` stream.
+        let bytes = read_all(stream.as_ref());
+        let mut de = minicbor_serde::Deserializer::new(&bytes);
+        let mut records = Vec::new();
+        while de.decoder().position() < bytes.len() {
+            let value: u64 = serde::Deserialize::deserialize(&mut de).unwrap();
+            records.push(value);
+        }
+        assert_eq!(records, [7]);
     }
 
     #[ktest]
-    fn strong_observe_and_produce_are_root_only() {
-        // Pins the permission restriction across the WHOLE filesystem: the two data files
+    fn consume_file_streams_consumed_values() {
+        crate::time::clocks::init_for_ktest();
+
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("consumefile"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<u32>::new(16, path.clone());
+        registry::register_producible(&path, &queue);
+
+        let fs = OQueueFs::new();
+        let leaf = fs
+            .root_inode()
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("consumefile")
+            .unwrap()
+            .lookup("0")
+            .unwrap();
+
+        fn open_stream(leaf: &Arc<dyn Inode>) -> Box<dyn PerOpenFileOps> {
+            match leaf
+                .lookup(reader::CONSUME_FILE_NAME)
+                .unwrap()
+                .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
+            {
+                Some(Ok(stream)) => stream,
+                _ => panic!("opening consume should mint a stream handle"),
+            }
+        }
+
+        // Open `consume` (which attaches a consumer) before producing.
+        let stream1 = open_stream(&leaf);
+        let stream2 = open_stream(&leaf);
+        let producer = queue.attach_value_producer().unwrap();
+        for value in [10u32, 20, 30] {
+            producer.produce(value);
+        }
+
+        // The stream is records only, one per consumed value.
+        let bytes = read_all(stream1.as_ref());
+        let mut de = minicbor_serde::Deserializer::new(&bytes);
+        let mut records = Vec::new();
+        while de.decoder().position() < bytes.len() {
+            let value: u64 = serde::Deserialize::deserialize(&mut de).unwrap();
+            records.push(value);
+        }
+        assert_eq!(records, [10, 20, 30]);
+
+        // A nonblocking read of the now-idle stream is `EAGAIN`.
+        let mut buf = [0u8; 64];
+        let mut writer = VmWriter::from(&mut buf[..]).to_fallible();
+        let err = stream1
+            .read_at(0, &mut writer, StatusFlags::O_NONBLOCK)
+            .expect_err("a nonblocking read of an idle consume stream is `EAGAIN`");
+        assert_eq!(err.error(), Errno::EAGAIN);
+
+        // Values are consumed, not replicated: a value produced afterwards is delivered once,
+        // only after the stream refills.
+        producer.produce(40);
+        let bytes = read_all(stream2.as_ref());
+        let mut de = minicbor_serde::Deserializer::new(&bytes);
+        let mut records = Vec::new();
+        while de.decoder().position() < bytes.len() {
+            let value: u64 = serde::Deserialize::deserialize(&mut de).unwrap();
+            records.push(value);
+        }
+        assert_eq!(records, [40]);
+    }
+
+    #[ktest]
+    fn oqueue_files_are_root_only() {
+        // Pins the permission restriction across the WHOLE filesystem: the data files
         // (`mkmod!(u+r)` / `mkmod!(u+w)`), every directory (`mkmod!(u+rx)`), and `metadata.yaml`
         // (`mkmod!(u+r)`) are all owner-only on an
         // inode whose owner is always root (`Metadata::new_file` hardcodes `Uid::new_root()` /
@@ -474,7 +576,7 @@ mod tests {
             .unwrap()
             .lookup("0")
             .unwrap()
-            .lookup(strong_observe::FILE_NAME)
+            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
             .unwrap();
         let observe_meta = observe_leaf.metadata().unwrap();
         assert_eq!(observe_meta.uid, Uid::new_root());
@@ -498,6 +600,24 @@ mod tests {
         assert!(produce_meta.mode.is_owner_writable());
         assert!(!produce_meta.mode.is_group_writable());
         assert!(!produce_meta.mode.is_other_writable());
+
+        // `consume` is a root-only stream file like `strong_observe`.
+        let consume_meta = root
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("perm_produce")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(reader::CONSUME_FILE_NAME)
+            .unwrap()
+            .metadata()
+            .unwrap();
+        assert_eq!(consume_meta.uid, Uid::new_root());
+        assert_eq!(consume_meta.gid, Gid::new_root());
+        assert!(consume_meta.mode.is_owner_readable());
+        assert!(!consume_meta.mode.is_group_readable());
+        assert!(!consume_meta.mode.is_other_readable());
 
         // The DIRECTORIES must be root-only too, otherwise an unprivileged process can still walk
         // `/oqueues` and enumerate every exported OQueue and its path -- the leaf files being

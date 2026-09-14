@@ -162,11 +162,12 @@ pub fn register_with<T, U, F>(
     insert_export(path, make_export_with(oqueue, project));
 }
 
-/// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production: a
-/// userspace writer can attach a producer (e.g. via the OQueue filesystem's `produce` file) and
-/// send values of type `T` into the queue by writing their CBOR encoding.
+/// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production
+/// and consumption: a userspace writer can attach a producer (e.g. via the OQueue filesystem's
+/// `produce` file) and send values of type `T` into the queue by writing their CBOR encoding, and
+/// a userspace reader can attach a consumer.
 ///
-/// Unlike [`register`]/[`register_with`], this is a user-to-kernel tunnel only; only a
+/// Unlike [`register`]/[`register_with`], this is for produce and consume in userspace; only a
 /// [`ConsumableOQueueRef`] can be passed.
 ///
 /// # Panics
@@ -398,11 +399,11 @@ mod test {
         // Draining yields exactly three records, then reports nothing available.
         let mut buf = Vec::new();
         let mut count = 0;
-        while observer.try_strong_observe_into(&mut buf).unwrap() {
+        while observer.try_read_into(&mut buf).unwrap() {
             count += 1;
         }
         assert_eq!(count, 3);
-        assert!(!observer.try_strong_observe_into(&mut buf).unwrap());
+        assert!(!observer.try_read_into(&mut buf).unwrap());
 
         // The bytes decode as an ordered CBOR record stream.
         let records = decode_records(&buf);
@@ -425,9 +426,9 @@ mod test {
         }
 
         let mut buf_a = Vec::new();
-        while observer_a.try_strong_observe_into(&mut buf_a).unwrap() {}
+        while observer_a.try_read_into(&mut buf_a).unwrap() {}
         let mut buf_b = Vec::new();
-        while observer_b.try_strong_observe_into(&mut buf_b).unwrap() {}
+        while observer_b.try_read_into(&mut buf_b).unwrap() {}
 
         let records_a = decode_records(&buf_a);
         let records_b = decode_records(&buf_b);
@@ -515,7 +516,7 @@ mod test {
         }
 
         let mut buf = Vec::new();
-        while observer.try_strong_observe_into(&mut buf).unwrap() {}
+        while observer.try_read_into(&mut buf).unwrap() {}
 
         let records = decode_records(&buf);
         assert_eq!(records, [100, 200, 300]);
