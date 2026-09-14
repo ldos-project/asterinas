@@ -1,0 +1,15 @@
+[package]
+name = "aster-fpu"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+aes-gcm.workspace = true
+ctr.workspace = true
+ostd.workspace = true
+
+[lints]
+workspace = true

@@ -132,6 +132,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-fpu"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "ctr",
+ "ostd",
+]
+
+[[package]]
 name = "aster-framebuffer"
 version = "0.1.0"
 dependencies = [
@@ -270,11 +279,10 @@ dependencies = [
 name = "aster-mlsdisk"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "aster-block",
+ "aster-fpu",
  "bittle",
  "component",
- "ctr",
  "device-id",
  "hashbrown 0.14.5",
  "inherit-methods-macro",
@@ -336,6 +344,7 @@ name = "aster-raid"
 version = "0.1.0"
 dependencies = [
  "aster-block",
+ "aster-fpu",
  "aster-time",
  "aster-virtio",
  "device-id",
