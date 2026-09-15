@@ -300,7 +300,7 @@ def run(args):
         )
         return 2
     output_dir.mkdir(parents=True, exist_ok=False)
-    print(f"Output directory: {output_dir}")
+    log_message(f"Output directory: {output_dir}")
 
     meta_data = {
         "run_name": args.name,
@@ -381,6 +381,8 @@ def run(args):
             log_message(
                 f"Command failed with code {code} (command was {format_command_line(cmd)})"
             )
+
+    log_message(f"Output directory: {output_dir}")
 
     return 0
 
