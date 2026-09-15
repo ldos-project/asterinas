@@ -5,6 +5,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +16,12 @@ CAPTURE_IMAGE = ROOT / "test/initramfs/build/capture.img"
 DECODER_DIR = ROOT / "kernel/core/comps/mariposa_data_capture/python"
 
 CAPTURE_PATH = "oqbench.samples"
+SCHEDULER_CAPTURE_PATH = "scheduler.events"
 PREFIX = "MARIPOSA_BENCH|"
+
+# Base filenames for the decoded streams; `--output-prefix` is prepended to each.
+OQ_OUTPUT_NAME = "oqbench.jsonl"
+SCHED_OUTPUT_NAME = "scheduler_events.jsonl"
 
 # Each becomes the `oqbench.<name>` kernel parameter of the same name. The kernel owns their
 # defaults and their validation, so neither is duplicated here.
@@ -40,11 +46,37 @@ def parse_args():
         "--vcpus", type=int, default=1, metavar="N", help="guest vCPU count"
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("oqbench-samples.jsonl"),
-        metavar="FILE",
-        help="sample file to write (default: %(default)s)",
+        "--release", help="Flag to build in release mode", action="store_true"
+    )
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="print the command to run without running it",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print each command as it is run",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        default="result_",
+        metavar="PREFIX",
+        help=(
+            "prefix for the output files: the oqbench samples go to "
+            f"<PREFIX>{OQ_OUTPUT_NAME}, and with --scheduler the scheduler events go to "
+            f"<PREFIX>{SCHED_OUTPUT_NAME} (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--scheduler",
+        action="store_true",
+        help=(
+            "also capture scheduler events: adds scheduler.capture_data=true and "
+            f"FEATURES=ostd/capture_scheduling, and decodes them to <PREFIX>{SCHED_OUTPUT_NAME}"
+        ),
     )
     return parser.parse_args()
 
@@ -56,6 +88,8 @@ def boot(args):
         value = getattr(args, name)
         if value is not None:
             params.append(f"oqbench.{name}={value}")
+    if args.scheduler:
+        params.append("scheduler.capture_data=true")
 
     command = [
         "make",
@@ -64,9 +98,29 @@ def boot(args):
         "run_kernel",
         "KCMDARGS=" + " ".join(params),
         f"SMP={args.vcpus}",
+        f"RELEASE={1 if args.release else 0}",
     ]
-    if subprocess.run(command, stdin=subprocess.DEVNULL).returncode != 0:
+    if args.scheduler:
+        command.append("FEATURES=ostd/capture_scheduling")
+    if args.dry_run or args.verbose:
+        print(format_cmd_line(command))
+    if (
+        not args.dry_run
+        and subprocess.run(command, stdin=subprocess.DEVNULL).returncode != 0
+    ):
         sys.exit(f"make run_kernel failed; inspect {QEMU_LOG}")
+
+
+HAS_WHITE_SPACE_RE = re.compile(r"\s")
+
+
+def format_cmd_line(command):
+    def format_arg(s):
+        if HAS_WHITE_SPACE_RE.search(s):
+            return f"'{s}'"
+        return s
+
+    return " ".join(format_arg(s) for s in command)
 
 
 def console_block():
@@ -88,40 +142,58 @@ def check(block):
         sys.exit(f"the run did not complete; inspect {QEMU_LOG}")
 
 
-def decode(output):
-    """Writes the captured samples to `output` as JSON Lines, returning how many there were."""
+def decode(targets):
+    """Writes each requested capture path to its output file as JSON Lines.
+
+    `targets` maps a capture path (e.g. `oqbench.samples`) to the file to write.
+    Returns a dict mapping each decoded path to its record count.
+    """
     sys.path.insert(0, str(DECODER_DIR))
     try:
         from mariposa_data_reader import DataCaptureDevice
     except ImportError as error:
         sys.exit(f"cannot decode: {error} (see {DECODER_DIR / 'requirements.txt'})")
 
+    counts = {}
     for capture_file in DataCaptureDevice(CAPTURE_IMAGE):
-        if capture_file.path != CAPTURE_PATH:
+        output = targets.get(capture_file.path)
+        if output is None:
             continue
+        count = 0
         with open(output, "w") as out:
-            samples = 0
             for record in capture_file:
                 out.write(json.dumps(record) + "\n")
-                samples += 1
-        return samples
-    sys.exit(f"no {CAPTURE_PATH} capture in {CAPTURE_IMAGE}")
+                count += 1
+        counts[capture_file.path] = count
+    missing = sorted(set(targets) - set(counts))
+    if missing:
+        sys.exit(f"no {' or '.join(missing)} capture in {CAPTURE_IMAGE}")
+    return counts
 
 
 def main():
     args = parse_args()
 
-    # Drop the image and let the build recreate an empty one, so that a run which dies early cannot
-    # decode into the previous run's samples.
-    CAPTURE_IMAGE.unlink(missing_ok=True)
+    if not args.dry_run:
+        # Drop the image and let the build recreate an empty one, so that a run which dies early
+        # cannot decode into the previous run's samples.
+        CAPTURE_IMAGE.unlink(missing_ok=True)
+
     boot(args)
+    if args.dry_run:
+        return
 
     block = console_block()
     check(block)
     # Echo the metadata so the run is self-describing.
     print("run metadata:", *(f"  {line}" for line in block), sep="\n", file=sys.stderr)
 
-    print(f"wrote {decode(args.output)} samples to {args.output}", file=sys.stderr)
+    targets = {CAPTURE_PATH: f"{args.output_prefix}{OQ_OUTPUT_NAME}"}
+    if args.scheduler:
+        targets[SCHEDULER_CAPTURE_PATH] = f"{args.output_prefix}{SCHED_OUTPUT_NAME}"
+    counts = decode(targets)
+    for path, output in targets.items():
+        print(f"wrote {counts[path]} samples from {path} to {output}", file=sys.stderr)
 
 
 if __name__ == "__main__":

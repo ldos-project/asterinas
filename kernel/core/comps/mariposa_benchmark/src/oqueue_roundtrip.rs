@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use aster_logger::println;
+use aster_time::Instant;
 use mariposa_data_capture::DataCaptureFile;
 use ostd::{
     arch::read_tsc,
@@ -159,6 +160,7 @@ enum Error {
 /// the capture file, one per measured iteration.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct RoundTripSample {
+    timestamp: Instant,
     /// The whole round trip, `t3 - t0`.
     roundtrip: u64,
     /// Waking the userspace peer, `t1 - t0`.
@@ -422,6 +424,7 @@ fn round_trip(
 
     let (t1, t2) = (reply[1], reply[2]);
     Ok(RoundTripSample {
+        timestamp: aster_time::read_monotonic_time().into(),
         roundtrip: t3.wrapping_sub(t0),
         kernel_to_user: t1.wrapping_sub(t0),
         compute: t2.wrapping_sub(t1),
