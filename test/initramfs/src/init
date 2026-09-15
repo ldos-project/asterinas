@@ -43,6 +43,7 @@ if grep -q 'oqbench.enable' /proc/cmdline; then
     i=0
     while [ "$i" -lt "${oqbench_busy_procs:-0}" ]; do
         sh -c 'while true; do :; done' &
+        echo "oqbench: busy PID $!"
         i=$((i + 1))
     done
     oqbench_server --compute "${oqbench_peer_compute:-0}"

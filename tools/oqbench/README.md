@@ -1,9 +1,8 @@
 # `tools/oqbench` — host driver for the OQFS round-trip microbenchmark
 
 `run.py` boots the kernel with the OQFS round-trip microbenchmark enabled in a chosen scenario, waits
-for the run to finish, and decodes the captured samples off the data capture image into a JSON Lines
-file. Like the other in-kernel microbenchmarks, the run is configured entirely from the kernel
-command line and the kernel stops the machine when it is done.
+for the run to finish, and decodes the captured samples off the data capture image into JSON Lines
+files. With `--scheduler` it also captures the kernel's scheduling events.
 
 Run `tools/oqbench/run.py --help` for the options; that help text is the canonical reference.
 
@@ -13,21 +12,30 @@ for what the benchmark measures and its caveats.
 ## Examples
 
 ```
-# Quick local sanity run:
-tools/oqbench/run.py --iterations 50000 --output quick.jsonl
+# Quick local sanity run (writes result_oqbench.jsonl in the current directory):
+tools/oqbench/run.py --iterations 50000
 
 # Make the peer's own work non-trivial:
-tools/oqbench/run.py --iterations 1000000 --peer-compute 5000 --output compute.jsonl
+tools/oqbench/run.py --iterations 1000000 --peer-compute 5000
 
-# Real-time kernel thread (mirroring the RAID worker) under scheduler contention:
-tools/oqbench/run.py --rt-prio 50 --busy-procs 16 --vcpus 4 --output loaded.jsonl
+# Real-time kernel thread (mirroring the RAID worker) under scheduler contention built in release mode:
+tools/oqbench/run.py --rt-prio 50 --busy-procs 16 --vcpus 4 --release
+
+# Run with scheduler trace capture 5 busy procs in release mode:
+tools/oqbench/run.py --scheduler --busy-procs 5 --release
 ```
 
 ## Output
 
-One JSON object per round trip, with the four TSC-cycle fields `roundtrip`, `kernel_to_user`,
-`compute` and `user_to_kernel`. Divide by the TSC frequency (printed in the console metadata block,
-which the script echoes to stderr) for seconds.
+Files are named `<PREFIX><base>` where `<PREFIX>` is `--output-prefix` (default `result_`, which is
+what `howdone` copies into its run directories).
+
+- `<PREFIX>oqbench.jsonl`: one JSON object per round trip, with a `timestamp` and the four
+  TSC-cycle fields `roundtrip`, `kernel_to_user`, `compute` and `user_to_kernel`. Divide the
+  TSC fields by the TSC frequency (printed in the console metadata block, which the script
+  echoes to stderr) for seconds.
+- `<PREFIX>scheduler_events.jsonl` (with `--scheduler`): one JSON object per scheduling event,
+  also with a `timestamp`.
 
 ## Decoding a capture manually
 
