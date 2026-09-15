@@ -6,6 +6,7 @@
 //! framework. The message handler framework is more flexible and declarative.
 
 use log::error;
+use snafu::Location;
 use spin::Once;
 
 use crate::{
@@ -21,18 +22,21 @@ use crate::{
 pub type ThreadMain = Box<dyn FnOnce() -> Result<(), Box<dyn core::error::Error>> + Send + 'static>;
 
 /// The type of the function used to implement the `spawn_thread` function.
-pub(crate) type SpawnThreadFn = fn(Arc<dyn Server + Send + Sync + 'static>, ThreadMain);
+pub(crate) type SpawnThreadFn = fn(Arc<dyn Server + Send + Sync + 'static>, Location, ThreadMain);
 
 /// Injected function for spawning new threads. See [`inject_spawn_thread`].
 pub(crate) static SPAWN_THREAD_FN: Once<SpawnThreadFn> = Once::new();
 
 /// Start a new server thread. This should only be called while spawning a server.
+#[track_caller]
 pub fn spawn_thread(
     server: Arc<dyn Server + Send + Sync + 'static>,
     body: impl (FnOnce() -> Result<(), Box<dyn core::error::Error>>) + Send + 'static,
 ) {
+    let build_location = Location::default();
+
     if let Some(spawn_fn) = SPAWN_THREAD_FN.get() {
-        spawn_fn(server, Box::new(body));
+        spawn_fn(server, build_location, Box::new(body));
         return;
     }
 
