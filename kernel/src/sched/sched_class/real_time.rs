@@ -145,6 +145,23 @@ impl PrioArray {
             self.map.set(usize::from(prio), true);
         }
     }
+
+    /// Remove the task from this queue-set. This selects the queue to remove from using the
+    /// priority of the task.
+    fn remove(&mut self, task: &Arc<Task>) -> bool {
+        let sched_attr = task.as_thread().unwrap().sched_attr();
+        let prio = sched_attr.real_time.prio.load(Relaxed);
+        let queue = &mut self.queue[usize::from(prio)];
+        let len = queue.len();
+        queue.retain(|thread| !Arc::ptr_eq(thread, task));
+        if queue.len() == len {
+            return false;
+        }
+        if queue.is_empty() {
+            self.map.set(prio.into(), false);
+        }
+        true
+    }
 }
 
 /// The per-cpu run queue for the REAL-TIME scheduling class.
@@ -219,6 +236,14 @@ impl SchedClassRq for RealTimeClassRq {
 
     fn is_empty(&self) -> bool {
         self.nr_running == 0
+    }
+
+    fn remove(&mut self, task: &Arc<Task>) -> bool {
+        let removed = self.array[0].remove(task) || self.array[1].remove(task);
+        if removed {
+            self.nr_running -= 1;
+        }
+        removed
     }
 
     fn pick_next(&mut self) -> Option<Arc<Task>> {
