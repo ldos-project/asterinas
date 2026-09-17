@@ -6,7 +6,7 @@ use core::time::Duration;
 use ostd::orpc::{
     framework::{notifier::Notifier, spawn_thread},
     new_server,
-    oqueue::{query::ObservationQuery, OQueueBase as _},
+    oqueue::{OQueueBase as _, query::ObservationQuery},
     orpc_server, orpc_trait,
     sync::select,
 };

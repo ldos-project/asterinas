@@ -42,14 +42,14 @@ mod arch;
 mod benchmarks;
 mod context;
 mod cpu;
+#[cfg(not(baseline_asterinas))]
+mod data_capture;
 mod device;
 mod driver;
 mod error;
 #[cfg(not(baseline_asterinas))]
 mod event;
 mod events;
-#[cfg(not(baseline_asterinas))]
-mod data_capture;
 mod fs;
 mod init;
 mod ipc;
