@@ -82,6 +82,17 @@ fn init() {
     crate::security::init();
 }
 
+#[cfg(ktest)]
+pub fn init_for_ktest() {
+    static INITIALIZED: Once<()> = Once::new();
+
+    INITIALIZED.call_once(|| {
+        component::init_all(InitStage::Bootstrap, component::parse_metadata!()).unwrap();
+        crate::time::init();
+        vm::vmar::init_in_first_kthread();
+    });
+}
+
 fn init_on_each_cpu() {
     sched::init_on_each_cpu();
     crate::process::init_on_each_cpu();

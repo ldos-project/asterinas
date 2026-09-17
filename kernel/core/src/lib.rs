@@ -73,3 +73,8 @@ mod vm;
 pub fn boot() {
     init::main();
 }
+
+#[cfg(ktest)]
+pub fn init_for_ktest() {
+    init::init_for_ktest();
+}
