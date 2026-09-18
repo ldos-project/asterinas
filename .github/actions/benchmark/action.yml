@@ -46,7 +46,7 @@ runs:
         echo "BENCHMARK_ARTIFACT=$BENCHMARK_ARTIFACT" >> $GITHUB_ENV
 
     - name: Store benchmark results
-      if: ${{ inputs.task == 'benchmark' }}
+      if: ${{ inputs.task == 'benchmark' && env.SKIP_UPLOAD != 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.BENCHMARK_ARTIFACT }}
