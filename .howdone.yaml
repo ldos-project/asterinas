@@ -1,7 +1,7 @@
 prefix: run
 output_file: output.txt
 output_dir:
-  var: OUTPUT_DIR
+  variable: OUTPUT_DIR
 commands:
   hostname: hostname
   git_state.txt: git status; git log -n 3
@@ -16,4 +16,4 @@ commands:
   env.txt: env
   qemu.log: cat qemu.log
   qemu-enhanced.log: cargo osdk enhance-log -b target/osdk/aster-kernel/aster-kernel-osdk-bin qemu.log
-  results: cp -a results_*.json $OUTPUT_DIR || true; echo Results are in; ls -lh $OUTPUT_DIR/results_*.json
+  results: cp -a result_*.json $OUTPUT_DIR || true; echo Results are in; ls -lh $OUTPUT_DIR/result_*.json
