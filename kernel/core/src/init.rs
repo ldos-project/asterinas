@@ -82,6 +82,13 @@ fn init() {
     crate::security::init();
 }
 
+/// Initialize kernel subsystems for ktests. This is not a complete initialization, but does load
+/// all components.
+///
+/// This is idempotent and should be called in *every* test that needs it. This avoids at least some
+/// test order dependence.
+///
+/// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/221): Something less ad-hoc.
 #[cfg(ktest)]
 pub fn init_for_ktest() {
     static INITIALIZED: Once<()> = Once::new();
