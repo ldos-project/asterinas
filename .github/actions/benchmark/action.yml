@@ -41,8 +41,8 @@ runs:
       shell: bash
       run: |
         make install_osdk
-        bash test/initramfs/src/benchmark/bench_linux_and_aster.sh "${{ matrix.benchmarks }}" "${{ inputs.platform }}"
-        BENCHMARK_ARTIFACT=results_$(echo "${{ matrix.benchmarks }}" | tr '/' '-')
+        bash test/initramfs/src/benchmark/bench_linux_and_aster.sh "${{ inputs.benchmark }}" "${{ inputs.platform }}"
+        BENCHMARK_ARTIFACT=results_$(echo "${{ inputs.benchmark }}" | tr '/' '-')
         echo "BENCHMARK_ARTIFACT=$BENCHMARK_ARTIFACT" >> $GITHUB_ENV
 
     - name: Store benchmark results
