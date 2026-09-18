@@ -32,6 +32,7 @@ exec tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
     --action-offline-mode \
     --log-prefix-job-id \
     --env SAVE_LOGS=1 \
+    --env SKIP_UPLOAD=true \
     --env GIT_CONFIG_COUNT=1 \
     --env GIT_CONFIG_KEY_0=safe.directory \
     --env GIT_CONFIG_VALUE_0='*' \
