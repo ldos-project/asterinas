@@ -286,7 +286,7 @@ main() {
     fi
 
     # Cleanup temporary files
-    cleanup
+    cleanup "$benchmark"
     echo "Benchmark completed successfully."
 }
 
