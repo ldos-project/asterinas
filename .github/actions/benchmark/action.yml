@@ -46,7 +46,7 @@ runs:
         echo "BENCHMARK_ARTIFACT=$BENCHMARK_ARTIFACT" >> $GITHUB_ENV
 
     - name: Store benchmark results
-      if: ${{ inputs.task == 'benchmark' && env.SKIP_UPLOAD != 'true' }}
+      if: ${{ inputs.task == 'benchmark' && !env.ACT }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.BENCHMARK_ARTIFACT }}
@@ -55,7 +55,7 @@ runs:
           result_*.json
 
     - name: Download Benchmark Results
-      if: ${{ inputs.task == 'result' }}
+      if: ${{ inputs.task == 'result' && !env.ACT }}
       uses: actions/download-artifact@v4
       with:
         pattern: results_*

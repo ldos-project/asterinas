@@ -23,7 +23,7 @@ for benchmark in "$@"; do
 done
 
 # Run the suite using the benchmark howdone config to capture provenance and artifacts
-exec tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
+tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
     act workflow_dispatch \
     -W .github/workflows/benchmark_x86.yml \
     -j Benchmarks \
@@ -32,7 +32,6 @@ exec tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
     --action-offline-mode \
     --log-prefix-job-id \
     --env SAVE_LOGS=1 \
-    --env SKIP_UPLOAD=true \
     --env GIT_CONFIG_COUNT=1 \
     --env GIT_CONFIG_KEY_0=safe.directory \
     --env GIT_CONFIG_VALUE_0='*' \
