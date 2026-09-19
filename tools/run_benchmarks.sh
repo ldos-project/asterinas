@@ -29,7 +29,6 @@ tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
     -j Benchmarks \
     --bind \
     --pull=false \
-    --action-offline-mode \
     --log-prefix-job-id \
     --env SAVE_LOGS=1 \
     --env GIT_CONFIG_COUNT=1 \
