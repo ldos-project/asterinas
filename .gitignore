@@ -26,6 +26,9 @@ virtio-net.pcap
 .vscode/launch.json
 .vscode/launch.bak
 
+# act secrets
+/.secrets
+
 # benchmark results
 /result_*.json
 
