@@ -168,6 +168,7 @@ runs:
         output-file-path: "configs/config_*.json"
         github-token: ${{ inputs.benchmark-secret }}
         gh-repository: 'github.com/ldos-project/benchmark'
+        archive-file: ${{ env.BENCHMARK_ARCHIVE }}
         auto-push: false
         skip-fetch-gh-pages: true
         comment-on-alert: true
