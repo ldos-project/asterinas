@@ -924,6 +924,12 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
     }
 }
 
+impl<U: Copy + Send> Drop for WeakObserver<U> {
+    fn drop(&mut self) {
+        self.oqueue.detach_observer(self.observer_id);
+    }
+}
+
 #[cfg(ktest)]
 mod test {
     use alloc::string::String;
@@ -1509,5 +1515,75 @@ mod test {
 
         let anon = ConsumableOQueueRef::<u32>::new_anonymous(4);
         assert_eq!(anon.path(), None);
+    }
+
+    #[ktest]
+    fn produce_ref_no_observers() {
+        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let producer = queue.attach_ref_producer().unwrap();
+
+        // Blocking produce should also complete without hanging.
+        for i in 1..10 {
+            producer.produce_ref(&new_message(i, "also fast"));
+        }
+    }
+
+    #[ktest]
+    fn produce_no_observers_no_consumer() {
+        let queue = ConsumableOQueueRef::<Message>::new(4, Path::test());
+        let producer = queue.attach_value_producer().unwrap();
+
+        // Blocking produce should complete without hanging.
+        for i in 1..10 {
+            producer.produce(new_message(i, "also nowhere"));
+        }
+    }
+
+    #[ktest]
+    fn weak_observer_drop_cleanup() {
+        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let producer = queue.attach_ref_producer().unwrap();
+        let observer = queue
+            .attach_weak_observer(2, ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+
+        // Produce and observe to confirm the observer works.
+        producer.produce_ref(&new_message(10, "before"));
+        assert_eq!(observer.weak_observe_recent(1).unwrap(), vec![Some(10)]);
+
+        // Drop the weak observer — this should clean up the ring buffer entry.
+        drop(observer);
+
+        // Produce again; should still succeed without panicking.
+        producer.produce_ref(&new_message(20, "after"));
+    }
+
+    #[ktest]
+    fn has_observers_lifecycle() {
+        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let producer = queue.attach_ref_producer().unwrap();
+
+        // No observers attached yet.
+        assert!(!producer.has_observers());
+
+        // Attach a strong observer.
+        let strong = queue
+            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+        assert!(producer.has_observers());
+
+        // Attach a weak observer — still true.
+        let weak = queue
+            .attach_weak_observer(2, ObservationQuery::new(|m: &Message| m.id))
+            .unwrap();
+        assert!(producer.has_observers());
+
+        // Drop the strong observer.
+        drop(strong);
+        assert!(producer.has_observers());
+
+        // Drop the weak observer — now nothing is attached.
+        drop(weak);
+        assert!(!producer.has_observers());
     }
 }
