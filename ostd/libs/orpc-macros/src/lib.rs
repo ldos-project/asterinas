@@ -32,9 +32,6 @@ use syn::{
 /// type. This will be run only when a server is constructed. This requirement will be relaxed once the OQueue
 /// implementation matures to the point that there is a universal OQueue implementation.
 ///
-/// TODO(amp, https://github.com/ldos-project/asterinas/issues/79): This requires specific OQueue
-/// implementations to be used. It should be dynamically selected or even reconfigured.
-///
 /// ### Example
 ///
 /// ```ignore
@@ -54,6 +51,9 @@ use syn::{
 /// should never be used directly.
 #[proc_macro_attribute]
 pub fn orpc_trait(attr: TokenStream, input: TokenStream) -> TokenStream {
+    // TODO(amp, https://github.com/ldos-project/asterinas/issues/79): This requires specific OQueue
+    // implementations to be used. It should be dynamically selected or even reconfigured.
+
     let input = parse_macro_input!(input as ItemTrait);
     let output = orpc_trait::orpc_trait_macro_impl(attr, input);
     output.into()
@@ -134,7 +134,7 @@ pub fn orpc_impl(attr: TokenStream, input: TokenStream) -> TokenStream {
     output.into()
 }
 
-/// Declare an [ORPC monitor type](`ostd::orpc::framework::monitor`). This is applied to the `impl`
+/// Declare an ORPC monitor type (see `ostd::orpc::framework::monitor`). This is applied to the `impl`
 /// for monitor methods.
 ///
 /// This will generate the `*Monitor` type and methods on it to call methods and attach methods to
@@ -221,8 +221,8 @@ pub fn select(input: TokenStream) -> TokenStream {
 }
 
 /// A no-op stub used in non-ORPC mode to allow servers to be used at normal structs, traits, and
-/// impls. This is exported as [`ostd::orpc::orpc_server`], [`ostd::orpc::orpc_trait`], and
-/// [`ostd::orpc::orpc_impl`] in non-orpc mode.
+/// impls. This is exported as `ostd::orpc::orpc_server`, `ostd::orpc::orpc_trait`, and
+/// `ostd::orpc::orpc_impl` in non-orpc mode.
 #[proc_macro_attribute]
 pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
     input

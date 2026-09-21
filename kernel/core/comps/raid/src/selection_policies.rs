@@ -557,7 +557,7 @@ impl SelectionRequestMessage {
 }
 
 /// Max wait for the server's reply before falling back, so a hung server can't stall RAID I/O.
-const REPLY_TIMEOUT_MS: u64 = 200;
+pub const REPLY_TIMEOUT_MS: u64 = 200;
 
 /// The endpoints of one synchronous request/reply exchange, kept under one lock so at most one
 /// exchange is in flight at a time.

@@ -37,6 +37,8 @@ pub struct FileDescriptor {
 const DIRECTORY_BLOCKS: usize = 1;
 
 /// A wrapper around a [`BlockDevice`] which supports creating [`DataCaptureFile`]s.
+/// 
+/// [`DataCaptureFile`]: crate::data_capture_file::DataCaptureFile
 #[orpc_trait]
 pub trait DataCaptureDevice {
     /// Create a new file for capturing data, via a builder. The file will start disabled. You must

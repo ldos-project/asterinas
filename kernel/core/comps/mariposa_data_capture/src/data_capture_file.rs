@@ -242,6 +242,8 @@ impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T>
 /// because ORPC methods cannot take type parameters, so this serves to hold all the information
 /// needed to construct the [`DataCaptureFile`] and then take the type parameter that is also
 /// needed.
+/// 
+/// [`DataCaptureDevice`]: crate::data_capture_device::DataCaptureDevice
 pub struct DataCaptureFileBuilder {
     pub(crate) block_device: Arc<dyn BlockDevice>,
     pub(crate) path: Path,
