@@ -4,7 +4,7 @@
 #
 # Archives the last run-<datetime>/ directory left by tools/run_benchmarks.sh,
 # pushes the per-benchmark results through the workflow's Results job, uploads
-# the archive as a release asset, then removes the raw directory.
+# the archive as a release asset, then removes the local copies.
 #
 # Reads BENCHMARK_SECRET from .secrets, which act loads automatically.
 #
@@ -19,6 +19,13 @@ if ! grep -qs '^BENCHMARK_SECRET=.' .secrets; then
     exit 1
 fi
 
+clean_workspace() {
+    docker run --rm \
+        -v "$PWD:/workspace" -w /workspace \
+        "ldosproject/asterinas:$(cat DOCKER_IMAGE_VERSION)" \
+        rm -rf results configs benchmark-data-repository
+}
+
 shopt -s nullglob
 RUN_DIRS=(run-*/)
 if (( ${#RUN_DIRS[@]} == 0 )); then
@@ -32,7 +39,7 @@ tar -czf "${RUN_DIR}.tar.gz" "$RUN_DIR"
 
 # Clear state left in the workspace by a previous upload: stale configs would be
 # re-uploaded alongside the current ones, and the gh-pages clone fails if it exists.
-rm -rf results configs benchmark-data-repository
+clean_workspace
 mkdir results
 cp "$RUN_DIR"/result_*.json results/
 
@@ -45,5 +52,6 @@ act workflow_dispatch \
     --env UPLOAD_RESULTS=1 \
     --env BENCHMARK_ARCHIVE="${RUN_DIR}.tar.gz"
 
-rm -rf "$RUN_DIR" results configs benchmark-data-repository
-echo "Uploaded; archive kept at ${RUN_DIR}.tar.gz"
+clean_workspace
+rm -rf "$RUN_DIR" "${RUN_DIR}.tar.gz"
+echo "Uploaded $RUN_DIR"
