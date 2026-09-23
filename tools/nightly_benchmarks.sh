@@ -16,10 +16,12 @@ cd "$(dirname "$(readlink -f "$0")")/.."
 
 echo "=== $(date -Is) nightly benchmark run starting in $PWD"
 
-git fetch --quiet origin main
-git checkout --quiet main
-git merge --ff-only --quiet origin/main
-echo "=== main at $(git rev-parse --short HEAD)"
+BENCH_BRANCH="gvipat/nightly-benchmark"
+BRANCH="${BENCH_BRANCH:-main}"
+git fetch --quiet origin "$BRANCH"          # remote, then ref — no prefix
+git checkout --quiet "$BRANCH"              # local branch name — no prefix
+git merge --ff-only --quiet "origin/$BRANCH"  # remote-tracking ref — prefix
+echo "=== $BRANCH at $(git rev-parse --short HEAD)"
 
 tools/run_benchmarks.sh || echo "=== benchmarks reported failures; publishing what completed" >&2
 
