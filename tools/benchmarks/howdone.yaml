@@ -5,22 +5,17 @@ output_file: act.log
 output_dir:
   variable: OUTPUT_DIR
 commands:
-  # Captured before the run, so they describe the host as the benchmarks saw it
-  start_date.txt:
-    command: date --iso-8601=seconds
-    when: before
+  hostname: hostname
+  git_state.txt: git status; git log -n 3
+  dirty.diff: git diff --stat --patch HEAD
   ps-ax.txt:
     command: ps ax
     when: before
-  hostname: hostname
-  uname-all.txt: uname --all
-  lscpu.txt: lscpu
-  free.txt: free -h
   lsblk.txt: lsblk
   mount.txt: mount
+  uname-all.txt: uname --all
+  lscpu.txt: lscpu
   env.txt: env
-  git_state.txt: git status; git log -n 3
-  dirty.diff: git diff --stat --patch HEAD
 
   # What actually ran the benchmarks
   act-version.txt: act --version

@@ -25,7 +25,7 @@ for benchmark in "$@"; do
 done
 
 # Run the suite using the benchmark howdone config to capture provenance and artifacts
-tools/howdone/howdone -c tools/howdone/benchmark_howdone.yaml -- \
+tools/howdone/howdone -c tools/benchmarks/howdone.yaml -- \
     act workflow_dispatch \
     -W .github/workflows/benchmark_x86.yml \
     -j Benchmarks \
