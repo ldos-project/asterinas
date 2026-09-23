@@ -3,12 +3,14 @@
 # Nightly benchmark run: update main, run the suite, publish the results.
 #
 # Intended to be driven by cron, which starts in $HOME with a minimal PATH, so
-# this resolves its own directory rather than relying on the caller's:
+# this resolves its own directory and extends PATH:
 #
-#   PATH=/usr/local/bin:/usr/bin:/bin
-#   0 9 * * * flock -n /tmp/bench-nightly.lock /home/gvipat/asterinas/tools/nightly_benchmarks.sh >> /home/gvipat/bench-nightly.log 2>&1
+#   0 9 * * * flock -n /tmp/nightly_benchmarks.lock /home/gvipat/asterinas/tools/nightly_benchmarks.sh >> /home/gvipat/bench-nightly.log 2>&1
 
 set -e
+
+# act installs to ~/.local/bin; docker is in /usr/bin, which cron already has.
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
