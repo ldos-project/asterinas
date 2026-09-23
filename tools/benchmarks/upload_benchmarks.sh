@@ -1,15 +1,18 @@
 #!/bin/bash
-#
+
+# SPDX-License-Identifier: MPL-2.0
+
 # Upload the most recent benchmark run to the dashboard.
 #
-# Archives the last run-<datetime>/ directory left by tools/run_benchmarks.sh,
-# pushes the per-benchmark results through the workflow's Results job, uploads
-# the archive as a release asset, then removes the local copies.
+# Archives the last run-<datetime>/ directory left by
+# tools/benchmarks/run_benchmarks.sh, pushes the per-benchmark results
+# through the workflow's Results job, uploads the archive as a release asset,
+# then removes the local copies.
 #
 # Reads BENCHMARK_SECRET from .secrets, which act loads automatically.
 #
 # Usage:
-#   tools/upload_benchmarks.sh
+#   tools/benchmarks/upload_benchmarks.sh
 
 set -e
 

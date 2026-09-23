@@ -1,12 +1,14 @@
 #!/bin/bash
-# 
+
+# SPDX-License-Identifier: MPL-2.0
+
 # Minimal setup for a machine that runs the benchmark suite via
-# tools/run_benchmarks.sh. Installs Docker, act and howdone's dependencies, and
-# loads the virtualisation modules the benchmarks require.
+# tools/benchmarks/run_benchmarks.sh. Installs Docker, act and howdone's
+# dependencies, and loads the virtualisation modules the benchmarks require.
 #
 # Targets Debian/Ubuntu. Run as a normal user with sudo access:
 #
-#   tools/setup_worker.sh
+#   tools/benchmarks/setup_worker.sh
 #
 # Log out and back in afterwards, so the new group memberships take effect.
 # Everything here is idempotent and safe to re-run.
@@ -77,4 +79,4 @@ echo
 echo "The suite needs ~40 GiB of RAM for the full matrix: the default guest is"
 echo "MEM=8G and lmbench/ramfs_create_delete_files_0k_ops asks for 32G."
 echo
-echo "Done. Log out and back in, then run: tools/run_benchmarks.sh sysbench/cpu_lat"
+echo "Done. Log out and back in, then run: tools/benchmarks/run_benchmarks.sh sysbench/cpu_lat"

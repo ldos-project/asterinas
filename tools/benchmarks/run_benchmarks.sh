@@ -1,13 +1,15 @@
 #!/bin/bash
-#
+
+# SPDX-License-Identifier: MPL-2.0
+
 # Run the x86-64 benchmark suite locally with act
 # Provenance and every artifact the run produces are captured into a
 # run-<datetime>/ directory by howdone.
 #
 # Usage:
-#   tools/run_benchmarks.sh                       # the whole matrix
-#   tools/run_benchmarks.sh sysbench/cpu_lat      # only the named benchmarks
-#   tools/run_benchmarks.sh nginx/http_file4KB_bw lmbench/pipe_lat
+#   tools/benchmarks/run_benchmarks.sh                       # the whole matrix
+#   tools/benchmarks/run_benchmarks.sh sysbench/cpu_lat      # only the named benchmarks
+#   tools/benchmarks/run_benchmarks.sh nginx/http_file4KB_bw lmbench/pipe_lat
 #
 # Requires a working docker, and a host with /dev/kvm and /dev/vhost-net.
 
