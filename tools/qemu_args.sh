@@ -41,6 +41,14 @@ fi
 VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
 VIRTIOFS_SOCKET=${VIRTIOFS_SOCKET:-"/tmp/vhostqemu/vfs.sock"}
 
+ATTACH_XFSTESTS_IMAGES=${ATTACH_XFSTESTS_IMAGES:-false}
+if [ "${ENABLE_CONFORMANCE_TEST:-"false"}" = "true" ] && \
+   [ "${CONFORMANCE_TEST_SUITE:-"ltp"}" = "xfstests" ]; then
+    ATTACH_XFSTESTS_IMAGES="true"
+fi
+VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
+VIRTIOFS_SOCKET=${VIRTIOFS_SOCKET:-"/tmp/vhostqemu/vfs.sock"}
+
 # Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
 # exactly three existing block devices (e.g.
 # RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
