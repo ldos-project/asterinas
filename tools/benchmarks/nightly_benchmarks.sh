@@ -7,11 +7,11 @@
 # Intended to be driven by cron, which starts in $HOME with a minimal PATH, so
 # this resolves its own directory and extends PATH:
 #
-#   0 9 * * * flock -n /tmp/nightly_benchmarks.lock $HOME/asterinas/tools/benchmarks/nightly_benchmarks.sh >> $HOME/bench-nightly.log 2>&1
+#   0 5 * * * flock -n /tmp/nightly_benchmarks.lock $HOME/asterinas/tools/benchmarks/nightly_benchmarks.sh >> $HOME/bench-nightly.log 2>&1
 
 set -e
 
-# act installs to ~/.local/bin; docker is in /usr/bin, which cron already has.
+# setup_worker.sh installs act to /usr/local/bin; docker is in /usr/bin, which cron already has.
 export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 cd "$(dirname "$(readlink -f "$0")")/../.."
