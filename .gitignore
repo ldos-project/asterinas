@@ -26,8 +26,17 @@ virtio-net.pcap
 .vscode/launch.json
 .vscode/launch.bak
 
+# act secrets
+/.secrets
+
 # benchmark results
 /result_*.json
+
+# raw benchmark outputs kept by SAVE_LOGS
+/aster_output_*.txt
+/linux_output_*.txt
+/aster_guest_*.log
+/linux_guest_*.log
 
 # howdone run results
 /run-*

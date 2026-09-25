@@ -10,6 +10,9 @@ BENCHMARK_ROOT="${BENCHMARK_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &>/de
 # Set the log file
 LINUX_OUTPUT="${BENCHMARK_ROOT}/linux_output.txt"
 ASTER_OUTPUT="${BENCHMARK_ROOT}/aster_output.txt"
+# Set the guest console log file, only produced by host-guest benchmarks
+LINUX_GUEST_LOG="/tmp/linux.log"
+ASTER_GUEST_LOG="/tmp/asterinas.log"
 # Dependencies for Linux
 LINUX_DEPENDENCIES_DIR="/opt/linux_binary_cache"
 LINUX_KERNEL="${LINUX_DEPENDENCIES_DIR}/vmlinuz"

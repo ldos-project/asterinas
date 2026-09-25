@@ -215,8 +215,25 @@ parse_results() {
 
 # Clean up temporary files
 cleanup() {
+    local benchmark="$1"
+
     echo "Cleaning up..."
-    rm -f "${LINUX_OUTPUT}" "${ASTER_OUTPUT}" "${RESULT_TEMPLATE}"
+    if [[ -n "${SAVE_LOGS}" ]]; then
+        local suffix="${benchmark//\//-}"
+        mv "${ASTER_OUTPUT}" "aster_output_${suffix}.txt"
+        mv "${LINUX_OUTPUT}" "linux_output_${suffix}.txt"
+        echo "Raw outputs saved to aster_output_${suffix}.txt and linux_output_${suffix}.txt"
+        # Only host-guest benchmarks produce guest console logs
+        if [[ -f "${ASTER_GUEST_LOG}" && -f "${LINUX_GUEST_LOG}" ]]; then
+            mv "${ASTER_GUEST_LOG}" "aster_guest_${suffix}.log"
+            mv "${LINUX_GUEST_LOG}" "linux_guest_${suffix}.log"
+            echo "Guest consoles saved to aster_guest_${suffix}.log and linux_guest_${suffix}.log"
+        fi
+    else
+        rm -f "${LINUX_OUTPUT}" "${ASTER_OUTPUT}"
+        rm -f "${LINUX_GUEST_LOG}" "${ASTER_GUEST_LOG}"
+    fi
+    rm -f "${RESULT_TEMPLATE}"
 }
 
 # Main function to coordinate the benchmark run
@@ -269,7 +286,7 @@ main() {
     fi
 
     # Cleanup temporary files
-    cleanup
+    cleanup "$benchmark"
     echo "Benchmark completed successfully."
 }
 
