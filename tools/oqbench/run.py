@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 QEMU_LOG = ROOT / "qemu.log"
 CAPTURE_IMAGE = ROOT / "test/initramfs/build/capture.img"
-DECODER_DIR = ROOT / "kernel/comps/mariposa_data_capture/python"
+DECODER_DIR = ROOT / "kernel/core/comps/mariposa_data_capture/python"
 
 CAPTURE_PATH = "oqbench.samples"
 PREFIX = "MARIPOSA_BENCH|"

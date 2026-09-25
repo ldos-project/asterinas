@@ -102,7 +102,7 @@ so you can grasp a rule from the table and open its full text only when needed.
 - **Framekernel:** The kernel is split into a safe upper half (`kernel/`)
   and an unsafe lower half (`ostd/`).
   This is a hard architectural boundary — never add `unsafe` to `kernel/`.
-- **Components** (`kernel/comps/`): block, console, network, PCI, virtio, etc.
+- **Components** (`kernel/core/comps/`): block, console, network, PCI, virtio, etc.
   Each is a separate crate.
 - **OSTD** (`ostd/`): memory management, page tables, interrupt handling,
   synchronization primitives, task scheduling, boot, and arch-specific code.

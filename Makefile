@@ -106,8 +106,8 @@ DEV_TRUSTED_PUBLIC_KEY ?=
 # Python formatting settings
 # Directories to search for python files
 PYTHON_PROJECTS= \
-	kernel/comps/mariposa_data_capture/python \
-	kernel/comps/raid/python \
+	kernel/core/comps/mariposa_data_capture/python \
+	kernel/core/comps/raid/python \
 	tools \
 	mariposa-cli
 # Specific files for format which are not .py
