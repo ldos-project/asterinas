@@ -71,19 +71,21 @@ macro_rules! debug {
     ($($arg:tt)+) => { $crate::log!($crate::log::Level::Debug, $($arg)+) };
 }
 
-/// Returns `true` if a message at the given level would be logged.
+/// Returns `true` if a message at the given level and prefix would be logged.
 ///
-/// Checks both the compile-time [`STATIC_MAX_LEVEL`] and the runtime
-/// [`max_level`] filters.
+/// Checks both the compile-time [`STATIC_MAX_LEVEL`], the runtime [`max_level`], and the per-prefix
+/// filters.
 ///
 /// [`STATIC_MAX_LEVEL`]: crate::log::STATIC_MAX_LEVEL
 /// [`max_level`]: crate::log::max_level
 #[macro_export]
 macro_rules! log_enabled {
-    ($level:expr) => {{
+    ($prefix:expr, $level:expr) => {{
         let __level: $crate::log::Level = $level;
-        $crate::log::STATIC_MAX_LEVEL.is_enabled(__level)
-            && $crate::log::max_level().is_enabled(__level)
+        let __prefix: &str = $prefix;
+        ($crate::log::STATIC_MAX_LEVEL.is_enabled(__level)
+            && $crate::log::max_level().is_enabled(__level))
+            || $crate::log::prefix_level_enabled(__prefix, __level)
     }};
 }
 
@@ -115,7 +117,7 @@ macro_rules! log {
         // elimination so that log calls above `STATIC_MAX_LEVEL` are
         // removed entirely.
         const __LEVEL: $crate::log::Level = $level;
-        if $crate::log_enabled!(__LEVEL) {
+        if $crate::log_enabled!(__log_prefix!(), __LEVEL) {
             $crate::log::__write_log_record(&$crate::log::Record::new(
                 __LEVEL,
                 __log_prefix!(),
