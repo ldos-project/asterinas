@@ -35,7 +35,7 @@ which the script echoes to stderr) for seconds.
 read it directly:
 
 ```
-python3 kernel/comps/mariposa_data_capture/python/decode_mariposa_data.py \
+python3 kernel/core/comps/mariposa_data_capture/python/decode_mariposa_data.py \
     test/initramfs/build/capture.img --output-dir .
 ```
 
