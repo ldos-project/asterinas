@@ -594,6 +594,16 @@ impl<T: Send + 'static> ValueProducer<T> {
     pub fn try_produce(&self, v: T) -> Result<(), T> {
         self.oqueue.try_produce(v)
     }
+
+    /// True if at least one consumer is currently attached to this OQueue.
+    pub fn has_consumers(&self) -> bool {
+        self.oqueue.has_consumers()
+    }
+
+    /// True if at least one strong or weak observer is currently attached to this OQueue.
+    pub fn has_observers(&self) -> bool {
+        self.oqueue.has_observers()
+    }
 }
 
 /// An attachment to an OQueue which allows producing values values by reference for observation.
@@ -617,8 +627,7 @@ impl<D: ElementDescriptor + 'static> GenericRefProducer<D> {
         self.oqueue.try_produce_ref(v)
     }
 
-    /// True if at least one observer is currently attached to this OQueue, e.g. so a caller can
-    /// decide whether waiting for a reaction to a produced value is worthwhile.
+    /// True if at least one strong or weak observer is currently attached to this OQueue.
     pub fn has_observers(&self) -> bool {
         self.oqueue.has_observers()
     }
@@ -647,11 +656,11 @@ impl<T: Send + 'static> Blocker for Consumer<T> {
     }
 
     fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.oqueue.read_wait_queue.enqueue(waker.clone())
+        self.oqueue.consume_wait_queue.enqueue(waker.clone())
     }
 
     fn remove(&self, key: WakerKey) {
-        self.oqueue.read_wait_queue.remove(key);
+        self.oqueue.consume_wait_queue.remove(key);
     }
 }
 
@@ -735,11 +744,11 @@ impl<U> Blocker for StrongObserver<U> {
     }
 
     fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.oqueue.enqueue_read_waker(waker)
+        self.oqueue.enqueue_observe_waker(waker)
     }
 
     fn remove(&self, key: WakerKey) {
-        self.oqueue.remove_read_waker(key)
+        self.oqueue.remove_observe_waker(key)
     }
 }
 
