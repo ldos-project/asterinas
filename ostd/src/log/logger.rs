@@ -191,3 +191,23 @@ pub fn set_max_level(mut filter: LevelFilter) {
 pub fn max_level() -> LevelFilter {
     LevelFilter::from_u8(DYNAMIC_MAX_LEVEL.load(Ordering::Relaxed))
 }
+
+// -- Prefix-based log level overrides --
+
+/// A prefix-based log level check. Generally injected by whoever parses the `prefix_loglevel`
+/// kernel command-line parameter (see [`inject_prefix_filter`]).
+static PREFIX_FILTER: Once<fn(&str, Level) -> bool> = Once::new();
+
+/// Registers the per-prefix log level checker.
+pub fn inject_prefix_filter(filter: fn(&str, Level) -> bool) {
+    PREFIX_FILTER.call_once(|| filter);
+}
+
+/// Returns `true` if a per-prefix filter is registered and enables `level` for `prefix`.
+#[inline]
+pub fn prefix_level_enabled(prefix: &str, level: Level) -> bool {
+    match PREFIX_FILTER.get() {
+        Some(filter) => filter(prefix, level),
+        None => false,
+    }
+}
