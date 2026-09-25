@@ -25,7 +25,7 @@ use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
 use io_util::batch::IoBatch;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueRef};
+use ostd::orpc::oqueue::{OQueue as _, OQueueRef};
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::orpc_impl;
 use ostd::{
@@ -76,7 +76,7 @@ pub struct BlockDevice {
 pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
-    queue: Arc<BioRequestSingleQueue>,
+    queue: BioRequestSingleQueue,
     name: String,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -85,7 +85,6 @@ pub struct BlockDevice {
 #[cfg(not(baseline_asterinas))]
 #[orpc_impl]
 impl server_traits::BlockIOObservable for BlockDevice {
-    fn bio_submission_oqueue(&self) -> ConsumableOQueueRef<SubmittedBio>;
     fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
 }
 
@@ -144,33 +143,15 @@ impl BlockDevice {
 
         #[cfg(not(baseline_asterinas))]
         {
-            use ostd::orpc::framework::spawn_thread;
-
             let block_device_server = Self::new_with(|orpc_internal, weak_self| BlockDevice {
                 device,
-                queue: Arc::new(BioRequestSingleQueue::with_max_nr_segments_per_bio(
+                queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
-                )),
+                ),
                 name,
                 partitions: SpinLock::new(None),
                 weak_self: weak_self.clone(),
                 orpc_internal,
-            });
-
-            // Thread 2: Handle requests from the OQueue and enqueue them
-            spawn_thread(block_device_server.clone(), {
-                let block_device_server = block_device_server.clone();
-                let consumer = block_device_server
-                    .bio_submission_oqueue()
-                    .attach_consumer()?;
-                move || {
-                    // Attach consumer ONCE outside the loop to avoid race condition
-                    // where items could be skipped between consumer drop and re-attach
-                    loop {
-                        let request = consumer.consume();
-                        block_device_server.queue.enqueue(request)?;
-                    }
-                }
             });
 
             aster_block::register(block_device_server).unwrap();
@@ -219,9 +200,7 @@ impl aster_block::BlockDevice for BlockDevice {
             .num_outstanding_requests
             .fetch_add(1, Ordering::Relaxed);
         bio.prepare_enqueue(reply_handle, outstanding_pages, outstanding_requests);
-        let producer = self.bio_submission_oqueue().attach_value_producer()?;
-        producer.produce(bio);
-        Ok(())
+        self.queue.enqueue(bio)
     }
 
     #[cfg(baseline_asterinas)]
@@ -232,7 +211,7 @@ impl aster_block::BlockDevice for BlockDevice {
     fn metadata(&self) -> BlockDeviceMeta {
         BlockDeviceMeta {
             max_nr_segments_per_bio: self.queue.max_nr_segments_per_bio(),
-            nr_sectors: self.device.config_manager.capacity_sectors(),
+            nr_sectors: self.device.nr_sectors,
         }
     }
 
@@ -315,6 +294,9 @@ struct DeviceInner {
     device_id: DeviceId,
     num_outstanding_pages: AtomicU32,
     num_outstanding_requests: AtomicU32,
+    /// The device's capacity, read once via MMIO at init time.
+    /// TODO(yingqi): currently assuming the device capacity is fixed in its life time.
+    nr_sectors: usize,
 }
 
 impl DeviceInner {
@@ -357,6 +339,8 @@ impl DeviceInner {
             );
         }
 
+        let nr_sectors = config_manager.capacity_sectors();
+
         let queue = VirtQueue::new(0, Self::QUEUE_SIZE, device_transport.as_mut())?;
 
         let block_requests = Arc::new(DmaStream::alloc(1, false).context(ResourceAllocSnafu)?);
@@ -378,6 +362,7 @@ impl DeviceInner {
             device_id: id,
             num_outstanding_pages: AtomicU32::new(0),
             num_outstanding_requests: AtomicU32::new(0),
+            nr_sectors,
         });
 
         let cloned_device = device.clone();
