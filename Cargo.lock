@@ -1286,6 +1286,7 @@ version = "0.1.0"
 dependencies = [
  "aster-cmdline",
  "aster-logger",
+ "aster-time",
  "mariposa_data_capture",
  "ostd",
  "serde",
