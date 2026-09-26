@@ -26,7 +26,6 @@ mount -t configfs none /sys/kernel/config
 mount -t oqueue none /oqueues
 mount -t ext2 /dev/vda /ext2
 mount -t exfat /dev/vdb /exfat
-mount -t virtiofs aster-virtiofs /host
 
 # The userspace RAID-1 selection policy reads and writes OQueues that only exist when the kernel
 # was booted with `raid.selection=userspace`; only start the server in that case, and start it

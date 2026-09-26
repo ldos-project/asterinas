@@ -12,13 +12,9 @@
 #  - NETDEV: "user" or "tap";
 #  - VHOST: "off" or "on";
 #  - VSOCK: "off" or "on";
-#  - VIRTIOFS: "off" or "on" (default: off);
+#  - VIRTIOFS: "off" or "on";
 #  - VIRTIOFS_TAG: mount tag for virtio-fs device;
-#  - VIRTIOFS_SOCKET: vhost-user socket path for the virtio-fs server; with VIRTIOFS=on, QEMU
-#    exits at startup if nothing listens on it, so a virtiofsd must be started before booting, e.g.
-#      /usr/libexec/virtiofsd --socket-path=/tmp/vhostqemu/vfs.sock --shared-dir=./aster-sharepoint &
-#    virtiofsd exits when its QEMU disconnects, so start a new one (and remove the stale socket)
-#    before every boot;
+#  - VIRTIOFS_SOCKET: vhost-user socket path for the virtio-fs server;
 #  - CONSOLE: "hvc0" to enable virtio console;
 #  - SMP: number of CPUs;
 #  - MEM: amount of memory, e.g. "8G";
@@ -70,7 +66,7 @@ if [ -n "${RAID_DEVICES:-}" ]; then
             exit 1
         fi
     done
-    RAID_CACHE="none"
+    RAID_CACHE="directsync"
 else
     echo "[$1] No RAID_DEVICES specified, using disk images instead." 1>&2
     RAID_IMG_DIR="./test/initramfs/build"
