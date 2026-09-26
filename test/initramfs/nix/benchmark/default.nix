@@ -2,6 +2,7 @@
   # Use `--esx` flag to enable `CONFIG_NO_SHM` and disable `CONFIG_HAVE_TIMERFD_CREATE`.
   fio = pkgsHostTarget.fio.overrideAttrs (_: { configureFlags = [ "--esx" ]; });
   hackbench = callPackage ./hackbench.nix { };
+  io-replayer = callPackage ./io-replayer.nix { };
   iperf3 = pkgsHostTarget.iperf3;
   lmbench = callPackage ./lmbench.nix { };
   memcached = pkgsHostTarget.memcached;
@@ -26,6 +27,7 @@
       mkdir -p $out/bin
       cp -r ${fio}/bin/fio $out/bin/
       cp -r ${hackbench}/bin/hackbench $out/bin/
+      cp -r ${io-replayer}/bin/io_replayer $out/bin/
       cp -r ${iperf3}/bin/iperf3 $out/bin/
       cp -r ${memcached}/bin/memcached $out/bin/
       cp -r ${nginx}/bin/nginx $out/bin/
