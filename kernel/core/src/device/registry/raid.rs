@@ -141,7 +141,7 @@ fn setup_raid1_device() -> Result<()> {
 
     spawn_worker_thread(raid_id);
 
-    info!(
+    ostd::early_println!(
         "[raid] RAID-1 device '{}' registered and worker thread spawned",
         RAID_DEVICE_NAME
     );
