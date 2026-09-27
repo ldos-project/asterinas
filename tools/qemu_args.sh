@@ -29,6 +29,11 @@
 #    IMPORTANT: This script specifies the actual physical devices to be used.
 #    To use them as the raid members, kernel parameters specified in OSDK.toml
 #    must be set to the same devices as well.
+#  - RAID_TRANSPORT: "virtio" (default) or "vfio". In "vfio" mode, RAID_DEVICES
+#    holds the three PCI addresses of controllers already bound to vfio-pci on
+#    the host (e.g. "0000:06:00.0,0000:04:00.0,0000:02:00.0"), passed through
+#    to the guest untouched via `-device vfio-pci` instead of being backed by
+#    a `-drive`. Only supported with the default (non-microvm) scheme.
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
@@ -36,6 +41,7 @@ VSOCK=${VSOCK:-"off"}
 VIRTIOFS=${VIRTIOFS:-"off"}
 NETDEV=${NETDEV:-"user"}
 CONSOLE=${CONSOLE:-"hvc0"}
+RAID_TRANSPORT=${RAID_TRANSPORT:-"virtio"}
 
 ATTACH_XFSTESTS_IMAGES=${ATTACH_XFSTESTS_IMAGES:-false}
 if [ "${ENABLE_CONFORMANCE_TEST:-"false"}" = "true" ] && \
@@ -53,12 +59,39 @@ fi
 VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
 VIRTIOFS_SOCKET=${VIRTIOFS_SOCKET:-"/tmp/vhostqemu/vfs.sock"}
 
-# Configure RAID drive sources. Set RAID_DEVICES to a comma-separated list of
-# exactly three existing block devices (e.g.
-# RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to pass them directly to the guest.
-# If this variable is unset, fallback to use three disk images.
-# Else if any of the path is invalid, will throw an error and not launching QEMU.
-if [ -n "${RAID_DEVICES:-}" ]; then
+# Configure RAID drive sources.
+#
+# RAID_TRANSPORT=vfio: RAID_DEVICES must hold exactly three PCI addresses already bound to
+# vfio-pci on the host (see the header comment); there is no image fallback, since a device bound
+# to vfio-pci is no longer reachable from the host to back a `-drive` with.
+#
+# RAID_TRANSPORT=virtio (default): RAID_DEVICES, if set, is a comma-separated list of exactly
+# three existing block devices (e.g. RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n1p1) to
+# pass them directly to the guest. If unset, fallback to use three disk images. Else if any of the
+# path is invalid, will throw an error and not launching QEMU.
+if [ "$RAID_TRANSPORT" = "vfio" ]; then
+    case "$1" in
+    microvm | riscv | tdx)
+        echo "[$1] Error: RAID_TRANSPORT=vfio is not supported with the '$1' scheme." 1>&2
+        exit 1
+        ;;
+    esac
+    if [ -z "${RAID_DEVICES:-}" ]; then
+        echo "[$1] Error: RAID_TRANSPORT=vfio requires RAID_DEVICES set to three PCI addresses." 1>&2
+        exit 1
+    fi
+    IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "$RAID_DEVICES"
+    if [ -z "$RAID_DEV_0" ] || [ -z "$RAID_DEV_1" ] || [ -z "$RAID_DEV_2" ] || [ -n "$RAID_DEV_EXTRA" ]; then
+        echo "[$1] Error: RAID_DEVICES='$RAID_DEVICES' must be exactly three comma-separated PCI addresses." 1>&2
+        exit 1
+    fi
+    for RAID_DEV in "$RAID_DEV_0" "$RAID_DEV_1" "$RAID_DEV_2"; do
+        if [ ! -e "/sys/bus/pci/devices/$RAID_DEV" ]; then
+            echo "[$1] Error: PCI device '$RAID_DEV' does not exist." 1>&2
+            exit 1
+        fi
+    done
+elif [ -n "${RAID_DEVICES:-}" ]; then
     IFS=',' read -r RAID_DEV_0 RAID_DEV_1 RAID_DEV_2 RAID_DEV_EXTRA <<< "$RAID_DEVICES"
     if [ -z "$RAID_DEV_0" ] || [ -z "$RAID_DEV_1" ] || [ -z "$RAID_DEV_2" ] || [ -n "$RAID_DEV_EXTRA" ]; then
         echo "[$1] Error: RAID_DEVICES='$RAID_DEVICES' must be exactly three comma-separated paths." 1>&2
@@ -102,6 +135,19 @@ IPERF_RAND_PORT=${IPERF_PORT:-${RAND_PORTS[3]}}
 LMBENCH_TCP_LAT_RAND_PORT=${LMBENCH_TCP_LAT_PORT:-${RAND_PORTS[4]}}
 LMBENCH_TCP_BW_RAND_PORT=${LMBENCH_TCP_BW_PORT:-${RAND_PORTS[5]}}
 MEMCACHED_RAND_PORT=${MEMCACHED_PORT:-${RAND_PORTS[6]}}
+
+# No `-drive` backend exists for vfio-passthrough RAID members (see above); the per-scheme
+# sections below use `$RAID_DRIVE_ARGS` instead of listing the three `-drive ... id=r0/r1/r2`
+# lines directly, so they disappear from the command line in vfio mode.
+if [ "$RAID_TRANSPORT" = "vfio" ]; then
+    RAID_DRIVE_ARGS=""
+else
+    RAID_DRIVE_ARGS="\
+    -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
+    -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
+"
+fi
 
 # Optional QEMU arguments. Opt in them manually if needed.
 # QEMU_OPT_ARG_DUMP_PACKETS="-object filter-dump,id=filter0,netdev=net01,file=virtio-net.pcap"
@@ -213,9 +259,7 @@ COMMON_QEMU_ARGS="\
     -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
     -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
     -drive if=none,format=raw,id=d0,file=./test/initramfs/build/capture.img \
-    -drive if=none,format=raw,id=r0,file=$RAID_DEV_0,cache=$RAID_CACHE \
-    -drive if=none,format=raw,id=r1,file=$RAID_DEV_1,cache=$RAID_CACHE \
-    -drive if=none,format=raw,id=r2,file=$RAID_DEV_2,cache=$RAID_CACHE \
+    $RAID_DRIVE_ARGS
 "
 
 # Add xfstests drives when the selected conformance suite is `xfstests`.
@@ -237,6 +281,28 @@ if [ "$1" = "iommu" ]; then
         -device ioh3420,id=pcie.0,chassis=1 \
     "
     # TODO: Add support for enabling IOMMU on AMD platforms
+fi
+
+# RAID member devices at addr 0x9/0xa/0xb: `virtio-blk-pci` backed by `$RAID_DRIVE_ARGS`'s drives
+# (default), or the passed-through PCI controllers directly via `vfio-pci` (RAID_TRANSPORT=vfio;
+# see the header comment).
+#
+# vfio mode used to set `kernel-irqchip=on` instead of `split`, for an unknown reason. It now
+# keeps `split` like every other mode: the guest NVMe driver uses MSI-X, which KVM delivers via
+# irqfd under `split` as well, and `on` is rejected by QEMU together with the `iommu` scheme's
+# `intel-iommu,intremap=on`.
+if [ "$RAID_TRANSPORT" = "vfio" ]; then
+    RAID_DEVICE_ARGS="\
+        -device vfio-pci,host=$RAID_DEV_0,bus=pcie.0,addr=0x9 \
+        -device vfio-pci,host=$RAID_DEV_1,bus=pcie.0,addr=0xa \
+        -device vfio-pci,host=$RAID_DEV_2,bus=pcie.0,addr=0xb \
+"
+else
+    RAID_DEVICE_ARGS="\
+        -device virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r0,serial=raid0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+        -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+        -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+"
 fi
 
 if [ "$1" = "microvm" ]; then
@@ -264,9 +330,7 @@ else
         -device virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=x2,serial=vltpdev,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        -device virtio-blk-pci,bus=pcie.0,addr=0x9,drive=r0,serial=raid0,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        -device virtio-blk-pci,bus=pcie.0,addr=0xa,drive=r1,serial=raid1,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        -device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=r2,serial=raid2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
+        $RAID_DEVICE_ARGS \
         -device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=d0,serial=capture,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -object rng-random,id=rng0,filename=/dev/urandom \
         -device virtio-rng-pci,bus=pcie.0,addr=0xd,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \

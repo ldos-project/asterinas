@@ -2,7 +2,7 @@
 
 //! RAID-1 logical block device assembly.
 //!
-//! This module assembles the RAID-1 device from its virtio member disks and
+//! This module assembles the RAID-1 device from its member disks (virtio-blk or NVMe) and
 //! registers it with the block layer. The device then gets a devtmpfs node
 //! (`/dev/raid`) like any other block device, so user space can mount a
 //! filesystem on it (e.g., `mount -t ext2 /dev/raid /raid1`).
@@ -11,6 +11,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(not(baseline_asterinas))]
+use aster_nvme::NvmeBlockDevice;
+#[cfg(not(baseline_asterinas))]
 use aster_raid::selection_policies;
 #[cfg(not(baseline_asterinas))]
 use aster_raid::server_traits::SelectionPolicy;
@@ -18,6 +20,8 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 #[cfg(not(baseline_asterinas))]
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::oqueue::OQueueRef;
 #[cfg(not(baseline_asterinas))]
 use ostd::path;
 use spin::Once;
@@ -167,28 +171,40 @@ fn build_admission(
     }
 }
 
-/// Attaches one weak observer per member to its bio-completion OQueue, each
-/// wrapped in a `Mutex` as the observer-based selection policies expect.
+/// Returns `member`'s `bio_completion` OQueue, whichever concrete block device driver it is.
 ///
 /// # Panics
 ///
-/// Panics if a member is not a `VirtIoBlockDevice`.
+/// Panics if `member` is neither a `VirtIoBlockDevice` nor an `NvmeBlockDevice` - the two
+/// concrete types that currently implement `BlockIOObservable`.
+#[cfg(not(baseline_asterinas))]
+fn bio_completion_oqueue_of(
+    member: &Arc<dyn aster_block::BlockDevice>,
+) -> OQueueRef<aster_block::bio::BlockDeviceCompletionStats> {
+    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
+
+    if let Some(virtio) = member.downcast_ref::<VirtIoBlockDevice>() {
+        virtio.bio_completion_oqueue()
+    } else if let Some(nvme) = member.downcast_ref::<NvmeBlockDevice>() {
+        nvme.bio_completion_oqueue()
+    } else {
+        panic!("RAID member must be a VirtIoBlockDevice or an NvmeBlockDevice");
+    }
+}
+
+/// Wraps each member's `bio_completion` OQueue in a weak observer with a 4-entry replay buffer,
+/// wrapped in a `Mutex` as the observer-based selection policies expect.
 #[cfg(not(baseline_asterinas))]
 fn attach_weak_observers(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Vec<Mutex<ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>>> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     members
         .iter()
         .map(|member| {
-            let virtio = member
-                .downcast_ref::<VirtIoBlockDevice>()
-                .expect("RAID member must be a VirtIoBlockDevice");
             Mutex::new(
-                virtio
-                    .bio_completion_oqueue()
+                bio_completion_oqueue_of(member)
                     .attach_weak_observer(4, ObservationQuery::identity())
                     .expect("Failed to attach weak observer to bio_completion_oqueue"),
             )
@@ -205,16 +221,12 @@ fn attach_weak_observers(
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, registry};
 
     for (index, member) in members.iter().enumerate() {
-        let virtio = member
-            .downcast_ref::<VirtIoBlockDevice>()
-            .expect("RAID member must be a VirtIoBlockDevice");
         registry::register_with(
             &path!(raid1.bio_completion[{ index }]),
-            &virtio.bio_completion_oqueue().as_any_oqueue(),
+            &bio_completion_oqueue_of(member).as_any_oqueue(),
             |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
         );
     }
@@ -305,17 +317,12 @@ aster_cmdline::define_kv_param!(
 fn setup_heimdall(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Arc<aster_raid::heimdall::Heimdall> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     let device_observers = members
         .iter()
         .map(|member| {
-            let virtio = member
-                .downcast_ref::<VirtIoBlockDevice>()
-                .expect("RAID member must be a VirtIoBlockDevice");
-            let observer = virtio
-                .bio_completion_oqueue()
+            let observer = bio_completion_oqueue_of(member)
                 .attach_strong_observer(ObservationQuery::identity())
                 .expect("Failed to attach strong observer for Heimdall");
             (member.clone(), observer)

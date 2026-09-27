@@ -11,6 +11,8 @@ use alloc::vec::Vec;
 use aster_pci::capability::msix::CapabilityMsixData;
 use ostd::irq::IrqLine;
 
+use crate::nvme_queue::QUEUE_NUM;
+
 /// MSI-X interrupt manager for NVMe devices.
 ///
 /// NVMe devices can use multiple MSI-X vectors for improved interrupt handling:
@@ -36,14 +38,14 @@ impl NvmeMsixManager {
     ///
     /// # Returns
     ///
-    /// A new `NvmeMsixManager` with all vectors allocated and initialized, or `None` if allocating
-    /// an IRQ line for any vector fails.
+    /// A new `NvmeMsixManager` with `QUEUE_NUM` vectors allocated and initialized (one admin, the
+    /// rest for I/O queues), or `None` if allocating an IRQ line for any vector fails.
     pub(crate) fn new(mut msix: CapabilityMsixData) -> Option<Self> {
         let table_size = msix.table_size();
         if table_size == 0 {
             return None;
         }
-        let n = usize::from(table_size);
+        let n = usize::from(table_size).min(QUEUE_NUM);
 
         let mut irqs = Vec::with_capacity(n);
         for _ in 0..n {
@@ -55,7 +57,7 @@ impl NvmeMsixManager {
         }
 
         // Reserve the first vector for admin queue
-        let mut vector_list: Vec<u16> = (0..table_size).collect();
+        let mut vector_list: Vec<u16> = (0..n as u16).collect();
         let admin_vector = vector_list.remove(0);
 
         Some(Self {

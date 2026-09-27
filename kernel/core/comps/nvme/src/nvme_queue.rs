@@ -214,14 +214,24 @@ where
         }
     }
 
+    /// Returns the command identifier the next `submit`/`submit_with` call would use, without
+    /// submitting anything.
+    pub(crate) fn peek_next_cid(&self) -> u16 {
+        self.queue.tail
+    }
+
     /// Submits a command and rings the SQ tail doorbell.
-    ///
-    /// Writes at the current tail, sets the command identifier to that slot index, advances the
-    /// tail, then updates the doorbell.
-    ///
-    /// Returns the command identifier used (same as the tail before enqueue), or `None` if the
-    /// queue is full.
-    pub(crate) fn submit(&mut self, mut entry: NvmeCommand) -> Option<u16> {
+    pub(crate) fn submit(&mut self, entry: NvmeCommand) -> Option<u16> {
+        self.submit_with(entry, |_cid| {})
+    }
+
+    /// Like [`Self::submit`], but calls `before_doorbell` with the command's identifier after it is
+    /// written into the ring and before the doorbell notifies the device.
+    pub(crate) fn submit_with(
+        &mut self,
+        mut entry: NvmeCommand,
+        before_doorbell: impl FnOnce(u16),
+    ) -> Option<u16> {
         let cid = self.queue.tail;
         entry.set_cid(cid);
         let new_tail = match self.queue.submit(entry) {
@@ -231,6 +241,7 @@ where
                 return None;
             }
         };
+        before_doorbell(cid);
         // Write barrier: do not update the doorbell until the submit entry write finishes.
         fence(Ordering::SeqCst);
         self.dbregs.write_racy(

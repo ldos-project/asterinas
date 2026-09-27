@@ -9,12 +9,13 @@
 //! issue synchronously to I/O queue [`IO_QID`] and wait on a per-queue `WaitQueue` driven
 //! by the MSI-X completion interrupt.
 //!
-//! Concurrency invariant: at most one in-flight NVMe command per queue at a time.
-//! Supporting more would require redesigning how commands are submitted and completions waited on.
+//! Admin commands still use the simpler blocking, polling-based path (`submit_and_wait_polling`),
+//! since they only ever run one at a time during device initialization.
 
-use alloc::{borrow::ToOwned, format, string::String, sync::Arc, vec::Vec};
+use alloc::{
+    borrow::ToOwned, collections::BTreeMap, format, string::String, sync::Arc, vec::Vec,
+};
 use core::{
-    ffi::CStr,
     hint::spin_loop,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
@@ -26,7 +27,14 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use aster_util::safe_ptr::SafePtr;
+#[cfg(not(baseline_asterinas))]
+use aster_virtio::device::block::server_traits::{self, BlockIOObservable as _};
 use device_id::DeviceId;
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::{
+    oqueue::{ConsumableOQueueRef, OQueue as _, OQueueRef},
+    orpc_impl, orpc_server,
+};
 use ostd::{
     debug, error, info,
     mm::{HasDaddr, HasSize, PAGE_SIZE, dma::DmaStream},
@@ -47,7 +55,7 @@ use crate::{
         NvmeSubmissionQueueAccess, QUEUE_DEPTH, QUEUE_NUM,
     },
     nvme_regs::{NvmeRegs32, NvmeRegs64},
-    nvme_spec::{NvmeCommand, NvmeCompletion},
+    nvme_spec::NvmeCommand,
     transport::pci::transport::{NvmePciTransport, NvmePciTransportLock},
 };
 
@@ -58,6 +66,7 @@ const IO_QID: usize = 1;
 // TODO: Support multiple I/O submission and completion queue pairs.
 ostd::const_assert!(IO_QID + 1 == QUEUE_NUM);
 
+#[cfg(baseline_asterinas)]
 #[derive(Debug)]
 pub struct NvmeBlockDevice {
     device: NvmeDeviceInner,
@@ -66,7 +75,43 @@ pub struct NvmeBlockDevice {
     id: DeviceId,
 }
 
+#[cfg(not(baseline_asterinas))]
+#[derive(Debug)]
+#[orpc_server(server_traits::BlockIOObservable)]
+pub struct NvmeBlockDevice {
+    device: NvmeDeviceInner,
+    queue: BioRequestSingleQueue,
+    name: String,
+    id: DeviceId,
+}
+
+#[cfg(not(baseline_asterinas))]
+#[orpc_impl]
+impl server_traits::BlockIOObservable for NvmeBlockDevice {
+    fn bio_completion_oqueue(&self) -> OQueueRef<aster_block::bio::BlockDeviceCompletionStats>;
+}
+
 impl aster_block::BlockDevice for NvmeBlockDevice {
+    #[cfg(not(baseline_asterinas))]
+    fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
+        let reply_handle = self.bio_completion_oqueue().attach_ref_producer()?;
+
+        let mut bio = bio;
+        // Atomically bump the counters, capturing the pre-increment values so the outstanding
+        // counts recorded for this bio are consistent with the bump (mirrors the virtio driver).
+        let outstanding_pages = self
+            .device
+            .num_outstanding_pages
+            .fetch_add(bio.num_pages(), Ordering::Relaxed);
+        let outstanding_requests = self
+            .device
+            .num_outstanding_requests
+            .fetch_add(1, Ordering::Relaxed);
+        bio.prepare_enqueue(reply_handle, outstanding_pages, outstanding_requests);
+        self.queue.enqueue(bio)
+    }
+
+    #[cfg(baseline_asterinas)]
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         self.queue.enqueue(bio)
     }
@@ -88,6 +133,16 @@ impl aster_block::BlockDevice for NvmeBlockDevice {
     fn id(&self) -> DeviceId {
         self.id
     }
+
+    #[cfg(not(baseline_asterinas))]
+    fn num_outstanding_pages(&self) -> u32 {
+        self.device.num_outstanding_pages.load(Ordering::Relaxed)
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    fn num_outstanding_requests(&self) -> u32 {
+        self.device.num_outstanding_requests.load(Ordering::Relaxed)
+    }
 }
 
 static NR_NVME_DEVICE: AtomicU32 = AtomicU32::new(0);
@@ -104,11 +159,21 @@ impl NvmeBlockDevice {
             DeviceId::new(major_id, device_id::MinorId::new(index))
         };
 
+        #[cfg(baseline_asterinas)]
         let block_device = Arc::new(Self {
             device,
             queue: BioRequestSingleQueue::new(),
             name,
             id,
+        });
+
+        #[cfg(not(baseline_asterinas))]
+        let block_device = Self::new_with(|orpc_internal, _weak_self| Self {
+            device,
+            queue: BioRequestSingleQueue::new(),
+            name,
+            id,
+            orpc_internal,
         });
 
         block_device
@@ -195,6 +260,25 @@ struct InitContext {
 
 struct IoMsixVectors([u16; QUEUE_NUM - 1]);
 
+/// Tracks one or more in-flight NVMe I/O commands that share a completion fate. 
+struct PendingGroup {
+    bios: Vec<SubmittedBio>,
+    outstanding_commands: u32,
+    submission_done: bool,
+    failed: bool,
+}
+
+impl PendingGroup {
+    fn new(bios: Vec<SubmittedBio>) -> Self {
+        Self {
+            bios,
+            outstanding_commands: 0,
+            submission_done: false,
+            failed: false,
+        }
+    }
+}
+
 struct NvmeDeviceInner {
     submission_queues: [SpinLock<NvmeSubmissionQueue, LocalIrqDisabled>; QUEUE_NUM],
     completion_queues: [SpinLock<NvmeCompletionQueue, LocalIrqDisabled>; QUEUE_NUM],
@@ -203,6 +287,10 @@ struct NvmeDeviceInner {
     namespace: NvmeNamespace,
     dstrd: u16,
     stats: NvmeStats,
+    /// Commands submitted to [`IO_QID`] awaiting completion, keyed by NVMe command identifier.
+    pending_io: SpinLock<BTreeMap<u16, Arc<SpinLock<PendingGroup, LocalIrqDisabled>>>, LocalIrqDisabled>,
+    num_outstanding_pages: AtomicU32,
+    num_outstanding_requests: AtomicU32,
 }
 
 #[derive(Clone, Copy)]
@@ -285,11 +373,17 @@ impl NvmeDeviceInner {
             namespace,
             dstrd: init_ctx.dstrd,
             stats: NvmeStats::new(),
+            pending_io: SpinLock::new(BTreeMap::new()),
+            num_outstanding_pages: AtomicU32::new(0),
+            num_outstanding_requests: AtomicU32::new(0),
         };
         Ok((device, io_msix_vectors))
     }
 
-    /// Registers MSI-X handlers that wake completion wait queues for admin and I/O queues.
+    /// Registers MSI-X handlers: the admin queue just wakes its wait queue (admin commands still
+    /// use the blocking, polling-based init path), while the I/O queue drains every completed
+    /// command directly in the interrupt handler and finishes the `Bio`(s) it belongs to - see
+    /// `handle_io_completions`.
     fn setup_msix_handlers(
         &self,
         block_device: &Arc<NvmeBlockDevice>,
@@ -315,7 +409,7 @@ impl NvmeDeviceInner {
             let device_weak = Arc::downgrade(block_device);
             io_irq.on_active(move |_| {
                 if let Some(block_device) = device_weak.upgrade() {
-                    block_device.device.completion_wait_queues[io_qid].wake_all();
+                    block_device.device.handle_io_completions(io_qid);
                 }
             });
         }
@@ -655,73 +749,112 @@ impl NvmeDeviceInner {
         )
     }
 
-    /// Submits a command to the submission queue and waits for its completion.
-    ///
-    /// This helper assumes that only a single thread calls `submit_and_wait`
-    /// for a given `qid` at a time. Calling it concurrently on the same queue
-    /// is not supported now.
-    ///
-    /// Returns `Ok(())` if the command completed successfully,
-    /// `Err(NvmeDeviceError::SubmissionQueueFull)` if the SQ has no free slots, or
-    /// `Err(NvmeDeviceError::CommandFailed)` if the device reported a non-zero status.
-    fn submit_and_wait(&self, qid: usize, entry: NvmeCommand) -> Result<(), NvmeDeviceError> {
-        let wait_queue = &self.completion_wait_queues[qid];
-
-        let cid = self
-            .lock_sq(qid)
-            .submit(entry)
-            .ok_or(NvmeDeviceError::SubmissionQueueFull)?;
-        if qid == IO_QID {
-            self.stats.increment_submitted();
+    /// Submits one command as part of `group` on [`IO_QID`], registering it in `pending_io` so
+    /// `handle_io_completions` can find it later. Busy-retries if the submission queue is
+    /// momentarily full.
+    fn submit_grouped(&self, entry: NvmeCommand, group: &Arc<SpinLock<PendingGroup, LocalIrqDisabled>>) {
+        group.lock().outstanding_commands += 1;
+        loop {
+            // A real controller reports its SQ head pointer in jumps - advancing it past several
+            // ring slots' worth of *fetched* commands in one completion is normal, spec-legal
+            // behaviour for a controller that pipelines ahead of actually finishing them. 
+            let next_cid = self.lock_sq(IO_QID).peek_next_cid();
+            if self.pending_io.lock().contains_key(&next_cid) {
+                spin_loop();
+                continue;
+            }
+            // Register the command in `pending_io` from `before_doorbell`. 
+            let registered = self.lock_sq(IO_QID).submit_with(entry, |cid| {
+                self.pending_io.lock().insert(cid, group.clone());
+            });
+            if registered.is_some() {
+                self.stats.increment_submitted();
+                return;
+            }
+            spin_loop();
         }
+    }
 
-        wait_queue.wait_until(|| {
-            let completion = self.lock_cq(qid).complete()?;
+    /// Called once whoever owns `group` has issued every command it will ever issue for it.
+    fn finish_submitting(&self, group: Arc<SpinLock<PendingGroup, LocalIrqDisabled>>) {
+        let ready = {
+            let mut locked = group.lock();
+            locked.submission_done = true;
+            locked.outstanding_commands == 0
+        };
+        if ready {
+            self.complete_group(group);
+        }
+    }
 
+    /// Called from `handle_io_completions` for one finished command belonging to `group`.
+    fn complete_one(&self, group: Arc<SpinLock<PendingGroup, LocalIrqDisabled>>, failed: bool) {
+        let ready = {
+            let mut locked = group.lock();
+            locked.failed |= failed;
+            locked.outstanding_commands -= 1;
+            locked.submission_done && locked.outstanding_commands == 0
+        };
+        if ready {
+            // Completes every bio in this group. 
+            self.complete_group(group);
+        }
+    }
+
+    /// Completes every `Bio` in `group`, which must have no commands left outstanding.
+    fn complete_group(&self, group: Arc<SpinLock<PendingGroup, LocalIrqDisabled>>) {
+        let (bios, failed) = {
+            let mut locked = group.lock();
+            (core::mem::take(&mut locked.bios), locked.failed)
+        };
+        let status = if failed {
+            BioStatus::IoError
+        } else {
+            BioStatus::Complete
+        };
+        for bio in bios {
+            #[cfg(not(baseline_asterinas))]
+            {
+                let pages = bio
+                    .get_num_pages()
+                    .expect("num_pages was not set during prepare_enqueue");
+                self.num_outstanding_pages
+                    .fetch_sub(pages, Ordering::Relaxed);
+                self.num_outstanding_requests
+                    .fetch_sub(1, Ordering::Relaxed);
+                bio.report_statistics();
+            }
+            bio.complete(status);
+        }
+    }
+
+    /// Drains every available completion on `IO_QID` and finishes the group each belongs to.
+    /// Runs directly in the MSI-X interrupt handler, mirroring the virtio driver's `handle_irq`.
+    fn handle_io_completions(&self, qid: usize) {
+        loop {
+            let Some(completion) = self.lock_cq(qid).complete() else {
+                return;
+            };
             self.submission_queues[qid]
                 .lock()
                 .update_sq_head(&completion);
-
-            self.process_completion(qid, completion, cid)
-        })
-    }
-
-    /// Interprets a completion queue entry for the command identified by `expected_cid`.
-    ///
-    /// Returns `None` if the completion does not match `expected_cid` (not our command),
-    /// `Some(Ok(()))` if it matches and the device reports success, or
-    /// `Some(Err(NvmeDeviceError::CommandFailed))` if it matches but the device reports an error.
-    fn process_completion(
-        &self,
-        qid: usize,
-        completion: NvmeCompletion,
-        expected_cid: u16,
-    ) -> Option<Result<(), NvmeDeviceError>> {
-        if qid == IO_QID {
             self.stats.increment_completed();
-        }
 
-        let is_target = completion.cid() == expected_cid;
-        if !is_target {
-            debug!(
-                "Ignore unexpected completion: expected CID {}, got {} on QID {}",
-                expected_cid,
-                completion.cid(),
-                qid
-            );
-            return None;
-        }
-
-        if completion.has_error() {
-            Some(Err(NvmeDeviceError::CommandFailed))
-        } else {
-            Some(Ok(()))
+            let cid = completion.cid();
+            let Some(group) = self.pending_io.lock().remove(&cid) else {
+                debug!("Ignoring completion for untracked CID {cid} on QID {qid}");
+                continue;
+            };
+            self.complete_one(group, completion.has_error());
         }
     }
 
     /// Performs read or write I/O for a `BioRequest` on I/O queue [`IO_QID`].
     ///
-    /// Splits work into chunks; each chunk is built from `io_op` and submitted synchronously.
+    /// Splits work into chunks; each chunk is built from `io_op` and submitted without waiting
+    /// for it to complete. Every chunk of one `Bio` shares one [`PendingGroup`], completed by
+    /// `handle_io_completions` once all of that `Bio`'s chunks (and any others sharing its
+    /// group) have finished.
     fn io_rw_request(&self, request: BioRequest, io_op: IoOp) {
         const { assert!(LBA_SIZE == SECTOR_SIZE) };
 
@@ -729,7 +862,7 @@ impl NvmeDeviceInner {
         let mut lba = request.sid_range().start.to_raw();
 
         for bio in request.into_bios() {
-            let mut status = BioStatus::Complete;
+            let group = Arc::new(SpinLock::new(PendingGroup::new(Vec::new())));
             for segment in bio.segments() {
                 let dma_slice = segment.inner_dma_slice();
                 // `BioSegment` should guarantee that the segment's address and the size is
@@ -758,17 +891,17 @@ impl NvmeDeviceInner {
                             nvme_cmd::io_write(nsid, lba, (sectors_to_io - 1) as u16, ptr0, 0u64)
                         }
                     };
-                    // TODO: This path submits and waits synchronously, which may block.
-                    if self.submit_and_wait(IO_QID, entry).is_err() {
-                        status = BioStatus::IoError;
-                    }
+                    self.submit_grouped(entry, &group);
 
                     lba += sectors_to_io;
                     remaining -= sectors_to_io;
                     ptr0 += (SECTOR_SIZE as u64) * sectors_to_io;
                 }
             }
-            bio.complete(status);
+            // `bio.segments()` above only needed `&bio`; move it into the group now that every
+            // chunk it needs has been submitted.
+            group.lock().bios.push(bio);
+            self.finish_submitting(group);
         }
     }
 
@@ -780,27 +913,26 @@ impl NvmeDeviceInner {
         self.io_rw_request(request, IoOp::Write);
     }
 
+    /// Issues one flush command for the whole `request`, completing every `Bio` in it together
+    /// once that single command finishes.
     fn flush(&self, request: BioRequest) {
         let nsid = self.namespace.id;
-
         let entry = nvme_cmd::io_flush(nsid);
-        // TODO: This path submits and waits synchronously, which may block.
-        let status = self
-            .submit_and_wait(IO_QID, entry)
-            .map_or(BioStatus::IoError, |_| BioStatus::Complete);
-        for bio in request.into_bios() {
-            bio.complete(status);
-        }
+
+        let group = Arc::new(SpinLock::new(PendingGroup::new(
+            request.into_bios().collect(),
+        )));
+        self.submit_grouped(entry, &group);
+        self.finish_submitting(group);
     }
 }
 
+/// Converts a space- or NUL-padded ASCII field of an Identify structure (serial, model, firmware)
+/// to a `String`.
 fn bytes_to_cstr_string(bytes: &[u8]) -> String {
-    if let Ok(cstr) = CStr::from_bytes_until_nul(bytes) {
-        let s = cstr.to_string_lossy();
-        s.trim_end().to_owned()
-    } else {
-        String::new()
-    }
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches(['\0', ' '])
+        .to_owned()
 }
 
 #[cfg(ktest)]
