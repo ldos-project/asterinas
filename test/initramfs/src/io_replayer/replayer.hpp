@@ -39,7 +39,6 @@ inline uint64_t get_ns_ts() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-//aaargh, I should have used this when reading
 struct TraceOp {
     double timestamp;
     uint64_t offset;
@@ -190,11 +189,10 @@ public:
         double timestamp;
         int trash;
         uint64_t offset, size;
-        uint32_t op_type; //0 is read, 1 write
+        uint32_t op_type;  // 0 is read, 1 write
         uint64_t max_size=0;
         for (int i = 0 ; i < trace_line_count[device] ; i++) {
             std::getline(in, line);
-            //printf("parsing %s\n", line.c_str());
             sscanf(line.c_str(), "%lf %d %lu %lu %u", 
                 &timestamp, &trash, &offset, &size, &op_type);
 
@@ -203,7 +201,6 @@ public:
             req_offsets[device][i] = offset;
             req_sizes[device][i] = size;
             req_ops[device][i] = op_type;
-            //printf("%f, %lu, %lu, %d\n", timestamp, offset, size, op_type);
             if(size > max_size) {
                 max_size = size;
             }
@@ -220,7 +217,7 @@ public:
     * 6: IO submission time (not used)
     * 7: Device index
     */
-   //ts comes in as us
+    //ts comes in as us
     void write_output_line(uint64_t ts, uint32_t latency, uint8_t op,
             uint64_t size, uint64_t offset, uint64_t submission, 
             uint32_t device) {
@@ -257,7 +254,6 @@ public:
         for (int i = 0 ; i < ndevices ; i++) {
             uint64_t lio = std::atomic_load(&late_ios[i]);
             uint64_t total = std::atomic_load(&io_count[i]);
-            //printf("Device %d had %lu IOs, %lu late (%f%%)\n", i, total, lio, (lio/(float)total)*100);
             uint64_t f = std::atomic_load(&fails[i]);
             uint64_t nf = std::atomic_load(&never_finished[i]);
         }

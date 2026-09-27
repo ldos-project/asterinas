@@ -15,9 +15,6 @@
  * 
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- * Changed from LAKE: the thread count is a command-line argument, right after the device count,
- * instead of being fixed at 64. Replaying is unchanged.
  */
 
 
@@ -40,8 +37,6 @@
 #include "replayer.hpp"
 #include "op_replayers.hpp"
 
-uint8_t N_THREADS = 64;
-
 int main (int argc, char **argv)
 {
     if (argc < 7) {
@@ -59,7 +54,6 @@ int main (int argc, char **argv)
         printf("The thread count must be in 1..=255, got %d\n", n_threads);
         exit(1);
     }
-    N_THREADS = n_threads;
     Trace trace(argv[5]);
 
     for (int i=0; i < n_devices_to_trace ; i++) {
@@ -68,16 +62,16 @@ int main (int argc, char **argv)
     }
     
     pthread_barrier_t sync_barrier;
-    int err = pthread_barrier_init(&sync_barrier, NULL, n_devices_to_trace*N_THREADS+1);
+    int err = pthread_barrier_init(&sync_barrier, NULL, n_devices_to_trace*n_threads+1);
     if (err != 0) {
         printf("Error creating barrier\n");
         exit(1);
     }
 
-    pthread_t threads[n_devices_to_trace][N_THREADS];
-    Thread_arg targs[n_devices_to_trace][N_THREADS];
+    pthread_t threads[n_devices_to_trace][n_threads];
+    Thread_arg targs[n_devices_to_trace][n_threads];
     for (int dev=0; dev < n_devices_to_trace ; dev++) {
-        for (int j = 0; j < N_THREADS; j++) {
+        for (int j = 0; j < n_threads; j++) {
             targs[dev][j].trace = &trace;
             targs[dev][j].device = dev;
             targs[dev][j].sync_barrier = &sync_barrier;
@@ -103,7 +97,7 @@ int main (int argc, char **argv)
     uint64_t now = get_ns_ts();
     //give threads most up do date starting time
     for (int dev=0; dev < n_devices_to_trace ; dev++) 
-        for (int j = 0; j < N_THREADS; j++)
+        for (int j = 0; j < n_threads; j++)
             targs[dev][j].start_ts = now;
 
     auto begin = std::chrono::steady_clock::now();
@@ -111,7 +105,7 @@ int main (int argc, char **argv)
     pthread_barrier_wait(&sync_barrier);
     //wait for workers
     for (int dev=0; dev < n_devices_to_trace ; dev++) {
-        for (int j = 0; j < N_THREADS; j++)
+        for (int j = 0; j < n_threads; j++)
             pthread_join(threads[dev][j], 0);
     }
     auto end = std::chrono::steady_clock::now();
