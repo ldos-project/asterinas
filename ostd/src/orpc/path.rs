@@ -95,7 +95,7 @@ impl PathComponent {
     }
 }
 
-/// A path consisting of multiple components. For example, "a.b" or "x[2].y".
+/// A path consisting of multiple components. For example, `a.b` or `x[2].y`.
 #[derive(Debug, Clone)]
 #[expect(private_interfaces)]
 pub enum Path {

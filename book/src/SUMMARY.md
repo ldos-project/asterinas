@@ -2,6 +2,14 @@
 
 [Introduction](README.md)
 
+# Mariposa
+
+* [Introduction](mariposa/README.md)
+* [Glossary](mariposa/glossary.md)
+* [OQueues](mariposa/oqueues.md)
+* [Objects](mariposa/objects.md)
+* [Slots](mariposa/slots.md)
+
 # Asterinas NixOS
 
 * [Getting Started](distro/README.md)

@@ -33,8 +33,9 @@ pub trait Blocker {
     /// Return true if performing the action may succeed and should be attempted. This must be *very* fast and cannot
     /// block for any condition itself. This is because it will be called inside the scheduler with locks held.
     ///
-    /// This should be an approximation of the success of a `try_` function such as [`Consumer::try_produce`]. This
-    /// *must* return true if `try`ing would succeed, but may also return true spuriously even if it will fail.
+    /// This should be an approximation of the success of a `try_` function such as
+    /// [`Consumer::try_consume`](`crate::orpc::oqueue::Consumer::try_consume`). This *must* return
+    /// true if `try`ing would succeed, but may also return true spuriously even if it will fail.
     ///
     /// This must have Acquire ordering.
     fn should_try(&self) -> bool;

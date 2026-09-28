@@ -82,11 +82,10 @@
 //!
 //! ## Implementation
 //!
-//! The types in this module are mostly wrappers around a single underlying implementation type (see
-//! [`GenericOQueueRef::inner`], for example). The wrappers carry additional information required to
-//! correctly and safely use the underlying implementation. They also provide abstractions which
-//! match the conceptual model of OQueues. Having this layer of wrappers will also simplify any
-//! future changes to the implementation.
+//! The types in this module are mostly wrappers around a single underlying implementation type. The
+//! wrappers carry additional information required to correctly and safely use the underlying
+//! implementation. They also provide abstractions which match the conceptual model of OQueues.
+//! Having this layer of wrappers will also simplify any future changes to the implementation.
 //!
 //! ## Element Descriptors
 //!

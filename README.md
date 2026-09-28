@@ -1,18 +1,29 @@
+<p align="center">
+    <img src="book/src/images/mariposa-orange-hex.svg" alt="mariposa-logo" width="300">
+</p>
 <div style="text-align: center;">
-<img src="book/src/images/ldos_logo.webp" alt="asterinas-logo" width="350">
+<img src="book/src/images/combination-mark-white-orange-hex.svg" alt="asterinas-logo" width="350">
 </div>
 
 [The Learning-Directed OS project](https://ldos.utexas.edu/) is developing the next-generation Machine Learning-based
 Operating System to drive computing infrastructure toward high efficiency and performance (see https://ldos.utexas.edu/
 for more information).
 
-The project is developing a kernel based on [the Asterinas framekernel](https://asterinas.github.io). We are not
-affiliated with the original authors of Asterinas and we expect our work to diverge from theirs due to very different
-research goals. However, the original authors deserve a huge amount of credit for developing such an impressive system.
-Our work would not be possible without their generosity in making Asterinas freely available.
+The project is developing Mariposa, a kernel based on [the Asterinas
+framekernel](https://asterinas.github.io). We are not affiliated with the original authors of
+Asterinas and we expect our work to diverge from theirs due to very different research goals.
+However, the original authors deserve a huge amount of credit for developing such an impressive
+system. Our work would not be possible without their generosity in making Asterinas freely
+available.
 
 Please do not report issues to the original Asterinas team or ask them questions about this repository. They are not
 responsible for any of the work done in this repository.
+
+*<small>This material is based upon work supported by the U.S. National Science Foundation (NSF)
+under Grant Number 2326576. Any opinions, findings and conclusions or recommendations expressed in
+this material do not necessarily reflect the views of the U.S. National Science Foundation.</small>*
+
+<hr style="height:3px;border:none;color:#333;background-color:#333;">
 
 <p align="center">
     <img src="book/src/images/logo_en.svg" alt="asterinas-logo" width="620"><br>
