@@ -67,6 +67,11 @@ impl SchedClassRq for IdleClassRq {
         self.entity.is_none()
     }
 
+    fn remove(&mut self, _task: &Arc<Task>) -> bool {
+        // The idle task is special, so we don't allow removing it.
+        false
+    }
+
     fn pick_next(&mut self) -> Option<Arc<Task>> {
         self.last_start_time = Some(read_monotonic_time());
         self.entity.take()
