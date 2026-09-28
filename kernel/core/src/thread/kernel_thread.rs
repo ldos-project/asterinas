@@ -5,6 +5,7 @@ use ostd::{
     ignore_err,
     task::{Task, TaskOptions},
 };
+use snafu::Location;
 
 use super::{AsThread, Thread, oops};
 use crate::{
@@ -18,12 +19,14 @@ struct KernelThread;
 /// Options to create or spawn a new kernel thread.
 pub struct ThreadOptions {
     func: Option<Box<dyn FnOnce() + Send>>,
+    build_location: Location,
     cpu_affinity: CpuSet,
     sched_policy: SchedPolicy,
 }
 
 impl ThreadOptions {
     /// Creates the thread options with the thread function.
+    #[track_caller]
     pub fn new<F>(func: F) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -32,6 +35,7 @@ impl ThreadOptions {
         let sched_policy = SchedPolicy::Fair(Nice::default());
         Self {
             func: Some(Box::new(func)),
+            build_location: Default::default(),
             cpu_affinity,
             sched_policy,
         }
@@ -46,6 +50,12 @@ impl ThreadOptions {
     /// Sets the scheduling policy.
     pub fn sched_policy(mut self, sched_policy: SchedPolicy) -> Self {
         self.sched_policy = sched_policy;
+        self
+    }
+
+    /// Sets the location the thread was built. This is used for wrappers around [`Thread`].
+    pub fn build_location(mut self, build_location: Location) -> Self {
+        self.build_location = build_location;
         self
     }
 }
@@ -73,7 +83,11 @@ impl ThreadOptions {
                 ))
             };
 
-            TaskOptions::new(thread_fn).data(thread).build().unwrap()
+            TaskOptions::new(thread_fn)
+                .data(thread)
+                .build_location(self.build_location)
+                .build()
+                .unwrap()
         })
     }
 

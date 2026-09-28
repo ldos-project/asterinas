@@ -8,6 +8,8 @@ use core::{
     str::Utf8Error,
 };
 
+use serde::Serialize;
+
 /// An owned C-compatible string with a fixed capacity of `N`.
 ///
 /// Although this is a POD type, it has a type invariant:
@@ -16,6 +18,15 @@ use core::{
 #[repr(C)]
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Pod)]
 pub struct FixedCStr<const N: usize>([u8; N]);
+
+impl<const N: usize> Serialize for FixedCStr<N> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str().unwrap_or("[NOT UTF-8]"))
+    }
+}
 
 impl<const N: usize> FixedCStr<N> {
     /// The maximum byte length, excluding the trailing nul.

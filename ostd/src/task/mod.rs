@@ -21,6 +21,7 @@ use core::{
 
 use kernel_stack::KernelStack;
 use processor::current_task;
+use snafu::Location;
 use spin::Once;
 use utils::ForceSync;
 
@@ -61,6 +62,7 @@ static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
 pub struct Task {
     #[expect(clippy::type_complexity)]
     func: ForceSync<Cell<Option<Box<dyn FnOnce() + Send>>>>,
+    build_location: Location,
 
     data: Box<dyn Any + Send + Sync>,
     local_data: ForceSync<Box<dyn Any + Send>>,
@@ -153,23 +155,31 @@ impl Task {
     pub fn id(&self) -> NonZeroUsize {
         self.id
     }
+
+    /// Get the location that [`TaskOptions::new`] was called.
+    pub fn build_location(&self) -> Location {
+        self.build_location
+    }
 }
 
 /// Options to create or spawn a new task.
 pub struct TaskOptions {
     func: Option<Box<dyn FnOnce() + Send>>,
+    build_location: Location,
     data: Option<Box<dyn Any + Send + Sync>>,
     local_data: Option<Box<dyn Any + Send>>,
 }
 
 impl TaskOptions {
     /// Creates a set of options for a task.
+    #[track_caller]
     pub fn new<F>(func: F) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
         Self {
             func: Some(Box::new(func)),
+            build_location: Default::default(),
             data: None,
             local_data: None,
         }
@@ -199,6 +209,12 @@ impl TaskOptions {
         T: Any + Send,
     {
         self.local_data = Some(Box::new(data));
+        self
+    }
+
+    /// Set the location the task was build. This is used for wrappers around [`Task`].
+    pub fn build_location(mut self, location: Location) -> Self {
+        self.build_location = location;
         self
     }
 
@@ -258,6 +274,7 @@ impl TaskOptions {
 
         let new_task = Task {
             func: ForceSync::new(Cell::new(self.func)),
+            build_location: self.build_location,
             data: self.data.unwrap_or_else(|| Box::new(())),
             local_data: ForceSync::new(self.local_data.unwrap_or_else(|| Box::new(()))),
             ctx: SyncUnsafeCell::new(ctx),
