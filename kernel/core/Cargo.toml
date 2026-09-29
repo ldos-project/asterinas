@@ -32,7 +32,6 @@ bitflags.workspace = true
 bitvec.workspace = true
 component.workspace = true
 const_format.workspace = true
-controlled.workspace = true
 crossbeam-utils.workspace = true
 cpio-decoder.workspace = true
 device-id.workspace = true
