@@ -48,7 +48,7 @@ use crate::{
     },
     id_alloc::SyncIdAlloc,
     queue::VirtQueue,
-    transport::{ConfigManager, DeviceTransport},
+    transport::DeviceTransport,
 };
 
 /// The number of minor device numbers allocated for each virtio disk,
@@ -281,7 +281,6 @@ impl aster_block::BlockDevice for BlockDevice {
 
 #[derive(Debug)]
 struct DeviceInner {
-    config_manager: ConfigManager<VirtioBlockConfig>,
     features: BlockFeatures,
     queue: SpinLock<VirtQueue>,
     transport: SpinLock<DeviceTransport>,
@@ -351,7 +350,6 @@ impl DeviceInner {
         }
 
         let device = Arc::new(Self {
-            config_manager,
             features,
             queue: SpinLock::new(queue),
             transport: SpinLock::new(device_transport),
