@@ -401,7 +401,7 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
 
 macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
-        if ostd::log_enabled!(ostd::log::Level::Info) {
+        if ostd::log_enabled!(__log_prefix!(), ostd::log::Level::Info) {
             let syscall_name_str = stringify!($syscall_name);
             let pid = $crate::context::current!().pid();
             let tid = {
