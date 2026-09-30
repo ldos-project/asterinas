@@ -67,7 +67,7 @@ const RAID_ADMISSION_PARAM: &str = "raid.admission";
 /// after the block devices have been registered and spawned.
 pub(super) fn init_in_first_kthread() {
     if let Err(err) = setup_raid1_device() {
-        error!("[raid] failed to set up the RAID-1 device: {:?}", err);
+        error!("failed to set up the RAID-1 device: {:?}", err);
     }
 }
 
@@ -113,7 +113,7 @@ fn setup_raid1_device() -> Result<()> {
                 )?
             }
             other => {
-                warn!("[raid] unknown raid.selection '{other}'; falling back to round-robin");
+                warn!("unknown raid.selection '{other}'; falling back to round-robin");
                 selection_policies::RoundRobinPolicy::new(members.clone())?
             }
         };
@@ -141,8 +141,8 @@ fn setup_raid1_device() -> Result<()> {
 
     spawn_worker_thread(raid_id);
 
-    ostd::early_println!(
-        "[raid] RAID-1 device '{}' registered and worker thread spawned",
+    info!(
+        "RAID-1 device '{}' registered and worker thread spawned",
         RAID_DEVICE_NAME
     );
     Ok(())
@@ -161,7 +161,7 @@ fn build_admission(
         None => None,
         Some("heimdall") => Some(setup_heimdall(members)),
         Some(other) => {
-            warn!("[raid] unknown raid.admission '{other}'; admission disabled");
+            warn!("unknown raid.admission '{other}'; admission disabled");
             None
         }
     }
