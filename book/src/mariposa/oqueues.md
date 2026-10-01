@@ -1,3 +1,5 @@
+<<<<<<< conflict 1 of 1
++++++++ otmstxwy a057c34a "Merged documentation"
 # OQueues
 
 OQueues are the primary observation primitive in Mariposa. They provide a way to efficiently expose
@@ -381,3 +383,51 @@ There are 3 general ways to handle this:
 can be CPU local and only needs to hold the productions generated during the period while blocking
 is disallowed. This means that the buffer is much much less likely to overflow because it does not
 depend on things happening on other threads or CPUs.
+
+<hr/>
+
+
+# Observable Queues
+
+**TODO(arthurp)**: This should be a detailed, but accessible description of what OQueues. It should
+    link to the in-source rustdocs for details of the practical API, usage, and implement of
+    OQueues.
+
+
+## Queries and projections
+
+Queries allows selecting the information a user wants from the available OQueues. In it's full
+generality this is a very suffisticated system. This is a matter of future work.
+
+Due to the Rust safety model and the practical limitations of building a system, some level of query
+is *required* even in a preliminary system. This is because all observed values must implement the
+Rust `Copy + Send` traits and for performance we need to limit the amount of data we capture as much
+as possible. 
+
+To do this we support simple queries which we call "projections". Projections take a *reference* to
+the value in the OQueue and must return a value which is `Copy + Send` which is actually observed.
+Projections may also decide to discard some values, so they are not observed at all.
+
+**TODO(arthurp)**: Complete
+
+### Default projections
+
+```rust
+trait OQueueMessage {
+   type DefaultProjection: Copy + Sync;
+   fn default_project(&self) -> Self::DefaultProjection;
+}
+```
+
+The default projection of references to [ORPC Objects](./orpc.md) is their ID. This widens the set
+of objects with derivable default projections by projecting references as a value that can be used
+to corelate references to the same object.
+
+```rust
+impl<T: ORPCObject> OQueueMessage for Arc<T> {
+   type DefaultProjection = Id;
+   fn default_project(&self) -> Self::DefaultProjection {
+      self.id()
+   }
+}
+```

@@ -1,3 +1,5 @@
+<<<<<<< conflict 1 of 1
++++++++ otmstxwy a057c34a "Merged documentation" (no terminating newline)
 
 # Mariposa
 

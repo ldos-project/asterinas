@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use serde::Serialize;
+
 use crate::{net::socket::util::SocketAddr, prelude::*};
 
 /// A vsock socket address.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct VsockSocketAddr {
     pub cid: u32,
     pub port: u32,
