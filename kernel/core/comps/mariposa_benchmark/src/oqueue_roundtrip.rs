@@ -18,8 +18,8 @@ use ostd::{
     arch::read_tsc,
     orpc::{
         oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueue as _, OQueueBase as _,
-            OQueueRef, RefProducer, registry,
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase, ValueProducer,
+            registry,
         },
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
@@ -81,7 +81,7 @@ static BUSY_PROCS: AtomicU32 = AtomicU32::new(0);
 aster_cmdline::define_kv_param!("oqbench.busy_procs", BUSY_PROCS);
 
 /// What the kernel asks the peer to do next; mirrored by `Request` in `oqbench_server`.
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 enum Request {
     /// Time the round trip identified by this sequence number.
     Measure(u64),
@@ -217,7 +217,7 @@ impl Config {
 /// the whole run.
 pub struct OQueueRoundTrip {
     config: Config,
-    producer: RefProducer<Request>,
+    producer: ValueProducer<Request>,
     consumer: Consumer<[u64; 3]>,
     signals: Consumer<PeerSignal>,
 }
@@ -249,16 +249,17 @@ fn setup_queues(
     request_capacity: u32,
     reply_capacity: u32,
 ) -> (
-    RefProducer<Request>,
+    ValueProducer<Request>,
     Consumer<[u64; 3]>,
     Consumer<PeerSignal>,
 ) {
     let request_path = ostd::path!(oqbench.request);
-    let request_oqueue = OQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
+    let request_oqueue =
+        ConsumableOQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
     registry::register(&request_path, &request_oqueue.as_any_oqueue());
     let request_producer = request_oqueue
-        .attach_ref_producer()
-        .expect("the oqbench request OQueue always allows a ref producer");
+        .attach_value_producer()
+        .expect("the oqbench request OQueue always allows a value producer");
 
     let reply_path = ostd::path!(oqbench.reply);
     let reply_oqueue =
@@ -332,7 +333,7 @@ impl OQueueRoundTrip {
 
         let outcome = measure(&config, &producer, &consumer, capture_file)
             .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
-        producer.produce_ref(&Request::ending(&outcome));
+        producer.produce(Request::ending(&outcome));
 
         let _ = wait_for_signal(&signals, PeerSignal::Done)
             .inspect_err(|error| println!("{PREFIX}|error {NAME}: {error}"));
@@ -342,7 +343,7 @@ impl OQueueRoundTrip {
 /// Measures every iteration and captures the samples, or reports why it could not.
 fn measure(
     config: &Config,
-    producer: &RefProducer<Request>,
+    producer: &ValueProducer<Request>,
     consumer: &Consumer<[u64; 3]>,
     capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>,
 ) -> Result<(), Error> {
@@ -376,7 +377,7 @@ fn measure(
 /// and returned as `Err`, which ends the run.
 fn round_trip(
     config: &Config,
-    producer: &RefProducer<Request>,
+    producer: &ValueProducer<Request>,
     consumer: &Consumer<[u64; 3]>,
     timeout: &TimeoutBlocker,
     timeout_jiffies: u64,
@@ -393,7 +394,7 @@ fn round_trip(
     }
 
     let t0 = read_tsc();
-    producer.produce_ref(&Request::Measure(seq));
+    producer.produce(Request::Measure(seq));
     timeout.arm_after(timeout_jiffies);
 
     let (t3, reply) = loop {
