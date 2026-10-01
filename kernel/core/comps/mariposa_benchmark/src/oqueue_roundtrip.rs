@@ -16,7 +16,10 @@ use mariposa_data_capture::DataCaptureFile;
 use ostd::{
     arch::read_tsc,
     orpc::{
-        oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ValueProducer, registry},
+        oqueue::{
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase, ValueProducer,
+            registry,
+        },
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
     ostd_error,
@@ -251,10 +254,10 @@ fn setup_queues(
     let request_path = ostd::path!(oqbench.request);
     let request_oqueue =
         ConsumableOQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
-    registry::register_producible(&request_path, &request_oqueue);
+    registry::register(&request_path, &request_oqueue.as_any_oqueue());
     let request_producer = request_oqueue
         .attach_value_producer()
-        .expect("the oqbench request OQueue always allows a ref producer");
+        .expect("the oqbench request OQueue always allows a value producer");
 
     let reply_path = ostd::path!(oqbench.reply);
     let reply_oqueue =

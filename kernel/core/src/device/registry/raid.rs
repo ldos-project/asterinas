@@ -265,7 +265,7 @@ fn setup_userspace_policy() -> (
     registry::register(&request_path, &request_oqueue.as_any_oqueue());
     let request_producer = request_oqueue
         .attach_value_producer()
-        .expect("the RAID-1 selection request OQueue always allows a ref producer");
+        .expect("the RAID-1 selection request OQueue always allows a value producer");
 
     let decision_path = path!(raid1.decision);
     let decision_oqueue =
