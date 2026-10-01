@@ -14,7 +14,15 @@ use options::{
     Congestion, DeferAccept, Inq, KeepCnt, KeepIdle, KeepIntvl, MaxSegment, NoDelay, SynCnt,
     UserTimeout, WindowClamp,
 };
-use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
+use ostd::{
+    orpc::framework::{
+        object::{Metadata, ObjectId, OrpcObject},
+        projection::DefaultProjection,
+    },
+    sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard},
+    trace_structured_data,
+};
+use serde::Serialize;
 use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
@@ -24,6 +32,7 @@ use super::{
     options::{IpOptionSet, SetIpLevelOption},
 };
 use crate::{
+    event::EventContext,
     events::IoEvents,
     fs::{
         file::{FileCommon, FileLike, StatusFlags},
@@ -70,6 +79,19 @@ pub struct StreamSocket {
 
     pollee: Pollee,
     common: FileCommon,
+    orpc_id: ObjectId,
+}
+
+impl Metadata for StreamSocket {}
+
+impl OrpcObject for StreamSocket {
+    fn id(&self) -> ostd::orpc::framework::object::ObjectId {
+        self.orpc_id
+    }
+
+    fn metadata(&self) -> &dyn ostd::orpc::framework::object::Metadata {
+        self
+    }
 }
 
 enum State {
@@ -123,6 +145,7 @@ impl StreamSocket {
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
+            orpc_id: ObjectId::new_tagged("TC"),
         })
     }
 
@@ -180,6 +203,7 @@ impl StreamSocket {
             timeouts: listener_timeouts.clone(),
             pollee,
             common: FileCommon::new(SockFs::new_path(), status_flags),
+            orpc_id: ObjectId::new_tagged("TL"),
         })
     }
 
@@ -499,14 +523,61 @@ impl Socket for StreamSocket {
         init_stream.bind(&endpoint, self.family, can_reuse)
     }
 
-    fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
-        let remote_endpoint = socket_addr.try_into()?;
-
-        if let Some(result) = self.start_connect(&remote_endpoint) {
-            return result;
+    // IDEALLY this would replace all the macros insize the function.
+    // #[trace_structured_data]
+    fn connect<'a>(&'a self, socket_addr: SocketAddr) -> Result<()> {
+        struct ConnectCall<'a> {
+            self_: &'a StreamSocket,
+            socket_addr: &'a SocketAddr,
         }
 
-        let send_timeout = self.timeouts.send_timeout();
+        #[derive(Copy, Clone, Serialize)]
+        struct ConnectCallProjected {
+            self_: ObjectId,
+            socket_addr: <SocketAddr as DefaultProjection>::Projected,
+            context: EventContext,
+        }
+
+        impl<'a> DefaultProjection for ConnectCall<'a> {
+            type Projected = ConnectCallProjected;
+
+            fn project(&self) -> Self::Projected {
+                Self::Projected {
+                    self_: self.self_.id(),
+                    socket_addr: self.socket_addr.project(),
+                    context: Default::default(),
+                }
+            }
+        }
+
+        trace_structured_data!(
+            { kernel.net.socket.ip.stream.Socket.connect.call },
+            ConnectCallProjected,
+            ConnectCall {
+                self_: self,
+                socket_addr: &socket_addr,
+            }
+            .project()
+        );
+
+        // WITH A MACRO:
+        //
+        // trace_call!(
+        //     { kernel.net.socket.ip.stream.Socket.connect },
+        //     {
+        //         self: &StreamSocket,
+        //         socket_addr: SocketAddr,
+        //     }
+        // );
+
+        let ret = (|| {
+            let remote_endpoint = socket_addr.try_into()?;
+
+            if let Some(result) = self.start_connect(&remote_endpoint) {
+                return result;
+            }
+
+            let send_timeout = self.timeouts.send_timeout();
         self.wait_events(IoEvents::OUT, send_timeout.as_ref(), || {
             self.check_connect()
         })
@@ -514,6 +585,53 @@ impl Socket for StreamSocket {
             Errno::ETIME => Error::with_message(Errno::EINPROGRESS, "the socket timeout expired"),
             _ => err,
         })
+        })();
+
+        struct ConnectReturn<'a> {
+            self_: &'a StreamSocket,
+            ret: &'a Result<()>,
+        }
+
+        #[derive(Copy, Clone, Serialize)]
+        struct ConnectReturnProjected {
+            self_: ObjectId,
+            ret: core::result::Result<(), ()>,
+            context: EventContext,
+        }
+
+        impl<'a> DefaultProjection for ConnectReturn<'a> {
+            type Projected = ConnectReturnProjected;
+
+            fn project(&self) -> Self::Projected {
+                Self::Projected {
+                    self_: self.self_.id(),
+                    ret: match self.ret {
+                        Ok(v) => Ok(*v),
+                        Err(_) => Err(()),
+                    },
+                    context: Default::default(),
+                }
+            }
+        }
+
+        trace_structured_data!(
+            { kernel.net.socket.ip.stream.Socket.connect.ret },
+            ConnectReturnProjected,
+            ConnectReturn {
+                self_: self,
+                ret: &ret
+            }
+            .project()
+        );
+
+        // WITH A MACRO:
+        //
+        // trace_ret!(
+        //     { kernel.net.socket.ip.stream.Socket.connect },
+        //     { self: &StreamSocket } -> Result<()>
+        // );
+
+        ret
     }
 
     fn listen(&self, backlog: usize) -> Result<()> {

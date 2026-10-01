@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use serde::Serialize;
+
 use crate::prelude::*;
 
 /// A set of group IDs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct GroupIdSet(u32);
 
 impl GroupIdSet {

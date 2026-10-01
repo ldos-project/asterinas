@@ -104,6 +104,8 @@ use alloc::{
     vec,
     vec::Vec,
 };
+#[cfg(not(baseline_asterinas))]
+use serde::Serialize;
 use core::{
     any::TypeId,
     cell::Cell,

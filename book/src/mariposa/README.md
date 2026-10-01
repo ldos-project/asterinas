@@ -1,4 +1,3 @@
-
 # Mariposa
 
 *(This document assumes the you have a basic understanding of Rust and kernel development. For
