@@ -11,7 +11,6 @@ use hashbrown::{
 use log::warn;
 use serde::Serialize;
 
-pub use super::export::Project;
 use super::{
     ConsumableOQueueRef, OQueueBase as _,
     export::{
@@ -29,6 +28,15 @@ use crate::{
 };
 
 type RegistryMap = HashMap<TypeId, PathMap>;
+
+/// Supplies the value exported for an OQueue message when using [`register_with`].
+pub trait DefaultProjection {
+    /// The projected value type written to the export stream.
+    type Output;
+
+    /// Returns the default projection of this message.
+    fn default_projection(&self) -> Self::Output;
+}
 
 /// A mapping from Paths to OQueues for a specific type. The type is erased and calling methods at
 /// the wrong type will panic.
@@ -133,9 +141,9 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
 /// `Serialize` implementation (the whole message is streamed).
 ///
 /// This is the common case for exportable queues: the message type just needs
-/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use [`register_with`]
-/// to stream a projected summary instead, or [`register_no_export`] for queues that must not be
-/// exported.
+/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use
+/// [`register_with_projection`] to provide a projection, [`register_with`] to use the message
+/// type's [`DefaultProjection`], or [`register_no_export`] for queues that must not be exported.
 pub fn register<T: Copy + Send + Serialize + 'static>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
@@ -144,19 +152,34 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
     insert_export(path, make_export(oqueue));
 }
 
+/// Registers an OQueue at `path` and exports it to userspace using `T`'s default projection.
+///
+/// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
+/// [`register_with_projection`] to provide a different projection.
+pub fn register_with<T>(
+    path: &Path,
+    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
+) where
+    T: DefaultProjection + Send + 'static,
+    T::Output: Copy + Send + Serialize + 'static,
+{
+    register_with_projection(path, oqueue, T::default_projection);
+}
+
 /// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection
-/// [`Project::F`].
+/// `project: Fn(&T) -> U`.
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
 /// extracted from it.
-pub fn register_with<T, U>(
+pub fn register_with_projection<T, U, F>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: Project<T, U>,
+    project: F,
 ) where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
+    F: Fn(&T) -> U + Send + Sync + 'static,
 {
     ensure_registered(path, oqueue);
     insert_export(path, make_export_with(oqueue, project));
@@ -167,8 +190,8 @@ pub fn register_with<T, U>(
 /// `produce` file) and send values of type `T` into the queue by writing their CBOR encoding, and
 /// a userspace reader can attach a consumer.
 ///
-/// Unlike [`register`]/[`register_with`], this is for produce and consume in userspace; only a
-/// [`ConsumableOQueueRef`] can be passed.
+/// Unlike [`register`], [`register_with`], and [`register_with_projection`], this is for produce and
+/// consume in userspace; only a [`ConsumableOQueueRef`] can be passed.
 ///
 /// # Panics
 ///
@@ -506,11 +529,7 @@ mod test {
         let path = path!(observe.proj[1]);
         let queue = ConsumableOQueueRef::<Sample>::new(16, path.clone());
         // Export only the inner value via a projection; `Sample` itself need not be `Serialize`.
-        register_with(
-            &path,
-            &queue.as_any_oqueue(),
-            Project::F(Arc::new(|sample: &Sample| sample.0)),
-        );
+        register_with_projection(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
 
         let handle = lookup_export(&path).unwrap();
         let observer = handle.attach_strong_observer().unwrap();

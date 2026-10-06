@@ -29,21 +29,16 @@ use super::{
     StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
 };
 
-/// A projection from an OQueue message to the value exported to userspace.
-pub enum Project<T, U> {
-    /// Applies a function to each message before it is serialized.
-    F(Arc<dyn Fn(&T) -> U + Send + Sync + 'static>),
-}
-
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
 ///
 /// Stored in the export registry so consumers can enumerate and read queues by
 /// [`Path`](crate::orpc::path::Path) without naming the message type. An export can independently
 /// carry an observe attachment, a produce attachment, and a consume attachment:
-/// [`register`](super::registry::register) / [`register_with`](super::registry::register_with) add
-/// an observe attachment, and [`register_producible`](super::registry::register_producible) adds a
-/// produce attachment and a consume attachment. This is a factory: attaching mints a fresh
-/// per-reader (or per-writer) handle.
+/// [`register`](super::registry::register), [`register_with`](super::registry::register_with), and
+/// [`register_with_projection`](super::registry::register_with_projection) add an observe
+/// attachment, and [`register_producible`](super::registry::register_producible) adds a produce
+/// attachment and a consume attachment. This is a factory: attaching mints a fresh per-reader (or
+/// per-writer) handle.
 pub trait OQueueExport: Send + Sync {
     /// Returns the name of the message type, for use in file metadata.
     fn type_name(&self) -> &'static str;
@@ -315,17 +310,18 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 }
 
 /// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
-/// messages are streamed through the caller-supplied [`Project::F`], where `U` is the
-/// `Copy + Serialize` value placed in the stream.
-pub(super) fn make_export_with<T, U>(
+/// messages are streamed through the caller-supplied projection, where `U` is the `Copy + Serialize`
+/// value placed in the stream.
+pub(super) fn make_export_with<T, U, F>(
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: Project<T, U>,
+    project: F,
 ) -> OQueueExportHandle<T>
 where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
+    F: Fn(&T) -> U + Send + Sync + 'static,
 {
-    let Project::F(project) = project;
+    let project = Arc::new(project);
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
