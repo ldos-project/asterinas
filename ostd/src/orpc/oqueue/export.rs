@@ -29,6 +29,12 @@ use super::{
     StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
 };
 
+/// A projection from an OQueue message to the value exported to userspace.
+pub enum Project<T, U> {
+    /// Applies a function to each message before it is serialized.
+    F(Arc<dyn Fn(&T) -> U + Send + Sync + 'static>),
+}
+
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
 ///
 /// Stored in the export registry so consumers can enumerate and read queues by
@@ -309,18 +315,17 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 }
 
 /// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
-/// messages are streamed through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is
-/// the `Copy + Serialize` value placed in the stream.
-pub(super) fn make_export_with<T, U, F>(
+/// messages are streamed through the caller-supplied [`Project::F`], where `U` is the
+/// `Copy + Serialize` value placed in the stream.
+pub(super) fn make_export_with<T, U>(
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: F,
+    project: Project<T, U>,
 ) -> OQueueExportHandle<T>
 where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
-    F: Fn(&T) -> U + Send + Sync + 'static,
 {
-    let project = Arc::new(project);
+    let Project::F(project) = project;
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
