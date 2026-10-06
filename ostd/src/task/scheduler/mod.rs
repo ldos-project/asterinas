@@ -119,12 +119,14 @@ pub(crate) fn init() {
         // Export the queue so it appears under the OQueue filesystem (e.g. at
         // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
         // dropped rather than blocking the scheduler.
-        registry::register_with(&path, &oqueue.as_any_oqueue(), |event: &SchedulingEvent| {
-            SchedulingEventView {
+        registry::register_with(
+            &path,
+            &oqueue.as_any_oqueue(),
+            registry::Project::F(Arc::new(|event: &SchedulingEvent| SchedulingEventView {
                 task: Arc::as_ptr(&event.task) as *const () as usize as u64,
                 kind: event.kind,
-            }
-        });
+            })),
+        );
 
         oqueue.attach_ref_producer().unwrap()
     });

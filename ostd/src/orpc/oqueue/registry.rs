@@ -11,6 +11,7 @@ use hashbrown::{
 use log::warn;
 use serde::Serialize;
 
+pub use super::export::Project;
 use super::{
     ConsumableOQueueRef, OQueueBase as _,
     export::{
@@ -144,19 +145,18 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
 }
 
 /// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection
-/// `project: Fn(&T) -> U`.
+/// [`Project::F`].
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
 /// extracted from it.
-pub fn register_with<T, U, F>(
+pub fn register_with<T, U>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: F,
+    project: Project<T, U>,
 ) where
     T: Send + 'static,
     U: Copy + Send + Serialize + 'static,
-    F: Fn(&T) -> U + Send + Sync + 'static,
 {
     ensure_registered(path, oqueue);
     insert_export(path, make_export_with(oqueue, project));
@@ -506,7 +506,11 @@ mod test {
         let path = path!(observe.proj[1]);
         let queue = ConsumableOQueueRef::<Sample>::new(16, path.clone());
         // Export only the inner value via a projection; `Sample` itself need not be `Serialize`.
-        register_with(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
+        register_with(
+            &path,
+            &queue.as_any_oqueue(),
+            Project::F(Arc::new(|sample: &Sample| sample.0)),
+        );
 
         let handle = lookup_export(&path).unwrap();
         let observer = handle.attach_strong_observer().unwrap();

@@ -19,7 +19,7 @@ use aster_raid::{Raid1Device, Raid1DeviceError};
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
 #[cfg(not(baseline_asterinas))]
-use ostd::path;
+use ostd::{orpc::oqueue::export::Project, path};
 use spin::Once;
 
 use crate::{
@@ -215,7 +215,9 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
         registry::register_with(
             &path!(raid1.bio_completion[{ index }]),
             &virtio.bio_completion_oqueue().as_any_oqueue(),
-            |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
+            Project::F(Arc::new(|stats: &BlockDeviceCompletionStats| {
+                BioCompletionStatsMessage::from(*stats)
+            })),
         );
     }
 }
