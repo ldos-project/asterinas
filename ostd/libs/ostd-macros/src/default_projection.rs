@@ -30,9 +30,9 @@ fn expand_opaque(name: &syn::Ident, generics: &syn::Generics) -> proc_macro2::To
 
     quote! {
         impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Output = usize;
+            type Projection = usize;
 
-            fn default_projection(&self) -> Self::Output {
+            fn default_projection(&self) -> Self::Projection {
                 ::core::ptr::from_ref(self) as *const () as usize
             }
         }
@@ -55,7 +55,6 @@ fn expand_struct(
     let mut tuple_fields = Vec::new();
     let mut tuple_initializers = Vec::new();
     let mut projected_types = Vec::new();
-
     match &fields {
         Fields::Named(fields) => {
             for field in &fields.named {
@@ -66,9 +65,8 @@ fn expand_struct(
                     &mut projection_bounds,
                     &default_projection,
                 )?;
-                let output_param = format_ident!("__ProjectionField{}", projected_types.len());
-                projected_types.push(projected_ty);
-                named_fields.push(quote!(#ident: #output_param));
+                projected_types.push(projected_ty.clone());
+                named_fields.push(quote!(#ident: #projected_ty));
                 named_initializers.push(quote!(#ident: #initializer));
             }
         }
@@ -81,26 +79,24 @@ fn expand_struct(
                     &mut projection_bounds,
                     &default_projection,
                 )?;
-                let output_param = format_ident!("__ProjectionField{}", projected_types.len());
-                projected_types.push(projected_ty);
-                tuple_fields.push(output_param);
+                projected_types.push(projected_ty.clone());
+                tuple_fields.push(projected_ty);
                 tuple_initializers.push(initializer);
             }
         }
         Fields::Unit => {}
     }
 
-    let output_params = (0..projected_types.len())
-        .map(|index| format_ident!("__ProjectionField{index}"))
-        .collect::<Vec<_>>();
-    let helper_generics = generic_arguments(&output_params);
-    let output_type = generic_arguments(&projected_types);
+    let helper_generics = projection_generics(generics, &projection_bounds, &projected_types);
+    let serde_bound = serialize_bounds(&projected_types);
     let (impl_generics, type_generics, where_clause) = projection_bounds.split_for_impl();
+    let (helper_impl_generics, helper_type_generics, helper_where_clause) =
+        helper_generics.split_for_impl();
 
     let (projection_definition, projection_construction) = match &fields {
         Fields::Named(_) => (
             quote! {
-                #visibility struct #projection_name #helper_generics {
+                #visibility struct #projection_name #helper_generics #helper_where_clause {
                     #(#named_fields,)*
                 }
             },
@@ -108,32 +104,37 @@ fn expand_struct(
         ),
         Fields::Unnamed(_) => (
             quote! {
-                #visibility struct #projection_name #helper_generics (
+                #visibility struct #projection_name #helper_generics #helper_where_clause (
                     #(#tuple_fields,)*
                 );
             },
             quote!(#projection_name(#(#tuple_initializers,)*)),
         ),
         Fields::Unit => (
-            quote!(#visibility struct #projection_name;),
+            quote!(#visibility struct #projection_name #helper_generics #helper_where_clause;),
             quote!(#projection_name),
         ),
     };
-    let output_type = if projected_types.is_empty() {
-        quote!(#projection_name)
-    } else {
-        quote!(#projection_name #output_type)
-    };
+    let output_type = quote!(#projection_name #helper_type_generics);
 
     Ok(quote! {
         #[doc(hidden)]
-        #[derive(Clone, Copy, ::serde::Serialize)]
+        #[derive(::serde::Serialize)]
+        #[serde(bound(serialize = #serde_bound))]
         #projection_definition
 
-        impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Output = #output_type;
+        impl #helper_impl_generics ::core::clone::Clone for #projection_name #helper_type_generics #helper_where_clause {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
 
-            fn default_projection(&self) -> Self::Output {
+        impl #helper_impl_generics ::core::marker::Copy for #projection_name #helper_type_generics #helper_where_clause {}
+
+        impl #impl_generics #default_projection for #name #type_generics #where_clause {
+            type Projection = #output_type;
+
+            fn default_projection(&self) -> Self::Projection {
                 #projection_construction
             }
         }
@@ -164,9 +165,9 @@ fn expand_enum(
                 });
             }
             Fields::Unnamed(fields) => {
-                let mut output_params = Vec::new();
                 let mut bindings = Vec::new();
-                let mut projected_fields = Vec::new();
+                let mut projected_field_types = Vec::new();
+                let mut projected_field_values = Vec::new();
 
                 for (index, field) in fields.unnamed.iter().enumerate() {
                     let binding = format_ident!("__field_{index}");
@@ -176,24 +177,23 @@ fn expand_enum(
                         &mut projection_bounds,
                         &default_projection,
                     )?;
-                    let output_param = format_ident!("__ProjectionField{}", projected_types.len());
-                    projected_types.push(projected_ty);
-                    output_params.push(output_param);
+                    projected_types.push(projected_ty.clone());
+                    projected_field_types.push(projected_ty);
                     bindings.push(binding);
-                    projected_fields.push(initializer);
+                    projected_field_values.push(initializer);
                 }
 
                 projection_variants.push(quote!(
-                    #variant_name(#(#output_params),*)
+                    #variant_name(#(#projected_field_types),*)
                 ));
                 match_arms.push(quote! {
                     Self::#variant_name(#(#bindings),*) => {
-                        #projection_name::#variant_name(#(#projected_fields),*)
+                        #projection_name::#variant_name(#(#projected_field_values),*)
                     }
                 });
             }
             Fields::Named(fields) => {
-                let mut output_fields = Vec::new();
+                let mut projected_fields = Vec::new();
                 let mut bindings = Vec::new();
                 let mut initializers = Vec::new();
 
@@ -206,15 +206,14 @@ fn expand_enum(
                         &mut projection_bounds,
                         &default_projection,
                     )?;
-                    let output_param = format_ident!("__ProjectionField{}", projected_types.len());
-                    projected_types.push(projected_ty);
-                    output_fields.push(quote!(#ident: #output_param));
+                    projected_types.push(projected_ty.clone());
+                    projected_fields.push(quote!(#ident: #projected_ty));
                     bindings.push(quote!(#ident: #binding));
                     initializers.push(quote!(#ident: #initializer));
                 }
 
                 projection_variants.push(quote! {
-                    #variant_name { #(#output_fields,)* }
+                    #variant_name { #(#projected_fields,)* }
                 });
                 match_arms.push(quote! {
                     Self::#variant_name { #(#bindings,)* } => {
@@ -225,29 +224,33 @@ fn expand_enum(
         }
     }
 
-    let output_params = (0..projected_types.len())
-        .map(|index| format_ident!("__ProjectionField{index}"))
-        .collect::<Vec<_>>();
-    let helper_generics = generic_arguments(&output_params);
-    let output_type = generic_arguments(&projected_types);
-    let output_type = if projected_types.is_empty() {
-        quote!(#projection_name)
-    } else {
-        quote!(#projection_name #output_type)
-    };
+    let helper_generics = projection_generics(generics, &projection_bounds, &projected_types);
+    let serde_bound = serialize_bounds(&projected_types);
     let (impl_generics, type_generics, where_clause) = projection_bounds.split_for_impl();
+    let (helper_impl_generics, helper_type_generics, helper_where_clause) =
+        helper_generics.split_for_impl();
+    let output_type = quote!(#projection_name #helper_type_generics);
 
     Ok(quote! {
         #[doc(hidden)]
-        #[derive(Clone, Copy, ::serde::Serialize)]
-        #visibility enum #projection_name #helper_generics {
+        #[derive(::serde::Serialize)]
+        #[serde(bound(serialize = #serde_bound))]
+        #visibility enum #projection_name #helper_generics #helper_where_clause {
             #(#projection_variants,)*
         }
 
-        impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Output = #output_type;
+        impl #helper_impl_generics ::core::clone::Clone for #projection_name #helper_type_generics #helper_where_clause {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
 
-            fn default_projection(&self) -> Self::Output {
+        impl #helper_impl_generics ::core::marker::Copy for #projection_name #helper_type_generics #helper_where_clause {}
+
+        impl #impl_generics #default_projection for #name #type_generics #where_clause {
+            type Projection = #output_type;
+
+            fn default_projection(&self) -> Self::Projection {
                 match self {
                     #(#match_arms,)*
                 }
@@ -256,12 +259,127 @@ fn expand_enum(
     })
 }
 
-fn generic_arguments<T: quote::ToTokens>(arguments: &[T]) -> proc_macro2::TokenStream {
-    if arguments.is_empty() {
-        quote!()
-    } else {
-        quote!(<#(#arguments),*>)
+fn projection_generics(
+    source: &syn::Generics,
+    bounds: &syn::Generics,
+    projected_types: &[proc_macro2::TokenStream],
+) -> syn::Generics {
+    use syn::{GenericParam, TypeParamBound};
+
+    fn contains_ident(tokens: proc_macro2::TokenStream, ident: &syn::Ident) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(token_ident) => token_ident == *ident,
+            proc_macro2::TokenTree::Group(group) => contains_ident(group.stream(), ident),
+            _ => false,
+        })
     }
+
+    let all_param_idents = source
+        .params
+        .iter()
+        .map(|param| match param {
+            GenericParam::Type(param) => param.ident.clone(),
+            GenericParam::Lifetime(param) => param.lifetime.ident.clone(),
+            GenericParam::Const(param) => param.ident.clone(),
+        })
+        .collect::<Vec<_>>();
+    let used_param_idents = all_param_idents
+        .iter()
+        .filter(|ident| {
+            projected_types
+                .iter()
+                .any(|ty| contains_ident(ty.clone(), ident))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut result = source.clone();
+    result.params = source
+        .params
+        .iter()
+        .filter(|param| {
+            let ident = match param {
+                GenericParam::Type(param) => &param.ident,
+                GenericParam::Lifetime(param) => &param.lifetime.ident,
+                GenericParam::Const(param) => &param.ident,
+            };
+            used_param_idents.contains(ident)
+        })
+        .cloned()
+        .map(|mut param| {
+            match &mut param {
+                GenericParam::Type(param) => {
+                    param.bounds = param
+                        .bounds
+                        .iter()
+                        .filter(|bound| {
+                            matches!(
+                                bound,
+                                TypeParamBound::Trait(bound)
+                                    if matches!(
+                                        bound.modifier,
+                                        syn::TraitBoundModifier::Maybe(_)
+                                    )
+                                        && bound.path.is_ident("Sized")
+                            )
+                        })
+                        .cloned()
+                        .collect();
+                    param.colon_token = (!param.bounds.is_empty()).then(Default::default);
+                    param.eq_token = None;
+                    param.default = None;
+                }
+                GenericParam::Lifetime(param) => param.bounds.clear(),
+                GenericParam::Const(param) => {
+                    param.eq_token = None;
+                    param.default = None;
+                }
+            }
+            param
+        })
+        .collect();
+
+    let base_predicate_count = source
+        .where_clause
+        .as_ref()
+        .map_or(0, |where_clause| where_clause.predicates.len());
+    let source_predicates = source
+        .where_clause
+        .iter()
+        .flat_map(|where_clause| &where_clause.predicates)
+        .filter(|predicate| {
+            let tokens = quote!(#predicate);
+            all_param_idents.iter().all(|ident| {
+                used_param_idents.contains(ident) || !contains_ident(tokens.clone(), ident)
+            })
+        });
+    let projection_predicates = bounds
+        .where_clause
+        .iter()
+        .flat_map(|where_clause| &where_clause.predicates)
+        .skip(base_predicate_count);
+    let predicates = source_predicates
+        .chain(projection_predicates)
+        .cloned()
+        .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>();
+    result.where_clause = if predicates.is_empty() {
+        None
+    } else {
+        Some(syn::WhereClause {
+            where_token: Default::default(),
+            predicates,
+        })
+    };
+    result
+}
+
+fn serialize_bounds(projected_types: &[proc_macro2::TokenStream]) -> syn::LitStr {
+    let predicates = projected_types
+        .iter()
+        .map(|ty| format!("{}: ::serde::Serialize", quote!(#ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    syn::LitStr::new(&predicates, proc_macro2::Span::call_site())
 }
 
 fn project_field(
@@ -304,11 +422,11 @@ fn project_field(
             .predicates
             .push(parse_quote!(#ty: #default_projection));
         generics.make_where_clause().predicates.push(parse_quote!(
-            <#ty as #default_projection>::Output:
+            <#ty as #default_projection>::Projection:
                 ::core::marker::Copy + ::core::marker::Send + ::serde::Serialize + 'static
         ));
         Ok((
-            quote!(<#ty as #default_projection>::Output),
+            quote!(<#ty as #default_projection>::Projection),
             quote!(<#ty as #default_projection>::default_projection(#value)),
         ))
     }

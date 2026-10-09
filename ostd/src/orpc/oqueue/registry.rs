@@ -37,19 +37,19 @@ type RegistryMap = HashMap<TypeId, PathMap>;
 /// `#[projection(opaque)]`.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
-    type Output;
+    type Projection;
 
     /// Returns the default projection of this message.
-    fn default_projection(&self) -> Self::Output;
+    fn default_projection(&self) -> Self::Projection;
 }
 
 impl<T> DefaultProjection for T
 where
     T: Pod,
 {
-    type Output = Self;
+    type Projection = Self;
 
-    fn default_projection(&self) -> Self::Output {
+    fn default_projection(&self) -> Self::Projection {
         *self
     }
 }
@@ -175,7 +175,7 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
 pub fn register_with<T>(path: &Path, oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>)
 where
     T: DefaultProjection + Send + 'static,
-    T::Output: Copy + Send + Serialize + 'static,
+    T::Projection: Copy + Send + Serialize + 'static,
 {
     register_with_projection(path, oqueue, T::default_projection);
 }
@@ -344,9 +344,9 @@ mod test {
     struct SpecialProjection(u32);
 
     impl DefaultProjection for SpecialProjection {
-        type Output = SpecialProjectionOutput;
+        type Projection = SpecialProjectionOutput;
 
-        fn default_projection(&self) -> Self::Output {
+        fn default_projection(&self) -> Self::Projection {
             SpecialProjectionOutput(self.0 + 1)
         }
     }
