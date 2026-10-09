@@ -421,10 +421,6 @@ fn project_field(
             .make_where_clause()
             .predicates
             .push(parse_quote!(#ty: #default_projection));
-        generics.make_where_clause().predicates.push(parse_quote!(
-            <#ty as #default_projection>::Projection:
-                ::core::marker::Copy + ::core::marker::Send + ::serde::Serialize + 'static
-        ));
         Ok((
             quote!(<#ty as #default_projection>::Projection),
             quote!(<#ty as #default_projection>::default_projection(#value)),

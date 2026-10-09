@@ -3,6 +3,7 @@
 //! Default projections of OQueue messages for export.
 
 use ostd_pod::Pod;
+use serde::Serialize;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
 ///
@@ -11,7 +12,7 @@ use ostd_pod::Pod;
 /// `#[projection(opaque)]`.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
-    type Projection;
+    type Projection: Copy + Send + Serialize + 'static;
 
     /// Returns the default projection of this message.
     fn default_projection(&self) -> Self::Projection;
@@ -19,7 +20,7 @@ pub trait DefaultProjection {
 
 impl<T> DefaultProjection for T
 where
-    T: Pod,
+    T: Pod + Send + Serialize + 'static,
 {
     type Projection = Self;
 
