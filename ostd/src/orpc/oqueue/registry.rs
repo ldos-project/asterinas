@@ -9,11 +9,11 @@ use hashbrown::{
     hash_map::{DefaultHashBuilder, EntryRef},
 };
 use log::warn;
-pub use ostd_pod::Pod;
 use serde::Serialize;
 
 use super::{
     ConsumableOQueueRef, OQueueBase as _,
+    default_projection::DefaultProjection,
     export::{
         OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
     },
@@ -29,30 +29,6 @@ use crate::{
 };
 
 type RegistryMap = HashMap<TypeId, PathMap>;
-
-/// Supplies the value exported for an OQueue message when using [`register_with`].
-///
-/// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
-/// values project to themselves; mark fields that should be opaque identifiers with
-/// `#[projection(opaque)]`.
-pub trait DefaultProjection {
-    /// The projected value type written to the export stream.
-    type Projection;
-
-    /// Returns the default projection of this message.
-    fn default_projection(&self) -> Self::Projection;
-}
-
-impl<T> DefaultProjection for T
-where
-    T: Pod,
-{
-    type Projection = Self;
-
-    fn default_projection(&self) -> Self::Projection {
-        *self
-    }
-}
 
 /// A mapping from Paths to OQueues for a specific type. The type is erased and calling methods at
 /// the wrong type will panic.
@@ -332,61 +308,6 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 mod test {
     use super::*;
     use crate::{orpc::oqueue::ConsumableOQueue as _, path, path_pattern, prelude::*};
-
-    #[derive(crate::DefaultProjection)]
-    struct ProjectedLeaf {
-        value: u32,
-    }
-
-    #[derive(Clone, Copy, serde::Serialize)]
-    struct SpecialProjectionOutput(u32);
-
-    struct SpecialProjection(u32);
-
-    impl DefaultProjection for SpecialProjection {
-        type Projection = SpecialProjectionOutput;
-
-        fn default_projection(&self) -> Self::Projection {
-            SpecialProjectionOutput(self.0 + 1)
-        }
-    }
-
-    #[derive(crate::DefaultProjection)]
-    struct ProjectedMessage {
-        leaf: ProjectedLeaf,
-        #[projection(opaque)]
-        ref_type: &'static str,
-        special: SpecialProjection,
-    }
-
-    #[ktest]
-    fn default_projection_serializes_nested_custom_and_opaque_fields() {
-        let message = ProjectedMessage {
-            leaf: ProjectedLeaf { value: 0x1234_5678 },
-            ref_type: "opaque",
-            special: SpecialProjection(41),
-        };
-        let projected = message.default_projection();
-
-        let mut actual = Vec::new();
-        Serialize::serialize(
-            &projected,
-            &mut minicbor_serde::Serializer::new(&mut actual),
-        )
-        .unwrap();
-
-        let mut decoder = minicbor::Decoder::new(&actual);
-        assert_eq!(decoder.map().unwrap(), Some(3));
-        assert_eq!(decoder.str().unwrap(), "leaf");
-        assert_eq!(decoder.map().unwrap(), Some(1));
-        assert_eq!(decoder.str().unwrap(), "value");
-        assert_eq!(decoder.u32().unwrap(), message.leaf.value);
-        assert_eq!(decoder.str().unwrap(), "ref_type");
-        decoder.u64().unwrap();
-        assert_eq!(decoder.str().unwrap(), "special");
-        assert_eq!(decoder.u32().unwrap(), 42);
-        assert_eq!(decoder.position(), actual.len());
-    }
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())
