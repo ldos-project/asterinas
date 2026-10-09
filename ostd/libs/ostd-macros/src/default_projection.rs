@@ -47,130 +47,91 @@ fn expand_struct(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let default_projection: syn::Path =
         parse_quote!(::ostd::orpc::oqueue::registry::DefaultProjection);
-    let pod_projection_value: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::registry::PodProjectionValue);
-    let opaque_projection_value: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::registry::OpaqueProjectionValue);
     let projection_name = format_ident!("{}DefaultProjection", name);
-    let mut projection_generics = generics.clone();
+    let mut projection_bounds = generics.clone();
 
-    let mut projection_fields = Vec::new();
-    let mut field_initializers = Vec::new();
-    let mut serialization_fields = Vec::new();
-    let serialization = match &fields {
-        Fields::Named(named) => {
-            for field in &named.named {
+    let mut named_fields = Vec::new();
+    let mut named_initializers = Vec::new();
+    let mut tuple_fields = Vec::new();
+    let mut tuple_initializers = Vec::new();
+    let mut projected_types = Vec::new();
+
+    match &fields {
+        Fields::Named(fields) => {
+            for field in &fields.named {
                 let ident = field.ident.as_ref().unwrap();
                 let (projected_ty, initializer) = project_field(
                     field,
                     quote!(&self.#ident),
-                    &mut projection_generics,
-                    &pod_projection_value,
-                    &opaque_projection_value,
+                    &mut projection_bounds,
+                    &default_projection,
                 )?;
-                projection_fields.push(quote! {
-                    #ident: #projected_ty
-                });
-                field_initializers.push(quote!(#ident: #initializer));
-                let key = ident.to_string();
-                serialization_fields.push(quote! {
-                    ::serde::ser::SerializeStruct::serialize_field(
-                        &mut __state,
-                        #key,
-                        &self.#ident,
-                    )?;
-                });
-            }
-            let count = named.named.len();
-            quote! {
-                let mut __state = ::serde::Serializer::serialize_struct(
-                    serializer,
-                    stringify!(#projection_name),
-                    #count,
-                )?;
-                #(#serialization_fields)*
-                ::serde::ser::SerializeStruct::end(__state)
+                let output_param = format_ident!("__ProjectionField{}", projected_types.len());
+                projected_types.push(projected_ty);
+                named_fields.push(quote!(#ident: #output_param));
+                named_initializers.push(quote!(#ident: #initializer));
             }
         }
-        Fields::Unnamed(unnamed) => {
-            for (index, field) in unnamed.unnamed.iter().enumerate() {
+        Fields::Unnamed(fields) => {
+            for (index, field) in fields.unnamed.iter().enumerate() {
                 let member = Index::from(index);
-                let field_name = format_ident!("field_{index}");
                 let (projected_ty, initializer) = project_field(
                     field,
                     quote!(&self.#member),
-                    &mut projection_generics,
-                    &pod_projection_value,
-                    &opaque_projection_value,
+                    &mut projection_bounds,
+                    &default_projection,
                 )?;
-                projection_fields.push(quote! {
-                    #field_name: #projected_ty
-                });
-                field_initializers.push(quote!(#field_name: #initializer));
-                serialization_fields.push(quote! {
-                    ::serde::ser::SerializeTuple::serialize_element(
-                        &mut __state,
-                        &self.#field_name,
-                    )?;
-                });
-            }
-            let count = unnamed.unnamed.len();
-            quote! {
-                let mut __state = ::serde::Serializer::serialize_tuple(serializer, #count)?;
-                #(#serialization_fields)*
-                ::serde::ser::SerializeTuple::end(__state)
+                let output_param = format_ident!("__ProjectionField{}", projected_types.len());
+                projected_types.push(projected_ty);
+                tuple_fields.push(output_param);
+                tuple_initializers.push(initializer);
             }
         }
-        Fields::Unit => quote! {
-            ::serde::Serializer::serialize_unit_struct(
-                serializer,
-                stringify!(#projection_name),
-            )
-        },
-    };
+        Fields::Unit => {}
+    }
 
-    let (impl_generics, type_generics, where_clause) = projection_generics.split_for_impl();
-    let projection_definition = if matches!(&fields, Fields::Unit) {
-        quote!(#visibility struct #projection_name #projection_generics #where_clause;)
-    } else {
-        quote! {
-            #visibility struct #projection_name #projection_generics #where_clause {
-                #(#projection_fields,)*
-            }
-        }
+    let output_params = (0..projected_types.len())
+        .map(|index| format_ident!("__ProjectionField{index}"))
+        .collect::<Vec<_>>();
+    let helper_generics = generic_arguments(&output_params);
+    let output_type = generic_arguments(&projected_types);
+    let (impl_generics, type_generics, where_clause) = projection_bounds.split_for_impl();
+
+    let (projection_definition, projection_construction) = match &fields {
+        Fields::Named(_) => (
+            quote! {
+                #visibility struct #projection_name #helper_generics {
+                    #(#named_fields,)*
+                }
+            },
+            quote!(#projection_name { #(#named_initializers,)* }),
+        ),
+        Fields::Unnamed(_) => (
+            quote! {
+                #visibility struct #projection_name #helper_generics (
+                    #(#tuple_fields,)*
+                );
+            },
+            quote!(#projection_name(#(#tuple_initializers,)*)),
+        ),
+        Fields::Unit => (
+            quote!(#visibility struct #projection_name;),
+            quote!(#projection_name),
+        ),
     };
-    let projection_construction = if matches!(&fields, Fields::Unit) {
+    let output_type = if projected_types.is_empty() {
         quote!(#projection_name)
     } else {
-        quote!(#projection_name { #(#field_initializers,)* })
+        quote!(#projection_name #output_type)
     };
 
     Ok(quote! {
         #[doc(hidden)]
+        #[derive(Clone, Copy, ::serde::Serialize)]
         #projection_definition
 
-        impl #impl_generics ::core::marker::Copy for #projection_name #type_generics #where_clause {}
-
-        impl #impl_generics ::core::clone::Clone for #projection_name #type_generics #where_clause {
-            fn clone(&self) -> Self {
-                *self
-            }
-        }
-
-        impl #impl_generics ::serde::Serialize for #projection_name #type_generics #where_clause {
-            fn serialize<__Serializer>(
-                &self,
-                serializer: __Serializer,
-            ) -> ::core::result::Result<__Serializer::Ok, __Serializer::Error>
-            where
-                __Serializer: ::serde::Serializer,
-            {
-                #serialization
-            }
-        }
-
         impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Output = #projection_name #type_generics;
+            type Output = #output_type;
 
             fn default_projection(&self) -> Self::Output {
                 #projection_construction
@@ -187,14 +148,11 @@ fn expand_enum(
 ) -> syn::Result<proc_macro2::TokenStream> {
     let default_projection: syn::Path =
         parse_quote!(::ostd::orpc::oqueue::registry::DefaultProjection);
-    let pod_projection_value: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::registry::PodProjectionValue);
-    let opaque_projection_value: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::registry::OpaqueProjectionValue);
     let projection_name = format_ident!("{}DefaultProjection", name);
-    let mut projection_generics = generics.clone();
+    let mut projection_bounds = generics.clone();
     let mut projection_variants = Vec::new();
     let mut match_arms = Vec::new();
+    let mut projected_types = Vec::new();
 
     for variant in variants {
         let variant_name = variant.ident;
@@ -206,7 +164,7 @@ fn expand_enum(
                 });
             }
             Fields::Unnamed(fields) => {
-                let mut projected_types = Vec::new();
+                let mut output_params = Vec::new();
                 let mut bindings = Vec::new();
                 let mut projected_fields = Vec::new();
 
@@ -215,17 +173,18 @@ fn expand_enum(
                     let (projected_ty, initializer) = project_field(
                         field,
                         quote!(#binding),
-                        &mut projection_generics,
-                        &pod_projection_value,
-                        &opaque_projection_value,
+                        &mut projection_bounds,
+                        &default_projection,
                     )?;
+                    let output_param = format_ident!("__ProjectionField{}", projected_types.len());
                     projected_types.push(projected_ty);
-                    bindings.push(binding.clone());
+                    output_params.push(output_param);
+                    bindings.push(binding);
                     projected_fields.push(initializer);
                 }
 
                 projection_variants.push(quote!(
-                    #variant_name(#(#projected_types),*)
+                    #variant_name(#(#output_params),*)
                 ));
                 match_arms.push(quote! {
                     Self::#variant_name(#(#bindings),*) => {
@@ -234,7 +193,7 @@ fn expand_enum(
                 });
             }
             Fields::Named(fields) => {
-                let mut projected_fields = Vec::new();
+                let mut output_fields = Vec::new();
                 let mut bindings = Vec::new();
                 let mut initializers = Vec::new();
 
@@ -244,19 +203,18 @@ fn expand_enum(
                     let (projected_ty, initializer) = project_field(
                         &field,
                         quote!(#binding),
-                        &mut projection_generics,
-                        &pod_projection_value,
-                        &opaque_projection_value,
+                        &mut projection_bounds,
+                        &default_projection,
                     )?;
-                    projected_fields.push(quote! {
-                        #ident: #projected_ty
-                    });
+                    let output_param = format_ident!("__ProjectionField{}", projected_types.len());
+                    projected_types.push(projected_ty);
+                    output_fields.push(quote!(#ident: #output_param));
                     bindings.push(quote!(#ident: #binding));
                     initializers.push(quote!(#ident: #initializer));
                 }
 
                 projection_variants.push(quote! {
-                    #variant_name { #(#projected_fields,)* }
+                    #variant_name { #(#output_fields,)* }
                 });
                 match_arms.push(quote! {
                     Self::#variant_name { #(#bindings,)* } => {
@@ -267,25 +225,27 @@ fn expand_enum(
         }
     }
 
-    let (impl_generics, type_generics, where_clause) = projection_generics.split_for_impl();
+    let output_params = (0..projected_types.len())
+        .map(|index| format_ident!("__ProjectionField{index}"))
+        .collect::<Vec<_>>();
+    let helper_generics = generic_arguments(&output_params);
+    let output_type = generic_arguments(&projected_types);
+    let output_type = if projected_types.is_empty() {
+        quote!(#projection_name)
+    } else {
+        quote!(#projection_name #output_type)
+    };
+    let (impl_generics, type_generics, where_clause) = projection_bounds.split_for_impl();
 
     Ok(quote! {
         #[doc(hidden)]
-        #[derive(::serde::Serialize)]
-        #visibility enum #projection_name #projection_generics #where_clause {
+        #[derive(Clone, Copy, ::serde::Serialize)]
+        #visibility enum #projection_name #helper_generics {
             #(#projection_variants,)*
         }
 
-        impl #impl_generics ::core::marker::Copy for #projection_name #type_generics #where_clause {}
-
-        impl #impl_generics ::core::clone::Clone for #projection_name #type_generics #where_clause {
-            fn clone(&self) -> Self {
-                *self
-            }
-        }
-
         impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Output = #projection_name #type_generics;
+            type Output = #output_type;
 
             fn default_projection(&self) -> Self::Output {
                 match self {
@@ -296,12 +256,19 @@ fn expand_enum(
     })
 }
 
+fn generic_arguments<T: quote::ToTokens>(arguments: &[T]) -> proc_macro2::TokenStream {
+    if arguments.is_empty() {
+        quote!()
+    } else {
+        quote!(<#(#arguments),*>)
+    }
+}
+
 fn project_field(
     field: &syn::Field,
     value: proc_macro2::TokenStream,
     generics: &mut syn::Generics,
-    pod_projection_value: &syn::Path,
-    opaque_projection_value: &syn::Path,
+    default_projection: &syn::Path,
 ) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
     let mut projection_kind = None;
     for attr in field
@@ -316,29 +283,33 @@ fn project_field(
             ));
         }
         let kind: syn::Ident = attr.parse_args()?;
-        if kind != "pod" && kind != "opaque" {
-            return Err(syn::Error::new_spanned(kind, "expected `pod` or `opaque`"));
+        if kind != "opaque" {
+            return Err(syn::Error::new_spanned(kind, "expected `opaque`"));
         }
         projection_kind = Some(kind);
     }
 
     let ty = &field.ty;
-    if projection_kind.as_ref().is_some_and(|kind| kind == "pod") {
-        let pod: syn::Path = parse_quote!(::ostd::orpc::oqueue::registry::Pod);
+    if projection_kind
+        .as_ref()
+        .is_some_and(|kind| kind == "opaque")
+    {
+        Ok((
+            quote!(usize),
+            quote!(::core::ptr::from_ref(#value) as *const () as usize),
+        ))
+    } else {
         generics
             .make_where_clause()
             .predicates
-            .push(parse_quote!(#ty: #pod + ::core::marker::Send + 'static));
+            .push(parse_quote!(#ty: #default_projection));
+        generics.make_where_clause().predicates.push(parse_quote!(
+            <#ty as #default_projection>::Output:
+                ::core::marker::Copy + ::core::marker::Send + ::serde::Serialize + 'static
+        ));
         Ok((
-            quote!(#pod_projection_value<#ty>),
-            quote!(#pod_projection_value::new(*#value)),
-        ))
-    } else {
-        Ok((
-            quote!(#opaque_projection_value<#ty>),
-            quote!(#opaque_projection_value::new(
-                ::core::ptr::from_ref(#value) as *const () as usize
-            )),
+            quote!(<#ty as #default_projection>::Output),
+            quote!(<#ty as #default_projection>::default_projection(#value)),
         ))
     }
 }
