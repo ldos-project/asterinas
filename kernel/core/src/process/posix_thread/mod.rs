@@ -34,6 +34,7 @@ mod cpu_sync;
 mod exit;
 pub mod futex;
 mod personality;
+mod pi_futex_events;
 mod posix_thread_ext;
 pub mod ptrace;
 mod robust_list;

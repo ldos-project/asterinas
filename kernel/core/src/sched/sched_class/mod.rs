@@ -39,7 +39,7 @@ mod stop;
 
 use self::policy::{SchedPolicyKind, SchedPolicyState};
 pub use self::{
-    policy::{LinuxSchedPolicy, SchedPolicy},
+    policy::{LinuxSchedPolicy, SchedPolicy, SchedPolicyView},
     real_time::{RealTimePolicy, RealTimePriority},
 };
 
