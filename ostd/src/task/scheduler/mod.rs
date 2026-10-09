@@ -71,6 +71,7 @@ pub mod info;
 use core::time::Duration;
 
 use orpc_macros::Element;
+#[cfg(not(baseline_asterinas))]
 use ostd_macros::DefaultProjection;
 use serde::Serialize;
 use spin::Once;
@@ -174,14 +175,15 @@ static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 #[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
 pub struct SchedulingEvent {
     /// The task
-    #[projection(opaque)]
+    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
     pub task: Arc<Task>,
     /// The kind of event
     pub kind: SchedulingEventKind,
 }
 
 /// The kind of a [`SchedulingEvent`].
-#[derive(Debug, DefaultProjection, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
