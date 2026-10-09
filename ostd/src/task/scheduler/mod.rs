@@ -71,6 +71,7 @@ pub mod info;
 use core::time::Duration;
 
 use orpc_macros::Element;
+use ostd_macros::DefaultProjection;
 use serde::Serialize;
 use spin::Once;
 
@@ -170,7 +171,7 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
-#[cfg_attr(not(baseline_asterinas), derive(Element, crate::DefaultProjection))]
+#[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
 pub struct SchedulingEvent {
     /// The task
     #[projection(opaque)]
@@ -180,7 +181,7 @@ pub struct SchedulingEvent {
 }
 
 /// The kind of a [`SchedulingEvent`].
-#[derive(Debug, crate::DefaultProjection, Clone, Copy, Serialize)]
+#[derive(Debug, DefaultProjection, Clone, Copy, Serialize)]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
