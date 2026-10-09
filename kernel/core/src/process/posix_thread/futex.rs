@@ -7,6 +7,7 @@ use ostd::{
 };
 use spin::Once;
 
+use super::pi_futex_events::{self, PiFutexEvent, PiFutexEventKind, PiWaitOutcome};
 use crate::{
     context::current_userspace,
     prelude::*,
@@ -435,7 +436,8 @@ pub fn futex_lock_pi(
 
         // Like Linux, refuse to wait on a TID that does not exist. The PID table lock may sleep,
         // so this is checked after the bucket is unlocked.
-        if pid_table::pid_table_mut().get_thread(owner).is_none() {
+        let owner_thread = pid_table::pid_table_mut().get_thread(owner);
+        let Some(owner_thread) = owner_thread else {
             if futex_bucket_ref
                 .lock()
                 .remove_pi_by_waker(&waiter.waker())
@@ -448,17 +450,47 @@ pub fn futex_lock_pi(
                 return_errno_with_message!(Errno::ESRCH, "the PI futex owner does not exist");
             }
             continue;
-        }
+        };
+
+        pi_futex_events::produce(|| {
+            PiFutexEvent::new(
+                futex_addr,
+                PiFutexEventKind::Block {
+                    waiter: tid,
+                    waiter_policy: pi_futex_events::policy_of(&thread),
+                    owner,
+                    owner_policy: pi_futex_events::policy_of(&owner_thread),
+                },
+            )
+        });
+        drop(owner_thread);
+        let wait_start_ns = pi_futex_events::now_ns();
 
         let result = waiter.pause_timeout(&timeout);
 
         // An unlocker hands over ownership by dequeuing our item, so if it is gone we own the
         // lock, even if the wait also timed out or was interrupted.
-        if futex_bucket_ref
+        let handed_over = futex_bucket_ref
             .lock()
             .remove_pi_by_waker(&waiter.waker())
-            .is_none()
-        {
+            .is_none();
+        pi_futex_events::produce(|| {
+            let outcome = match &result {
+                _ if handed_over => PiWaitOutcome::Acquired,
+                Ok(()) => PiWaitOutcome::Retry,
+                Err(err) if err.error() == Errno::ETIMEDOUT => PiWaitOutcome::TimedOut,
+                Err(_) => PiWaitOutcome::Interrupted,
+            };
+            PiFutexEvent::new(
+                futex_addr,
+                PiFutexEventKind::WaitEnd {
+                    waiter: tid,
+                    waited_ns: pi_futex_events::now_ns().saturating_sub(wait_start_ns),
+                    outcome,
+                },
+            )
+        });
+        if handed_over {
             return Ok(());
         }
         // Otherwise we were woken without a handover (a spurious wakeup, or the owner died
@@ -535,11 +567,29 @@ pub fn futex_unlock_pi(
         }
 
         // The word now names the new owner, so dequeue it to tell it that it owns the lock.
-        Ok(next.map(|index| bucket.pi_items.remove(index)))
+        Ok(next.map(|index| {
+            let new_owner = bucket.pi_items.remove(index);
+            let waiters_left = bucket
+                .pi_items
+                .iter()
+                .filter(|item| item.key.match_up(&futex_key))
+                .count();
+            (new_owner, waiters_left)
+        }))
     })?;
 
-    if let Some(new_owner) = new_owner {
+    if let Some((new_owner, waiters_left)) = new_owner {
         new_owner.waker.wake_up();
+        pi_futex_events::produce(|| {
+            PiFutexEvent::new(
+                futex_addr,
+                PiFutexEventKind::Handoff {
+                    from: tid,
+                    to: new_owner.tid,
+                    waiters_left: waiters_left as u32,
+                },
+            )
+        });
     }
 
     Ok(())
@@ -708,6 +758,7 @@ fn lock_bucket_pairs(
 /// Initializes the futex system.
 pub fn init() {
     FUTEX_BUCKETS.call_once(|| FutexBucketVec::new(get_bucket_count()));
+    pi_futex_events::init();
 }
 
 struct FutexBucketVec {

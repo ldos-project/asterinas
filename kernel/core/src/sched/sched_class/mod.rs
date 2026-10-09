@@ -44,7 +44,7 @@ use self::policy::{SchedPolicyKind, SchedPolicyState};
 #[cfg(not(baseline_asterinas))]
 pub use self::select_cpu::UserspacePolicy;
 pub use self::{
-    policy::{LinuxSchedPolicy, SchedPolicy},
+    policy::{LinuxSchedPolicy, SchedPolicy, SchedPolicyView},
     real_time::{RealTimePolicy, RealTimePriority},
     select_cpu::{
         LastCpuPolicy, PolicySlot, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy,
