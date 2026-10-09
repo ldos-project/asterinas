@@ -32,8 +32,9 @@ type RegistryMap = HashMap<TypeId, PathMap>;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`].
 ///
-/// The `DefaultProjection` derive represents fields as opaque pointer identifiers by default.
-/// Fields marked `#[projection(pod)]` are preserved as POD bytes.
+/// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
+/// values project to themselves; mark fields that should be opaque identifiers with
+/// `#[projection(opaque)]`.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Output;
@@ -42,54 +43,14 @@ pub trait DefaultProjection {
     fn default_projection(&self) -> Self::Output;
 }
 
-/// A POD field represented as its raw bytes for serialization.
-#[doc(hidden)]
-#[derive(Clone, Copy)]
-pub struct PodProjectionValue<T: Pod>(T);
+impl<T> DefaultProjection for T
+where
+    T: Pod,
+{
+    type Output = Self;
 
-impl<T: Pod> PodProjectionValue<T> {
-    /// Wraps a POD value for byte serialization.
-    #[doc(hidden)]
-    pub fn new(value: T) -> Self {
-        Self(value)
-    }
-}
-
-impl<T: Pod> Serialize for PodProjectionValue<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_bytes(self.0.as_bytes())
-    }
-}
-
-/// An opaque pointer identifier that retains the source type only at compile time.
-#[doc(hidden)]
-pub struct OpaqueProjectionValue<T: ?Sized>(usize, core::marker::PhantomData<fn(&T)>);
-
-impl<T: ?Sized> Copy for OpaqueProjectionValue<T> {}
-
-impl<T: ?Sized> Clone for OpaqueProjectionValue<T> {
-    fn clone(&self) -> Self {
+    fn default_projection(&self) -> Self::Output {
         *self
-    }
-}
-
-impl<T: ?Sized> OpaqueProjectionValue<T> {
-    /// Wraps an opaque identifier.
-    #[doc(hidden)]
-    pub fn new(id: usize) -> Self {
-        Self(id, core::marker::PhantomData)
-    }
-}
-
-impl<T: ?Sized> Serialize for OpaqueProjectionValue<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        Serialize::serialize(&self.0, serializer)
     }
 }
 
@@ -371,6 +332,61 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 mod test {
     use super::*;
     use crate::{orpc::oqueue::ConsumableOQueue as _, path, path_pattern, prelude::*};
+
+    #[derive(crate::DefaultProjection)]
+    struct ProjectedLeaf {
+        value: u32,
+    }
+
+    #[derive(Clone, Copy, serde::Serialize)]
+    struct SpecialProjectionOutput(u32);
+
+    struct SpecialProjection(u32);
+
+    impl DefaultProjection for SpecialProjection {
+        type Output = SpecialProjectionOutput;
+
+        fn default_projection(&self) -> Self::Output {
+            SpecialProjectionOutput(self.0 + 1)
+        }
+    }
+
+    #[derive(crate::DefaultProjection)]
+    struct ProjectedMessage {
+        leaf: ProjectedLeaf,
+        #[projection(opaque)]
+        ref_type: &'static str,
+        special: SpecialProjection,
+    }
+
+    #[ktest]
+    fn default_projection_serializes_nested_custom_and_opaque_fields() {
+        let message = ProjectedMessage {
+            leaf: ProjectedLeaf { value: 0x1234_5678 },
+            ref_type: "opaque",
+            special: SpecialProjection(41),
+        };
+        let projected = message.default_projection();
+
+        let mut actual = Vec::new();
+        Serialize::serialize(
+            &projected,
+            &mut minicbor_serde::Serializer::new(&mut actual),
+        )
+        .unwrap();
+
+        let mut decoder = minicbor::Decoder::new(&actual);
+        assert_eq!(decoder.map().unwrap(), Some(3));
+        assert_eq!(decoder.str().unwrap(), "leaf");
+        assert_eq!(decoder.map().unwrap(), Some(1));
+        assert_eq!(decoder.str().unwrap(), "value");
+        assert_eq!(decoder.u32().unwrap(), message.leaf.value);
+        assert_eq!(decoder.str().unwrap(), "ref_type");
+        decoder.u64().unwrap();
+        assert_eq!(decoder.str().unwrap(), "special");
+        assert_eq!(decoder.u32().unwrap(), 42);
+        assert_eq!(decoder.position(), actual.len());
+    }
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())

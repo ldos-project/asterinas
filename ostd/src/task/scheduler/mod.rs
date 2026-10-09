@@ -91,25 +91,10 @@ use crate::{
 pub(crate) fn init() {
     #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
-        use serde::Serialize;
-
         use crate::{
             orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, registry},
             path,
         };
-
-        /// The serializable projection of a [`SchedulingEvent`] exported to userspace.
-        ///
-        /// A `SchedulingEvent` holds an `Arc<Task>`, which is neither `Copy` nor `Serialize`, so
-        /// the exported stream carries this small view instead: the task's identity (its kernel
-        /// address) and whether it was scheduled or descheduled.
-        #[derive(Clone, Copy, Serialize)]
-        struct SchedulingEventView {
-            /// The scheduled/descheduled task's identity (its kernel address).
-            task: u64,
-            /// Whether the task was scheduled or descheduled.
-            kind: SchedulingEventKind,
-        }
 
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
@@ -119,14 +104,7 @@ pub(crate) fn init() {
         // Export the queue so it appears under the OQueue filesystem (e.g. at
         // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
         // dropped rather than blocking the scheduler.
-        registry::register_with_projection(
-            &path,
-            &oqueue.as_any_oqueue(),
-            |event: &SchedulingEvent| SchedulingEventView {
-                task: Arc::as_ptr(&event.task) as *const () as usize as u64,
-                kind: event.kind,
-            },
-        );
+        registry::register_with(&path, &oqueue.as_any_oqueue());
 
         oqueue.attach_ref_producer().unwrap()
     });
@@ -192,16 +170,17 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
-#[cfg_attr(not(baseline_asterinas), derive(Element))]
+#[cfg_attr(not(baseline_asterinas), derive(Element, crate::DefaultProjection))]
 pub struct SchedulingEvent {
     /// The task
+    #[projection(opaque)]
     pub task: Arc<Task>,
     /// The kind of event
     pub kind: SchedulingEventKind,
 }
 
 /// The kind of a [`SchedulingEvent`].
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, crate::DefaultProjection, Clone, Copy, Serialize)]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
