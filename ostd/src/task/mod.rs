@@ -276,6 +276,7 @@ impl TaskOptions {
             id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
+                exiting: AtomicBool::new(false),
             },
             #[cfg(not(baseline_asterinas))]
             server: ForceSync::new(RefCell::new(None)),

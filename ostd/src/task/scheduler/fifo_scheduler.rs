@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::time::Duration;
+use core::{sync::atomic::Ordering, time::Duration};
 
 use super::{EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, info::CommonSchedInfo};
 use crate::{
@@ -56,6 +56,15 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
 
         // Note: call set_if_is_none again to prevent a race condition.
         let still_in_rq = still_in_rq && runnable.cpu().set_if_is_none(target_cpu).is_err();
+
+        // An exiting task will never run again, so it must not be enqueued.
+        if runnable.exiting().load(Ordering::Relaxed) {
+            // Release the CPU claimed above, as the task is in no runqueue.
+            if !still_in_rq {
+                runnable.cpu().set_to_none();
+            }
+            return None;
+        }
 
         if flags == EnqueueFlags::ForceSchedule {
             // A forced task is placed at the front of the queue and should
@@ -130,7 +139,13 @@ impl<T: CommonSchedInfo> LocalRunQueue<T> for FifoRunQueue<T> {
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
         match flags {
             UpdateFlags::Tick => false,
-            UpdateFlags::Wait | UpdateFlags::Yield | UpdateFlags::Exit => !self.queue.is_empty(),
+            UpdateFlags::Wait | UpdateFlags::Yield => !self.queue.is_empty(),
+            UpdateFlags::Exit => {
+                if let Some(current) = &self.current {
+                    current.exiting().store(true, Ordering::Relaxed);
+                }
+                !self.queue.is_empty()
+            }
         }
     }
 
