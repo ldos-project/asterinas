@@ -6,7 +6,7 @@
 #![feature(btree_cursors)]
 #![feature(core_intrinsics)]
 #![feature(linkage)]
-#![feature(min_specialization)]
+#![feature(specialization)]
 #![feature(negative_impls)]
 #![feature(ptr_metadata)]
 #![feature(sync_unsafe_cell)]
@@ -70,6 +70,8 @@ mod coverage;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(baseline_asterinas))]
+pub use ostd_macros::DefaultProjection;
 pub use ostd_macros::{
     early_cmdline_parser, global_frame_allocator, global_heap_allocator,
     global_heap_allocator_slot_map, main, ostd_error, panic_handler,

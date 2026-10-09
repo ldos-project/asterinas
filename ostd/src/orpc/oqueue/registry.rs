@@ -9,6 +9,7 @@ use hashbrown::{
     hash_map::{DefaultHashBuilder, EntryRef},
 };
 use log::warn;
+use ostd_pod::Pod;
 use serde::Serialize;
 
 use super::{
@@ -30,12 +31,77 @@ use crate::{
 type RegistryMap = HashMap<TypeId, PathMap>;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`].
+///
+/// The `DefaultProjection` derive preserves each POD field as bytes and represents each non-POD
+/// field by its address as an opaque `usize` identifier.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Output;
 
     /// Returns the default projection of this message.
     fn default_projection(&self) -> Self::Output;
+}
+
+/// Projects one field for a derived [`DefaultProjection`]: POD fields become raw bytes, while
+/// non-POD fields become opaque pointer identifiers.
+#[doc(hidden)]
+pub trait ProjectionField {
+    /// The exported representation of this field.
+    type Output: ProjectionOutput;
+
+    /// Creates the exported representation of this field.
+    fn project_field(&self) -> Self::Output;
+}
+
+impl<T: ?Sized> ProjectionField for T {
+    default type Output = usize;
+
+    default fn project_field(&self) -> Self::Output {
+        <Self::Output as ProjectionOutput>::from_opaque_id(
+            core::ptr::from_ref(self) as *const () as usize
+        )
+    }
+}
+
+impl<T: Pod + Send + 'static> ProjectionField for T {
+    type Output = PodProjectionValue<T>;
+
+    fn project_field(&self) -> Self::Output {
+        PodProjectionValue(*self)
+    }
+}
+
+/// A POD field represented as its raw bytes for serialization.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct PodProjectionValue<T: Pod>(T);
+
+/// An exported field value that can also represent an opaque pointer identifier.
+#[doc(hidden)]
+pub trait ProjectionOutput: Copy + Send + Serialize + 'static {
+    /// Constructs this output type from an opaque pointer identifier.
+    fn from_opaque_id(id: usize) -> Self;
+}
+
+impl ProjectionOutput for usize {
+    fn from_opaque_id(id: usize) -> Self {
+        id
+    }
+}
+
+impl<T: Pod + Send + 'static> ProjectionOutput for PodProjectionValue<T> {
+    fn from_opaque_id(_id: usize) -> Self {
+        Self(<T as ostd_pod::FromZeros>::new_zeroed())
+    }
+}
+
+impl<T: Pod> Serialize for PodProjectionValue<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(self.0.as_bytes())
+    }
 }
 
 /// A mapping from Paths to OQueues for a specific type. The type is erased and calling methods at
@@ -156,10 +222,8 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
 ///
 /// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// [`register_with_projection`] to provide a different projection.
-pub fn register_with<T>(
-    path: &Path,
-    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-) where
+pub fn register_with<T>(path: &Path, oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>)
+where
     T: DefaultProjection + Send + 'static,
     T::Output: Copy + Send + Serialize + 'static,
 {
