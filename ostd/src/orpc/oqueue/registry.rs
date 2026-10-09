@@ -9,7 +9,7 @@ use hashbrown::{
     hash_map::{DefaultHashBuilder, EntryRef},
 };
 use log::warn;
-use ostd_pod::Pod;
+pub use ostd_pod::Pod;
 use serde::Serialize;
 
 use super::{
@@ -32,8 +32,8 @@ type RegistryMap = HashMap<TypeId, PathMap>;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`].
 ///
-/// The `DefaultProjection` derive preserves each POD field as bytes and represents each non-POD
-/// field by its address as an opaque `usize` identifier.
+/// The `DefaultProjection` derive represents fields as opaque pointer identifiers by default.
+/// Fields marked `#[projection(pod)]` are preserved as POD bytes.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Output;
@@ -42,56 +42,16 @@ pub trait DefaultProjection {
     fn default_projection(&self) -> Self::Output;
 }
 
-/// Projects one field for a derived [`DefaultProjection`]: POD fields become raw bytes, while
-/// non-POD fields become opaque pointer identifiers.
-#[doc(hidden)]
-pub trait ProjectionField {
-    /// The exported representation of this field.
-    type Output: ProjectionOutput;
-
-    /// Creates the exported representation of this field.
-    fn project_field(&self) -> Self::Output;
-}
-
-impl<T: ?Sized> ProjectionField for T {
-    default type Output = usize;
-
-    default fn project_field(&self) -> Self::Output {
-        <Self::Output as ProjectionOutput>::from_opaque_id(
-            core::ptr::from_ref(self) as *const () as usize
-        )
-    }
-}
-
-impl<T: Pod + Send + 'static> ProjectionField for T {
-    type Output = PodProjectionValue<T>;
-
-    fn project_field(&self) -> Self::Output {
-        PodProjectionValue(*self)
-    }
-}
-
 /// A POD field represented as its raw bytes for serialization.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
 pub struct PodProjectionValue<T: Pod>(T);
 
-/// An exported field value that can also represent an opaque pointer identifier.
-#[doc(hidden)]
-pub trait ProjectionOutput: Copy + Send + Serialize + 'static {
-    /// Constructs this output type from an opaque pointer identifier.
-    fn from_opaque_id(id: usize) -> Self;
-}
-
-impl ProjectionOutput for usize {
-    fn from_opaque_id(id: usize) -> Self {
-        id
-    }
-}
-
-impl<T: Pod + Send + 'static> ProjectionOutput for PodProjectionValue<T> {
-    fn from_opaque_id(_id: usize) -> Self {
-        Self(<T as ostd_pod::FromZeros>::new_zeroed())
+impl<T: Pod> PodProjectionValue<T> {
+    /// Wraps a POD value for byte serialization.
+    #[doc(hidden)]
+    pub fn new(value: T) -> Self {
+        Self(value)
     }
 }
 
@@ -101,6 +61,35 @@ impl<T: Pod> Serialize for PodProjectionValue<T> {
         S: serde::Serializer,
     {
         serializer.serialize_bytes(self.0.as_bytes())
+    }
+}
+
+/// An opaque pointer identifier that retains the source type only at compile time.
+#[doc(hidden)]
+pub struct OpaqueProjectionValue<T: ?Sized>(usize, core::marker::PhantomData<fn(&T)>);
+
+impl<T: ?Sized> Copy for OpaqueProjectionValue<T> {}
+
+impl<T: ?Sized> Clone for OpaqueProjectionValue<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: ?Sized> OpaqueProjectionValue<T> {
+    /// Wraps an opaque identifier.
+    #[doc(hidden)]
+    pub fn new(id: usize) -> Self {
+        Self(id, core::marker::PhantomData)
+    }
+}
+
+impl<T: ?Sized> Serialize for OpaqueProjectionValue<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Serialize::serialize(&self.0, serializer)
     }
 }
 
