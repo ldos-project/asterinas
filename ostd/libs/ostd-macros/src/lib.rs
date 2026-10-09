@@ -10,8 +10,9 @@ use quote::quote;
 use rand::{Rng, distr::Alphanumeric};
 use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
 
-/// Derives a structural projection that preserves POD fields and identifies other fields by address.
-#[proc_macro_derive(DefaultProjection)]
+/// Derives a projection that identifies fields by address unless they are marked `#[projection(pod)]`.
+/// Use `#[projection(opaque)]` to state the default projection explicitly.
+#[proc_macro_derive(DefaultProjection, attributes(projection))]
 pub fn default_projection_derive(input: TokenStream) -> TokenStream {
     default_projection::derive(input)
 }
