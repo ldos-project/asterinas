@@ -174,7 +174,7 @@ fn do_execve_no_return(
 
     // After the program has been successfully loaded, the virtual memory of the current process
     // is initialized. Hence, it is necessary to clear the previously recorded robust list.
-    *thread_local.robust_list().borrow_mut() = None;
+    thread_local.robust_list().set(0);
     thread_local.clear_child_tid().set(0);
 
     // Set up the CPU context.
