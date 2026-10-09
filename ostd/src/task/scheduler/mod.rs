@@ -749,7 +749,7 @@ pub fn idle_time() -> Duration {
 mod test {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::*;
+    use super::{info::CommonSchedInfo, *};
     use crate::task::TaskOptions;
 
     /// Test the expected scheduling behavior of unparking. It relies on the behavior of the ostd
@@ -816,5 +816,29 @@ mod test {
         switch_to_target(test_task);
 
         assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+    }
+
+    /// Waking a task whose function has returned must be a no-op: the task will
+    /// never be scheduled again, and re-enqueuing it would resume a dead stack
+    /// and panic in `exit_current`.
+    #[ktest]
+    fn wake_exiting_task() {
+        let exiting_task = TaskOptions::new(|| Task::yield_now()).spawn().unwrap();
+
+        // Wait until the task has exited, i.e. `exit_current` dequeued it and
+        // cleared its `cpu` field (the `exiting` flag was set just before, under
+        // the same runqueue lock).
+        while exiting_task.cpu().get().is_some() {
+            Task::yield_now();
+        }
+
+        // Both wake flavors must now be no-ops.
+        unpark_target(exiting_task.clone());
+        switch_to_target(exiting_task);
+        Task::yield_now();
+
+        // Without the fix, the zombie above is picked by now (or inside
+        // `switch_to_target` via `might_preempt`) and panics at
+        // `exit_current`'s `unreachable!()`; reaching this point means it didn't.
     }
 }
