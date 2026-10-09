@@ -43,6 +43,7 @@ fi
 ./prctl/thread_name
 
 ./pthread/pi_futex
+./pthread/pi_futex_oqueue
 ./pthread/pthread_signal_test
 ./pthread/pthread_test
 
