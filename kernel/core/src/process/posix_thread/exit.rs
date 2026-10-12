@@ -101,6 +101,7 @@ fn exit_internal(
     wake_clear_ctid(thread_local);
 
     wake_robust_list(thread_local, posix_thread.tid());
+    super::lockprio::forget_thread(posix_thread.tid());
 
     // According to Linux behavior, the main thread shouldn't be removed from the table until the
     // process is reaped by its parent.

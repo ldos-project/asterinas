@@ -21,7 +21,7 @@ pub use self::{
     nice::{AtomicNice, Nice},
     sched_class::{
         LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy,
-        SchedPolicyView, init, init_on_each_cpu,
+        SchedPolicyView, init, init_on_each_cpu, set_policy_requeued,
     },
     stats::{loadavg, nr_queued_and_running},
 };
