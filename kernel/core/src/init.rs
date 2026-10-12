@@ -227,6 +227,12 @@ fn first_kthread() {
         pmu.start();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[cfg(not(baseline_asterinas))]
+    if PMU_TASK_COUNTERS_ENABLED.load(Ordering::Relaxed) {
+        crate::arch::task_counters::init();
+    }
+
     #[cfg(not(baseline_asterinas))]
     if SCHEDULER_CAPTURE_DATA.load(Ordering::Relaxed) {
         use ostd::orpc::oqueue::LifetimelessElementDescriptor;
@@ -379,3 +385,9 @@ aster_cmdline::define_flag_param!("io.capture_block_io", IO_CAPTURE_BLOCK_IO);
 static PMU_DTLB_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_arch = "x86_64")]
 aster_cmdline::define_flag_param!("pmu.dtlb_enabled", PMU_DTLB_ENABLED);
+
+/// Produce per-task hardware counter samples at each context switch into an OQueue.
+#[cfg(target_arch = "x86_64")]
+static PMU_TASK_COUNTERS_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+aster_cmdline::define_flag_param!("pmu.task_counters", PMU_TASK_COUNTERS_ENABLED);
