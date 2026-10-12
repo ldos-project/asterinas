@@ -7,7 +7,10 @@ use ostd::{
 };
 use spin::Once;
 
-use super::pi_futex_events::{self, PiFutexEvent, PiFutexEventKind, PiWaitOutcome};
+use super::{
+    lockprio::{self, PiWaiter},
+    pi_futex_events::{self, PiFutexEvent, PiFutexEventKind, PiWaitOutcome},
+};
 use crate::{
     context::current_userspace,
     prelude::*,
@@ -428,9 +431,21 @@ pub fn futex_lock_pi(
                 }
                 Ok(acquired)
             })?;
+        // Report the futex's new waiter, or its new owner if it was free but contended (after a
+        // robust owner died), while the bucket is still locked.
+        let boost_owners = lockprio::is_enabled().then(|| {
+            let owner = match acquired {
+                PiAcquire::Acquired => tid,
+                PiAcquire::Owned(owner) => owner,
+            };
+            lockprio::record(&futex_key, Some(owner), futex_bucket.pi_waiters(&futex_key))
+        });
         drop(futex_bucket);
         let owner = match acquired {
-            PiAcquire::Acquired => return Ok(()),
+            PiAcquire::Acquired => {
+                apply_boosts(boost_owners, tid, &thread);
+                return Ok(());
+            }
             PiAcquire::Owned(owner) => owner,
         };
 
@@ -451,6 +466,7 @@ pub fn futex_lock_pi(
             }
             continue;
         };
+        apply_boosts(boost_owners, owner, &owner_thread);
 
         pi_futex_events::produce(|| {
             PiFutexEvent::new(
@@ -470,10 +486,17 @@ pub fn futex_lock_pi(
 
         // An unlocker hands over ownership by dequeuing our item, so if it is gone we own the
         // lock, even if the wait also timed out or was interrupted.
-        let handed_over = futex_bucket_ref
-            .lock()
-            .remove_pi_by_waker(&waiter.waker())
-            .is_none();
+        let mut futex_bucket = futex_bucket_ref.lock();
+        let handed_over = futex_bucket.remove_pi_by_waker(&waiter.waker()).is_none();
+        // If we gave up waiting, the owner may no longer need its boost.
+        let boost_owners = (!handed_over && lockprio::is_enabled())
+            .then(|| lockprio::record(&futex_key, None, futex_bucket.pi_waiters(&futex_key)));
+        drop(futex_bucket);
+        if let Some(owners) = boost_owners {
+            for owner in owners.into_iter().flatten() {
+                lockprio::apply(owner, None);
+            }
+        }
         pi_futex_events::produce(|| {
             let outcome = match &result {
                 _ if handed_over => PiWaitOutcome::Acquired,
@@ -546,37 +569,59 @@ pub fn futex_unlock_pi(
     let (_, futex_bucket_ref) = get_futex_bucket(&futex_key);
     let tid = ctx.posix_thread.tid();
 
-    let (_, new_owner) = lock_bucket_for_word(futex_addr, futex_bucket_ref, ctx, |bucket| {
-        let mut val: u32 = user_space.atomic_load(futex_addr)?;
-        let next = bucket.top_pi_waiter(&futex_key);
-        // Like Linux, the new owner always gets `FUTEX_WAITERS`, so its release goes through the
-        // kernel even if no other waiter is left.
-        let new_val = next.map_or(0, |index| bucket.pi_items[index].tid | FUTEX_WAITERS);
+    let (futex_bucket, new_owner) =
+        lock_bucket_for_word(futex_addr, futex_bucket_ref, ctx, |bucket| {
+            let mut val: u32 = user_space.atomic_load(futex_addr)?;
+            let next = bucket.top_pi_waiter(&futex_key);
+            // Like Linux, the new owner always gets `FUTEX_WAITERS`, so its release goes through the
+            // kernel even if no other waiter is left.
+            let new_val = next.map_or(0, |index| bucket.pi_items[index].tid | FUTEX_WAITERS);
 
-        loop {
-            if val & FUTEX_TID_MASK != tid {
-                return_errno_with_message!(
-                    Errno::EPERM,
-                    "the PI futex is not owned by the current thread"
-                );
+            loop {
+                if val & FUTEX_TID_MASK != tid {
+                    return_errno_with_message!(
+                        Errno::EPERM,
+                        "the PI futex is not owned by the current thread"
+                    );
+                }
+                match cmpxchg_futex_word(&user_space, futex_addr, val, new_val)? {
+                    (_, true) => break,
+                    (cur_val, false) => val = cur_val,
+                }
             }
-            match cmpxchg_futex_word(&user_space, futex_addr, val, new_val)? {
-                (_, true) => break,
-                (cur_val, false) => val = cur_val,
+
+            // The word now names the new owner, so dequeue it to tell it that it owns the lock.
+            Ok(next.map(|index| {
+                let new_owner = bucket.pi_items.remove(index);
+                let waiters_left = bucket
+                    .pi_items
+                    .iter()
+                    .filter(|item| item.key.match_up(&futex_key))
+                    .count();
+                (new_owner, waiters_left)
+            }))
+        })?;
+
+    // Report the futex's new owner, or that it is free, while the bucket is still locked.
+    let boost_owners = lockprio::is_enabled().then(|| {
+        let owner = new_owner.as_ref().map(|(new_owner, _)| new_owner.tid);
+        lockprio::record(&futex_key, owner, futex_bucket.pi_waiters(&futex_key))
+    });
+    drop(futex_bucket);
+    if let Some(owners) = boost_owners {
+        let thread = ctx.task.as_thread().unwrap();
+        for owner in owners.into_iter().flatten() {
+            // Unboost this thread before waking the new owner, so that the new owner preempts it
+            // if it should.
+            match &new_owner {
+                Some((new_owner, _)) if new_owner.tid == owner => {
+                    lockprio::apply(owner, Some(&new_owner.thread));
+                }
+                _ if owner == tid => lockprio::apply(owner, Some(thread)),
+                _ => lockprio::apply(owner, None),
             }
         }
-
-        // The word now names the new owner, so dequeue it to tell it that it owns the lock.
-        Ok(next.map(|index| {
-            let new_owner = bucket.pi_items.remove(index);
-            let waiters_left = bucket
-                .pi_items
-                .iter()
-                .filter(|item| item.key.match_up(&futex_key))
-                .count();
-            (new_owner, waiters_left)
-        }))
-    })?;
+    }
 
     if let Some((new_owner, waiters_left)) = new_owner {
         new_owner.waker.wake_up();
@@ -610,6 +655,13 @@ pub(super) fn futex_wake_pi_waiter(futex_addr: Vaddr, visibility: FutexVisibilit
         futex_bucket.pi_items[index].waker.wake_up();
     }
     Ok(())
+}
+
+/// Applies the boosts reported by [`lockprio::record`], where `thread` is the thread `tid`.
+fn apply_boosts(owners: Option<[Option<Tid>; 2]>, tid: Tid, thread: &Arc<Thread>) {
+    for owner in owners.into_iter().flatten().flatten() {
+        lockprio::apply(owner, (owner == tid).then_some(thread));
+    }
 }
 
 /// The outcome of trying to take a PI futex.
@@ -759,6 +811,7 @@ fn lock_bucket_pairs(
 pub fn init() {
     FUTEX_BUCKETS.call_once(|| FutexBucketVec::new(get_bucket_count()));
     pi_futex_events::init();
+    lockprio::init();
 }
 
 struct FutexBucketVec {
@@ -802,6 +855,20 @@ impl FutexBucket {
             items: Vec::with_capacity(1),
             pi_items: Vec::new(),
         }
+    }
+
+    /// Returns the threads waiting for the PI futex `key`, for [`lockprio::record`].
+    pub(self) fn pi_waiters(&self, key: &FutexKey) -> Vec<PiWaiter> {
+        let now_ns = pi_futex_events::now_ns();
+        self.pi_items
+            .iter()
+            .filter(|item| item.key.match_up(key))
+            .map(|item| PiWaiter {
+                tid: item.tid,
+                policy: item.thread.sched_attr().policy(),
+                waited_ns: now_ns.saturating_sub(item.since_ns),
+            })
+            .collect()
     }
 
     pub(self) fn add_pi_item(&mut self, item: FutexPiItem) {
@@ -925,6 +992,8 @@ struct FutexPiItem {
     waker: Arc<Waker>,
     tid: Tid,
     thread: Arc<Thread>,
+    /// When the thread started waiting, in monotonic nanoseconds.
+    since_ns: u64,
 }
 
 impl FutexPiItem {
@@ -935,6 +1004,7 @@ impl FutexPiItem {
             waker,
             tid,
             thread,
+            since_ns: pi_futex_events::now_ns(),
         };
 
         (item, waiter)
@@ -951,7 +1021,7 @@ enum FutexIdentity {
 
 /// The lookup key used for futex bucket selection and matching.
 #[derive(Clone, Debug)]
-struct FutexKey {
+pub(super) struct FutexKey {
     /// A hash value deterministically computed from the futex identity.
     hash: usize,
     identity: FutexIdentity,
@@ -1009,7 +1079,7 @@ impl FutexKey {
         })
     }
 
-    pub(self) fn match_up(&self, another: &Self) -> bool {
+    pub(super) fn match_up(&self, another: &Self) -> bool {
         self.identity.match_up(&another.identity) && (self.bitset & another.bitset) != 0
     }
 }

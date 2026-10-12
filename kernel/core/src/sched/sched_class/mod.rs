@@ -45,8 +45,12 @@ pub use self::{
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
 
+/// The scheduler injected into OSTD, for operations outside the [`Scheduler`] trait.
+static CLASS_SCHEDULER: spin::Once<&'static ClassScheduler> = spin::Once::new();
+
 pub fn init() {
-    let scheduler = Box::leak(Box::new(ClassScheduler::new()));
+    let scheduler: &'static ClassScheduler = Box::leak(Box::new(ClassScheduler::new()));
+    CLASS_SCHEDULER.call_once(|| scheduler);
 
     // Inject the scheduler into the ostd for actual scheduling work.
     inject_scheduler(scheduler);
@@ -341,6 +345,65 @@ impl Scheduler for ClassScheduler {
             idle_time += class_rq.lock().idle.get_idle_time();
         }
         idle_time + Duration::from_secs(0)
+    }
+}
+
+/// Changes the scheduling policy of `thread` and moves it to the matching run queue at once.
+///
+/// [`SchedAttr::set_policy`] alone only takes effect the next time the thread is enqueued, so a
+/// thread waiting in a run queue keeps competing at its old priority. This instead requeues it
+/// under the new policy, and preempts its CPU if it now outranks the running task. A running
+/// thread just has its policy changed; it is not preempted if it was lowered.
+pub fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
+    let (Some(scheduler), Some(task)) = (CLASS_SCHEDULER.get(), thread.try_task()) else {
+        thread.sched_attr().set_policy(policy);
+        return;
+    };
+
+    let mut policy_set = false;
+    loop {
+        let Some(cpu) = task.cpu().get() else {
+            if policy_set {
+                return;
+            }
+            // The task is not in a run queue, so its next enqueue will use the new policy. It may
+            // be enqueued concurrently, though, using either policy, so check again.
+            thread.sched_attr().set_policy(policy);
+            policy_set = true;
+            continue;
+        };
+
+        let mut rq = scheduler.rqs[cpu.as_usize()].lock();
+        if task.cpu().get() != Some(cpu) {
+            continue;
+        }
+        let is_current = rq
+            .current
+            .as_ref()
+            .is_some_and(|((current, _), _)| Arc::ptr_eq(current, &task));
+        if is_current {
+            thread.sched_attr().set_policy(policy);
+            return;
+        }
+
+        // The task may have been queued under its old policy or, if we set it above while it was
+        // being enqueued, under the new one, so look for it in any queue. If it is not found, it
+        // is being enqueued on this CPU and will be once we unlock, under the new policy.
+        let removed = rq.fair.remove(&task) || rq.real_time.remove_at_any_prio(&task);
+        thread.sched_attr().set_policy(policy);
+        if !removed {
+            return;
+        }
+        let should_preempt = rq
+            .current
+            .as_ref()
+            .is_none_or(|((_, current), _)| policy < current.sched_attr().policy());
+        rq.enqueue_entity((task, thread.clone()), None);
+        drop(rq);
+        if should_preempt {
+            ostd::task::scheduler::request_preempt(cpu);
+        }
+        return;
     }
 }
 
