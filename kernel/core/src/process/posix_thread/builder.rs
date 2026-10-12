@@ -45,6 +45,7 @@ pub struct PosixThreadBuilder {
     sig_mask: AtomicSigMask,
     sig_queues: SigQueues,
     sched_policy: SchedPolicy,
+    cpu_affinity: CpuSet,
     supp_user_context: SuppUserContext,
     user_ns: Option<Arc<UserNamespace>>,
     ns_proxy: Option<Arc<NsProxy>>,
@@ -73,6 +74,7 @@ impl PosixThreadBuilder {
             sig_mask: AtomicSigMask::new_empty(),
             sig_queues: SigQueues::new(),
             sched_policy: SchedPolicy::Fair(Nice::default()),
+            cpu_affinity: CpuSet::new_full(),
             supp_user_context: SuppUserContext::new(),
             user_ns: None,
             ns_proxy: None,
@@ -143,6 +145,12 @@ impl PosixThreadBuilder {
         self
     }
 
+    /// Sets the CPUs the thread may run on. A cloned thread inherits its parent's.
+    pub fn cpu_affinity(mut self, cpu_affinity: CpuSet) -> Self {
+        self.cpu_affinity = cpu_affinity;
+        self
+    }
+
     pub fn default_timer_slack_ns(mut self, slack_ns: u64) -> Self {
         self.default_timer_slack_ns = slack_ns;
         self
@@ -163,6 +171,7 @@ impl PosixThreadBuilder {
             sig_mask,
             sig_queues,
             sched_policy,
+            cpu_affinity,
             supp_user_context,
             user_ns,
             ns_proxy,
@@ -209,7 +218,6 @@ impl PosixThreadBuilder {
                 }
             };
 
-            let cpu_affinity = CpuSet::new_full();
             let thread = Arc::new(Thread::new(
                 weak_task.clone(),
                 posix_thread,
