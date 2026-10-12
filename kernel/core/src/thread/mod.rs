@@ -27,6 +27,9 @@ pub mod work_queue;
 pub type Tid = u32;
 
 fn pre_schedule_handler(irq_guard: &DisabledLocalIrqGuard) {
+    #[cfg(all(target_arch = "x86_64", not(baseline_asterinas)))]
+    crate::arch::task_counters::sample(irq_guard);
+
     let Some(task) = Task::current() else {
         return;
     };
