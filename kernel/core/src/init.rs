@@ -238,6 +238,7 @@ fn first_kthread() {
             struct KernelSchedulingEvent {
                 timestamp: Instant,
                 task: TaskId,
+                cpu: u32,
                 kind: SchedulingEventKind,
             }
 
@@ -258,6 +259,7 @@ fn first_kthread() {
                                 KernelSchedulingEvent {
                                     timestamp: context.timestamp,
                                     task: TaskId::new(&e.task),
+                                    cpu: e.cpu,
                                     kind: e.kind,
                                 }
                             }))
