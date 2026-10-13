@@ -208,6 +208,68 @@ FN_TEST(boost_and_restore)
 END_TEST()
 
 // ============================================================================
+// A thread created by a boosted owner starts with the owner's own policy
+// ============================================================================
+
+static _Atomic int spawn_child;
+static _Atomic int child_policy = -1;
+
+static void *record_policy(void *arg)
+{
+	(void)arg;
+	atomic_store(&child_policy, sched_getscheduler(0));
+	return NULL;
+}
+
+static void *spawn_while_boosted(void *arg)
+{
+	pthread_t child;
+
+	(void)arg;
+	if (set_policy(SCHED_OTHER, 0) < 0)
+		return (void *)(long)errno;
+	atomic_store(&owner_tid, gettid_());
+	if (futex_pi(&word, FUTEX_TRYLOCK_PI, NULL) < 0)
+		return (void *)(long)errno;
+	atomic_store(&owner_locked, 1);
+	while (!atomic_load(&spawn_child))
+		sleep_ms(1);
+	if (pthread_create(&child, NULL, record_policy, NULL) != 0 ||
+	    pthread_join(child, NULL) != 0)
+		return (void *)(long)EAGAIN;
+	if (futex_pi(&word, FUTEX_UNLOCK_PI, NULL) < 0)
+		return (void *)(long)errno;
+	return NULL;
+}
+
+FN_TEST(boost_is_not_inherited)
+{
+	pthread_t owner, waiter;
+	void *ret;
+
+	SKIP_TEST_IF(has_kernel_param("lockprio.policy=none"));
+
+	atomic_store(&word, 0);
+	atomic_store(&owner_locked, 0);
+	TEST_SUCC(pthread_create(&owner, NULL, spawn_while_boosted, NULL));
+	while (!atomic_load(&owner_locked))
+		sleep_ms(1);
+	TEST_SUCC(pthread_create(&waiter, NULL, lock_and_unlock, NULL));
+	while (!(atomic_load(&word) & FUTEX_WAITERS))
+		sleep_ms(1);
+	sleep_ms(20);
+	TEST_RES(sched_getscheduler(atomic_load(&owner_tid)),
+		 _ret == SCHED_FIFO);
+
+	// Like Linux, the child starts with the owner's own policy.
+	atomic_store(&spawn_child, 1);
+	TEST_RES(pthread_join(owner, &ret), ret == NULL);
+	TEST_RES(atomic_load(&child_policy), _ret == SCHED_OTHER);
+	TEST_RES(pthread_join(waiter, &ret), ret == NULL);
+}
+END_TEST()
+
+// ============================================================================
 // Boosting lets a high-priority waiter get past a medium-priority hog
 // ============================================================================
 

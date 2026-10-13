@@ -44,6 +44,7 @@ mod thread_local;
 pub use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub use exit::{do_exit, do_exit_group};
+pub(super) use lockprio::inheritable_policy;
 pub use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub use robust_list::RobustListHead;

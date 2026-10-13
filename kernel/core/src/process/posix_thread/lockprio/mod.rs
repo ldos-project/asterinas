@@ -16,6 +16,7 @@
 //!   futex, that futex's owner sees the boosted policy only at the next change to that futex.
 //! - Changing a boosted thread's policy with `sched_setscheduler` replaces its own policy, which
 //!   it keeps once unboosted, but `sched_getscheduler` reports the boosted policy meanwhile.
+//!   Threads it clones meanwhile do start with its own policy, as on Linux.
 
 pub mod policy;
 
@@ -189,6 +190,22 @@ pub(super) fn apply(tid: Tid, thread: Option<&Arc<Thread>>) {
         // Apply with the lock held so that concurrent changes are applied in order.
         set_policy_requeued(&thread, target);
         decisions::produce(tid, applied, target, contended_futexes);
+    }
+}
+
+/// Returns the policy that a thread cloned from `thread`, whose TID is `tid`, starts with.
+///
+/// Like Linux, a clone inherits the parent's own policy, not one the parent was boosted to.
+pub(in crate::process) fn inheritable_policy(thread: &Thread, tid: Tid) -> SchedPolicy {
+    let own_policy = thread.sched_attr().inheritable_policy();
+    if !is_enabled() {
+        return own_policy;
+    }
+    let state = STATE.lock();
+    match state.owners.get(&tid) {
+        // As in `apply`, a policy other than the applied one was set with `sched_setscheduler`.
+        Some(owner) if own_policy == owner.applied => owner.base,
+        _ => own_policy,
     }
 }
 
