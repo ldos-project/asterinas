@@ -2,17 +2,17 @@
  * Part of LAKE: Towards a Machine Learning-Assisted Kernel with LAKE
  * Copyright (C) 2022-2024 Henrique Fingler
  * Copyright (C) 2022-2024 Isha Tarte
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
@@ -81,7 +81,7 @@ private:
     * 5: offset in bytes
     * 6: IO submission time (not used)
     */
-    std::ofstream outfile;  
+    std::ofstream outfile;
     std::mutex io_mutex;
 
     void allocate_trace() {
@@ -185,7 +185,7 @@ public:
         req_offsets[device] = new uint64_t[trace_line_count[device]];
         req_sizes[device] = new uint64_t[trace_line_count[device]];
         req_ops[device] = new uint8_t[trace_line_count[device]];
-        
+
         double timestamp;
         int trash;
         uint64_t offset, size;
@@ -193,7 +193,7 @@ public:
         uint64_t max_size=0;
         for (int i = 0 ; i < trace_line_count[device] ; i++) {
             std::getline(in, line);
-            sscanf(line.c_str(), "%lf %d %lu %lu %u", 
+            sscanf(line.c_str(), "%lf %d %lu %lu %u",
                 &timestamp, &trash, &offset, &size, &op_type);
 
             //in >> timestamp >> trash >> offset >> size >> op_type;
@@ -219,11 +219,11 @@ public:
     */
     //ts comes in as us
     void write_output_line(uint64_t ts, uint32_t latency, uint8_t op,
-            uint64_t size, uint64_t offset, uint64_t submission, 
+            uint64_t size, uint64_t offset, uint64_t submission,
             uint32_t device) {
         std::lock_guard<std::mutex> lk(io_mutex);
-        char buf[1024]; 
-        sprintf(buf, "%.3ld,%d,%d,%ld,%lu,%.3ld,%u", ts, latency, !op, 
+        char buf[1024];
+        sprintf(buf, "%.3ld,%d,%d,%ld,%lu,%.3ld,%u", ts, latency, !op,
                 size, offset, submission, device);
         outfile << std::string(buf) << std::endl;
     }
@@ -231,7 +231,7 @@ public:
     TraceOp get_line(uint8_t device) {
         uint64_t line_n = jobtracker[device].fetch_add(1, std::memory_order_seq_cst);
 
-        TraceOp traceop; 
+        TraceOp traceop;
         traceop.timestamp = line_n >= trace_line_count[device] ? -1 : req_timestamps[device][line_n];
         if (traceop.timestamp == -1)
             return traceop;

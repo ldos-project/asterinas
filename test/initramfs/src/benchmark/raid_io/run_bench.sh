@@ -1,8 +1,8 @@
 #!/bin/sh
 
 # SPDX-License-Identifier: MPL-2.0
-
-# One replay of the RAID I/O benchmark, inside the guest. To drive it in Mariposa, use init; to drive it in 
+#
+# One replay of the RAID I/O benchmark, inside the guest. To drive it in Mariposa, use init; to drive it in
 # Debian, use SSH, with --replayer, --share and --staging pointed at its own paths.
 #
 # Usage: run_bench.sh --workload W --threads N --target /dev/X --out-dir D
@@ -46,6 +46,7 @@ RESULT_DIR="${SHARE}/${OUT_DIR}"
 TRACE="${STAGING}/${WORKLOAD}.trace"
 rm -rf "$STAGING" "$RESULT_DIR"
 mkdir -p "$STAGING" "$RESULT_DIR"
+# Move the trace from the shared VirtIOFS to /tmp
 cp "${SHARE}/traces/${WORKLOAD}.trace" "$TRACE" || fail "no ${WORKLOAD}.trace on the share"
 
 # Count the trace's requests and the CPUs, and tell the host driver the replay is about to start.
@@ -73,8 +74,10 @@ cat >"${STAGING}/guest_meta.json" <<EOF
  "replay_seconds": ${REPLAY_SECONDS}, "replayer_exit": ${RC},
  "cmdline": "$(sed 's/\\/\\\\/g; s/"/\\"/g' /proc/cmdline)"}
 EOF
-# Copy the results to the share for the host to collect, and flush them.
-cp "${STAGING}/latency.csv" "${STAGING}/replayer.log" "${STAGING}/guest_meta.json" "$RESULT_DIR/" || true
+# Copy the results to the share for the host to collect, and flush them. A failed copy is only tolerated
+# when the replayer already failed (its output may be missing), since that failure is reported below.
+cp "${STAGING}/latency.csv" "${STAGING}/replayer.log" "${STAGING}/guest_meta.json" "$RESULT_DIR/" ||
+    [ "$RC" -ne 0 ] || fail "could not copy the results to '${RESULT_DIR}'"
 sync
 
 # Report failure if the replayer failed, otherwise mark the run as finished.

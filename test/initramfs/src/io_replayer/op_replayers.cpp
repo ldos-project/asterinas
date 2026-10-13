@@ -2,17 +2,17 @@
  * Part of LAKE: Towards a Machine Learning-Assisted Kernel with LAKE
  * Copyright (C) 2022-2024 Henrique Fingler
  * Copyright (C) 2022-2024 Isha Tarte
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
@@ -33,7 +33,7 @@ static int sleep_until(uint64_t next) {
         if (diff <= -2000) return 1;
         return 0; //late but not that much
     }
-    else 
+    else
         std::this_thread::sleep_for(std::chrono::nanoseconds(diff));
     return 0;
 }
@@ -131,7 +131,7 @@ void strawman_2ssds_execute_op(TraceOp &trace_op, Trace *trace, uint32_t device,
             trace->add_unique_fail(device);
             trace->add_io_count(2);
             ret = pread(fds[2], buf, trace_op.size, trace_op.offset);
-            if (ret < 0) { 
+            if (ret < 0) {
                 printf("Second IO failed, this shouldn't happen! err %d\n", ret);
                 trace->add_never_finished(device);
             }

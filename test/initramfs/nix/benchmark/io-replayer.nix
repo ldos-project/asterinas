@@ -1,6 +1,5 @@
 { lib, stdenv, glibc, }:
-# The LAKE I/O trace replayer (https://github.com/utcs-scea/LAKE, src/linnos/io_replayer), the
-# workload generator of the RAID I/O benchmark.
+# The LAKE I/O trace replayer (https://github.com/utcs-scea/LAKE, src/linnos/io_replayer).
 stdenv.mkDerivation {
   pname = "io-replayer";
   version = "0.1.0";
@@ -10,7 +9,7 @@ stdenv.mkDerivation {
   };
 
   # Linked statically, so the binary can be dropped into `/benchmark/bin` on its own without
-  # dragging a shared-library closure into the initramfs. `glibc.static` supplies `libc.a`.
+  # dragging a shared-library closure into the initramfs.
   buildInputs = [ glibc.static ];
 
   buildPhase = ''

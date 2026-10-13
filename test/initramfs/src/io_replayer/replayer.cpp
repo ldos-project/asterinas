@@ -2,17 +2,17 @@
  * Part of LAKE: Towards a Machine Learning-Assisted Kernel with LAKE
  * Copyright (C) 2022-2024 Henrique Fingler
  * Copyright (C) 2022-2024 Isha Tarte
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
@@ -43,7 +43,7 @@ int main (int argc, char **argv)
         printf("Usage: ./replayer <baseline|failover> logfile <# of devices to trace (1,2,3)> <# of threads per device> /dev/tgt0-/dev/tgt1-/dev/tgt2 <n of devices traces>\n");
         exit(1);
     }
-    
+
     std::string metrics_file(argv[2]);
     std::string metrics_fname(argv[2]);
     std::string type(argv[1]);
@@ -60,7 +60,7 @@ int main (int argc, char **argv)
         printf("parsing trace %d\n", i);
         trace.parse_file(i, argv[6+i]);
     }
-    
+
     pthread_barrier_t sync_barrier;
     int err = pthread_barrier_init(&sync_barrier, NULL, n_devices_to_trace*n_threads+1);
     if (err != 0) {
@@ -96,7 +96,7 @@ int main (int argc, char **argv)
     usleep(20); //wait until everyone hits barrier
     uint64_t now = get_ns_ts();
     //give threads most up do date starting time
-    for (int dev=0; dev < n_devices_to_trace ; dev++) 
+    for (int dev=0; dev < n_devices_to_trace ; dev++)
         for (int j = 0; j < n_threads; j++)
             targs[dev][j].start_ts = now;
 
