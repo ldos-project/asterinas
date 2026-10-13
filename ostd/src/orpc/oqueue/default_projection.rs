@@ -31,8 +31,6 @@ where
 
 #[cfg(ktest)]
 mod test {
-    use alloc::vec::Vec;
-
     use serde::Serialize;
 
     use super::DefaultProjection;
