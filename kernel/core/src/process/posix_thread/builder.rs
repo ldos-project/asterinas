@@ -145,6 +145,12 @@ impl PosixThreadBuilder {
         self
     }
 
+    /// Sets the scheduling policy the thread starts with. A cloned thread inherits its parent's.
+    pub fn sched_policy(mut self, sched_policy: SchedPolicy) -> Self {
+        self.sched_policy = sched_policy;
+        self
+    }
+
     /// Sets the CPUs the thread may run on. A cloned thread inherits its parent's.
     pub fn cpu_affinity(mut self, cpu_affinity: CpuSet) -> Self {
         self.cpu_affinity = cpu_affinity;
