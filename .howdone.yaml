@@ -16,4 +16,8 @@ commands:
   env.txt: env
   qemu.log: cat qemu.log
   qemu-enhanced.log: cargo osdk enhance-log -b target/osdk/aster-kernel/aster-kernel-osdk-bin qemu.log
-  results: cp -a result_*.json $OUTPUT_DIR || true; echo Results are in; ls -lh $OUTPUT_DIR/result_*.json
+  results: mv result_*.json *_output_*.txt *_guest_*.log $OUTPUT_DIR || true; echo Results are in; ls -lh $OUTPUT_DIR/result_*.json
+  # Nightly benchmark context (may be empty)
+  act-version.txt: act --version
+  docker-version.txt: docker version
+  image.txt: cat DOCKER_IMAGE_VERSION

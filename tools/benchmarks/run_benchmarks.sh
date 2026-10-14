@@ -24,8 +24,8 @@ for benchmark in "$@"; do
     MATRIX_ARGS+=(--matrix "benchmarks:${benchmark}")
 done
 
-# Run the suite using the benchmark howdone config to capture provenance and artifacts
-tools/howdone/howdone -c tools/benchmarks/howdone.yaml -- \
+# Run the suite with howdone to capture provenance and artifacts
+tools/howdone/howdone -- \
     act workflow_dispatch \
     -W .github/workflows/benchmark_x86.yml \
     -j Benchmarks \
