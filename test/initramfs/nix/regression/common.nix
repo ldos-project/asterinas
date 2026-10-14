@@ -7,6 +7,7 @@
   testPlatform ? "asterinas",
   extraAttrs ? { },
   extraBuildInputs ? [ ],
+  extraNativeBuildInputs ? [ ],
 }:
 stdenv.mkDerivation (
   {
@@ -30,7 +31,13 @@ stdenv.mkDerivation (
       glibc.static
     ]
     ++ extraBuildInputs;
+    nativeBuildInputs = extraNativeBuildInputs;
     buildCommand = ''
+      if declare -F cargoSetupPostUnpackHook >/dev/null; then
+        cargoSetupPostUnpackHook
+        export CARGO_HOME="$PWD/.cargo"
+      fi
+
       mkdir -p $out
       make --no-print-directory BUILD_DIR=$(mktemp -d) OUTPUT_DIR=$out -C "$src/${dir}"
     '';

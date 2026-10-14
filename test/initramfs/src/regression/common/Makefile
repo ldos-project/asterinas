@@ -17,6 +17,11 @@ C_DEPS := $(addprefix $(DEP_OUTPUT_DIR)/,$(C_SRCS:%.c=%.d))
 ASM_SRCS := $(wildcard *.S)
 ASM_OBJS := $(addprefix $(OBJ_OUTPUT_DIR)/,$(ASM_SRCS:%.S=%))
 SCRIPTS := $(addprefix $(OBJ_OUTPUT_DIR)/, $(wildcard *.sh))
+RUST_SRCS := $(shell find src -type f -name "*.rs" 2>/dev/null)
+RUST_OBJS := $(addprefix $(OBJ_OUTPUT_DIR)/,$(RUST_BINS))
+RUST_TARGET_DIR := $(BUILD_DIR)/rust/$(CUR_DIR_NAME)
+RUST_TARGET_ARG := $(if $(RUST_TARGET),--target $(RUST_TARGET))
+RUST_PROFILE_DIR := $(RUST_TARGET_DIR)/$(if $(RUST_TARGET),$(RUST_TARGET)/)release
 
 CC ?= gcc
 C_FLAGS += -Wall -Werror
@@ -48,7 +53,7 @@ ifneq ($(SUBDIRS_FILTER),)
 endif
 
 .PHONY: all
-all: $(C_OBJS) $(ASM_OBJS) $(SUBDIRS) $(SCRIPTS)
+all: $(C_OBJS) $(ASM_OBJS) $(RUST_OBJS) $(SUBDIRS) $(SCRIPTS)
 
 $(OBJ_OUTPUT_DIR) $(DEP_OUTPUT_DIR):
 	@mkdir -p $@
@@ -66,6 +71,14 @@ $(OBJ_OUTPUT_DIR)/%: %.S | $(OBJ_OUTPUT_DIR)
 
 $(OBJ_OUTPUT_DIR)/%.sh: %.sh | $(OBJ_OUTPUT_DIR)
 	@cp $< $@
+
+ifneq ($(RUST_BINS),)
+$(RUST_OBJS): $(OBJ_OUTPUT_DIR)/%: Cargo.toml Cargo.lock $(RUST_SRCS) | $(OBJ_OUTPUT_DIR)
+	@cargo build --locked --release --manifest-path Cargo.toml \
+		--target-dir $(RUST_TARGET_DIR) $(RUST_TARGET_ARG) --bin $*
+	@cp $(RUST_PROFILE_DIR)/$* $@
+	@echo "CARGO <= $@"
+endif
 
 .PHONY: $(SUBDIRS)
 $(SUBDIRS):

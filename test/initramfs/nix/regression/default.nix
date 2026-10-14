@@ -13,6 +13,10 @@ let
 
   commonArgs = { inherit testPlatform; };
   commonBuild = dir: callPackage ./common.nix (commonArgs // { inherit dir; });
+  oqfsCargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+    src = ./../../src/regression/oqfs;
+    hash = "sha256-pMKHpCS0tX/a198hbHjfwGKQmrgartKVrXCQoJpCBds=";
+  };
 
   subDirs = [
     "fs"
@@ -32,6 +36,22 @@ let
   allPkgs =
     lib.genAttrs subDirs commonBuild
     // {
+      oqfs = callPackage ./common.nix (
+        commonArgs
+        // {
+          dir = "oqfs";
+          extraAttrs = {
+            cargoDeps = oqfsCargoDeps;
+            RUST_TARGET = stdenv.hostPlatform.rust.rustcTarget;
+            RUSTFLAGS = "-C target-feature=+crt-static -C linker=${stdenv.cc.targetPrefix}cc";
+          };
+          extraNativeBuildInputs = [
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.pkgsBuildHost.cargo
+            pkgs.pkgsBuildHost.rustc
+          ];
+        }
+      );
       device = callPackage ./common.nix (
         commonArgs
         // {
