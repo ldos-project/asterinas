@@ -18,9 +18,8 @@ cd "$(dirname "$(readlink -f "$0")")/../.."
 echo "=== $(date -Is) nightly benchmark run starting in $PWD"
 
 BRANCH="${BENCH_BRANCH:-main}"
-git fetch --quiet origin "$BRANCH"          # remote, then ref — no prefix
-git checkout --quiet "$BRANCH"              # local branch name — no prefix
-git merge --ff-only --quiet "origin/$BRANCH"  # remote-tracking ref — prefix
+git checkout --quiet "$BRANCH"
+git pull --ff-only --quiet origin "$BRANCH"
 echo "=== $BRANCH at $(git rev-parse --short HEAD)"
 
 tools/benchmarks/run_benchmarks.sh || echo "=== benchmarks reported failures; publishing what completed" >&2
