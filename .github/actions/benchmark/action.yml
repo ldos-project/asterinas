@@ -46,7 +46,7 @@ runs:
         echo "BENCHMARK_ARTIFACT=$BENCHMARK_ARTIFACT" >> $GITHUB_ENV
 
     - name: Store benchmark results
-      if: ${{ inputs.task == 'benchmark' && !env.ACT }}
+      if: ${{ inputs.task == 'benchmark' && !env.ACT }} # Artifacts are passed manually under ACT by tools/benchmarks/{run,upload}_benchmarks.sh
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.BENCHMARK_ARTIFACT }}
