@@ -29,6 +29,7 @@ tools/howdone/howdone -c tools/benchmarks/howdone.yaml -- \
     act workflow_dispatch \
     -W .github/workflows/benchmark_x86.yml \
     -j Benchmarks \
+    -P ubuntu-latest=catthehacker/ubuntu:act-latest \
     --bind \
     --pull=false \
     --log-prefix-job-id \

@@ -48,6 +48,7 @@ cp "$RUN_DIR"/result_*.json results/
 
 act workflow_dispatch \
     -W .github/workflows/benchmark_x86.yml \
+    -P ubuntu-latest=catthehacker/ubuntu:act-latest \
     --bind \
     --pull=false \
     --matrix benchmarks:sysbench/cpu_lat \
