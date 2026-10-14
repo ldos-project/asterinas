@@ -11,8 +11,7 @@
 
 set -e
 
-# setup_worker.sh installs act to /usr/local/bin; docker is in /usr/bin, which cron already has.
-export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+export PATH="$HOME/.nix-profile/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
 cd "$(dirname "$(readlink -f "$0")")/../.."
 
