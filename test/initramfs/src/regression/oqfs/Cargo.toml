@@ -7,17 +7,9 @@ edition = "2024"
 publish = false
 license = "MPL-2.0"
 
-[[bin]]
-name = "oqfs_produce_consume_test"
-path = "src/bin/oqfs_produce_consume_test.rs"
-
-[[bin]]
-name = "oqfs_strong_observe_test"
-path = "src/bin/oqfs_strong_observe_test.rs"
-
-[[bin]]
-name = "oqfs_weak_observe_test"
-path = "src/bin/oqfs_weak_observe_test.rs"
+[[test]]
+name = "oqfs_test"
+path = "tests/oqfs_test.rs"
 
 [dependencies]
 minicbor-serde = { version = "0.6", features = ["std"] }

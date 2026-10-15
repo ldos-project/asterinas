@@ -29,8 +29,6 @@ use spin::once::Once;
 use crate::data_capture::{self, new_data_capture_file};
 #[cfg(not(baseline_asterinas))]
 use crate::event::{EventContext, TaskId};
-#[cfg(not(baseline_asterinas))]
-use crate::oqfs_test;
 use crate::{
     benchmarks,
     fs::vfs::path::{MountNamespace, PathResolver},
@@ -38,7 +36,7 @@ use crate::{
     process::{Process, spawn_init_process},
     sched,
     sched::SchedPolicy,
-    thread,
+    test, thread,
     thread::kernel_thread::ThreadOptions,
     vm,
 };
@@ -214,8 +212,7 @@ fn first_kthread() {
     #[cfg(not(baseline_asterinas))]
     benchmarks::oqueue_roundtrip::init_after_init_process();
 
-    #[cfg(not(baseline_asterinas))]
-    oqfs_test::init_after_init_process();
+    test::init_after_init_process();
 
     #[cfg(not(baseline_asterinas))]
     if VM_HUGEPAGED_ENABLED.load(Ordering::Relaxed) {
