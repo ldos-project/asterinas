@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 15
     container: ldosproject/asterinas:0.18.0-ldos-20260831
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           repository: 'ldos-project/asterinas'
           path: 'asterinas'
