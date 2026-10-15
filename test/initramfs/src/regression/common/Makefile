@@ -17,7 +17,10 @@ C_DEPS := $(addprefix $(DEP_OUTPUT_DIR)/,$(C_SRCS:%.c=%.d))
 ASM_SRCS := $(wildcard *.S)
 ASM_OBJS := $(addprefix $(OBJ_OUTPUT_DIR)/,$(ASM_SRCS:%.S=%))
 SCRIPTS := $(addprefix $(OBJ_OUTPUT_DIR)/, $(wildcard *.sh))
-RUST_SRCS := $(shell find src -type f -name "*.rs" 2>/dev/null)
+# Cargo discovers each `src/bin/*.rs` file as a binary target; mirror that convention here.
+RUST_BIN_SRCS := $(wildcard src/bin/*.rs)
+RUST_BINS := $(patsubst src/bin/%.rs,%,$(RUST_BIN_SRCS))
+RUST_SRCS := $(shell if test -f Cargo.toml; then find src -type f -name "*.rs"; fi)
 RUST_OBJS := $(addprefix $(OBJ_OUTPUT_DIR)/,$(RUST_BINS))
 RUST_TARGET_DIR := $(BUILD_DIR)/rust/$(CUR_DIR_NAME)
 RUST_TARGET_ARG := $(if $(RUST_TARGET),--target $(RUST_TARGET))
@@ -72,7 +75,7 @@ $(OBJ_OUTPUT_DIR)/%: %.S | $(OBJ_OUTPUT_DIR)
 $(OBJ_OUTPUT_DIR)/%.sh: %.sh | $(OBJ_OUTPUT_DIR)
 	@cp $< $@
 
-ifneq ($(RUST_BINS),)
+ifneq ($(wildcard Cargo.toml),)
 $(RUST_OBJS): $(OBJ_OUTPUT_DIR)/%: Cargo.toml Cargo.lock $(RUST_SRCS) | $(OBJ_OUTPUT_DIR)
 	@cargo build --locked --release --manifest-path Cargo.toml \
 		--target-dir $(RUST_TARGET_DIR) $(RUST_TARGET_ARG) --bin $*
