@@ -22,7 +22,7 @@ git checkout --quiet "$BRANCH"
 git pull --ff-only --quiet origin "$BRANCH"
 echo "=== $BRANCH at $(git rev-parse --short HEAD)"
 
-tools/benchmarks/run_benchmarks.sh || echo "=== benchmarks reported failures; publishing what completed" >&2
+tools/benchmarks/run_benchmarks.sh
 
 tools/benchmarks/upload_benchmarks.sh
 
