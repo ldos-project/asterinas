@@ -38,7 +38,8 @@ fi
 RUN_DIR="${RUN_DIRS[-1]%/}"
 echo "Uploading $RUN_DIR"
 
-tar -czf "${RUN_DIR}.tar.gz" "$RUN_DIR"
+ARCHIVE="${RUN_DIR}.tar.xz"
+tar -cJf "$ARCHIVE" "$RUN_DIR"
 
 # Clear state left in the workspace by a previous upload: stale configs would be
 # re-uploaded alongside the current ones, and the gh-pages clone fails if it exists.
@@ -54,8 +55,8 @@ act workflow_dispatch \
     --matrix benchmarks:sysbench/cpu_lat \
     --env SKIP_BENCHMARKS=1 \
     --env UPLOAD_RESULTS=1 \
-    --env BENCHMARK_ARCHIVE="${RUN_DIR}.tar.gz"
+    --env BENCHMARK_ARCHIVE="$ARCHIVE"
 
 clean_workspace
-rm -rf "$RUN_DIR" "${RUN_DIR}.tar.gz"
+rm -rf "$RUN_DIR" "$ARCHIVE"
 echo "Uploaded $RUN_DIR"
