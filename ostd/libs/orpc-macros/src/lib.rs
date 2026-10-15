@@ -8,13 +8,16 @@ mod orpc_server;
 mod orpc_trait;
 mod parsing_utils;
 mod select;
+mod trace_methods;
 mod tuple_serialize;
 
 use proc_macro::TokenStream;
 use syn::{
-    ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
+    Item, ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
     punctuated::Punctuated,
 };
+
+use crate::trace_methods::ImplOptions;
 
 /// Declare a trait as an ORPC trait that can be implemented by ORPC server.
 ///
@@ -226,6 +229,50 @@ pub fn select(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
     input
+}
+
+/// Creates call and return OQueues for marked methods in a trait or impl.
+///
+/// A trait or inherent impl generates event types in a snake-case module named after the trait or
+/// implementing type. Traced default trait methods emit events through the generated types. A
+/// generated supertrait lets their receivers be recorded as `&dyn Trait`. A trait impl reuses its
+/// trait's types and produces the events instead. Use `trait_module(...)` on a trait impl to give
+/// the path to the module containing the trait when the trait path is unqualified.
+///
+/// ```ignore
+/// #[trace_methods(visibility(pub(crate)))]
+/// trait Socket {
+///     #[trace]
+///     fn connect(&self, address: SocketAddr) -> Result<()>;
+/// }
+///
+/// #[trace_methods(trait_module(crate::net))]
+/// impl Socket for TcpSocket {
+///     #[trace]
+///     fn connect(&self, address: SocketAddr) -> Result<()> { /* ... */ }
+/// }
+/// ```
+///
+/// A method's default OQueue paths are derived from its module, type, and method names. Use
+/// `#[trace(path = "custom.path")]` to override the base path. Arguments may be left out of either
+/// event with `#[trace(only(call))]` or `#[trace(only(return))]`. An empty `#[trace(only())]`
+/// omits an argument from both events.
+///
+/// Trait-owned messages store the receiver as `&dyn Trait`. `Self` in argument and return types is
+/// supported only for inherent impls.
+#[proc_macro_attribute]
+pub fn trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let options = parse_macro_input!(attr as ImplOptions);
+    let item = parse_macro_input!(input as Item);
+    let result = match item {
+        Item::Impl(impl_block) => trace_methods::trace_structured_data_impl(options, impl_block),
+        Item::Trait(trait_item) => trace_methods::trace_structured_data_trait(options, trait_item),
+        item => Err(syn::Error::new_spanned(
+            item,
+            "trace_methods must be placed on a trait or impl",
+        )),
+    };
+    result.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 /// Implement `serde::Serialize` for a struct by serializing it as a tuple, instead of a map with

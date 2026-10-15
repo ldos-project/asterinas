@@ -251,8 +251,22 @@ pub fn trace_structured_data_with_len<'a, D: ElementDescriptor>(
     length: usize,
     producer: &'static spin::Once<GenericRefProducer<D>>,
 ) {
+    trace_structured_data_at_path(|| Path::Static(path), value, length, producer);
+}
+
+#[cfg(not(baseline_asterinas))]
+#[doc(hidden)]
+pub fn trace_structured_data_at_path<'a, D, F>(
+    path_fn: F,
+    value: &'a D::Element<'a>,
+    length: usize,
+    producer: &'static spin::Once<GenericRefProducer<D>>,
+) where
+    D: ElementDescriptor,
+    F: FnOnce() -> Path,
+{
     let producer = producer.call_once(|| {
-        let path = Path::Static(path);
+        let path = path_fn();
         let oqueue = registry::lookup_by_path::<D>(&path)
             .unwrap_or_else(|| GenericOQueueRef::<D>::new(length, path).as_any_oqueue());
         oqueue.attach_ref_producer().unwrap()
