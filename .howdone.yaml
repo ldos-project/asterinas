@@ -27,4 +27,4 @@ commands:
   # Nightly benchmark context (may be empty)
   act-version.txt: act --version
   docker-version.txt: docker version
-  image.txt: cat DOCKER_IMAGE_VERSION
+  image-version.txt: cat DOCKER_IMAGE_VERSION
