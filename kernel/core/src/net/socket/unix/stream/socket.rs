@@ -11,12 +11,11 @@ use super::{
 use crate::{
     events::IoEvents,
     fs::{
-        file::{FileCommon, FileLike, StatusFlags},
-        pseudofs::SockFs,
+        file::{FileCommon, FileLike},
         utils::EndpointState,
     },
     net::socket::{
-        Socket,
+        Socket, new_socket_common,
         options::{
             Error as SocketError, PeerCred, PeerGroups, SocketOption, macros::sock_option_mut,
         },
@@ -38,7 +37,7 @@ use crate::{
     util::{MultiRead, MultiWrite, net::SockType},
 };
 
-pub struct UnixStreamSocket {
+pub(crate) struct UnixStreamSocket {
     // Lock order: `state` first, `options` second
     state: RwMutex<Takeable<State>>,
     options: RwLock<OptionSet>,
@@ -167,7 +166,7 @@ impl OptionSet {
 }
 
 impl UnixStreamSocket {
-    pub fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
         debug_assert!(
             socket_type == SockType::SOCK_STREAM || socket_type == SockType::SOCK_SEQPACKET
         );
@@ -176,22 +175,17 @@ impl UnixStreamSocket {
     }
 
     fn new_init(init: Init, is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Arc::new(Self {
             state: RwMutex::new(Takeable::new(State::Init(init))),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             socket_type,
             pollee: Pollee::new(),
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 
-    pub fn new_pair(is_nonblocking: bool, socket_type: SockType) -> (Arc<Self>, Arc<Self>) {
+    pub(crate) fn new_pair(is_nonblocking: bool, socket_type: SockType) -> (Arc<Self>, Arc<Self>) {
         debug_assert!(
             socket_type == SockType::SOCK_STREAM || socket_type == SockType::SOCK_SEQPACKET
         );
@@ -219,18 +213,13 @@ impl UnixStreamSocket {
         socket_type: SockType,
     ) -> Arc<Self> {
         let cloned_pollee = connected.cloned_pollee();
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Arc::new(Self {
             state: RwMutex::new(Takeable::new(State::Connected(connected))),
             options: RwLock::new(options),
             timeouts: SocketTimeouts::new(),
             socket_type,
             pollee: cloned_pollee,
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 

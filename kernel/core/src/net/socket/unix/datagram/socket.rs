@@ -10,12 +10,9 @@ use aster_rights::ReadDupOp;
 use super::message::{MessageQueue, MessageReceiver};
 use crate::{
     events::IoEvents,
-    fs::{
-        file::{FileCommon, StatusFlags},
-        pseudofs::SockFs,
-    },
+    fs::file::FileCommon,
     net::socket::{
-        Socket,
+        Socket, new_socket_common,
         options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
         private::SocketPrivate,
         unix::{CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData},
@@ -31,7 +28,7 @@ use crate::{
     util::{MultiRead, MultiWrite, net::SockType},
 };
 
-pub struct UnixDatagramSocket {
+pub(crate) struct UnixDatagramSocket {
     local_receiver: MessageReceiver,
     remote_queue: RwLock<Option<Arc<MessageQueue>>>,
     options: RwLock<OptionSet>,
@@ -59,11 +56,11 @@ impl OptionSet {
 }
 
 impl UnixDatagramSocket {
-    pub fn new(is_nonblocking: bool) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool) -> Arc<Self> {
         Arc::new(Self::new_raw(is_nonblocking))
     }
 
-    pub fn new_pair(is_nonblocking: bool) -> (Arc<Self>, Arc<Self>) {
+    pub(crate) fn new_pair(is_nonblocking: bool) -> (Arc<Self>, Arc<Self>) {
         let mut socket_a = Self::new_raw(is_nonblocking);
         let mut socket_b = Self::new_raw(is_nonblocking);
 
@@ -81,11 +78,6 @@ impl UnixDatagramSocket {
     }
 
     fn new_raw(is_nonblocking: bool) -> Self {
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Self {
             local_receiver: MessageReceiver::new(),
             remote_queue: RwLock::new(None),
@@ -93,7 +85,7 @@ impl UnixDatagramSocket {
             timeouts: SocketTimeouts::new(),
             peer_cred: None,
             is_write_shutdown: AtomicBool::new(false),
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         }
     }
 

@@ -11,7 +11,6 @@ use snafu::Snafu;
 /// Error number.
 ///
 /// This should match the Linux error numbers as defined in `errno.h` and similar.
-#[expect(clippy::upper_case_acronyms)]
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, TryFromInt)]
 pub enum Errno {
@@ -627,13 +626,32 @@ impl From<int_to_c_enum::TryFromIntError> for Error {
     }
 }
 
+impl From<aster_device::common::Error> for Error {
+    fn from(err: aster_device::common::Error) -> Self {
+        use aster_device::common::Error::*;
+        match err {
+            AlreadyAdded | AlreadyBound => Error::new(Errno::EBUSY),
+            NotAdded | NotBound | ParentNotAdded | DriverUnregistered | NoDevNum => {
+                Error::new(Errno::ENODEV)
+            }
+            HasChildren => Error::new(Errno::ENOTEMPTY),
+            NameConflict => Error::new(Errno::EEXIST),
+            NotFound | NoDriver => Error::new(Errno::ENOENT),
+            InvalidName | InvalidValue => Error::new(Errno::EINVAL),
+            ProbeFailed | Attribute | Format | Hook => Error::new(Errno::EIO),
+            ResourceUnavailable => Error::new(Errno::ENOSPC),
+            SysTree(inner) => inner.into(),
+        }
+    }
+}
+
 impl From<aster_systree::Error> for Error {
     #[track_caller]
     fn from(err: aster_systree::Error) -> Self {
         use aster_systree::Error::*;
         match err {
             NotFound => Error::new(Errno::ENOENT),
-            InvalidOperation => Error::new(Errno::EINVAL),
+            InvalidOperation | InvalidName => Error::new(Errno::EINVAL),
             ResourceUnavailable => Error::new(Errno::EBUSY),
             AttributeError => Error::new(Errno::EIO),
             PermissionDenied => Error::new(Errno::EACCES),
@@ -656,21 +674,19 @@ impl From<aster_util::printer::VmPrinterError> for Error {
     }
 }
 
+#[macro_export]
 macro_rules! return_errno {
     ($errno: expr) => {
         return Err($crate::error::Error::new($errno))
     };
 }
 
-pub(crate) use return_errno;
-
+#[macro_export]
 macro_rules! return_errno_with_message {
     ($errno: expr, $message: expr) => {
         return Err($crate::error::Error::with_message($errno, $message))
     };
 }
-
-pub(crate) use return_errno_with_message;
 
 #[cfg(ktest)]
 mod test {

@@ -4,19 +4,93 @@ This section documents kernel command-line parameters supported by Asterinas.
 
 ## Inherited from Linux
 
-### `init`
+### `rdinit`
 
-Run the specified binary as `init`.
+Run the specified initramfs binary as the first userspace process.
 
 Example:
 ```text
-init=/bin/busybox
+rdinit=/bin/busybox
 ```
 
 Notes:
-- The value is the path to the executable.
-- If omitted, Asterinas will try to execute from the following paths in order:
-  `/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`.
+- The value is the path to the executable in the initramfs root.
+- If omitted, Asterinas will try to execute `/init` from the initramfs root.
+- If the specified path cannot be accessed,
+  Asterinas ignores it and proceeds with root filesystem initialization.
+  It does not fall back to `/init` in this case.
+
+### `root`
+
+Mount the specified block device as the root filesystem.
+
+Example:
+```text
+root=/dev/vda2
+```
+
+Notes:
+- The value currently must name a registered block device under `/dev`,
+  such as `/dev/vda2`.
+- Asterinas first determines the boot source. If the path specified by
+  `rdinit` is accessible, or if `rdinit` is absent and `/init` exists, it
+  boots from the initramfs and ignores `root`. Otherwise, it boots from the
+  rootfs, for which `root` is required: Asterinas mounts the specified device
+  as the root filesystem and panics if the parameter is absent.
+
+### `rootfstype`
+
+Select the filesystem type used for the root filesystem.
+
+Example:
+```text
+root=/dev/vda2 rootfstype=ext2
+```
+
+Valid values:
+- `ext2`
+
+### `ro`
+
+Mount the root filesystem read-only.
+This is the default when Asterinas mounts the root filesystem via `root`.
+
+Example:
+```text
+root=/dev/vda2 ro
+```
+
+Notes:
+- This parameter has no effect when Asterinas boots from the initramfs.
+- If both `ro` and `rw` are specified, the last one takes precedence.
+
+### `rw`
+
+Mount the root filesystem read-write.
+
+Example:
+```text
+root=/dev/vda2 rw
+```
+
+Notes:
+- This parameter has no effect when Asterinas boots from the initramfs.
+- `rw` overrides the default read-only root mount.
+- If both `ro` and `rw` are specified, the last one takes precedence.
+
+### `init`
+
+Run the specified executable as the first userspace process from the root filesystem.
+
+Example:
+```text
+root=/dev/vda2 rootfstype=ext2 init=/nix/var/nix/profiles/system/init
+```
+
+Notes:
+- `init` is used only after Asterinas mounts the root filesystem via `root=`.
+- If omitted,
+  Asterinas tries `/sbin/init`, `/etc/init`, `/bin/init`, and `/bin/sh`, in that order.
 
 ### `console`
 
@@ -55,6 +129,36 @@ Examples:
 ```text
 virtio_mmio.device=0x200@0x5950f000:10
 virtio_mmio.device=1K@0x1001e000:74
+```
+
+### `i8042.reset`
+
+Force the i8042 controller self-test during initialization.
+
+Valid values:
+- `1`, `on`, `yes`, `true` or no value — perform the controller self-test
+- `0`, `off`, `no`, `false` — skip the controller self-test (default)
+
+Examples:
+```text
+i8042.reset
+i8042.reset=1
+i8042.reset=0
+```
+
+### `atkbd.reset`
+
+Override whether the AT keyboard reset is performed during initialization.
+
+Valid values:
+- `1`, `on`, `yes`, `true` or no value — send the keyboard reset command
+- `0`, `off`, `no`, `false` — skip the keyboard reset
+
+Examples:
+```text
+atkbd.reset
+atkbd.reset=1
+atkbd.reset=0
 ```
 
 ### `earlycon`
@@ -116,7 +220,7 @@ Override ACPI's indication of whether a PS/2 (i8042) controller exists.
 
 Valid values:
 - `1`, `on`, `yes`, `true` or no value — treat the i8042 controller as present (force probing)
-- `0`, `off`, `no`, `false` - treat the i8042 controller as absent (skip probing)
+- `0`, `off`, `no`, `false` — treat the i8042 controller as absent (skip probing)
 
 Examples:
 ```text

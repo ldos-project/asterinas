@@ -7,17 +7,20 @@ use aster_framebuffer::{
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::mm::{HasPaddr, HasSize, VmIo};
 
-use super::{Device, DeviceType, DevtmpfsInodeMeta, registry::char};
+use super::{Device, DeviceType, registry::char};
 use crate::{
     context::current_userspace,
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
-        file::{Mappable, PerOpenFileOps, StatusFlags},
+        devtmpfs::DevtmpfsNodeMeta,
+        file::{Mappable, MappableObject, MappedObject, PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
+    vm::vmar::{FileMmapRequest, MapHandle},
 };
 
 #[derive(Debug)]
@@ -202,7 +205,10 @@ struct FbCmapUser {
 
 mod ioctl_defs {
     use super::{FbCmapUser, FbFixScreenInfo, FbVarScreenInfo};
-    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
+    use crate::{
+        ioc,
+        util::ioctl::{InData, InOutData, NoData, OutData},
+    };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/linux/fb.h#L13-L38>
 
@@ -227,12 +233,12 @@ impl Device for Fb {
         DeviceId::new(MajorId::new(29), MinorId::new(0))
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
         // Linux names framebuffer device nodes as `fbN`.
         // TODO: We currently expose only one framebuffer device,
         // so the devtmpfs node is fixed to `fb0`.
         // Reference: <https://elixir.bootlin.com/linux/v6.18/source/drivers/video/fbdev/core/fbsysfs.c#L482>.
-        Some(DevtmpfsInodeMeta::new("fb0"))
+        Some(DevtmpfsNodeMeta::new("fb0").unwrap())
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -498,9 +504,8 @@ impl PerOpenFileOps for FbHandle {
         true
     }
 
-    fn mappable(&self) -> Result<Mappable> {
-        let iomem = self.framebuffer.io_mem();
-        Ok(Mappable::IoMem(iomem.clone()))
+    fn mappable(&self, _request: FileMmapRequest) -> Result<MappableObject<'_>> {
+        Ok(MappableObject::Device(self as &dyn Mappable))
     }
 
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -546,6 +551,34 @@ impl PerOpenFileOps for FbHandle {
                 return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
             }
         })
+    }
+}
+
+impl Mappable for FbHandle {
+    fn map(&self, offset: usize, mut handle: MapHandle) -> Result<Box<dyn MappedObject>> {
+        let io_mem = self.framebuffer.io_mem();
+        let mapped_handle = Box::new(FbMapHandle);
+
+        let io_mem_sliced = if offset >= io_mem.size() {
+            return Ok(mapped_handle);
+        } else if offset != 0 {
+            io_mem.slice(offset..io_mem.size())
+        } else {
+            io_mem.clone()
+        };
+
+        handle.map_iomem(0, io_mem_sliced);
+
+        Ok(mapped_handle)
+    }
+}
+
+#[derive(Debug)]
+struct FbMapHandle;
+
+impl MappedObject for FbMapHandle {
+    fn dup_at_offset(&self, _offset: usize) -> Box<dyn MappedObject> {
+        Box::new(Self)
     }
 }
 

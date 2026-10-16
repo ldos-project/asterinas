@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-pub fn sys_clock_gettime(
+pub(super) fn sys_clock_gettime(
     clockid: clockid_t,
     timespec_addr: Vaddr,
     ctx: &Context,
@@ -38,7 +38,7 @@ pub fn sys_clock_gettime(
 #[expect(non_camel_case_types)]
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
-pub enum ClockId {
+pub(crate) enum ClockId {
     CLOCK_REALTIME = 0,
     CLOCK_MONOTONIC = 1,
     CLOCK_PROCESS_CPUTIME_ID = 2,
@@ -66,8 +66,7 @@ pub enum ClockId {
 pub(super) enum DynamicClockIdInfo {
     Pid(u32, DynamicClockType),
     Tid(u32, DynamicClockType),
-    #[cfg_attr(target_arch = "x86_64", expect(dead_code))]
-    Fd(u32),
+    // TODO: Support FD clocks.
 }
 
 impl TryFrom<clockid_t> for DynamicClockIdInfo {
@@ -85,10 +84,6 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
         let id = !(value >> 3);
         let cpu_clock_type = DynamicClockType::try_from(CPU_CLOCK_TYPE_MASK & value)?;
 
-        if let DynamicClockType::FD = cpu_clock_type {
-            return Ok(DynamicClockIdInfo::Fd(id as u32));
-        }
-
         if ID_TYPE_MASK & value > 0 {
             Ok(DynamicClockIdInfo::Tid(id as u32, cpu_clock_type))
         } else {
@@ -102,8 +97,7 @@ impl TryFrom<clockid_t> for DynamicClockIdInfo {
 pub(super) enum DynamicClockType {
     Profiling = 0,
     Virtual = 1,
-    Scheduling = 2,
-    FD = 3,
+    // TODO: Support scheduling clocks and FD clocks.
 }
 
 /// Reads the time of a clock specified by the input clock ID.
@@ -132,8 +126,6 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
                 match clock_type {
                     DynamicClockType::Profiling => Ok(process.prof_clock().read_time()),
                     DynamicClockType::Virtual => Ok(process.prof_clock().user_clock().read_time()),
-                    // TODO: support scheduling clock and fd clock.
-                    _ => unimplemented!(),
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
@@ -146,10 +138,8 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
                     DynamicClockType::Virtual => {
                         Ok(posix_thread.prof_clock().user_clock().read_time())
                     }
-                    _ => unimplemented!(),
                 }
             }
-            DynamicClockIdInfo::Fd(_) => unimplemented!(),
         }
     }
 }

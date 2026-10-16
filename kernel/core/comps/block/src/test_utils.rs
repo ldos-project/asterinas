@@ -66,7 +66,7 @@ impl BlockDevice for MemoryDisk {
                     let data = &data.as_ref()[current_offset..current_offset + segment.nbytes()];
                     // We are pretending to be the device so we directly access the DMA slice.
                     segment
-                        .inner_dma_slice()
+                        .dma_slice()
                         .writer()
                         .expect("submitted read bio missing writer")
                         .write(&mut data.into())
@@ -76,7 +76,7 @@ impl BlockDevice for MemoryDisk {
                         &mut data.as_mut()[current_offset..current_offset + segment.nbytes()];
                     // We are pretending to be the device so we directly access the DMA slice.
                     segment
-                        .inner_dma_slice()
+                        .dma_slice()
                         .reader()
                         .expect("submitted write bio missing reader")
                         .read(&mut data.into())

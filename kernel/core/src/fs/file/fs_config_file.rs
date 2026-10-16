@@ -48,7 +48,7 @@ use crate::{
 ///                              │     Failed     │
 ///                              └────────────────┘
 /// ```
-pub struct FsConfigFile {
+pub(crate) struct FsConfigFile {
     fs_type: &'static dyn DynFsType,
     config: Mutex<FsConfig>,
     common: FileCommon,
@@ -72,7 +72,7 @@ enum FsConfigState {
 
 impl FsConfigFile {
     /// Creates a filesystem configuration file for a filesystem type.
-    pub fn new(fs_type: &'static dyn DynFsType) -> Self {
+    pub(crate) fn new(fs_type: &'static dyn DynFsType) -> Self {
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[fscontext]".to_string());
         Self {
             fs_type,
@@ -82,14 +82,15 @@ impl FsConfigFile {
                 extra_options: String::new(),
                 state: FsConfigState::Configuring,
             }),
-            common: FileCommon::new(pseudo_path, StatusFlags::empty()),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/fsopen.c#L97>.
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, StatusFlags::empty()),
         }
     }
 
     /// Sets a flag-style filesystem configuration option.
     ///
     /// This is valid in the `Configuring` and `Reconfiguring` states.
-    pub fn set_flag(&self, key: &str) -> Result<()> {
+    pub(crate) fn set_flag(&self, key: &str) -> Result<()> {
         let mut config = self.config.lock();
         match &config.state {
             FsConfigState::Configuring | FsConfigState::Reconfiguring(_) => match key {
@@ -117,7 +118,7 @@ impl FsConfigFile {
     ///
     /// This is valid in the `Configuring` and `Reconfiguring` states. The
     /// `source` option may only be specified once in the `Configuring` state.
-    pub fn set_string(&self, key: &str, value: &str) -> Result<()> {
+    pub(crate) fn set_string(&self, key: &str, value: &str) -> Result<()> {
         let mut config = self.config.lock();
         match &config.state {
             FsConfigState::Configuring => match key {
@@ -156,7 +157,7 @@ impl FsConfigFile {
     /// This is only valid in the `Configuring` state. Success transitions to
     /// `AwaitingMount`, while failure transitions to `Failed`. It returns
     /// `EBUSY` in all other states.
-    pub fn create_fs(&self, ctx: &Context) -> Result<()> {
+    pub(crate) fn create_fs(&self, ctx: &Context) -> Result<()> {
         let mut config = self.config.lock();
         if !matches!(&config.state, FsConfigState::Configuring) {
             return_errno_with_message!(Errno::EBUSY, "the file system has already been created");
@@ -187,7 +188,7 @@ impl FsConfigFile {
     /// This is only valid in the `AwaitingMount` state. Success transitions to
     /// `Reconfiguring`, while failure leaves the context in `AwaitingMount` so
     /// that the operation can be retried.
-    pub fn create_detached_mount(
+    pub(crate) fn create_detached_mount(
         &self,
         flags: PerMountFlags,
         mnt_ns: Weak<MountNamespace>,
@@ -224,7 +225,7 @@ impl FsConfigFile {
     ///
     /// This is only valid in the `Reconfiguring` state. Success leaves the
     /// context in `Reconfiguring`, while failure transitions to `Failed`.
-    pub fn reconfigure_fs(&self, ctx: &Context) -> Result<()> {
+    pub(crate) fn reconfigure_fs(&self, ctx: &Context) -> Result<()> {
         let mut config = self.config.lock();
         let FsConfigState::Reconfiguring(fs) = &config.state else {
             return_errno_with_message!(Errno::EBUSY, "the file system is not reconfiguring");
@@ -254,11 +255,6 @@ impl Pollable for FsConfigFile {
 }
 
 impl FileLike for FsConfigFile {
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/fsopen.c#L97>.
-        AccessMode::O_RDWR
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -285,7 +281,7 @@ impl FileLike for FsConfigFile {
         }
 
         Box::new(FdInfo {
-            access_mode: self.access_mode(),
+            access_mode: self.common.access_mode(),
             status_flags: self.common.status_flags(),
             fd_flags,
         })
@@ -293,23 +289,24 @@ impl FileLike for FsConfigFile {
 }
 
 /// Represents a detached mount.
-pub struct DetachedMountFile {
+pub(crate) struct DetachedMountFile {
     mount: Arc<Mount>,
     common: FileCommon,
 }
 
 impl DetachedMountFile {
     /// Creates a detached mount file.
-    pub fn new(mount: Arc<Mount>) -> Self {
-        let root_path = Path::new_fs_root(mount.clone());
+    pub(crate) fn new(mount: Arc<Mount>) -> Self {
+        let root_path = Path::new_root(mount.clone());
         Self {
             mount,
-            common: FileCommon::new(root_path, StatusFlags::empty()),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/namespace.c#L4497>.
+            common: FileCommon::new(root_path, AccessMode::O_RDONLY, StatusFlags::empty()),
         }
     }
 
     /// Returns the detached mount.
-    pub fn mount(&self) -> Arc<Mount> {
+    pub(crate) fn mount(&self) -> Arc<Mount> {
         self.mount.clone()
     }
 }
@@ -321,11 +318,6 @@ impl Pollable for DetachedMountFile {
 }
 
 impl FileLike for DetachedMountFile {
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/namespace.c#L4497>.
-        AccessMode::O_RDONLY
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -352,7 +344,7 @@ impl FileLike for DetachedMountFile {
         }
 
         Box::new(FdInfo {
-            access_mode: self.access_mode(),
+            access_mode: self.common.access_mode(),
             status_flags: self.common.status_flags(),
             fd_flags,
         })

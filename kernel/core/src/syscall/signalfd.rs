@@ -9,9 +9,11 @@
 use core::{fmt::Display, sync::atomic::Ordering};
 
 use bitflags::bitflags;
-use ostd::mm::VmIo;
 
-use super::SyscallReturn;
+use super::{
+    SyscallReturn,
+    rt_sigprocmask::{RequireFullSize, UserSigSetPtr},
+};
 use crate::{
     events::IoEvents,
     fs::{
@@ -34,7 +36,7 @@ use crate::{
 };
 
 /// Creates a new signalfd or updates an existing one according to the given mask.
-pub fn sys_signalfd(
+pub(super) fn sys_signalfd(
     fd: RawFileDesc,
     mask_ptr: Vaddr,
     sizemask: usize,
@@ -44,7 +46,7 @@ pub fn sys_signalfd(
 }
 
 /// Creates a new signalfd or updates an existing one according to the given mask and flags.
-pub fn sys_signalfd4(
+pub(super) fn sys_signalfd4(
     raw_fd: RawFileDesc,
     mask_ptr: Vaddr,
     sizemask: usize,
@@ -56,11 +58,12 @@ pub fn sys_signalfd4(
         raw_fd, mask_ptr, sizemask, flags
     );
 
-    if sizemask != size_of::<SigMask>() {
-        return_errno_with_message!(Errno::EINVAL, "invalid mask size");
-    }
-
-    let mut mask = ctx.user_space().read_val::<SigMask>(mask_ptr)?;
+    let user_space = ctx.user_space();
+    let sigmask_ptr = {
+        let size_policy = RequireFullSize::new(sizemask)?;
+        UserSigSetPtr::new(&user_space, mask_ptr, size_policy)
+    };
+    let mut mask = sigmask_ptr.read_val()?;
     mask -= SIGKILL;
     mask -= SIGSTOP;
 
@@ -148,7 +151,8 @@ impl SignalFile {
 
         Self {
             signals_mask: mask,
-            common: FileCommon::new(pseudo_path, status_flags),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/signalfd.c#L276>.
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, status_flags),
         }
     }
 
@@ -243,11 +247,6 @@ impl FileLike for SignalFile {
         }
     }
 
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/signalfd.c#L276>.
-        AccessMode::O_RDWR
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -268,7 +267,7 @@ impl FileLike for SignalFile {
             }
         }
 
-        let mut flags = self.common.status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common.status_flags().bits() | self.common.access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }

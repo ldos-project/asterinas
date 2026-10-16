@@ -37,7 +37,7 @@
 //! |----------------------------|-----------------------------------------------------------|
 //! | `attrs`                    | Metadata: mode, uid, gid, times, xattr                    |
 //! | `block_manager`            | Page-cache backend and block-pointer tree management      |
-//! | `io_range`                 | Direct-I/O block range planning                           |
+//! | `io_range`                 | Block-backed I/O range planning                            |
 //! | `file`                     | Regular-file I/O and allocation                           |
 //! | `dir`                      | Directory entry semantics                                 |
 //! | `symlink`                  | Symlink target storage                                    |
@@ -104,7 +104,7 @@ pub(super) type Ext2Ino = u32;
 
 /// Ext2 file permission bits (lower 12 bits of `i_mode`).
 #[derive(Clone, Copy, Debug)]
-pub struct FilePerm(u16);
+pub(crate) struct FilePerm(u16);
 
 impl FilePerm {
     /// Constructs a `FilePerm` from raw permission bits, discarding unknown bits.
@@ -130,7 +130,7 @@ impl FilePerm {
 /// bitmaps belong to the parent `Ext2` and `BlockGroup`. See the module-level
 /// documentation, especially the `Locking` section, for the full lock ordering
 /// across inode, filesystem, and block-group layers.
-pub struct Inode {
+pub(crate) struct Inode {
     ino: Ext2Ino,
     type_: InodeType,
     inner: RwMutex<InodeInner>,

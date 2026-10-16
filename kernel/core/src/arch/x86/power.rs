@@ -3,7 +3,7 @@
 use ostd::{
     arch::{device::io_port::WriteOnlyAccess, kernel::ACPI_INFO},
     io::IoPort,
-    power::{ExitCode, inject_restart_handler},
+    power::ExitCode,
 };
 use spin::Once;
 
@@ -15,17 +15,23 @@ fn try_acpi_reset(_code: ExitCode) {
         port.write(*val);
     }
 }
+// ACPI is attempted before legacy restart fallbacks, following Linux's x86 reset order.
+// Reference: <https://elixir.bootlin.com/linux/v7.0/source/arch/x86/kernel/reboot.c#L657>
+crate::register_restart_handler!(try_acpi_reset, crate::power::Priority::DEFAULT);
+
+crate::register_poweroff_handler!(
+    ostd::arch::power::try_poweroff,
+    crate::power::Priority::HIGH
+);
 
 pub(super) fn init() {
     let acpi_info = ACPI_INFO.get().unwrap();
-    let Some((reset_port_num, reset_val)) = acpi_info.reset_port_and_val else {
-        return;
-    };
-    let Ok(reset_port) = IoPort::acquire(reset_port_num) else {
-        ostd::warn!("The reset port from ACPI is not available");
-        return;
-    };
 
-    ACPI_RESET_PORT_AND_VAL.call_once(move || (reset_port, reset_val));
-    inject_restart_handler(try_acpi_reset);
+    if let Some((reset_port_num, reset_val)) = acpi_info.reset_port_and_val {
+        if let Ok(reset_port) = IoPort::acquire(reset_port_num) {
+            ACPI_RESET_PORT_AND_VAL.call_once(move || (reset_port, reset_val));
+        } else {
+            ostd::warn!("The reset port from ACPI is not available");
+        }
+    }
 }

@@ -9,6 +9,7 @@ use ostd::{arch::cpu::context::UserContext, task::Task};
 use crate::{
     prelude::*,
     process::signal::signals::fault::FaultSignal,
+    thread::kernel_thread::AsKernelThread,
     vm::vmar::{PageFaultInfo, Vmar},
 };
 
@@ -44,7 +45,7 @@ fn handle_page_fault_from_vmar(vmar: &Vmar, page_fault_info: &PageFaultInfo) -> 
 /// A trait that converts CPU exceptions into fault signals.
 ///
 /// This trait should be implemented by architecture-specific code for [`CpuException`].
-pub trait ToFaultSignal {
+pub(crate) trait ToFaultSignal {
     /// Converts a CPU exception into a fault signal.
     ///
     /// Returns `None` if the exception must be handled earlier and cannot be delivered as a signal.
@@ -70,14 +71,22 @@ fn generate_fault_signal(exception: CpuException, ctx: &Context, user_ctx: &User
 
 pub(super) fn page_fault_handler(info: &CpuException) -> Result<(), ()> {
     let task = Task::current().unwrap();
-    let thread_local = task.as_thread_local().unwrap();
+    let page_fault_info = info.try_into().unwrap();
 
-    if thread_local.is_page_fault_disabled() {
-        // Do nothing if the page fault handler is disabled. This will typically cause the fallible
-        // memory operation to report `EFAULT` errors immediately.
-        return Err(());
+    if let Some(thread_local) = task.as_thread_local() {
+        if thread_local.is_page_fault_disabled() {
+            // Do nothing if the page fault handler is disabled. This will typically cause the
+            // fallible memory operation to report EFAULT errors immediately.
+            return Err(());
+        }
+
+        let user_space = CurrentUserSpace::new(thread_local);
+        handle_page_fault_from_vmar(user_space.vmar(), &page_fault_info)
+    } else {
+        let vmar = task
+            .as_kernel_thread()
+            .and_then(|kernel_thread| kernel_thread.vmar())
+            .ok_or(())?;
+        handle_page_fault_from_vmar(vmar, &page_fault_info)
     }
-
-    let user_space = CurrentUserSpace::new(thread_local);
-    handle_page_fault_from_vmar(user_space.vmar(), &info.try_into().unwrap())
 }

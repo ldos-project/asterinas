@@ -11,9 +11,9 @@ aster-bigtcp.workspace = true
 aster-block.workspace = true
 aster-cmdline.workspace = true
 aster-console.workspace = true
+aster-device.workspace = true
 aster-framebuffer.workspace = true
 aster-fuse.workspace = true
-aster-i8042.workspace = true
 aster-input.workspace = true
 aster-logger.workspace = true
 aster-network.workspace = true
@@ -24,7 +24,6 @@ aster-rights-proc.workspace = true
 aster-softirq.workspace = true
 aster-systree.workspace = true
 aster-time.workspace = true
-aster-uart.workspace = true
 aster-util.workspace = true
 aster-virtio.workspace = true
 atomic-integer-wrapper.workspace = true
@@ -39,6 +38,7 @@ getset.workspace = true
 hashbrown.workspace = true
 id-alloc.workspace = true
 inherit-methods-macro.workspace = true
+inventory.workspace = true
 intrusive-collections.workspace = true
 int-to-c-enum.workspace = true
 io-util.workspace = true
@@ -50,7 +50,7 @@ lru.workspace = true
 mariposa_benchmark.workspace = true
 mariposa_data_capture.workspace = true
 minicbor-serde.workspace = true
-no_std_io2.workspace = true
+miniz_oxide.workspace = true
 osdk-frame-allocator.workspace = true
 osdk-heap-allocator.workspace = true
 ostd = { workspace = true, features = ["capture_scheduling"] }
@@ -71,7 +71,6 @@ typeflags.workspace = true
 xarray.workspace = true
 xmas-elf.workspace = true
 zerocopy.workspace = true
-zune-inflate.workspace = true
 
 [target.x86_64-unknown-none.dependencies]
 tdx-guest = { workspace = true, optional = true }
@@ -87,6 +86,7 @@ loongArch64.workspace = true
 default = ["cvm_guest"]
 coverage = ["ostd/coverage"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
+pvh_boot = ["ostd/pvh_boot"]
 # By default we use the Sv48 address translation mode.
 riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
 

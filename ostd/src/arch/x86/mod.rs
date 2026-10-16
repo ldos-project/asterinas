@@ -10,11 +10,12 @@ pub(crate) mod iommu;
 pub mod irq;
 pub mod kernel;
 pub(crate) mod mm;
-mod power;
+pub mod power;
 pub mod serial;
 pub(crate) mod task;
 mod timer;
 pub mod trap;
+pub mod vm;
 
 pub mod pmu;
 #[cfg(feature = "cvm_guest")]
@@ -176,6 +177,7 @@ pub(crate) fn enable_cpu_features() {
     };
 
     cpu::extension::init();
+    vm::init();
 
     let mut cr0 = x86_64::registers::control::Cr0::read();
     cr0 |= Cr0Flags::WRITE_PROTECT;

@@ -4,7 +4,7 @@
 
 use spin::Once;
 
-use crate::{cpu::PinCurrentCpu, error::Error, irq::IrqLine, prelude::Result};
+use crate::{cpu::PinCurrentCpu, irq::IrqLine, prelude::Result};
 
 /// Hardware-specific, architecture-dependent CPU ID.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +69,6 @@ pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) -> Result
             hw_cpu_id.0,
             ret.error
         );
-        Err(Error::IoError)
+        crate::error::IoSnafu.fail()
     }
 }

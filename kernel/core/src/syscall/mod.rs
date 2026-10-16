@@ -3,19 +3,24 @@
 //! System call handlers.
 
 #![cfg_attr(
-    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    any(
+        target_arch = "riscv64",
+        target_arch = "loongarch64",
+        target_arch = "aarch64"
+    ),
     expect(dead_code)
 )]
 
-pub use clock_gettime::ClockId;
+pub(crate) use clock_gettime::ClockId;
 use ostd::arch::cpu::context::UserContext;
-pub use timer_create::create_timer;
+pub(crate) use timer_create::create_timer_for_clock;
 
 use crate::{cpu::LinuxAbi, prelude::*};
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/arm.rs")]
 mod arch;
 
 mod accept;
@@ -317,11 +322,11 @@ macro_rules! impl_syscall_nums_and_dispatch_fn {
     ( $( $name: ident = $num: literal => $handler: ident $args: tt );* $(;)? ) => {
         // First, define the syscall numbers
         $(
-            pub const $name: u64 = $num;
+            pub(crate) const $name: u64 = $num;
         )*
 
         // Then, define the dispatcher function
-        pub fn syscall_dispatch(
+        pub(crate) fn syscall_dispatch(
             syscall_number: u64,
             args: [u64; 6],
             ctx: &crate::context::Context,
@@ -336,7 +341,7 @@ macro_rules! impl_syscall_nums_and_dispatch_fn {
                 )*
                 _ => {
                     ostd::warn!("Unimplemented syscall number: {}", syscall_number);
-                    $crate::error::return_errno_with_message!(
+                    $crate::return_errno_with_message!(
                         $crate::error::Errno::ENOSYS,
                         "Syscall was unimplemented"
                     );
@@ -376,7 +381,7 @@ impl SyscallArgument {
     }
 }
 
-pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
+pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
     let syscall_return = arch::syscall_dispatch(
         syscall_frame.syscall_number,
@@ -403,7 +408,7 @@ macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
         if ostd::log_enabled!(__log_prefix!(), ostd::log::Level::Info) {
             let syscall_name_str = stringify!($syscall_name);
-            let pid = $crate::context::current!().pid();
+            let pid = $crate::current!().pid();
             let tid = {
                 use $crate::process::posix_thread::AsPosixThread;
                 $crate::context::current_thread!()

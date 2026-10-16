@@ -14,7 +14,11 @@ use crate::{
     fs::cgroupfs::{CpuStatKind, charge_cpu_time},
     process::{
         posix_thread::AsPosixThread,
-        signal::{constants::SIGALRM, signals::kernel::KernelSignal},
+        signal::{
+            constants::{SIGALRM, SIGPROF, SIGVTALRM},
+            sig_num::SigNum,
+            signals::kernel::KernelSignal,
+        },
     },
     thread::{
         Thread,
@@ -24,6 +28,7 @@ use crate::{
         Timer, TimerManager,
         clocks::{ProfClock, RealTimeClock},
         timer::TimerGuard,
+        timer_t,
     },
 };
 
@@ -89,7 +94,7 @@ pub(super) fn init_on_each_cpu() {
 }
 
 /// Represents timer resources and utilities for a POSIX process.
-pub struct PosixTimerManager {
+pub(crate) struct PosixTimerManager {
     /// A real-time countdown timer, measuring in wall clock time.
     alarm_timer: Arc<Timer>,
     /// A timer based on user CPU clock.
@@ -105,10 +110,11 @@ pub struct PosixTimerManager {
 
 fn create_process_timer_callback(
     process_ref: &Weak<Process>,
-) -> impl Fn(TimerGuard) + Clone + 'static {
+    signum: SigNum,
+) -> impl Fn(TimerGuard) + 'static {
     let current_process = process_ref.clone();
     let sent_signal = move || {
-        let signal = KernelSignal::new(SIGALRM);
+        let signal = KernelSignal::new(signum);
         if let Some(process) = current_process.upgrade() {
             process.enqueue_signal(Box::new(signal));
         }
@@ -128,14 +134,17 @@ fn create_process_timer_callback(
 impl PosixTimerManager {
     pub(super) fn new(prof_clock: &Arc<ProfClock>, process_ref: &Weak<Process>) -> Self {
         const MAX_NUM_OF_POSIX_TIMERS: usize = 10000;
+        const { assert!(MAX_NUM_OF_POSIX_TIMERS <= timer_t::MAX as usize) };
 
-        let callback = create_process_timer_callback(process_ref);
-
-        let alarm_timer = RealTimeClock::timer_manager().create_timer(callback.clone());
-
-        let virtual_timer =
-            TimerManager::new(prof_clock.user_clock().clone()).create_timer(callback.clone());
-        let prof_timer = TimerManager::new(prof_clock.clone()).create_timer(callback);
+        // The `alarm_timer`, `virtual_timer`, and `prof_timer` raise `SIGALRM`,
+        // `SIGVTALRM`, and `SIGPROF`, respectively.
+        // Reference: <https://man7.org/linux/man-pages/man2/setitimer.2.html>.
+        let alarm_timer = RealTimeClock::timer_manager()
+            .create_timer(create_process_timer_callback(process_ref, SIGALRM));
+        let virtual_timer = TimerManager::new(prof_clock.user_clock().clone())
+            .create_timer(create_process_timer_callback(process_ref, SIGVTALRM));
+        let prof_timer = TimerManager::new(prof_clock.clone())
+            .create_timer(create_process_timer_callback(process_ref, SIGPROF));
 
         Self {
             alarm_timer,
@@ -147,22 +156,22 @@ impl PosixTimerManager {
     }
 
     /// Gets the alarm timer of the corresponding process.
-    pub fn alarm_timer(&self) -> &Arc<Timer> {
+    pub(crate) fn alarm_timer(&self) -> &Arc<Timer> {
         &self.alarm_timer
     }
 
     /// Gets the virtual timer of the corresponding process.
-    pub fn virtual_timer(&self) -> &Arc<Timer> {
+    pub(crate) fn virtual_timer(&self) -> &Arc<Timer> {
         &self.virtual_timer
     }
 
     /// Gets the profiling timer of the corresponding process.
-    pub fn prof_timer(&self) -> &Arc<Timer> {
+    pub(crate) fn prof_timer(&self) -> &Arc<Timer> {
         &self.prof_timer
     }
 
     /// Creates a timer based on the profiling CPU clock of the current process.
-    pub fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
+    pub(crate) fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
     where
         F: Fn(TimerGuard) + Send + Sync + 'static,
     {
@@ -170,7 +179,7 @@ impl PosixTimerManager {
     }
 
     /// Creates a timer based on the user CPU clock of the current process.
-    pub fn create_virtual_timer<F>(&self, func: F) -> Arc<Timer>
+    pub(crate) fn create_virtual_timer<F>(&self, func: F) -> Arc<Timer>
     where
         F: Fn(TimerGuard) + Send + Sync + 'static,
     {
@@ -178,8 +187,8 @@ impl PosixTimerManager {
     }
 
     /// Adds a POSIX timer to the managed `posix_timers`, and allocate a timer ID for this timer.
-    /// Return the timer ID, or `None` if allocation failed.
-    pub fn add_posix_timer(&self, posix_timer: Arc<Timer>) -> Option<usize> {
+    /// Returns the timer ID, or `None` if allocation failed.
+    pub(crate) fn add_posix_timer(&self, posix_timer: Arc<Timer>) -> Option<timer_t> {
         let mut timers = self.posix_timers.lock();
         // Holding the lock of `posix_timers` is required to operate the `id_allocator`.
         let timer_id = self.id_allocator.lock().alloc()?;
@@ -189,11 +198,12 @@ impl PosixTimerManager {
         // The ID allocated is not used by any other timers so this index in `timers`
         // must be `None`.
         timers[timer_id] = Some(posix_timer);
-        Some(timer_id)
+        Some(timer_id as timer_t)
     }
 
     /// Finds a POSIX timer by the input `timer_id`.
-    pub fn find_posix_timer(&self, timer_id: usize) -> Option<Arc<Timer>> {
+    pub(crate) fn find_posix_timer(&self, timer_id: timer_t) -> Option<Arc<Timer>> {
+        let timer_id = timer_id as usize;
         let timers = self.posix_timers.lock();
         if timer_id >= timers.len() {
             return None;
@@ -203,7 +213,8 @@ impl PosixTimerManager {
     }
 
     /// Removes the POSIX timer with the ID `timer_id`.
-    pub fn remove_posix_timer(&self, timer_id: usize) -> Option<Arc<Timer>> {
+    pub(crate) fn remove_posix_timer(&self, timer_id: timer_t) -> Option<Arc<Timer>> {
+        let timer_id = timer_id as usize;
         let mut timers = self.posix_timers.lock();
         if timer_id >= timers.len() {
             return None;

@@ -5,6 +5,7 @@ use ostd::task::Task;
 use super::{PtySlave, driver::PtyDriver};
 use crate::{
     device::tty::TtyFlags,
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
         devpts::Ptmx,
@@ -19,7 +20,7 @@ use crate::{
         Terminal,
         signal::{PollHandle, Pollable},
     },
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 const IO_CAPACITY: usize = 4096;
@@ -33,7 +34,7 @@ const IO_CAPACITY: usize = 4096;
 ///    driver (i.e., [`PtyDriver`]).
 ///
 /// [`Tty`]: crate::device::tty::Tty
-pub struct PtyMaster {
+pub(crate) struct PtyMaster {
     ptmx: Arc<Ptmx>,
     slave: Arc<PtySlave>,
 }
@@ -190,7 +191,7 @@ impl PerOpenFileOps for PtyMaster {
                 };
 
                 let slave = {
-                    let devpts_root = Path::new_fs_root(path.mount_node().clone());
+                    let devpts_root = Path::new_root(path.mount_node().clone());
                     let slave_path = devpts_root.lookup_child(&self.slave.index().to_string())?;
                     Arc::new(slave_path.open(open_args)?)
                 };
@@ -245,10 +246,9 @@ impl PerOpenFileOps for PtyMaster {
 
 impl Drop for PtyMaster {
     fn drop(&mut self) {
-        if let Some(devpts) = self.ptmx.devpts() {
-            let index = self.slave.index();
-            devpts.remove_slave(index);
-        }
+        let devpts = self.ptmx.devpts().unwrap();
+        let index = self.slave.index();
+        devpts.remove_slave(index);
 
         self.slave_flags().set_other_closed();
         self.slave.notify_hup();

@@ -5,12 +5,14 @@ chmod01
 chmod01A
 chmod08
 chown05
+chroot04
 creat03
 dup05
 dup203
 dup205
 faccessat201
 fallocate03
+fchdir03
 fchmod01
 fchmod02
 fchmodat01
@@ -19,6 +21,7 @@ fchownat01
 fchownat02
 fstat02
 fstat02_64
+fsync03
 ftruncate01
 ftruncate01_64
 getcwd03
@@ -57,6 +60,11 @@ setfsuid04
 setresuid04
 setreuid07
 setuid04
+statfs02
+statfs02_64
+statfs03
+statfs03_64
+statx02
 symlink02
 symlink03
 symlink04
@@ -67,4 +75,3 @@ umask01
 unlink05
 unlink08
 utime07
-statx02

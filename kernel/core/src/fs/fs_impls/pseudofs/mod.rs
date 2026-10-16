@@ -25,15 +25,16 @@ use core::{
     time::Duration,
 };
 
-pub use allocator::AnonDeviceId;
-pub use anon_inodefs::AnonInodeFs;
+pub(crate) use allocator::AnonDeviceId;
+pub(crate) use anon_inodefs::AnonInodeFs;
 use device_id::DeviceId;
 pub(in crate::fs) use nsfs::NsInode;
-pub use nsfs::{NsCommonOps, NsFile, NsType, StashedDentry};
-pub use pidfdfs::PidfdFs;
+pub(crate) use nsfs::{NsCommonOps, NsFile, NsType, StashedDentry};
+pub(in crate::fs) use nullfs::NullFs;
+pub(crate) use pidfdfs::PidfdFs;
 pub(in crate::fs) use pipefs::PipeFs;
 use pipefs::PipeFsType;
-pub use sockfs::SockFs;
+pub(crate) use sockfs::SockFs;
 use sockfs::SockFsType;
 use spin::Once;
 
@@ -44,6 +45,7 @@ use crate::{
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::{Extension, FileOps, Inode, Metadata},
+            path::Dentry,
         },
     },
     prelude::*,
@@ -54,12 +56,13 @@ use crate::{
 mod allocator;
 mod anon_inodefs;
 mod nsfs;
+mod nullfs;
 mod pidfdfs;
 mod pipefs;
 mod sockfs;
 
 /// A pseudo file system that manages pseudo inodes, such as pipe inodes and socket inodes.
-pub struct NaivePseudoFs {
+pub(crate) struct NaivePseudoFs {
     name: &'static str,
     _anon_device_id: AnonDeviceId,
     sb: SuperBlock,
@@ -122,7 +125,7 @@ impl NaivePseudoFs {
         })
     }
 
-    pub fn alloc_inode(
+    pub(crate) fn alloc_inode(
         self: &Arc<Self>,
         type_: PseudoInodeType,
         mode: InodeMode,
@@ -166,7 +169,7 @@ pub(super) fn init() {
 const ROOT_INO: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PseudoInodeType {
+pub(crate) enum PseudoInodeType {
     Root,
     Pipe,
     Socket,
@@ -189,7 +192,7 @@ impl From<PseudoInodeType> for InodeType {
 }
 
 /// A pseudo inode that does not correspond to any real path in the file system.
-pub struct PseudoInode {
+pub(crate) struct PseudoInode {
     metadata: SpinLock<Metadata>,
     extension: Extension,
     fs: Weak<NaivePseudoFs>,
@@ -267,7 +270,7 @@ impl Inode for PseudoInode {
         self.metadata.lock().size
     }
 
-    fn resize(&self, _new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, _new_size: usize) -> Result<()> {
         return_errno_with_message!(Errno::EINVAL, "pseudo inodes can not be resized");
     }
 
@@ -291,7 +294,7 @@ impl Inode for PseudoInode {
         Ok(self.metadata.lock().mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         if self.is_anon {
             return_errno_with_message!(
                 Errno::EOPNOTSUPP,
@@ -309,7 +312,7 @@ impl Inode for PseudoInode {
         Ok(self.metadata.lock().uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         let mut meta = self.metadata.lock();
         meta.uid = uid;
         meta.last_meta_change_at = now();
@@ -320,7 +323,7 @@ impl Inode for PseudoInode {
         Ok(self.metadata.lock().gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         let mut meta = self.metadata.lock();
         meta.gid = gid;
         meta.last_meta_change_at = now();
@@ -331,7 +334,7 @@ impl Inode for PseudoInode {
         self.metadata.lock().last_access_at
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().last_access_at = time;
     }
 
@@ -339,7 +342,7 @@ impl Inode for PseudoInode {
         self.metadata.lock().last_modify_at
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().last_modify_at = time;
     }
 
@@ -347,12 +350,13 @@ impl Inode for PseudoInode {
         self.metadata.lock().last_meta_change_at
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().last_meta_change_at = time;
     }
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {

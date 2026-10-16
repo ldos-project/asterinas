@@ -32,7 +32,7 @@ Most tests in this directory are compiled and packaged using [Nix](https://nixos
 
 ### Conformance Test Suite - gVisor Exception
 
-While most tests rely on `Nix` for compilation, the `gvisor` conformance test suite currently cannot be built with `Nix`. Instead, the `gvisor` tests are compiled in the Docker image. For details, refer to `tools/docker/Dockerfile`.
+While most tests rely on `Nix` for compilation, the `gvisor` conformance test suite currently cannot be built with `Nix`. Instead, the `gvisor` tests are compiled in the Docker image. For details, refer to `tools/dev_env/docker/kernel-dev/Dockerfile`.
 
 ### Linux Kernel Selftest (kselftest)
 
@@ -89,7 +89,7 @@ The following benchmarks are currently supported:
 
 All benchmarks except `sysbench` support both `x86_64` and `riscv64` architectures.
 
-These benchmarks are precompiled and packaged into the Docker image for convenience. Refer to `tools/docker/nix/Dockerfile` for details.
+These benchmarks are precompiled and packaged into the Docker image for convenience. Refer to `tools/dev_env/docker/prebuilt-nix-packages/Dockerfile` for details.
 
 ### Running a Benchmark
 
@@ -115,7 +115,7 @@ To run multiple benchmarks locally, loop over them manually. In CI, all benchmar
 
 ## Adding New Benchmarks
 
-We recommend utilizing `Nix` when adding new benchmarks. To check if a benchmark is already available, use the [`Nix Package Search`](https://search.nixos.org/packages?channel=25.05). If a package exists in the Nix channel, you can directly use it or modify it if necessary.
+We recommend utilizing `Nix` when adding new benchmarks. To check if a benchmark is already available, use the [`Nix Package Search`](https://search.nixos.org/packages?channel=26.05). If a package exists in the Nix channel, you can directly use it or modify it if necessary.
 
 If the desired benchmark is not available or cannot be easily adapted, you can add a custom `.nix` file to package it manually. Place the `.nix` files under the `test/initramfs/nix/benchmark` directory.
 

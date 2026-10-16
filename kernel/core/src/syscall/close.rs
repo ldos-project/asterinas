@@ -8,10 +8,7 @@ use super::SyscallReturn;
 #[cfg(not(baseline_asterinas))]
 use crate::time::clocks::MonotonicRawClock;
 use crate::{
-    fs::{
-        self,
-        file::file_table::{FdFlags, RawFileDesc},
-    },
+    fs::file::file_table::{FdFlags, RawFileDesc},
     prelude::*,
     process::ContextUnshareAdminApi,
 };
@@ -23,7 +20,7 @@ bitflags! {
     }
 }
 
-pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
     debug!("raw_fd = {}", raw_fd);
 
     let fd = raw_fd.try_into()?;
@@ -46,8 +43,6 @@ pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
         file_table_locked.close_file(fd).unwrap()
     };
 
-    fs::vfs::notify::on_close(closed_file.file());
-
     // Cleanup work needs to be done in the `Drop` impl.
     //
     // We don't mind the races between closing the file descriptor and using the file descriptor,
@@ -65,7 +60,7 @@ pub fn sys_close(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_close_range(
+pub(super) fn sys_close_range(
     first: u32,
     last: u32,
     raw_flags: u32,

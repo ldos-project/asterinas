@@ -38,14 +38,14 @@ mod real_time;
 mod stop;
 
 use self::policy::{SchedPolicyKind, SchedPolicyState};
-pub use self::{
+pub(crate) use self::{
     policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
 };
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
 
-pub fn init() {
+pub(crate) fn init() {
     let scheduler = Box::leak(Box::new(ClassScheduler::new()));
 
     // Inject the scheduler into the ostd for actual scheduling work.
@@ -57,14 +57,14 @@ pub fn init() {
     set_stats_from_scheduler(scheduler);
 }
 
-pub fn init_on_each_cpu() {
+pub(crate) fn init_on_each_cpu() {
     enable_preemption_on_cpu();
 }
 
 /// Represents the middle layer between scheduling classes and generic scheduler
 /// traits. It consists of all the sets of run queues for CPU cores. Other global
 /// information may also be stored here.
-pub struct ClassScheduler {
+pub(crate) struct ClassScheduler {
     /// The per-CPU runqueues.
     ///
     /// We use the `LocalIrqDisabled` marker for this spinlock to ensure local IRQs are always disabled,
@@ -153,7 +153,7 @@ trait SchedClassRq: Send + fmt::Debug {
 /// This is used to store the scheduling policy and runtime parameters for each
 /// scheduling class.
 #[derive(Debug)]
-pub struct SchedAttr {
+pub(crate) struct SchedAttr {
     policy: SchedPolicyState,
     /// The CPU that the task is running on or was most recently scheduled on.
     ///
@@ -169,7 +169,7 @@ pub struct SchedAttr {
 
 impl SchedAttr {
     /// Constructs a new `SchedAttr` with the given scheduling policy.
-    pub fn new(policy: SchedPolicy) -> Self {
+    pub(crate) fn new(policy: SchedPolicy) -> Self {
         Self {
             policy: SchedPolicyState::new(policy),
             last_cpu: AtomicCpuId::default(),
@@ -189,7 +189,7 @@ impl SchedAttr {
     }
 
     /// Retrieves the current scheduling policy of the thread.
-    pub fn policy(&self) -> SchedPolicy {
+    pub(crate) fn policy(&self) -> SchedPolicy {
         self.policy.get()
     }
 
@@ -201,7 +201,7 @@ impl SchedAttr {
     ///
     /// Specifically for real-time policies, if the new policy doesn't
     /// specify a base slice factor for RR, the old one will be kept.
-    pub fn set_policy(&self, policy: SchedPolicy) {
+    pub(crate) fn set_policy(&self, policy: SchedPolicy) {
         self.policy.set(policy, |policy| match policy {
             SchedPolicy::RealTime { rt_prio, rt_policy } => {
                 self.real_time.update(rt_prio.get(), rt_policy);
@@ -233,7 +233,7 @@ impl SchedAttr {
         }
     }
 
-    pub fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
+    pub(crate) fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
         self.policy.update(|policy| {
             let ret = f(policy);
             match *policy {
@@ -248,7 +248,7 @@ impl SchedAttr {
     }
 
     /// The CPU that the thread is running on or was most recently scheduled on.
-    pub fn last_cpu(&self) -> Option<CpuId> {
+    pub(crate) fn last_cpu(&self) -> Option<CpuId> {
         self.last_cpu.get()
     }
 
@@ -335,7 +335,7 @@ impl Scheduler for ClassScheduler {
 }
 
 impl ClassScheduler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let class_rq = |cpu| {
             SpinLock::new(PerCpuClassRqSet {
                 stop: stop::StopClassRq::new(),

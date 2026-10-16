@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 # Builds `read_oqueues`, the in-guest CBOR decoder for the OQueue filesystem (`/oqueues`).
-{ stdenv, glibc, libcbor }:
+{
+  stdenv,
+  glibc,
+  libcbor,
+}:
 let
   # libcbor ships only a shared library by default, but this tool is copied straight into the
   # initramfs (outside the nix closure), so it must link statically. Rebuild libcbor as a static
@@ -12,12 +16,17 @@ let
       "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF"
     ];
   });
-in stdenv.mkDerivation {
+in
+stdenv.mkDerivation {
   pname = "oqueue-reader";
   version = "0.1.0";
   dontUnpack = true;
   # `glibc.static` provides `libc.a` for static linking, matching the regression tests.
-  buildInputs = [ glibc glibc.static libcborStatic ];
+  buildInputs = [
+    glibc
+    glibc.static
+    libcborStatic
+  ];
   # The tool uses only the C standard library and libcbor, so `-nostdlib++` lets it link statically
   # without pulling in libstdc++ (which is not present in the initramfs).
   buildCommand = ''

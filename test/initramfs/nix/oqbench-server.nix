@@ -9,7 +9,10 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ../src/oqbench_server/Cargo.lock;
 
   # Static linking so the binary can be copied straight into the initramfs, outside the nix closure.
-  buildInputs = [ glibc glibc.static ];
+  buildInputs = [
+    glibc
+    glibc.static
+  ];
   RUSTFLAGS = "-C target-feature=+crt-static";
 
   doCheck = false;

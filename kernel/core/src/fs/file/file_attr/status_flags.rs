@@ -29,7 +29,7 @@ bitflags! {
 
 impl StatusFlags {
     /// Status flags that can be changed by `F_SETFL`.
-    pub const SETFL_MASK: Self = Self::O_APPEND
+    pub(crate) const SETFL_MASK: Self = Self::O_APPEND
         .union(Self::O_ASYNC)
         .union(Self::O_DIRECT)
         .union(Self::O_NOATIME)
@@ -83,5 +83,5 @@ impl From<StatusFlags> for u32 {
 define_atomic_version_of_integer_like_type!(StatusFlags, {
     /// An atomic version of `StatusFlags`.
     #[derive(Debug)]
-    pub struct AtomicStatusFlags(AtomicU32);
+    pub(crate) struct AtomicStatusFlags(AtomicU32);
 });

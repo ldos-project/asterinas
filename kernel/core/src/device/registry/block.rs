@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_block::{BLOCK_SIZE, BlockDevice, SECTOR_SIZE};
+use alloc::borrow::ToOwned;
+
+use aster_block::{BLOCK_SIZE, BlockDevice, SECTOR_SIZE, bio::BioStatus};
 use aster_nvme::NvmeBlockDevice;
 use aster_virtio::device::block::device::BlockDevice as VirtIoBlockDevice;
 use device_id::DeviceId;
@@ -8,19 +10,18 @@ use ostd::mm::VmIo;
 
 use crate::{
     context::current_userspace,
-    device::{Device, DeviceType, DevtmpfsInodeMeta, add_node},
+    device::{Device, DeviceType},
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
-        file::{PerOpenFileOps, SettableStatusFlags, StatusFlags},
-        vfs::{
-            inode::FileOps,
-            path::{Path, PathResolver},
-        },
+        devtmpfs::{self, DevtmpfsNode, DevtmpfsNodeMeta},
+        file::{PerOpenFileOps, SettableStatusFlags, StatusFlags, SyncMode},
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
     thread::kernel_thread::ThreadOptions,
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 pub(super) fn init_in_first_kthread() {
@@ -54,14 +55,17 @@ pub(super) fn init_in_first_kthread() {
             ThreadOptions::new(task_fn).spawn();
         }
     }
+
+    // Partition scanning performs synchronous block I/O, so the request
+    // handling threads above must be available first.
+    aster_block::scan_partitions();
 }
 
-pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {
+pub(super) fn init_in_first_process() -> Result<()> {
     for device in aster_block::collect_all() {
-        let device = Arc::new(BlockFile::new(device));
-        if let Some(devtmpfs_meta) = device.devtmpfs_meta() {
-            let dev_id = device.id().as_encoded_u64();
-            add_node(DeviceType::Block, dev_id, &devtmpfs_meta, path_resolver)?;
+        let device: Arc<dyn Device> = Arc::new(BlockFile::new(device));
+        if let Some(meta) = device.devtmpfs_meta() {
+            devtmpfs::create_node(DevtmpfsNode::new(device.type_(), device.id(), meta))?;
         }
     }
 
@@ -69,7 +73,10 @@ pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> 
 }
 
 mod ioctl_defs {
-    use crate::util::ioctl::{NoData, OutData, ioc};
+    use crate::{
+        ioc,
+        util::ioctl::{NoData, OutData},
+    };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/linux/fs.h>
 
@@ -115,8 +122,8 @@ impl Device for BlockFile {
         self.0.id()
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new(self.0.name()))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        Some(DevtmpfsNodeMeta::new(self.0.name().to_owned()).unwrap())
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -239,6 +246,18 @@ impl PerOpenFileOps for OpenBlockFile {
 
     fn settable_status_flags(&self) -> SettableStatusFlags {
         SettableStatusFlags::minimal().with_o_direct()
+    }
+
+    fn sync(&self, _mode: SyncMode) -> Result<()> {
+        match self.0.sync()? {
+            // Linux treats an unsupported block-device flush as success.
+            // Reference: <https://github.com/torvalds/linux/blob/v6.16/block/fops.c#L609-L611>
+            BioStatus::Complete | BioStatus::NotSupported => Ok(()),
+            status @ (BioStatus::NoSpace | BioStatus::IoError) => Err(status.into()),
+            BioStatus::Init | BioStatus::Submit | BioStatus::Zeros => {
+                return_errno_with_message!(Errno::EIO, "invalid block device flush status")
+            }
+        }
     }
 }
 

@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::{
-    device::{
-        DevtmpfsInodeMeta,
-        tty::{Tty, termio::CTermios},
-    },
-    fs::file::PerOpenFileOps,
+    device::tty::{Tty, termio::CTermios},
+    fs::{devtmpfs::DevtmpfsNodeMeta, file::PerOpenFileOps},
     prelude::*,
     util::ioctl::RawIoctl,
 };
@@ -18,12 +15,12 @@ use crate::{
 /// device is pseduoterminal).
 ///
 /// [`Tty`]: super::Tty
-pub trait TtyDriver: Send + Sync + 'static {
+pub(crate) trait TtyDriver: Send + Sync + 'static {
     /// The device major ID.
     const DEVICE_MAJOR_ID: u32;
 
     /// Returns the metadata that specifies a TTY device inode to be created in devtmpfs, if any.
-    fn devtmpfs_meta(&self, index: u32) -> Option<DevtmpfsInodeMeta<'_>>;
+    fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsNodeMeta>;
 
     /// Opens the TTY.
     ///

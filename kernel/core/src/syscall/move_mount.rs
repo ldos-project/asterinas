@@ -12,7 +12,7 @@ use crate::{
     prelude::*,
 };
 
-pub fn sys_move_mount(
+pub(super) fn sys_move_mount(
     from_dfd: RawFileDesc,
     from_path_addr: Vaddr,
     to_dfd: RawFileDesc,
@@ -50,14 +50,14 @@ pub fn sys_move_mount(
     let target_path = path_resolver.lookup(&to_fs_path)?;
     match source {
         MoveMountSource::Detached(detached_mount) => {
-            let detached_root = Path::new_fs_root(detached_mount);
-            detached_root.move_mount_to(&target_path, ctx)?;
+            let detached_root = Path::new_root(detached_mount);
+            detached_root.move_mount_to(target_path, ctx)?;
         }
         MoveMountSource::Path(from_path) => {
             let from_path = from_path.to_string_lossy();
             let from_fs_path = FsPath::from_fd_at(from_dfd, &from_path, EmptyPathStr::Reject)?;
             let source_path = path_resolver.lookup(&from_fs_path)?;
-            source_path.move_mount_to(&target_path, ctx)?;
+            source_path.move_mount_to(target_path, ctx)?;
         }
     };
 

@@ -9,7 +9,7 @@ use core::{
 
 use ostd::{
     cpu::{CpuId, CpuSet},
-    sync::WaitQueue,
+    sync::{WaitQueue, Waiter},
     task::Task,
 };
 
@@ -24,7 +24,7 @@ use crate::{
 ///
 /// The `WorkerPool` maintains workers created from different CPUs, while clustering workers
 /// from the same CPU into a `LocalWorkerPool` for better management.
-pub struct WorkerPool {
+pub(crate) struct WorkerPool {
     local_pools: Vec<Arc<LocalWorkerPool>>,
     /// Monitor invokes `schedule()` in WorkerScheduler to determine whether there is a need for
     /// adding or removing workers.
@@ -36,7 +36,7 @@ pub struct WorkerPool {
 }
 
 /// A set of workers for a specific CPU.
-pub struct LocalWorkerPool {
+pub(crate) struct LocalWorkerPool {
     cpu_id: CpuId,
     idle_wait_queue: WaitQueue,
     parent: Weak<WorkerPool>,
@@ -53,7 +53,7 @@ pub struct LocalWorkerPool {
 /// Having an excessive number of Workers in WorkerPool may result in wastage of system
 /// resources, while a shortage of workers may lead to longer response time for workitems.
 /// A well-designed WorkerScheduler must strike a balance between resource utilization and response time.
-pub trait WorkerScheduler: Sync + Send {
+pub(crate) trait WorkerScheduler: Sync + Send {
     /// Schedule workers in a worker pool. This needs to solve two problems: when to increase or decrease
     /// workers, and how to add or remove workers to keep the number of workers in a reasonable range.
     fn schedule(&self);
@@ -63,7 +63,7 @@ pub trait WorkerScheduler: Sync + Send {
 ///
 /// Currently, it only performs a liveness check, and attempts to schedule when no workers
 /// are found processing in the pool.
-pub struct Monitor {
+pub(crate) struct Monitor {
     worker_pool: Weak<WorkerPool>,
     bound_task: Arc<Task>,
 }
@@ -129,7 +129,7 @@ impl LocalWorkerPool {
 }
 
 impl WorkerPool {
-    pub fn new(priority: WorkPriority, cpu_set: CpuSet) -> Arc<Self> {
+    pub(crate) fn new(priority: WorkPriority, cpu_set: CpuSet) -> Arc<Self> {
         Arc::new_cyclic(|pool_ref| {
             let mut local_pools = Vec::new();
             for cpu_id in cpu_set.iter() {
@@ -146,15 +146,15 @@ impl WorkerPool {
         })
     }
 
-    pub fn run(&self) {
+    pub(crate) fn run(&self) {
         self.monitor.run();
     }
 
-    pub fn assign_work_queue(&self, work_queue: Arc<WorkQueue>) {
+    pub(crate) fn assign_work_queue(&self, work_queue: Arc<WorkQueue>) {
         self.work_queues.disable_irq().lock().push(work_queue);
     }
 
-    pub fn has_pending_work_items(&self, request_cpu: CpuId) -> bool {
+    pub(crate) fn has_pending_work_items(&self, request_cpu: CpuId) -> bool {
         self.work_queues
             .disable_irq()
             .lock()
@@ -162,15 +162,15 @@ impl WorkerPool {
             .any(|work_queue| work_queue.has_pending_work_items(request_cpu))
     }
 
-    pub fn schedule(&self) {
+    pub(crate) fn schedule(&self) {
         self.scheduler.schedule();
     }
 
-    pub fn num_workers(&self, cpu_id: CpuId) -> u16 {
+    pub(crate) fn num_workers(&self, cpu_id: CpuId) -> u16 {
         self.local_pool(cpu_id).workers.disable_irq().lock().len() as u16
     }
 
-    pub fn cpu_set(&self) -> &CpuSet {
+    pub(crate) fn cpu_set(&self) -> &CpuSet {
         &self.cpu_set
     }
 
@@ -229,7 +229,7 @@ impl Drop for WorkerPool {
 }
 
 impl Monitor {
-    pub fn new(worker_pool: Weak<WorkerPool>, priority: &WorkPriority) -> Arc<Self> {
+    pub(crate) fn new(worker_pool: Weak<WorkerPool>, priority: &WorkPriority) -> Arc<Self> {
         Arc::new_cyclic(|monitor_ref| {
             let weal_monitor = monitor_ref.clone();
             let task_fn = Box::new(move || {
@@ -252,12 +252,12 @@ impl Monitor {
         })
     }
 
-    pub fn run(&self) {
+    pub(crate) fn run(&self) {
         self.bound_task.as_thread().unwrap().run()
     }
 
     fn run_monitor_loop(self: &Arc<Self>) {
-        let sleep_queue = WaitQueue::new();
+        let (sleep_waiter, _) = Waiter::new_pair();
         let sleep_duration = Duration::from_millis(100);
         loop {
             let worker_pool = self.worker_pool.upgrade();
@@ -268,7 +268,7 @@ impl Monitor {
             for local_pool in worker_pool.local_pools.iter() {
                 local_pool.set_heartbeat(false);
             }
-            let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+            let _ = sleep_waiter.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
         }
     }
 }

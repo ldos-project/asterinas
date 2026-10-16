@@ -54,11 +54,14 @@ impl ProcFileOps for MemInfoFileOps {
         writeln!(printer, "SwapTotal:\t0 kB")?;
         writeln!(printer, "SwapFree:\t0 kB")?;
 
+        let slab = crate::vm::mem_slab() / 1024;
+        writeln!(printer, "Slab:	{} kB", slab)?;
+
         // Additional memory information
         let hugepage_size = page_size::<PagingConsts>(2) / 1024;
         let anon_hugepages = num_anon_hugepages() as usize * hugepage_size;
-        writeln!(printer, "AnonHugePages:\t{} kB", anon_hugepages)?;
-        writeln!(printer, "Hugepagesize:\t{} kB", hugepage_size)?;
+        writeln!(printer, "AnonHugePages:	{} kB", anon_hugepages)?;
+        writeln!(printer, "Hugepagesize:	{} kB", hugepage_size)?;
 
         Ok(printer.bytes_written())
     }

@@ -8,7 +8,6 @@ use core::{
 
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 
-use super::clockid_t;
 use crate::{
     events::IoEvents,
     fs::{
@@ -17,15 +16,15 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    syscall::create_timer,
+    syscall::{ClockId, create_timer_for_clock},
     time::{
-        Timer,
+        Timer, clockid_t,
         timer::{Timeout, TimerGuard},
     },
 };
 
 /// A file-like object representing a timer that can be used with file descriptors.
-pub struct TimerfdFile {
+pub(crate) struct TimerfdFile {
     clockid: clockid_t,
     timer: Arc<Timer>,
     ticks: Arc<AtomicU64>,
@@ -36,7 +35,7 @@ pub struct TimerfdFile {
 
 bitflags! {
     /// The flags used for timerfd-related operations.
-    pub struct TFDFlags: u32 {
+    pub(crate) struct TFDFlags: u32 {
         const TFD_CLOEXEC = CreationFlags::O_CLOEXEC.bits();
         const TFD_NONBLOCK = StatusFlags::O_NONBLOCK.bits();
     }
@@ -60,7 +59,7 @@ impl From<TFDFlags> for u32 {
 
 bitflags! {
     /// The flags used for timerfd settime operations.
-    pub struct TFDSetTimeFlags: u32 {
+    pub(crate) struct TFDSetTimeFlags: u32 {
         const TFD_TIMER_ABSTIME = 0x1;
         const TFD_TIMER_CANCEL_ON_SET = 0x2;
     }
@@ -91,7 +90,15 @@ define_atomic_version_of_integer_like_type!(TFDSetTimeFlags, try_from = true, {
 
 impl TimerfdFile {
     /// Creates a new `TimerfdFile` instance.
-    pub fn new(clockid: clockid_t, flags: TFDFlags, ctx: &Context) -> Result<Self> {
+    pub(crate) fn new(clock_id: ClockId, flags: TFDFlags, ctx: &Context) -> Result<Self> {
+        let is_valid = matches!(
+            clock_id,
+            ClockId::CLOCK_REALTIME | ClockId::CLOCK_MONOTONIC | ClockId::CLOCK_BOOTTIME
+        );
+        if !is_valid {
+            return_errno_with_message!(Errno::EINVAL, "invalid clock ID");
+        }
+
         let ticks = Arc::new(AtomicU64::new(0));
         let pollee = Pollee::new();
 
@@ -103,7 +110,7 @@ impl TimerfdFile {
                 ticks.fetch_add(1, Ordering::Relaxed);
                 pollee.notify(IoEvents::IN);
             };
-            create_timer(clockid, expired_fn, ctx)
+            create_timer_for_clock(clock_id, expired_fn, ctx)
         }?;
 
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[timerfd]".to_string());
@@ -114,12 +121,13 @@ impl TimerfdFile {
         };
 
         Ok(TimerfdFile {
-            clockid,
+            clockid: clock_id as clockid_t,
             timer,
             ticks,
             pollee,
             settime_flags: AtomicTFDSetTimeFlags::default(),
-            common: FileCommon::new(pseudo_path, status_flags),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/timerfd.c#L436>.
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, status_flags),
         })
     }
 
@@ -127,7 +135,7 @@ impl TimerfdFile {
     //
     // The remaining time and old interval are saved before the settings are applied, and then
     // returned afterwards.
-    pub fn set_time(
+    pub(crate) fn set_time(
         &self,
         expire_time: Duration,
         interval: Duration,
@@ -165,7 +173,7 @@ impl TimerfdFile {
     }
 
     /// Gets the timer's remaining time and interval.
-    pub fn get_time(&self) -> (Duration, Duration) {
+    pub(crate) fn get_time(&self) -> (Duration, Duration) {
         let timer_guard = self.timer.lock();
         (timer_guard.interval(), timer_guard.remain())
     }
@@ -221,11 +229,6 @@ impl FileLike for TimerfdFile {
         Ok(read_len)
     }
 
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/timerfd.c#L436>.
-        AccessMode::O_RDWR
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -264,7 +267,7 @@ impl FileLike for TimerfdFile {
             }
         }
 
-        let mut flags = self.common.status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common.status_flags().bits() | self.common.access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }

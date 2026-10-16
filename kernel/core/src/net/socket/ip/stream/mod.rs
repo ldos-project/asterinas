@@ -25,14 +25,11 @@ use super::{
 };
 use crate::{
     events::IoEvents,
-    fs::{
-        file::{FileCommon, FileLike, StatusFlags},
-        pseudofs::SockFs,
-    },
+    fs::file::{FileCommon, FileLike},
     net::{
         iface::Iface,
         socket::{
-            Socket,
+            Socket, new_socket_common,
             options::{
                 Error as SocketError, SocketOption,
                 macros::{sock_option_mut, sock_option_ref},
@@ -56,10 +53,10 @@ mod connecting;
 mod init;
 mod listen;
 pub(super) mod observer;
-pub mod options;
+pub(crate) mod options;
 mod util;
 
-pub struct StreamSocket {
+pub(crate) struct StreamSocket {
     // Lock order: `state` first, `options` second
     // FIXME: We perform userspace reads/writes when holding the spin locks (e.g., this state lock
     // and other locks in `aster-bigtcp`), which will break the atomic mode.
@@ -109,20 +106,15 @@ impl OptionSet {
 }
 
 impl StreamSocket {
-    pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Init(init_stream))),
             family,
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 
@@ -167,19 +159,13 @@ impl StreamSocket {
         let pollee = Pollee::new();
         connected_stream.init_observer(StreamObserver::new(pollee.clone()));
 
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
-
         Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Connected(connected_stream))),
             family,
             options: RwLock::new(options),
             timeouts: listener_timeouts.clone(),
             pollee,
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 
@@ -601,7 +587,19 @@ impl Socket for StreamSocket {
                 return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected")
             }
             State::Connecting(connecting_stream) => connecting_stream.remote_endpoint(),
-            State::Connected(connected_stream) => connected_stream.remote_endpoint(),
+            State::Connected(connected_stream) => {
+                // `getpeername()` fails on a closed connection.
+                // Reference: <https://elixir.bootlin.com/linux/v7.1/source/net/ipv4/af_inet.c#L820>.
+                //
+                // Linux checks for TCP_CLOSE. We also reject smoltcp's TIME_WAIT state because
+                // Linux moves TIME_WAIT handling to a separate socket and sets the original
+                // socket to TCP_CLOSE. smoltcp keeps TIME_WAIT on the original socket.
+                // Reference: <https://elixir.bootlin.com/linux/v7.1/source/net/ipv4/tcp_minisocks.c#L393>.
+                if !connected_stream.raw_with(|socket| socket.is_open()) {
+                    return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected");
+                }
+                connected_stream.remote_endpoint()
+            }
         };
         Ok(remote_endpoint.into())
     }

@@ -107,7 +107,7 @@ struct FifoRunQueue<T: CommonSchedInfo> {
 }
 
 impl<T: CommonSchedInfo> FifoRunQueue<T> {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
             current: None,
             queue: VecDeque::new(),
