@@ -216,6 +216,7 @@ parse_results() {
 # Clean up temporary files
 cleanup() {
     local benchmark="$1"
+    local run_mode="$2"
 
     echo "Cleaning up..."
     if [[ -n "${SAVE_LOGS}" ]]; then
@@ -224,7 +225,7 @@ cleanup() {
         mv "${LINUX_OUTPUT}" "linux_output_${suffix}.txt"
         echo "Raw outputs saved to aster_output_${suffix}.txt and linux_output_${suffix}.txt"
         # Only host-guest benchmarks produce guest console logs
-        if [[ -f "${ASTER_GUEST_LOG}" && -f "${LINUX_GUEST_LOG}" ]]; then
+        if [[ "$run_mode" == "host_guest" ]]; then
             mv "${ASTER_GUEST_LOG}" "aster_guest_${suffix}.log"
             mv "${LINUX_GUEST_LOG}" "linux_guest_${suffix}.log"
             echo "Guest consoles saved to aster_guest_${suffix}.log and linux_guest_${suffix}.log"
@@ -286,7 +287,7 @@ main() {
     fi
 
     # Cleanup temporary files
-    cleanup "$benchmark"
+    cleanup "$benchmark" "$run_mode"
     echo "Benchmark completed successfully."
 }
 
