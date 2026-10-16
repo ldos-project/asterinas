@@ -198,7 +198,11 @@ Please remove the `.template` to use it as the regular configuration file. The v
 
 ## The Book
 
-See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.
+See [The LDOS Book](https://ldos-project.github.io/book/) to learn more about the project.
+
+## Benchmark Dashboard
+
+See [LDOS Benchmark Dashboard](https://ldos-project.github.io/benchmark/) for nightly benchmark scores.
 
 ## License
 
