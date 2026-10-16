@@ -30,7 +30,7 @@ virtio-net.pcap
 /.secrets
 
 # benchmark results
-/result_*.json
+/result_*.json*
 
 # raw benchmark outputs kept by SAVE_LOGS
 /aster_output_*.txt
@@ -42,9 +42,9 @@ virtio-net.pcap
 /run-*
 
 # profile results
-aster-nix-profile-*.json
-aster-nix-profile-*.folded
-aster-nix-profile-*.svg
+asterinas-profile-*.json
+asterinas-profile-*.folded
+asterinas-profile-*.svg
 
 # distro results
 distro/result

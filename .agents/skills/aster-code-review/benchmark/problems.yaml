@@ -163,7 +163,7 @@
     diff:
       base: HEAD^
   defects:
-    - target: { kind: file, path: kernel/comps/virtio/src/device/block/device.rs }
+    - target: { kind: file, path: kernel/core/comps/virtio/src/device/block/device.rs }
       persona: development
       grounding: "Off by one"
       severity: major

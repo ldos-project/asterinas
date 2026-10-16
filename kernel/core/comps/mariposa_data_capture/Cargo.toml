@@ -6,11 +6,11 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-component = { path = "../../libs/comp-sys/component" }
+component = { path = "../../../libs/comp-sys/component" }
 aster-logger = { path = "../logger" }
 aster-block = { path = "../block" }
 io-util.workspace = true
-ostd = { path = "../../../ostd" }
+ostd = { path = "../../../../ostd" }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"]}
 minicbor = { version = "2.2", default-features = false, features = ["derive", "alloc"] }
 minicbor-serde = { version = "0.6", default-features = false }

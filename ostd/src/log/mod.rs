@@ -116,7 +116,8 @@ use self::bridge::LogCrateBridge;
 pub use self::{
     level::{Level, LevelFilter},
     logger::{
-        __write_log_record, Log, Record, STATIC_MAX_LEVEL, inject_logger, max_level, set_max_level,
+        __write_log_record, Log, Record, STATIC_MAX_LEVEL, inject_logger, inject_prefix_filter,
+        max_level, prefix_level_enabled, set_max_level,
     },
 };
 use crate::boot::EarlyCmdline;

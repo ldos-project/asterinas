@@ -43,6 +43,14 @@ def _decode_cbor_values(decoder: cbor2.CBORDecoder, end_pos: int):
             break
         try:
             record = decoder.decode()
+            if record == 0:
+                # Zero is technically a valid value, but it's extremely unlikely because values are
+                # almost always structs.
+                logger.warning(
+                    f"CBOR decoding stopped at element {i} (at offset {peek_pos}), because the value was the integer 0. Assuming end of event stream.\n"
+                    "(If the data type of the stream is actually int, this might be incorrect.)"
+                )
+                break
             # Check if we have overrun the file here, since we can't know the record length before
             # reading it.
             if fp.tell() < end_pos:

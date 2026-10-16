@@ -53,6 +53,7 @@ mod events;
 mod fs;
 mod init;
 mod ipc;
+mod log;
 mod net;
 #[cfg(not(baseline_asterinas))]
 mod orpc_utils;

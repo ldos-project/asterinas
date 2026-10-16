@@ -10,7 +10,6 @@ use core::{fmt, ops::Bound, sync::atomic::Ordering, time::Duration};
 use ostd::{
     arch::read_tsc as sched_clock,
     cpu::{CpuId, CpuSet, PinCurrentCpu, all_cpus},
-    info,
     irq::disable_local,
     sync::{LocalIrqDisabled, SpinLock},
     task::{
@@ -21,6 +20,7 @@ use ostd::{
         },
     },
     util::id_set::Id,
+    warn,
 };
 
 use super::{
@@ -127,6 +127,15 @@ trait SchedClassRq: Send + fmt::Debug {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Removes the task from the run queue, if it is queued. Returns true if it was present.
+    ///
+    /// The task must have the same priority it did when it was inserted, because the priority can
+    /// be used to find it in the queues.
+    ///
+    /// Not every run queue supports removing a specific task. Run queues that don't will always
+    /// return `false`.
+    fn remove(&mut self, task: &Arc<Task>) -> bool;
 
     /// Picks the next task for running.
     fn pick_next(&mut self) -> Option<Arc<Task>>;
@@ -273,10 +282,12 @@ impl Scheduler for ClassScheduler {
         if flags == EnqueueFlags::ForceSchedule {
             // A forced task is temporarily assigned the highest real-time priority and is placed at
             // the front of the run queue. Its previous policy is restored on the next
-            // `update_current` of the task. If the task is still in the run queue, the force fails
-            // entirely and falls back to normal scheduling.
-            if still_in_rq {
-                info!("Failed to force schedule task: {:?}", task);
+            // `update_current` of the task. If the task is still in the run queue, it must be
+            // removed from its queue first; if that is not possible (the task is the current task,
+            // or it is in a run queue which doesn't support removal), the force fails entirely and
+            // falls back to normal scheduling.
+            if still_in_rq && !rq.remove_task(&task) {
+                warn!("Failed to force schedule task: {:?}", task);
             } else {
                 thread.sched_attr().set_forced_policy();
                 rq.real_time.enqueue_front(task);
@@ -414,6 +425,20 @@ impl PerCpuClassRqSet {
             SchedPolicyKind::RealTime => self.real_time.enqueue(task, flags),
             SchedPolicyKind::Fair => self.fair.enqueue(task, flags),
             SchedPolicyKind::Idle => self.idle.enqueue(task, flags),
+        }
+    }
+
+    /// Removes the task from the run queues of this CPU, if it is queued in one of the classes that
+    /// supports that.
+    fn remove_task(&mut self, task: &Arc<Task>) -> bool {
+        let Some(t) = task.as_thread() else {
+            return false;
+        };
+        match t.sched_attr().policy_kind() {
+            SchedPolicyKind::Stop => self.stop.remove(task),
+            SchedPolicyKind::RealTime => self.real_time.remove(task),
+            SchedPolicyKind::Fair => self.fair.remove(task),
+            SchedPolicyKind::Idle => self.idle.remove(task),
         }
     }
 

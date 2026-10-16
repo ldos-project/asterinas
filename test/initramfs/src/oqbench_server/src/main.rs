@@ -7,7 +7,7 @@
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
-    process::ExitCode,
+    process::{ExitCode, self},
     thread,
     time::Duration,
 };
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 
 /// Request stream path (kernel -> user); overridable with `--request-path`.
-const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/strong_observe";
+const DEFAULT_REQUEST_PATH: &str = "/oqueues/oqbench/request/consume";
 /// Reply produce file path (user -> kernel); overridable with `--reply-path`.
 const DEFAULT_REPLY_PATH: &str = "/oqueues/oqbench/reply/produce";
 /// Control produce file path (user -> kernel), carrying this peer's lifecycle signals; overridable
@@ -184,8 +184,8 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Error> {
     let config = Config::parse();
     eprintln!(
-        "oqbench_server: starting (compute={} cycles, request={}, reply={})",
-        config.compute_cycles, config.request_path, config.reply_path
+        "oqbench_server: starting (compute={} cycles, request={}, reply={}, tid={})",
+        config.compute_cycles, config.request_path, config.reply_path, process::id()
     );
 
     let mut request_file = open_with_retry(&config.request_path, false)?;
