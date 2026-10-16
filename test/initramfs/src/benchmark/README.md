@@ -266,4 +266,4 @@ This will create a directory `run-<date and time>` which contains all the output
 other useful information as specified in `.howdone.yaml`. This will include the hardware and
 software in use, log files with resolved stack traces, and other information.
 
-Note: `howdone` **moves** generated files into the `run-<date and time>` directory, so be sure to include all relevant files in `.howdone.yaml` and update refereces to the local results.
+Note: `howdone` **moves** generated files into the `run-<date and time>` directory, so be sure to include all relevant files in `.howdone.yaml` and update references to the local results.
