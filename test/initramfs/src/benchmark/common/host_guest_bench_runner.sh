@@ -70,20 +70,17 @@ run_benchmark() {
 
     # Run the host command and save the output to the specified file.
     bash "${BENCHMARK_PATH}/host.sh" 2>&1 | tee "${output_file}"
-
-    # Clean up the log file
-    rm -f "${guest_log_file}"
 }
 
 # Run the benchmark on the Asterinas VM
-run_benchmark "${ASTERINAS_GUEST_CMD}" "${ASTERINAS_OUTPUT}" "/tmp/asterinas.log" "${READY_MESSAGE}"
+run_benchmark "${ASTERINAS_GUEST_CMD}" "${ASTERINAS_OUTPUT}" "${ASTER_GUEST_LOG}" "${READY_MESSAGE}"
 
 # Wait for the Asterinas QEMU process to exit
 wait
 
 # Run the benchmark on the Linux VM
 prepare_fs
-run_benchmark "${LINUX_GUEST_CMD}" "${LINUX_OUTPUT}" "/tmp/linux.log" "${READY_MESSAGE}"
+run_benchmark "${LINUX_GUEST_CMD}" "${LINUX_OUTPUT}" "${LINUX_GUEST_LOG}" "${READY_MESSAGE}"
 
 # Wait for the Linux QEMU process to exit
 wait
