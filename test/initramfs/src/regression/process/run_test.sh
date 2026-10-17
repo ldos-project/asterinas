@@ -53,6 +53,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./sched/sched_attr_getset
+./sched/sched_inherit
 ./sched/sched_param_getset
 ./sched/sched_param_idle
 
