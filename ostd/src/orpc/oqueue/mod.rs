@@ -123,7 +123,7 @@ mod single_thread_ring_buffer;
 mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
-pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
+pub use export::{CborProducer, CborReader, CborWeakReader, OQueueExport, ProduceCborError};
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -237,6 +237,10 @@ pub trait OQueueBase<D: ElementDescriptor + 'static> {
     /// Return the path of this OQueue, or `None` if it is anonymous.
     fn path(&self) -> Option<&Path>;
 
+    /// Return the history length of this OQueue, i.e. the number of past values a weak observer
+    /// may be able to look back to.
+    fn history_len(&self) -> usize;
+
     /// Erase the kind of OQueue. This will not allow additional operations to succeed. It
     /// simply makes the checks dynamic.
     fn as_any_oqueue(&self) -> GenericAnyOQueueRef<D>;
@@ -344,6 +348,10 @@ macro_rules! impl_oqueue_base_forward {
 
             fn path(&self) -> Option<&Path> {
                 self.$member.path()
+            }
+
+            fn history_len(&self) -> usize {
+                self.$member.history_len()
             }
 
             fn as_any_oqueue(&self) -> GenericAnyOQueueRef<$md> {
