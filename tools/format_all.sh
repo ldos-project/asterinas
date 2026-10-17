@@ -48,6 +48,16 @@ else
     rustfmt $KERNEL_DEMO_FILE
 fi
 
+format_crate() {
+    local crate_dir="$1"
+
+    if [ "$CHECK_MODE" = true ]; then
+        (cd "$crate_dir" && cargo fmt --check)
+    else
+        (cd "$crate_dir" && cargo fmt)
+    fi
+}
+
 for CRATE in $EXCLUDED_CRATES; do
     CRATE_DIR="$WORKSPACE_ROOT/$CRATE"
 
@@ -70,13 +80,17 @@ for CRATE in $EXCLUDED_CRATES; do
             ;;
     esac
 
-    if [ -d "$CRATE_DIR" ]; then
-        if [ "$CHECK_MODE" = true ]; then
-            (cd "$CRATE_DIR" && cargo fmt --check)
-        else
-            (cd "$CRATE_DIR" && cargo fmt)
-        fi
-    else
+    if [ ! -d "$CRATE_DIR" ]; then
         echo "Directory for crate $CRATE does not exist"
+        continue
     fi
+
+    if [ -f "$CRATE_DIR/Cargo.toml" ]; then
+        format_crate "$CRATE_DIR"
+        continue
+    fi
+
+    while IFS= read -r manifest; do
+        format_crate "$(dirname "$manifest")"
+    done < <(find "$CRATE_DIR" -name Cargo.toml -not -path '*/target/*' -print)
 done
