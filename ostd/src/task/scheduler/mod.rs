@@ -122,6 +122,30 @@ fn get_scheduling_event_producer() -> &'static RefProducer<SchedulingEvent> {
     SCHEDULING_EVENT_PRODUCER.get().unwrap()
 }
 
+/// Publishes a scheduling event about `task` best-effort, if [`init()`] has run.
+///
+/// This never blocks the scheduler on an observer: a full ring drops the event (and revokes a
+/// revocable observer). It must not be called with the local runqueue locked, since waking a
+/// blocked observer enqueues it.
+#[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
+fn publish_scheduling_event(task: Arc<Task>, kind: SchedulingEventKind) {
+    let Some(producer) = SCHEDULING_EVENT_PRODUCER.get() else {
+        return;
+    };
+    let event = SchedulingEvent {
+        task: EventTask(task),
+        cpu: CpuId::current_racy().into(),
+        kind,
+    };
+    crate::ignore_err!(
+        producer
+            .try_produce_ref(&event)
+            .then_some(())
+            .ok_or("scheduling event dropped: observer ring full"),
+        crate::log::Level::Notice
+    );
+}
+
 /// Injects a custom implementation of task scheduler into OSTD.
 ///
 /// This function can only be called once and must be called
@@ -171,12 +195,15 @@ pub fn enable_preemption_on_cpu() {
 /// and falls back to a default FIFO scheduler if none has been injected.
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
-/// An event either or scheduling or descheduling a task.
+/// An event in a task's scheduling lifecycle.
 #[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
 pub struct SchedulingEvent {
-    /// The task
-    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
-    pub task: Arc<Task>,
+    /// The task the event is about.
+    pub task: EventTask,
+    /// The CPU on which the event happened. For [`SchedulingEventKind::Wakeup`] and
+    /// [`SchedulingEventKind::Spawn`] this is the CPU of the waker or spawner, not the CPU the
+    /// task is enqueued on.
+    pub cpu: u32,
     /// The kind of event
     pub kind: SchedulingEventKind,
 }
@@ -188,7 +215,81 @@ pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
     /// The task has stopped executing.
-    Deschedule,
+    Deschedule {
+        /// Why the task stopped executing.
+        reason: DescheduleReason,
+    },
+    /// The task was made runnable after blocking.
+    Wakeup,
+    /// The task was made runnable for the first time.
+    Spawn,
+}
+
+/// Why a task stopped executing in a [`SchedulingEventKind::Deschedule`] event.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
+pub enum DescheduleReason {
+    /// The task was preempted by another task, including one woken with
+    /// [`switch_to_target`].
+    Preempted,
+    /// The task blocked.
+    Blocked,
+    /// The task yielded.
+    Yielded,
+    /// The task exited.
+    Exited,
+}
+
+/// The task a [`SchedulingEvent`] is about.
+///
+/// This wraps the task so that it can be exported as a [`TaskProjection`].
+pub struct EventTask(pub Arc<Task>);
+
+impl core::ops::Deref for EventTask {
+    type Target = Task;
+
+    fn deref(&self) -> &Task {
+        &self.0
+    }
+}
+
+/// The exported projection of a task in a [`SchedulingEvent`].
+#[cfg(not(baseline_asterinas))]
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TaskProjection {
+    /// The task's [`Task::id`].
+    pub id: usize,
+    /// The thread ID of the task, if the kernel injected a function to find it with
+    /// [`inject_task_tid_fn`] and the task has one.
+    pub tid: Option<u32>,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl crate::orpc::oqueue::default_projection::DefaultProjection for EventTask {
+    type Projection = TaskProjection;
+
+    fn default_projection(&self) -> Self::Projection {
+        TaskProjection {
+            id: self.id().get(),
+            tid: TASK_TID_FN.get().and_then(|f| f(self)),
+        }
+    }
+}
+
+/// The function that maps a task to its thread ID, if any. See [`inject_task_tid_fn`].
+#[cfg(not(baseline_asterinas))]
+static TASK_TID_FN: Once<fn(&Task) -> Option<u32>> = Once::new();
+
+/// Injects a function that maps a task to its thread ID.
+///
+/// OSTD has no notion of thread IDs, so the exported projection of a [`SchedulingEvent`]
+/// identifies tasks by [`Task::id`]. Injecting this function adds the thread ID too, so that
+/// scheduling events can be joined with kernel events that identify threads by thread ID.
+///
+/// The function is called while producing events, so it must be cheap and must not block.
+#[cfg(not(baseline_asterinas))]
+pub fn inject_task_tid_fn(f: fn(&Task) -> Option<u32>) {
+    TASK_TID_FN.call_once(|| f);
 }
 
 /// Returns the global scheduler.
@@ -498,7 +599,7 @@ pub(crate) fn might_preempt() {
     if !cpu_local::should_preempt() {
         return;
     }
-    reschedule(|local_rq| {
+    reschedule(DescheduleReason::Preempted, |local_rq| {
         let next_task_opt = local_rq.try_pick_next();
         if let Some(next_task) = next_task_opt {
             ReschedAction::SwitchTo(next_task.clone())
@@ -520,7 +621,7 @@ where
     let mut current = None;
     let mut is_first_try = true;
 
-    reschedule(|local_rq: &mut dyn LocalRunQueue| {
+    reschedule(DescheduleReason::Blocked, |local_rq| {
         let next_task_opt = if is_first_try {
             if has_unparked() {
                 return ReschedAction::DoNothing;
@@ -557,6 +658,9 @@ where
 
 /// Unblocks a target task.
 pub(crate) fn unpark_target(runnable: Arc<Task>) {
+    // Publish before enqueueing so that the wakeup precedes the task's next `Schedule` event.
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
+    publish_scheduling_event(runnable.clone(), SchedulingEventKind::Wakeup);
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Wake);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
@@ -566,6 +670,8 @@ pub(crate) fn unpark_target(runnable: Arc<Task>) {
 /// Unblocks a target task and force it to run immediate, giving up the CPU to it if needed
 /// (similarly to yielding).
 pub(crate) fn switch_to_target(runnable: Arc<Task>) {
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
+    publish_scheduling_event(runnable.clone(), SchedulingEventKind::Wakeup);
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::ForceSchedule);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
@@ -578,6 +684,8 @@ pub(crate) fn switch_to_target(runnable: Arc<Task>) {
 /// Note that the new task is not guaranteed to run at once.
 #[track_caller]
 pub(super) fn run_new_task(runnable: Arc<Task>) {
+    #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
+    publish_scheduling_event(runnable.clone(), SchedulingEventKind::Spawn);
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Spawn);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
@@ -619,7 +727,7 @@ fn set_need_preempt(cpu_id: CpuId) {
 pub(super) fn exit_current() -> ! {
     let mut is_first_try = true;
 
-    reschedule(|local_rq: &mut dyn LocalRunQueue| {
+    reschedule(DescheduleReason::Exited, |local_rq| {
         let next_task_opt = if is_first_try {
             is_first_try = false;
             let should_pick_next = local_rq.update_current(UpdateFlags::Exit);
@@ -642,7 +750,7 @@ pub(super) fn exit_current() -> ! {
 /// Yields execution.
 #[track_caller]
 pub(super) fn yield_now() {
-    reschedule(|local_rq| {
+    reschedule(DescheduleReason::Yielded, |local_rq| {
         let should_pick_next = local_rq.update_current(UpdateFlags::Yield);
         let next_task_opt = should_pick_next.then(|| local_rq.pick_next());
         if let Some(next_task) = next_task_opt {
@@ -657,9 +765,16 @@ pub(super) fn yield_now() {
 /// user-given closure.
 ///
 /// The closure makes the scheduling decision by taking the local runqueue has its input.
+/// `reason` is reported in the `Deschedule` event of the current task if it is switched out.
 #[track_caller]
-fn reschedule<F>(mut f: F)
-where
+fn reschedule<F>(
+    #[cfg_attr(
+        not(all(feature = "capture_scheduling", not(baseline_asterinas))),
+        expect(unused_variables)
+    )]
+    reason: DescheduleReason,
+    mut f: F,
+) where
     F: FnMut(&mut dyn LocalRunQueue) -> ReschedAction,
 {
     // Even if the decision below is `DoNothing`, we should clear this flag. Meanwhile, to avoid
@@ -689,35 +804,23 @@ where
     // temporarily. This avoids an atomic incr and decr.
     #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     let next_task = {
-        let producer = get_scheduling_event_producer();
-        // Publish scheduling events best-effort: never block the scheduler on an observer. A full
-        // ring drops the event (and revokes a revocable observer), keeping the reschedule path
-        // fast and non-blocking.
         if let Some(t) = Task::current() {
-            crate::ignore_err!(
-                producer
-                    .try_produce_ref(&SchedulingEvent {
-                        task: t.cloned(),
-                        kind: SchedulingEventKind::Deschedule,
-                    })
-                    .then_some(())
-                    .ok_or("scheduling event dropped: observer ring full"),
-                crate::log::Level::Notice
-            );
+            publish_scheduling_event(t.cloned(), SchedulingEventKind::Deschedule { reason });
         }
 
         let scheduling_event = SchedulingEvent {
-            task: next_task,
+            task: EventTask(next_task),
+            cpu: CpuId::current_racy().into(),
             kind: SchedulingEventKind::Schedule,
         };
         crate::ignore_err!(
-            producer
+            get_scheduling_event_producer()
                 .try_produce_ref(&scheduling_event)
                 .then_some(())
                 .ok_or("scheduling event dropped: observer ring full"),
             crate::log::Level::Notice
         );
-        scheduling_event.task
+        scheduling_event.task.0
     };
 
     // `switch_to_task` will spin if it finds that the next task is still running on some CPU core,
