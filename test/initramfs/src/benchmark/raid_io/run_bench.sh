@@ -2,11 +2,20 @@
 
 # SPDX-License-Identifier: MPL-2.0
 #
-# One replay of the RAID I/O benchmark, inside the guest. To drive it in Mariposa, use init; to drive it in
-# Debian, use SSH, with --replayer, --share and --staging pointed at its own paths.
+# One replay of the RAID I/O benchmark, inside the guest. The per-workload `<workload>/run.sh` calls it
+# through `bench_runner.sh`, on Mariposa and on Linux alike (`SYSTEM` says which).
 #
-# Usage: run_bench.sh --workload W --threads N --target /dev/X --out-dir D
-#                     [--replayer PATH] [--share DIR] [--staging DIR]
+# The host side (`bench_linux_and_aster.sh`) puts a fresh trace over 95% of RAID_IO_RANGE GiB (default 16)
+# on the share and, before each boot, recreates every member as a zeroed RAID_IO_RANGE GiB first partition
+# of its disk. To run both systems on the machine's SSDs, which wipes those disks entirely:
+#   RAID_DEVICES=/dev/nvme0n1p1,/dev/nvme1n1p1,/dev/nvme2n2p1 \
+#       test/initramfs/src/benchmark/bench_linux_and_aster.sh raid_io/<workload> x86-64
+# The results land in RAID_IO_SHARE/raid_io/<workload>/{asterinas,linux}. Without RAID_DEVICES both
+# systems use image files, which runs anywhere but measures nothing.
+#
+# Usage: run_bench.sh --workload W [--threads N] [--target /dev/X] [--out-dir D]
+#   --target defaults to the array of the running system; --out-dir, relative to the share, defaults
+#   to raid_io/W/SYSTEM.
 
 set -e
 
@@ -14,6 +23,8 @@ REPLAYER=/benchmark/bin/io_replayer
 SHARE=/host
 STAGING=/tmp/raid_io  # put dataset in RAM
 MARKER="RAID_IO_BENCH|"
+SYSTEM=${SYSTEM:-asterinas}
+THREADS=8
 
 # `mark` prints a line the host driver watches the console for; `fail` prints an error marker and stops.
 mark() { echo "${MARKER}$*"; }
@@ -30,13 +41,32 @@ while [ "$#" -gt 0 ]; do
     --threads) THREADS=$2 ;;
     --target) TARGET=$2 ;;
     --out-dir) OUT_DIR=$2 ;;
-    --replayer) REPLAYER=$2 ;;
-    --share) SHARE=$2 ;;
-    --staging) STAGING=$2 ;;
     *) fail "unknown argument '$1'" ;;
     esac
     shift 2
 done
+
+[ -n "$WORKLOAD" ] || fail "missing --workload"
+OUT_DIR=${OUT_DIR:-raid_io/${WORKLOAD}/${SYSTEM}}
+
+# Setting the device for benchmark. Assemble the RAID array for linux
+if [ "$SYSTEM" = linux ]; then
+    # Unlike Mariposa, whose `/init` has mounted the share, Linux boots straight into `bench_runner.sh`.
+    mount -t virtiofs aster-virtiofs "$SHARE" || fail "could not mount the share"
+    # Assemble the three members. 
+    MEMBERS=
+    for SERIAL in raid0 raid1 raid2; do
+        # Getting the correct block device by finding and matching their serial
+        for F in /sys/block/vd*/serial; do
+            if [ "$(cat "$F")" = "$SERIAL" ]; then MEMBERS="$MEMBERS /dev/$(basename "$(dirname "$F")")"; fi
+        done
+    done
+    MDADM_NO_UDEV=1 mdadm --create /dev/md0 --run --assume-clean --metadata=1.0 --level=1 --raid-devices=3 $MEMBERS ||
+        fail "mdadm could not create the RAID-1 array from '${MEMBERS}'"
+    TARGET=${TARGET:-/dev/md0}
+else
+    TARGET=${TARGET:-/dev/raid}
+fi
 
 # Refuse to run unless the target is a block device.
 [ -b "$TARGET" ] || fail "the target '${TARGET}' is not a block device"

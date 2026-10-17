@@ -89,7 +89,7 @@ else
             cp "$RAID_DEV_0" "$RAID_IMG"
         fi
     done
-    RAID_CACHE="writeback"
+    RAID_CACHE="none"
 fi
 
 SSH_RAND_PORT=${SSH_PORT:-22}

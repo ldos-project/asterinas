@@ -12,7 +12,7 @@ LINUX_OUTPUT="${BENCHMARK_ROOT}/linux_output.txt"
 ASTER_OUTPUT="${BENCHMARK_ROOT}/aster_output.txt"
 # Dependencies for Linux
 LINUX_DEPENDENCIES_DIR="/opt/linux_binary_cache"
-LINUX_KERNEL="${LINUX_DEPENDENCIES_DIR}/vmlinuz"
+LINUX_KERNEL="${LINUX_KERNEL:-${LINUX_DEPENDENCIES_DIR}/vmlinuz}"
 LINUX_KERNEL_VERSION="6.16.0"
 LINUX_MODULES_DIR="${BENCHMARK_ROOT}/../build/initramfs/lib/modules/${LINUX_KERNEL_VERSION}/kernel"
 WGET_SCRIPT="${BENCHMARK_ROOT}/../../../tools/atomic_wget.sh"

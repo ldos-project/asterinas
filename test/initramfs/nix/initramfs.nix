@@ -31,7 +31,7 @@ let
 
   all_pkgs = [ busybox dropbear openssh etc resolv_conf ]
     ++ lib.optionals enablePython [ python3 ]
-    ++ lib.optionals (benchmark != null) [ benchmark.package ]
+    ++ lib.optionals (benchmark != null) [ benchmark.package pkgs.mdadm ]
     ++ lib.optionals (conformance != null) [ conformance.package ]
     ++ lib.optionals (regression != null) [ regression.package ]
     ++ lib.optionals is_evtest_included [ pkgs.evtest ];
@@ -77,6 +77,7 @@ in stdenvNoCC.mkDerivation {
 
     ${lib.optionalString (benchmark != null) ''
       cp -r "${benchmark.package}"/* $out/benchmark/
+      cp ${pkgs.mdadm}/bin/mdadm $out/bin/
     ''}
 
     ${lib.optionalString (conformance != null) ''
