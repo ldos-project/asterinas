@@ -9,7 +9,7 @@ BENCHMARK_ROOT="/benchmark"
 READY_MESSAGE="The VM is ready for the benchmark."
 
 BENCHMARK_NAME=$1
-SYSTEM="${2:-asterinas}"
+export SYSTEM="${2:-asterinas}"
 echo "Running benchmark: ${BENCHMARK_NAME} on ${SYSTEM}"
 
 print_help() {
@@ -44,6 +44,8 @@ prepare_system() {
     if [ "$SYSTEM" = "linux" ]; then
         # Mount necessary fs
         mount -t devtmpfs devtmpfs /dev
+        mount -t proc proc /proc
+        mount -t sysfs sysfs /sys
         # Enable network
         ip link set lo up
         ip link set eth0 up

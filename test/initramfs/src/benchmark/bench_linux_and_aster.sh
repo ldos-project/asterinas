@@ -19,6 +19,10 @@ fi
 BENCHMARK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${BENCHMARK_ROOT}/common/prepare_host.sh"
 RESULT_TEMPLATE="${BENCHMARK_ROOT}/result_template.json"
+RAID_IO_SHARE="${RAID_IO_SHARE:-${BENCHMARK_ROOT}/../../build/raid_io_share}"
+RAID_IO_SOCKET="/tmp/vhostqemu/vfs.sock"
+# `raid_io` uses the first RAID_IO_RANGE GiB of each RAID member.
+RAID_IO_RANGE="${RAID_IO_RANGE:-16}"
 
 # Parse benchmark results
 parse_raw_results() {
@@ -79,6 +83,59 @@ extract_result_file() {
     fi
 }
 
+# Start the virtio-fs backend on the host. 
+start_virtiofsd() {
+    mkdir -p "$(dirname "${RAID_IO_SOCKET}")" "${RAID_IO_SHARE}"
+    rm -f "${RAID_IO_SOCKET}"
+    /usr/libexec/virtiofsd --socket-path="${RAID_IO_SOCKET}" --shared-dir="${RAID_IO_SHARE}" &
+    local virtiofsd_pid=$!
+    until [[ -S "${RAID_IO_SOCKET}" ]]; do
+        kill -0 "${virtiofsd_pid}" 2>/dev/null || { echo "Error: virtiofsd exited at startup" >&2; exit 1; }
+        sleep 0.1
+    done
+}
+
+# Without `RAID_DEVICES`, `raid_io` runs on image files rather than the three SSDs; say so loudly.
+warn_raid_images() {
+    [[ -n "${RAID_DEVICES:-}" ]] && return 0
+    echo >&2 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo >&2 "!!! WARNING: RAID_DEVICES is not set, so raid_io ran on image files, not the three SSDs.    !!!"
+    echo >&2 "!!! The run only checks that the benchmark works; its latencies say nothing about RAID.     !!!"
+    echo >&2 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+}
+
+# Prepare the RAID members for one boot. 
+prepare_raid_members() {
+    local member disk md
+    for member in "$@"; do
+        echo "Preparing ${member}: ${RAID_IO_RANGE} GiB of zeros..." >&2
+        if [[ -b "$member" ]]; then
+            # Stop any md array a previous run left assembled from this member.
+            for md in /sys/class/block/"$(basename "$member")"/holders/md*; do
+                [[ -e "$md" ]] && mdadm --stop "/dev/$(basename "$md")"
+            done
+            disk=/dev/$(lsblk -no PKNAME "$member")
+            wipefs -q -a "$member" "$disk"
+            parted -s "$disk" mklabel gpt mkpart primary 1MiB "$((RAID_IO_RANGE * 1024 + 1))MiB"
+            partprobe "$disk"
+            until [[ -b "$member" ]]; do sleep 0.1; done
+        fi
+        dd if=/dev/zero of="$member" bs=1M count=$((RAID_IO_RANGE * 1024)) oflag=direct status=none
+    done
+}
+
+# Regenerate the job's trace on the share, spanning 95% of the range, from the `gen.py` arguments in the
+# job's `trace_params`: the read fraction, seconds, read and write sizes, mean inter-arrival time, seed.
+generate_raid_trace() {
+    local job_dir="$1" params span
+    read -r -a params < "${job_dir}/trace_params"
+    span=$((RAID_IO_RANGE * 95 / 100))  # `gen.py` takes whole GiB, so round 95% down
+    mkdir -p "${RAID_IO_SHARE}/traces"
+    echo "Generating the $(basename "$job_dir") trace over ${span} GiB..." >&2
+    nix-shell -p python3Packages.numpy --run "python3 ${BENCHMARK_ROOT}/../../../../tools/raid_io_bench/traces/gen.py \
+        ${RAID_IO_SHARE}/traces/$(basename "$job_dir").trace ${params[*]:0:5} ${span} ${params[5]}" >/dev/null
+}
+
 # Run the specified benchmark with runtime configurations
 run_benchmark() {
     local benchmark="$1"
@@ -92,6 +149,9 @@ run_benchmark() {
     local smp_val=1
     local mem_val="8G"
     local aster_scheme_cmd_part="SCHEME=iommu" # Default scheme
+    
+    # iommu will break VirtIOFS. Turn iommu off for RAID benchmark. 
+    [[ "$benchmark" == raid_io/* ]] && aster_scheme_cmd_part=""
 
     # Process runtime_configs_str to override defaults and gather extra args
     while IFS='=' read -r key value; do
@@ -133,6 +193,8 @@ run_benchmark() {
         asterinas_cmd_arr+=(INTEL_TDX=1)
     fi
 
+    [[ "$benchmark" == raid_io/* ]] && asterinas_cmd_arr+=(VIRTIOFS=on)
+
     local linux_cmd_arr=(
         qemu-system-x86_64
         --no-reboot
@@ -164,13 +226,44 @@ run_benchmark() {
         )
     fi
 
+    # Add flags for block devices used in the raid benchmark. 
+    if [[ "$benchmark" == raid_io/* ]]; then
+        local raid_members virtio_blk_features="disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off"
+        IFS=, read -r -a raid_members <<< "${RAID_DEVICES:-}"
+        if [[ ${#raid_members[@]} -eq 0 ]]; then
+            raid_members=("${BENCHMARK_ROOT}"/../../build/raid{0,1,2}.img)
+        fi
+        generate_raid_trace "${BENCHMARK_ROOT}/${benchmark}"
+        warn_raid_images
+        for i in 0 1 2; do
+            linux_cmd_arr+=(
+                -drive "if=none,format=raw,id=r${i},file=${raid_members[i]},cache=none"
+                -device "virtio-blk-pci,bus=pcie.0,addr=$((9 + i)),drive=r${i},serial=raid${i},${virtio_blk_features}"
+            )
+        done
+        linux_cmd_arr+=(
+            -object "memory-backend-memfd,id=mem0,size=${mem_val},share=on"
+            -numa node,memdev=mem0
+            -chardev "socket,id=char0,path=${RAID_IO_SOCKET}"
+            -device vhost-user-fs-pci,chardev=char0,tag=aster-virtiofs
+        )
+    fi
+
     # Run the benchmark depending on the mode
     case "${run_mode}" in
         "guest_only")
+            if [[ "$benchmark" == raid_io/* ]]; then
+                prepare_raid_members "${raid_members[@]}"
+                start_virtiofsd
+            fi
             echo "Running benchmark ${benchmark} on Asterinas..."
             # Execute directly from array, redirect stderr to stdout, then tee
             "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
             prepare_fs
+            if [[ "$benchmark" == raid_io/* ]]; then
+                prepare_raid_members "${raid_members[@]}"
+                start_virtiofsd
+            fi
             echo "Running benchmark ${benchmark} on Linux..."
             # Execute directly from array, redirect stderr to stdout, then tee
             "${linux_cmd_arr[@]}" 2>&1 | tee "${LINUX_OUTPUT}"
@@ -197,6 +290,8 @@ run_benchmark() {
             exit 1
             ;;
     esac
+    [[ "$benchmark" == raid_io/* ]] && warn_raid_images
+    return 0
 }
 
 # Parse the benchmark configuration
