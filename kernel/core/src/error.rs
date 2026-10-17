@@ -292,6 +292,10 @@ pub enum Errno {
 
     /// Restart of an interrupted system call. For kernel internal use only.
     ERESTARTSYS = 512,
+
+    /// Unconditional restart of an interrupted system call, even if the signal handler does not
+    /// have `SA_RESTART`. For kernel internal use only.
+    ERESTARTNOINTR = 513,
 }
 
 /// Error used in this crate.
