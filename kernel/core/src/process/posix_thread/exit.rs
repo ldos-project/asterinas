@@ -6,7 +6,7 @@ use super::{
     AsPosixThread, ThreadLocal,
     futex::{FutexVisibility, futex_wake},
     ptrace::PtraceEvent,
-    robust_list::wake_robust_futex,
+    robust_list::{RobustListHead, wake_robust_futex},
 };
 use crate::{
     context::current_userspace,
@@ -162,17 +162,20 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
 ///
 /// This corresponds to Linux's `exit_robust_list`. Errors are silently ignored.
 fn wake_robust_list(thread_local: &ThreadLocal, tid: Tid) {
-    let list_head = match thread_local.robust_list().borrow_mut().take() {
-        Some(robust_list_head) => robust_list_head,
-        None => return,
+    let head_addr = thread_local.robust_list().replace(0);
+    if head_addr == 0 {
+        return;
+    }
+    let Ok(list_head) = current_userspace!().read_val::<RobustListHead>(head_addr) else {
+        return;
     };
 
     debug!("exit: wake up the robust list: {:?}", list_head);
-    for futex_addr in list_head.futexes() {
-        if let Err(err) = wake_robust_futex(futex_addr, tid) {
+    for futex in list_head.futexes(head_addr) {
+        if let Err(err) = wake_robust_futex(futex, tid) {
             debug!(
                 "exit: cannot wake the robust futex at {:#x}: {:?}",
-                futex_addr, err
+                futex.addr, err
             );
             return;
         }
