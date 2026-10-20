@@ -212,7 +212,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
         let virtio = member
             .downcast_ref::<VirtIoBlockDevice>()
             .expect("RAID member must be a VirtIoBlockDevice");
-        registry::register_with(
+        registry::register_with_projection(
             &path!(raid1.bio_completion[{ index }]),
             &virtio.bio_completion_oqueue().as_any_oqueue(),
             |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
