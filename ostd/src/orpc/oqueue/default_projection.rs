@@ -63,7 +63,8 @@ impl<T: ?Sized> OpaqueId for Arc<T> {
 
 impl<T: ?Sized> OpaqueId for Box<T> {
     fn opaque_id(&self) -> usize {
-        core::ptr::from_ref(&**self) as *const () as usize
+        let ptr: *const T = &**self;
+        ptr as *const () as usize
     }
 }
 
@@ -130,24 +131,24 @@ mod test {
     }
 
     #[derive(DefaultProjection)]
-    struct ProjectedPointers {
+    struct ProjectedPointers<'a> {
         #[projection(opaque)]
         arc: Arc<u32>,
         #[projection(opaque)]
         boxed: Box<u32>,
         #[projection(opaque)]
-        reference: &'static u32,
+        reference: &'a u32,
     }
 
-    static REFERENT: u32 = 3;
-
     #[ktest]
-    fn default_projection_identifies_smart_pointers_by_referent() {
+    fn default_projection_get_inner_value_pointer_from_smart_ptr() {
+        let data: u32 = 3;
+
         let arc = Arc::new(1);
         let message = ProjectedPointers {
             arc: arc.clone(),
             boxed: Box::new(2),
-            reference: &REFERENT,
+            reference: &data,
         };
         let projected = message.default_projection();
 
@@ -156,6 +157,6 @@ mod test {
             projected.boxed,
             core::ptr::from_ref(&*message.boxed) as usize
         );
-        assert_eq!(projected.reference, core::ptr::from_ref(&REFERENT) as usize);
+        assert_eq!(projected.reference, core::ptr::from_ref(&data) as usize);
     }
 }
