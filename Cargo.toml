@@ -123,6 +123,7 @@ exclude = [
     "kernel/libs/comp-sys/component-macro",
     "kernel/libs/comp-sys/controlled",
     "osdk",
+    "test/initramfs/src/regression",
     "tools/sctrace",
 ]
 

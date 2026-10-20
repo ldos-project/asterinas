@@ -164,6 +164,8 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
+# Enable the kernel-side OQFS test OQueues that the userspace oqfs regression tests exercise.
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="oqfs_test.enable"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), raid)
 ENABLE_REGRESSION_TEST := true
