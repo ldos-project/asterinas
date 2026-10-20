@@ -52,6 +52,43 @@ new_key_type! {
     pub struct ObserverKey;
     /// A unique identifier for an inline strong observer.
     pub struct InlineObserverKey;
+    /// A unique identifier for a readiness hook.
+    pub struct ReadinessHookKey;
+}
+
+/// The kind of OQueue readiness change that a [`ReadinessHook`] reports.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Readiness {
+    /// A value may have become available to observers and consumers.
+    Readable,
+    /// Space may have become available to producers.
+    Writable,
+}
+
+/// A hook registered on an OQueue to report readiness changes, unregistered when dropped.
+pub struct ReadinessHook {
+    oqueue: Arc<dyn UntypedOQueueImplementation>,
+    key: ReadinessHookKey,
+}
+
+impl ReadinessHook {
+    /// Registers `hook` to run whenever `oqueue` may have gained the given `readiness`.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or access the OQueue.
+    pub(super) fn register(
+        oqueue: Arc<dyn UntypedOQueueImplementation>,
+        readiness: Readiness,
+        hook: Box<dyn Fn() + Send>,
+    ) -> Self {
+        let key = oqueue.add_readiness_hook(readiness, hook);
+        Self { oqueue, key }
+    }
+}
+
+impl Drop for ReadinessHook {
+    fn drop(&mut self) {
+        self.oqueue.remove_readiness_hook(self.key);
+    }
 }
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
@@ -105,6 +142,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
                 observer_ring_buffers: Default::default(),
                 inline_strong_observers: Default::default(),
                 inline_consumer: None,
+                readiness_hooks: Default::default(),
             }),
             len,
             supports_consume,
@@ -307,7 +345,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// True if try_produce into self is *expected* to succeed. It may still fail if there is a
     /// concurrent producer.
-    fn can_produce(&self) -> bool {
+    pub(super) fn can_produce(&self) -> bool {
         self.inner.lock().can_produce()
     }
 
@@ -342,6 +380,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             for f in inner.inline_strong_observers.values() {
                 f(v)
             }
+            inner.run_readiness_hooks(Readiness::Readable);
             drop(inner);
 
             self.wake_after_produce();
@@ -439,6 +478,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                     "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
                 );
             }
+            // After producing, there are something to read
+            inner.run_readiness_hooks(Readiness::Readable);
             drop(inner);
 
             self.wake_after_produce();
@@ -474,6 +515,10 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                 .expect("consume not supported")
                 .try_consume()
         };
+        // If some values are consumed, there are space for write. 
+        if ret.is_some() {
+            inner.run_readiness_hooks(Readiness::Writable);
+        }
         drop(inner);
         *self.last_consumer.lock().deref_mut() =
             Task::current().map(|t| Arc::downgrade(&t.cloned()));
@@ -561,17 +606,29 @@ struct OQueueInner<D: ElementDescriptor> {
     /// `OQueueImplementation<LifetimelessElementDescriptor<T>>`'s by-value impl block), since only an
     /// owned, `'static` message can be consumed by value.
     inline_consumer: Option<Box<dyn Fn(D::Element<'static>) + Send>>,
+    /// Hooks run when the OQueue may have gained the paired readiness.
+    #[expect(clippy::type_complexity)]
+    readiness_hooks: SlotMap<ReadinessHookKey, (Readiness, Box<dyn Fn() + Send>)>,
 }
 
 impl<D: ElementDescriptor> OQueueInner<D> {
-    /// True if all ring buffers can produce.
-    ///
-    /// Revoked observers are ignored, cus they won't get produced to at all.
+    /// True if a produce can succeed without blocking.
     fn can_produce(&self) -> bool {
+        // Revoked observers are never produced to, and a full revocable observer is revoked by the
+        // produce rather than blocking it.
         self.observer_ring_buffers
             .values()
-            .all(|r| r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
+            .all(|r| r.revocable || r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
+    }
+
+    /// Runs the hooks registered for `readiness`.
+    fn run_readiness_hooks(&self, readiness: Readiness) {
+        for (hook_readiness, hook) in self.readiness_hooks.values() {
+            if *hook_readiness == readiness {
+                hook();
+            }
+        }
     }
 
     /// Revoke every *revocable* strong observer whose ring buffer is full (a.k.a !can_produce()).
@@ -800,6 +857,17 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
     /// Get the oldest cursor which will return a value.
     fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor;
+
+    /// Register a hook to run whenever the OQueue may have gained `readiness`. This is used to
+    /// implement [`ReadinessHook`].
+    fn add_readiness_hook(
+        &self,
+        readiness: Readiness,
+        hook: Box<dyn Fn() + Send>,
+    ) -> ReadinessHookKey;
+
+    /// Unregister a hook added by [`Self::add_readiness_hook`].
+    fn remove_readiness_hook(&self, key: ReadinessHookKey);
 }
 
 assert_obj_safe!(UntypedOQueueImplementation);
@@ -839,6 +907,9 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
 
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };
+        if ret {
+            inner.run_readiness_hooks(Readiness::Writable);
+        }
         drop(inner);
         // TODO(#309):PERFORMANCE: This should check if there is actually space to produce.
         if ret {
@@ -941,5 +1012,17 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
 
     fn remove_observe_waker(&self, key: WakerKey) {
         self.observe_wait_queue.remove(key);
+    }
+
+    fn add_readiness_hook(
+        &self,
+        readiness: Readiness,
+        hook: Box<dyn Fn() + Send>,
+    ) -> ReadinessHookKey {
+        self.inner.lock().readiness_hooks.insert((readiness, hook))
+    }
+
+    fn remove_readiness_hook(&self, key: ReadinessHookKey) {
+        self.inner.lock().readiness_hooks.remove(key);
     }
 }

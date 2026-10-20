@@ -21,7 +21,7 @@ use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborReader, registry},
+    oqueue::{CborReader, ReadinessHook, registry},
     path::Path,
 };
 
@@ -179,6 +179,8 @@ struct ReaderFile {
     /// Encoded record bytes staged for delivery.
     buffer: Mutex<BufferState>,
     pollee: Pollee,
+    /// Notifies `pollee` of new OQueue values while this handle is open.
+    _readable_hook: ReadinessHook,
 }
 
 struct BufferState {
@@ -192,6 +194,11 @@ struct BufferState {
 
 impl ReaderFile {
     fn new(reader: Box<dyn CborReader>) -> Self {
+        let pollee = Pollee::new();
+        // Wake pollers whenever the OQueue may have a new value for this reader.
+        let readable_pollee = pollee.clone();
+        let readable_hook =
+            reader.on_readable(Box::new(move || readable_pollee.notify(IoEvents::IN)));
         Self {
             reader: Mutex::new(reader),
             buffer: Mutex::new(BufferState {
@@ -199,7 +206,8 @@ impl ReaderFile {
                 pos: 0,
                 ended: false,
             }),
-            pollee: Pollee::new(),
+            pollee,
+            _readable_hook: readable_hook,
         }
     }
 
@@ -207,8 +215,7 @@ impl ReaderFile {
     ///
     /// If `blocking` and nothing is immediately available, blocks for one record. Returns whether
     /// the stream has ended (the observer was revoked).
-    fn drain(&self, out: &mut Vec<u8>, blocking: bool) -> bool {
-        let reader = self.reader.lock();
+    fn drain(reader: &dyn CborReader, out: &mut Vec<u8>, blocking: bool) -> bool {
         let mut ended = false;
         loop {
             match reader.try_read_into(out) {
@@ -229,9 +236,9 @@ impl ReaderFile {
     }
 
     /// Drains available records from the reader and appends them to the buffer.
-    fn refill(&self, blocking: bool) -> bool {
+    fn refill(&self, reader: &dyn CborReader, blocking: bool) -> bool {
         let mut records = Vec::new();
-        let ended = self.drain(&mut records, blocking);
+        let ended = Self::drain(reader, &mut records, blocking);
         let mut buffer = self.buffer.lock();
         buffer.bytes.extend_from_slice(&records);
         if ended {
@@ -254,6 +261,8 @@ impl ReaderFile {
                     if buffer.pos >= buffer.bytes.len() {
                         buffer.bytes.clear();
                         buffer.pos = 0;
+                        // The stream may no longer be readable, so pollers must re-check.
+                        self.pollee.invalidate();
                     }
                     return Ok(copied);
                 }
@@ -263,7 +272,9 @@ impl ReaderFile {
             }
 
             // The buffer is empty and the stream has not ended: refill from the reader.
-            self.refill(blocking);
+            self.refill(&**self.reader.lock(), blocking);
+            // Pollers skip refilling while the reader is held, so let them re-check now.
+            self.pollee.notify(IoEvents::IN);
 
             let idle = {
                 let buffer = self.buffer.lock();
@@ -274,20 +285,26 @@ impl ReaderFile {
                 // A blocking `drain` never returns idle, so this is the nonblocking case.
                 return_errno_with_message!(Errno::EAGAIN, "no OQueue data is available");
             }
-            self.pollee.notify(IoEvents::IN);
         }
     }
 
-    /// Reports readability for `poll`, filling the buffer without blocking so the result reflects
-    /// the currently-available data.
+    /// Reports the I/O events currently ready on this stream.
     fn check_events(&self) -> IoEvents {
-        self.refill(false);
-        let buffer = self.buffer.lock();
-        if buffer.pos < buffer.bytes.len() || buffer.ended {
-            IoEvents::IN
-        } else {
-            IoEvents::empty()
+        // Pull in newly available records, unless a read in progress will take them.
+        if let Some(reader) = self.reader.try_lock() {
+            self.refill(&**reader, false);
         }
+
+        // Like a pipe: readable while bytes are buffered, hung up once the stream has ended.
+        let buffer = self.buffer.lock();
+        let mut events = IoEvents::empty();
+        if buffer.pos < buffer.bytes.len() {
+            events |= IoEvents::IN;
+        }
+        if buffer.ended {
+            events |= IoEvents::HUP;
+        }
+        events
     }
 }
 

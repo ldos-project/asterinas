@@ -25,8 +25,9 @@ use snafu::Snafu;
 
 use super::{
     ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
-    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
-    StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
+    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, ReadinessHook,
+    RevokedSnafu, StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
+    implementation::Readiness,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -122,6 +123,15 @@ pub trait CborProducer: Send {
     /// retry). Returns `Err` if `bytes` starts with malformed CBOR, if the CBOR item does not
     /// decode as the expected message type, or once the underlying OQueue is gone.
     fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError>;
+
+    /// Returns whether producing a record would currently succeed without blocking.
+    fn can_produce(&self) -> bool;
+
+    /// Registers `hook` to run whenever the OQueue may have gained space for a record, until the
+    /// returned handle is dropped.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or access the OQueue.
+    fn on_writable(&self, hook: Box<dyn Fn() + Send>) -> ReadinessHook;
 }
 
 /// A per-reader observer or consumer of CBOR-encoded records from an OQueue, with the message type
@@ -142,6 +152,12 @@ pub trait CborReader: Send {
     /// Returns `Err` (typically [`OQueueError::Revoked`]) once the been revoked (for example,
     /// because the observer fell too far behind), which a reader treats as end-of-stream.
     fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
+
+    /// Registers `hook` to run whenever a record may have become available or the stream may
+    /// have ended, until the returned handle is dropped.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or access the OQueue.
+    fn on_readable(&self, hook: Box<dyn Fn() + Send>) -> ReadinessHook;
 }
 
 /// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
@@ -252,6 +268,10 @@ impl<U: Copy + Send + Serialize + 'static> CborReader for CborStrongObserver<U> 
         encode_record(value, out);
         Ok(())
     }
+
+    fn on_readable(&self, hook: Box<dyn Fn() + Send>) -> ReadinessHook {
+        ReadinessHook::register(self.observer.oqueue.clone(), Readiness::Readable, hook)
+    }
 }
 
 /// A [`CborReader`] backed by a [`Consumer<T>`], encoding each consumed value as a CBOR record.
@@ -276,6 +296,10 @@ impl<T: Send + Serialize + 'static> CborReader for CborConsumer<T> {
         let value = self.consumer.consume();
         encode_record(value, out);
         Ok(())
+    }
+
+    fn on_readable(&self, hook: Box<dyn Fn() + Send>) -> ReadinessHook {
+        ReadinessHook::register(self.consumer.oqueue.clone(), Readiness::Readable, hook)
     }
 }
 
@@ -379,6 +403,14 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
         self.producer.produce(value);
         Ok(item_len)
     }
+
+    fn can_produce(&self) -> bool {
+        self.producer.oqueue.can_produce()
+    }
+
+    fn on_writable(&self, hook: Box<dyn Fn() + Send>) -> ReadinessHook {
+        ReadinessHook::register(self.producer.oqueue.clone(), Readiness::Writable, hook)
+    }
 }
 
 /// Builds a type-erased export handle carrying a produce attachment and a consume attachment for
@@ -407,6 +439,8 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
 
 #[cfg(ktest)]
 mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::{path, prelude::*};
 
@@ -469,5 +503,69 @@ mod test {
         buf.clear();
         assert!(file_reader.try_read_into(&mut buf).unwrap());
         assert_eq!(decode_records(&buf), [8]);
+    }
+
+    /// Returns a hook that counts its calls into `count`.
+    fn counting_hook(count: &Arc<AtomicUsize>) -> Box<dyn Fn() + Send> {
+        let count = count.clone();
+        Box::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    #[ktest]
+    fn readiness_hooks_report_oqueue_activity() {
+        let path = path!(export.readiness[0]);
+        let queue = ConsumableOQueueRef::<usize>::new(2, path.clone());
+        let handle = make_produce_export(&queue);
+        let reader = handle.attach_consumer().unwrap();
+        let producer = handle.attach_producer().unwrap();
+        let value_producer = queue.attach_value_producer().unwrap();
+
+        let readable = Arc::new(AtomicUsize::new(0));
+        let writable = Arc::new(AtomicUsize::new(0));
+        let readable_hook = reader.on_readable(counting_hook(&readable));
+        let writable_hook = producer.on_writable(counting_hook(&writable));
+
+        // Producing fills the queue and reports readability.
+        assert!(producer.can_produce());
+        value_producer.try_produce(1).unwrap();
+        assert_eq!(readable.load(Ordering::Relaxed), 1);
+        assert_eq!(writable.load(Ordering::Relaxed), 0);
+        assert!(!producer.can_produce());
+
+        // Consuming frees a slot and reports writability.
+        let mut buf = Vec::new();
+        assert!(reader.try_read_into(&mut buf).unwrap());
+        assert_eq!(writable.load(Ordering::Relaxed), 1);
+        assert!(producer.can_produce());
+
+        // Dropped hooks no longer run.
+        drop(readable_hook);
+        drop(writable_hook);
+        value_producer.try_produce(2).unwrap();
+        assert!(reader.try_read_into(&mut buf).unwrap());
+        assert_eq!(readable.load(Ordering::Relaxed), 1);
+        assert_eq!(writable.load(Ordering::Relaxed), 1);
+    }
+
+    #[ktest]
+    fn full_revocable_observer_does_not_block_producers() {
+        let path = path!(export.revocable_full[0]);
+        let queue = ConsumableOQueueRef::<usize>::new(2, path.clone());
+        let observer = make_export(&queue.as_any_oqueue())
+            .attach_strong_observer()
+            .unwrap();
+        let producer = make_produce_export(&queue).attach_producer().unwrap();
+
+        // Fill the observer's ring. The next produce revokes the observer instead of blocking, so
+        // producing is still possible.
+        queue
+            .attach_value_producer()
+            .unwrap()
+            .try_produce(1)
+            .unwrap();
+        assert!(producer.can_produce());
+        drop(observer);
     }
 }
