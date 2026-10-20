@@ -79,7 +79,7 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     pub(super) consume_wait_queue: WaitQueue,
     /// The last task to attach to this OQueue as a consumer. This is weak so as not to keep the
     /// [`Task`] alive if no other consumer appears for a long period of time.
-    last_consumer: SpinLock<Option<Weak<Task>>>,
+    last_consumer: SpinLock<Option<Weak<Task>>, LocalIrqDisabled>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
 }
@@ -941,5 +941,26 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
 
     fn remove_observe_waker(&self, key: WakerKey) {
         self.observe_wait_queue.remove(key);
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+    use crate::prelude::*;
+
+    /// Producing takes `last_consumer`, and some OQueues are produced from IRQ context (e.g.
+    /// `scheduler.events` wakeups from a block I/O completion). If the lock left IRQs enabled, a
+    /// handler producing to the same OQueue could interrupt a holder and spin on it forever.
+    #[ktest]
+    fn last_consumer_lock_disables_local_irqs() {
+        let queue = OQueueImplementation::<LifetimelessElementDescriptor<u32>>::new(4, true, None);
+        assert!(crate::arch::irq::is_local_enabled());
+
+        let guard = queue.last_consumer.lock();
+        assert!(!crate::arch::irq::is_local_enabled());
+        drop(guard);
+
+        assert!(crate::arch::irq::is_local_enabled());
     }
 }
