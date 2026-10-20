@@ -353,11 +353,19 @@ fn projection_generics(
                 used_param_idents.contains(ident) || !contains_ident(tokens.clone(), ident)
             })
         });
+    // Bounds that mention no generic parameter hold trivially, so they are left off the projection
+    // type and its trait impls.
     let projection_predicates = bounds
         .where_clause
         .iter()
         .flat_map(|where_clause| &where_clause.predicates)
-        .skip(base_predicate_count);
+        .skip(base_predicate_count)
+        .filter(|predicate| {
+            let tokens = quote!(#predicate);
+            used_param_idents
+                .iter()
+                .any(|ident| contains_ident(tokens.clone(), ident))
+        });
     let predicates = source_predicates
         .chain(projection_predicates)
         .cloned()
@@ -414,7 +422,7 @@ fn project_field(
     {
         Ok((
             quote!(usize),
-            quote!(::core::ptr::from_ref(#value) as *const () as usize),
+            quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
         ))
     } else {
         generics

@@ -2,14 +2,18 @@
 
 //! Default projections of OQueue messages for export.
 
+use alloc::{boxed::Box, sync::Arc};
+
 use ostd_pod::Pod;
 use serde::Serialize;
+
+pub use crate::DefaultProjection;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
 ///
 /// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
 /// values project to themselves; mark fields that should be opaque identifiers with
-/// `#[projection(opaque)]`.
+/// `#[projection(opaque)]`, which projects them through [`OpaqueId`].
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Projection: Copy + Send + Serialize + 'static;
@@ -29,6 +33,40 @@ where
     }
 }
 
+/// Supplies an opaque identifier for a value projected with `#[projection(opaque)]`.
+///
+/// By default, the identifier is the address of the value itself. Smart pointers identify the
+/// and references identify the value they point to instead, so that copies of the same pointer
+/// share an identifier.
+pub trait OpaqueId {
+    /// Returns the opaque identifier of this value.
+    fn opaque_id(&self) -> usize;
+}
+
+impl<T: ?Sized> OpaqueId for T {
+    default fn opaque_id(&self) -> usize {
+        core::ptr::from_ref(self) as *const () as usize
+    }
+}
+
+impl<T: ?Sized> OpaqueId for &T {
+    fn opaque_id(&self) -> usize {
+        core::ptr::from_ref(*self) as *const () as usize
+    }
+}
+
+impl<T: ?Sized> OpaqueId for Arc<T> {
+    fn opaque_id(&self) -> usize {
+        Arc::as_ptr(self) as *const () as usize
+    }
+}
+
+impl<T: ?Sized> OpaqueId for Box<T> {
+    fn opaque_id(&self) -> usize {
+        core::ptr::from_ref(&**self) as *const () as usize
+    }
+}
+
 #[cfg(ktest)]
 mod test {
     use serde::Serialize;
@@ -36,7 +74,7 @@ mod test {
     use super::DefaultProjection;
     use crate::prelude::*;
 
-    #[derive(crate::DefaultProjection)]
+    #[derive(DefaultProjection)]
     struct ProjectedLeaf {
         value: u32,
     }
@@ -54,7 +92,7 @@ mod test {
         }
     }
 
-    #[derive(crate::DefaultProjection)]
+    #[derive(DefaultProjection)]
     struct ProjectedMessage {
         leaf: ProjectedLeaf,
         #[projection(opaque)]
@@ -89,5 +127,35 @@ mod test {
         assert_eq!(decoder.str().unwrap(), "special");
         assert_eq!(decoder.u32().unwrap(), 42);
         assert_eq!(decoder.position(), actual.len());
+    }
+
+    #[derive(DefaultProjection)]
+    struct ProjectedPointers {
+        #[projection(opaque)]
+        arc: Arc<u32>,
+        #[projection(opaque)]
+        boxed: Box<u32>,
+        #[projection(opaque)]
+        reference: &'static u32,
+    }
+
+    static REFERENT: u32 = 3;
+
+    #[ktest]
+    fn default_projection_identifies_smart_pointers_by_referent() {
+        let arc = Arc::new(1);
+        let message = ProjectedPointers {
+            arc: arc.clone(),
+            boxed: Box::new(2),
+            reference: &REFERENT,
+        };
+        let projected = message.default_projection();
+
+        assert_eq!(projected.arc, Arc::as_ptr(&arc) as usize);
+        assert_eq!(
+            projected.boxed,
+            core::ptr::from_ref(&*message.boxed) as usize
+        );
+        assert_eq!(projected.reference, core::ptr::from_ref(&REFERENT) as usize);
     }
 }

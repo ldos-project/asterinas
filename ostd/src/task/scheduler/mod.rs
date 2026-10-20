@@ -71,14 +71,14 @@ pub mod info;
 use core::time::Duration;
 
 use orpc_macros::Element;
-#[cfg(not(baseline_asterinas))]
-use ostd_macros::DefaultProjection;
 use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
+#[cfg(not(baseline_asterinas))]
+use crate::orpc::oqueue::default_projection::DefaultProjection;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
