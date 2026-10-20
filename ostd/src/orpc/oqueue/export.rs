@@ -24,9 +24,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
-    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
-    StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
+    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, Cursor, ElementDescriptor,
+    GenericAnyOQueueRef, LifetimelessElementDescriptor, OQueueBase as _, OQueueError,
+    ObservationQuery, RevokedSnafu, StrongObserver, UnsupportedSnafu, ValueProducer,
+    WeakAnyOQueueRef, WeakObserver,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -68,6 +69,14 @@ pub trait OQueueExport: Send + Sync {
     /// The default implementation reports [`OQueueError::Unsupported`], which is correct for every
     /// export that does not [`supports_observe`](Self::supports_observe).
     fn attach_strong_observer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
+        Err(UnsupportedSnafu.build())
+    }
+
+    /// Attaches a fresh weak observer and returns it as a CBOR record source.
+    ///
+    /// Every export that [`supports_observe`](Self::supports_observe) supports both strong and weak
+    /// observation.
+    fn attach_weak_observer(&self) -> Result<Box<dyn CborWeakReader>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
 
@@ -144,12 +153,30 @@ pub trait CborReader: Send {
     fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
 }
 
+/// A weak observer of CBOR-encoded records from an OQueue, with the value type erased.
+pub trait CborWeakReader: Send {
+    /// Returns the cursor for the most recently retained value.
+    fn newest_cursor(&self) -> Cursor;
+
+    /// Appends the value at `cursor` to `out`, if it is still retained.
+    fn observe_into(&self, cursor: Cursor, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
+}
+
 /// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
 /// [`CborReader`]. The value type `U` (identity or a projection) is erased inside the closure.
 type AttachReaderFn<T> = Box<
     dyn Fn(
             &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
         ) -> Result<Box<dyn CborReader>, OQueueError>
+        + Send
+        + Sync,
+>;
+
+/// A closure that attaches a fresh weak observer and wraps it as a [`CborWeakReader`].
+type AttachWeakReaderFn<T> = Box<
+    dyn Fn(
+            &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
+        ) -> Result<Box<dyn CborWeakReader>, OQueueError>
         + Send
         + Sync,
 >;
@@ -173,6 +200,7 @@ pub(super) struct OQueueExportHandle<T: 'static> {
     weak: WeakAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     type_name: &'static str,
     observe: Option<AttachReaderFn<T>>,
+    weak_observe: Option<AttachWeakReaderFn<T>>,
     produce: Option<AttachProducerFn<T>>,
     consume: Option<AttachReaderFn<T>>,
 }
@@ -206,6 +234,14 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         attach_fn(&oqueue)
     }
 
+    fn attach_weak_observer(&self) -> Result<Box<dyn CborWeakReader>, OQueueError> {
+        let Some(attach_fn) = &self.weak_observe else {
+            return Err(UnsupportedSnafu.build());
+        };
+        let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
+        attach_fn(&oqueue)
+    }
+
     fn attach_producer(&self) -> Result<Box<dyn CborProducer>, OQueueError> {
         let Some(attach_fn) = &self.produce else {
             return Err(UnsupportedSnafu.build());
@@ -227,6 +263,11 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
 /// record.
 struct CborStrongObserver<U> {
     observer: StrongObserver<U>,
+}
+
+/// A [`CborWeakReader`] backed by a [`WeakObserver<U>`].
+struct CborWeakObserver<U: Copy + Send> {
+    observer: WeakObserver<U>,
 }
 
 /// Appends the CBOR record for `value` to `out`.
@@ -251,6 +292,20 @@ impl<U: Copy + Send + Serialize + 'static> CborReader for CborStrongObserver<U> 
         let value = self.observer.strong_observe()?;
         encode_record(value, out);
         Ok(())
+    }
+}
+
+impl<U: Copy + Send + Serialize + 'static> CborWeakReader for CborWeakObserver<U> {
+    fn newest_cursor(&self) -> Cursor {
+        self.observer.newest_cursor()
+    }
+
+    fn observe_into(&self, cursor: Cursor, out: &mut Vec<u8>) -> Result<bool, OQueueError> {
+        let Some(value) = self.observer.weak_observe(cursor)? else {
+            return Ok(false);
+        };
+        encode_record(value, out);
+        Ok(true)
     }
 }
 
@@ -291,6 +346,18 @@ where
     Ok(Box::new(CborStrongObserver { observer }))
 }
 
+/// Attaches a weak observer and wraps it as a CBOR record source.
+fn attach_cbor_weak_observer<D: ElementDescriptor, U>(
+    oqueue: &GenericAnyOQueueRef<D>,
+    query: ObservationQuery<D, U>,
+) -> Result<Box<dyn CborWeakReader>, OQueueError>
+where
+    U: Copy + Send + Serialize + 'static,
+{
+    let observer = oqueue.attach_weak_observer(oqueue.history_len(), query)?;
+    Ok(Box::new(CborWeakObserver { observer }))
+}
+
 /// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
 /// whole message is streamed via the identity projection (so the message type's derived
 /// `Serialize` is used).
@@ -302,6 +369,9 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
         type_name: core::any::type_name::<T>(),
         observe: Some(Box::new(|oqueue| {
             attach_cbor_observer(oqueue, ObservationQuery::identity())
+        })),
+        weak_observe: Some(Box::new(|oqueue| {
+            attach_cbor_weak_observer(oqueue, ObservationQuery::identity())
         })),
         produce: None,
         consume: None,
@@ -321,12 +391,20 @@ where
     F: Fn(&T) -> U + Send + Sync + 'static,
 {
     let project = Arc::new(project);
+    let weak_project = project.clone();
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
         observe: Some(Box::new(move |oqueue| {
             let project = project.clone();
             attach_cbor_observer(
+                oqueue,
+                ObservationQuery::new(move |msg: &T| (*project)(msg)),
+            )
+        })),
+        weak_observe: Some(Box::new(move |oqueue| {
+            let project = weak_project.clone();
+            attach_cbor_weak_observer(
                 oqueue,
                 ObservationQuery::new(move |msg: &T| (*project)(msg)),
             )
@@ -394,6 +472,7 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
         observe: None,
+        weak_observe: None,
         produce: Some(Box::new(|oqueue| {
             let producer = oqueue.attach_value_producer()?;
             Ok(Box::new(CborValueProducer { producer }) as Box<dyn CborProducer>)
@@ -436,6 +515,7 @@ mod test {
             weak: observe_only.weak,
             type_name: observe_only.type_name,
             observe: observe_only.observe,
+            weak_observe: observe_only.weak_observe,
             produce: produce_only.produce,
             consume: produce_only.consume,
         };
@@ -469,5 +549,27 @@ mod test {
         buf.clear();
         assert!(file_reader.try_read_into(&mut buf).unwrap());
         assert_eq!(decode_records(&buf), [8]);
+    }
+
+    #[ktest]
+    fn weak_observer_encodes_recent_values_newest_first() {
+        let path = path!(export.weak[1]);
+        let queue = ConsumableOQueueRef::<usize>::new(3, path.clone());
+        let handle = make_export(&queue.as_any_oqueue());
+        let observer = handle.attach_weak_observer().unwrap();
+        let producer = queue.attach_value_producer().unwrap();
+
+        for value in [10usize, 20, 30] {
+            producer.produce(value);
+        }
+
+        let mut cursor = observer.newest_cursor();
+        let mut buf = Vec::new();
+        for _ in 0..3 {
+            assert!(observer.observe_into(cursor, &mut buf).unwrap());
+            cursor = cursor - 1;
+        }
+        assert!(!observer.observe_into(cursor, &mut buf).unwrap());
+        assert_eq!(decode_records(&buf), [30, 20, 10]);
     }
 }
