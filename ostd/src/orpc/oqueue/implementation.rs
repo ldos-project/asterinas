@@ -67,7 +67,7 @@ pub(super) enum Readiness {
 
 /// A hook registered on an OQueue to report readiness changes, unregistered when dropped.
 pub struct ReadinessHook {
-    oqueue: Arc<dyn UntypedOQueueImplementation>,
+    oqueue: Weak<dyn UntypedOQueueImplementation>,
     key: ReadinessHookKey,
 }
 
@@ -81,13 +81,19 @@ impl ReadinessHook {
         hook: Box<dyn Fn() + Send>,
     ) -> Self {
         let key = oqueue.add_readiness_hook(readiness, hook);
-        Self { oqueue, key }
+        Self {
+            oqueue: Arc::downgrade(&oqueue),
+            key,
+        }
     }
 }
 
 impl Drop for ReadinessHook {
     fn drop(&mut self) {
-        self.oqueue.remove_readiness_hook(self.key);
+        // A dropped OQueue took its hooks with it, so there is nothing to unregister.
+        if let Some(oqueue) = self.oqueue.upgrade() {
+            oqueue.remove_readiness_hook(self.key);
+        }
     }
 }
 
