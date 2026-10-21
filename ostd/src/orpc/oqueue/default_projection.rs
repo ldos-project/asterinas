@@ -6,6 +6,7 @@ use alloc::{boxed::Box, sync::Arc};
 
 use ostd_pod::Pod;
 use serde::Serialize;
+pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 pub use crate::DefaultProjection;
 
@@ -22,9 +23,27 @@ pub trait DefaultProjection {
     fn default_projection(&self) -> Self::Projection;
 }
 
-impl<T> DefaultProjection for T
+pub trait PodDefaultProjection {
+    /// The projected value type written to the export stream.
+    type Projection: Copy + Send + Serialize + 'static;
+
+    /// Returns the default projection of this message.
+    fn default_projection(&self) -> Self::Projection;
+}
+impl<T> PodDefaultProjection for T
 where
     T: Pod + Send + Serialize + 'static,
+{
+    type Projection = Self;
+
+    fn default_projection(&self) -> Self::Projection {
+        *self
+    }
+}
+
+impl<T> DefaultProjection for T
+where
+    T: IntoBytes + KnownLayout + Immutable + Copy + Send + Serialize + 'static,
 {
     type Projection = Self;
 
@@ -74,6 +93,12 @@ mod test {
 
     use super::DefaultProjection;
     use crate::prelude::*;
+
+    // If bool is DefaultProjection this should compile.
+    // This is worth testing as bool is treated slightly special and only implements IntoBytes and
+    // not FromBytes, which caused problems when we had a blanked impl on the trait Pod.
+    #[derive(DefaultProjection)]
+    struct TestProjectBool(bool);
 
     #[derive(DefaultProjection)]
     struct ProjectedLeaf {
