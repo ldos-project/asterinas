@@ -17,6 +17,8 @@ use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
 /// * `opaque` to use an opaque ID for the value instead of projecting the value itself
 /// * `deref` to dereference the value before doing other projection steps
 /// * `omit` to omit the field from the projection
+/// * `self` to copy the field as if it implemented `Projectable` (only use if the type cannot
+///   implement `Projectable` due to orphan rules)
 #[proc_macro_derive(DefaultProjection, attributes(projection))]
 pub fn default_projection_derive(input: TokenStream) -> TokenStream {
     default_projection::derive(input)
