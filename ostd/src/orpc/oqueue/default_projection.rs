@@ -78,6 +78,7 @@ mod test {
     // If bool is DefaultProjection this should compile.
     // This is worth testing as bool is treated slightly special and only implements IntoBytes and
     // not FromBytes, which caused problems when we had a blanked impl on the trait Pod.
+    #[expect(dead_code)]
     #[derive(DefaultProjection)]
     struct TestProjectBool(bool);
 
