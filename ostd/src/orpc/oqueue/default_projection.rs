@@ -4,7 +4,6 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ostd_pod::Pod;
 use serde::Serialize;
 pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
@@ -21,24 +20,6 @@ pub trait DefaultProjection {
 
     /// Returns the default projection of this message.
     fn default_projection(&self) -> Self::Projection;
-}
-
-pub trait PodDefaultProjection {
-    /// The projected value type written to the export stream.
-    type Projection: Copy + Send + Serialize + 'static;
-
-    /// Returns the default projection of this message.
-    fn default_projection(&self) -> Self::Projection;
-}
-impl<T> PodDefaultProjection for T
-where
-    T: Pod + Send + Serialize + 'static,
-{
-    type Projection = Self;
-
-    fn default_projection(&self) -> Self::Projection {
-        *self
-    }
 }
 
 impl<T> DefaultProjection for T
