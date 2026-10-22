@@ -49,6 +49,9 @@ asterinas-profile-*.svg
 # distro results
 distro/result
 
+# policy explorer results
+/policy_explorer/results/
+
 # cachix package list
 cachix.list
 
@@ -70,3 +73,5 @@ aster-kernel-profile-*.svg
 # Local configuration files
 .claude/settings.local.json
 CLAUDE.local.md
+
+.env
