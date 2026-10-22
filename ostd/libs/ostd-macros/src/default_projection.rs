@@ -2,7 +2,10 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned};
+use syn::{
+    Data, DeriveInput, Fields, Index, ext::IdentExt, parse_macro_input, parse_quote,
+    spanned::Spanned,
+};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -391,35 +394,48 @@ fn project_field(
                 "only one `projection` attribute is allowed per field",
             ));
         }
-        let kind: syn::Ident = attr.parse_args()?;
-        if kind != "opaque" {
-            return Err(syn::Error::new_spanned(kind, "expected `opaque`"));
+        let kind = attr.parse_args_with(syn::Ident::parse_any)?;
+        if kind != "opaque" && kind != "self" {
+            return Err(syn::Error::new_spanned(kind, "expected `opaque` or `self`"));
         }
         projection_kind = Some(kind);
     }
 
     let ty = &field.ty;
-    if projection_kind
+    match projection_kind
         .as_ref()
-        .is_some_and(|kind| kind == "opaque")
+        .map(syn::Ident::to_string)
+        .as_deref()
     {
-        Ok((
+        Some("opaque") => Ok((
             quote!(usize),
             quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
-        ))
-    } else {
-        let span = ty.span();
-        let default_projection: syn::Path = syn::parse_quote_spanned!(span =>
-            ::ostd::orpc::oqueue::default_projection::DefaultProjection
-        );
-        generics
-            .make_where_clause()
-            .predicates
-            .push(syn::parse_quote_spanned!(span => #ty: #default_projection));
-        Ok((
-            quote_spanned!(span => <#ty as #default_projection>::Projection),
-            quote_spanned!(span => <#ty as #default_projection>::default_projection(#value)),
-        ))
+        )),
+        Some("self") => {
+            let span = ty.span();
+            let default_projection: syn::Path = syn::parse_quote_spanned!(span =>
+                Copy + Send + ::serde::Serialize + 'static
+            );
+            generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote_spanned!(span => #ty: #default_projection));
+            Ok((quote!(#ty), quote!(*#value)))
+        }
+        _ => {
+            let span = ty.span();
+            let default_projection: syn::Path = syn::parse_quote_spanned!(span =>
+                ::ostd::orpc::oqueue::default_projection::DefaultProjection
+            );
+            generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote_spanned!(span => #ty: #default_projection));
+            Ok((
+                quote_spanned!(span => <#ty as #default_projection>::Projection),
+                quote_spanned!(span => <#ty as #default_projection>::default_projection(#value)),
+            ))
+        }
     }
 }
 
