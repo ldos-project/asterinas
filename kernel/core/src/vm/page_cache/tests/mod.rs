@@ -8,10 +8,13 @@ use alloc::vec;
 use ostd::{
     mm::{VmIo, io::util::HasVmReaderWriter},
     prelude::ktest,
+    task::disable_preempt,
 };
 
 use self::utils::{IoCompletion, IoKind, MockPageCacheBackend, wait_until};
-use super::{PageCache, PageCacheBackend, Vmo, VmoCommitError, VmoMapMode};
+use super::{
+    CachePage, CachePageExt, PageCache, PageCacheBackend, Vmo, VmoCommitError, VmoMapMode,
+};
 use crate::{prelude::*, thread::kernel_thread::ThreadOptions};
 
 mod utils;
@@ -31,6 +34,13 @@ fn new_locked_backend_page_cache(
     Arc::new(RwMutex::new(new_backend_page_cache(backend, num_pages)))
 }
 
+/// Returns the cache page whose prefetch is still in flight.
+fn prefetched_page(page_cache: &PageCache) -> CachePage {
+    let guard = disable_preempt();
+    let mut cursor = page_cache.0.pages.cursor(&guard, 0);
+    cursor.load().unwrap().clone()
+}
+
 /// Simulates stores through a shared writable VMO mapping.
 ///
 /// A store page fault first commits page 0 for shared writes, which marks an
@@ -47,6 +57,97 @@ fn write_vmo_bytes(vmo: &Vmo, bytes: &[u8]) {
     let mut reader = VmReader::from(bytes);
     let mut writer = page.writer();
     assert_eq!(writer.write(&mut reader), bytes.len());
+}
+
+/// Starts a prefetch without waiting and shares its backend read with a later
+/// demand reader.
+#[ktest]
+fn prefetch_is_async_and_shared_with_demand_read() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Read, IoCompletion::Deferred);
+    let persisted_pattern = vec![0x7d; PAGE_SIZE];
+    backend.set_persisted_page_bytes(0, &persisted_pattern);
+
+    let page_cache = Arc::new(new_backend_page_cache(&backend, 1));
+    page_cache.prefetch_page(0).unwrap();
+
+    backend.wait_for_deferred_bios(IoKind::Read, 1);
+    assert_eq!(backend.read_count(0), 1);
+    let prefetched_page = prefetched_page(&page_cache);
+
+    // A duplicate prefetch is a no-op even while the first read is in flight.
+    page_cache.prefetch_page(0).unwrap();
+    assert_eq!(backend.read_count(0), 1);
+
+    let read_result = Arc::new(Mutex::new(None::<Vec<u8>>));
+    let read_finished = Arc::new(Mutex::new(false));
+    let reader = {
+        let page_cache = page_cache.clone();
+        let read_result = read_result.clone();
+        let read_finished = read_finished.clone();
+        ThreadOptions::new(move || {
+            let mut read_buffer = vec![0; PAGE_SIZE];
+            page_cache.read_bytes(0, &mut read_buffer).unwrap();
+            *read_result.lock() = Some(read_buffer);
+            *read_finished.lock() = true;
+        })
+        .spawn()
+    };
+
+    wait_until(|| prefetched_page.wait_queue().wake_all() > 0);
+    assert_eq!(backend.read_count(0), 1);
+    assert!(!*read_finished.lock());
+
+    assert!(backend.complete_next_deferred_bio(IoKind::Read, true));
+    reader.join();
+
+    assert_eq!(&*read_result.lock(), &Some(persisted_pattern));
+    assert_eq!(backend.read_count(0), 1);
+
+    // Once resident, prefetch remains a no-op.
+    page_cache.prefetch_page(0).unwrap();
+    assert_eq!(backend.read_count(0), 1);
+}
+
+/// Invalidates a page whose prefetch is still in flight, ensuring the completed
+/// read cannot repopulate stale data after invalidation returns.
+#[ktest]
+fn invalidate_waits_for_prefetch() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Read, IoCompletion::Deferred);
+    backend.set_persisted_page_bytes(0, &[0x31; PAGE_SIZE]);
+
+    let page_cache = new_locked_backend_page_cache(&backend, 1);
+    page_cache.read().prefetch_page(0).unwrap();
+    backend.wait_for_deferred_bios(IoKind::Read, 1);
+    let prefetched_page = prefetched_page(&page_cache.read());
+
+    let invalidate_finished = Arc::new(Mutex::new(false));
+    let invalidate_thread = {
+        let page_cache = page_cache.clone();
+        let invalidate_finished = invalidate_finished.clone();
+        ThreadOptions::new(move || {
+            page_cache.read().invalidate_range(0..PAGE_SIZE).unwrap();
+            *invalidate_finished.lock() = true;
+        })
+        .spawn()
+    };
+
+    wait_until(|| prefetched_page.wait_queue().wake_all() > 0);
+    assert!(!*invalidate_finished.lock());
+
+    assert!(backend.complete_next_deferred_bio(IoKind::Read, true));
+    invalidate_thread.join();
+    assert!(*invalidate_finished.lock());
+
+    let new_pattern = vec![0xb4; PAGE_SIZE];
+    backend.set_persisted_page_bytes(0, &new_pattern);
+    backend.set_completion(IoKind::Read, IoCompletion::Immediate);
+
+    let mut read_buffer = vec![0; PAGE_SIZE];
+    page_cache.read().read_bytes(0, &mut read_buffer).unwrap();
+    assert_eq!(read_buffer, new_pattern);
+    assert_eq!(backend.read_count(0), 2);
 }
 
 /// Serializes a cold read and a later overwrite with the caller-provided
