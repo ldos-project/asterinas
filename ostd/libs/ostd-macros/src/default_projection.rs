@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote};
+use quote::{format_ident, quote, quote_spanned};
+use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -59,12 +59,8 @@ fn expand_struct(
         Fields::Named(fields) => {
             for field in &fields.named {
                 let ident = field.ident.as_ref().unwrap();
-                let (projected_ty, initializer) = project_field(
-                    field,
-                    quote!(&self.#ident),
-                    &mut projection_bounds,
-                    &default_projection,
-                )?;
+                let (projected_ty, initializer) =
+                    project_field(field, quote!(&self.#ident), &mut projection_bounds)?;
                 projected_types.push(projected_ty.clone());
                 named_fields.push(quote!(#ident: #projected_ty));
                 named_initializers.push(quote!(#ident: #initializer));
@@ -73,12 +69,8 @@ fn expand_struct(
         Fields::Unnamed(fields) => {
             for (index, field) in fields.unnamed.iter().enumerate() {
                 let member = Index::from(index);
-                let (projected_ty, initializer) = project_field(
-                    field,
-                    quote!(&self.#member),
-                    &mut projection_bounds,
-                    &default_projection,
-                )?;
+                let (projected_ty, initializer) =
+                    project_field(field, quote!(&self.#member), &mut projection_bounds)?;
                 projected_types.push(projected_ty.clone());
                 tuple_fields.push(projected_ty);
                 tuple_initializers.push(initializer);
@@ -171,12 +163,8 @@ fn expand_enum(
 
                 for (index, field) in fields.unnamed.iter().enumerate() {
                     let binding = format_ident!("__field_{index}");
-                    let (projected_ty, initializer) = project_field(
-                        field,
-                        quote!(#binding),
-                        &mut projection_bounds,
-                        &default_projection,
-                    )?;
+                    let (projected_ty, initializer) =
+                        project_field(field, quote!(#binding), &mut projection_bounds)?;
                     projected_types.push(projected_ty.clone());
                     projected_field_types.push(projected_ty);
                     bindings.push(binding);
@@ -200,12 +188,8 @@ fn expand_enum(
                 for field in fields.named {
                     let ident = field.ident.as_ref().unwrap();
                     let binding = format_ident!("__field_{}", ident);
-                    let (projected_ty, initializer) = project_field(
-                        &field,
-                        quote!(#binding),
-                        &mut projection_bounds,
-                        &default_projection,
-                    )?;
+                    let (projected_ty, initializer) =
+                        project_field(&field, quote!(#binding), &mut projection_bounds)?;
                     projected_types.push(projected_ty.clone());
                     projected_fields.push(quote!(#ident: #projected_ty));
                     bindings.push(quote!(#ident: #binding));
@@ -394,7 +378,6 @@ fn project_field(
     field: &syn::Field,
     value: proc_macro2::TokenStream,
     generics: &mut syn::Generics,
-    default_projection: &syn::Path,
 ) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
     let mut projection_kind = None;
     for attr in field
@@ -425,13 +408,65 @@ fn project_field(
             quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
         ))
     } else {
+        let span = ty.span();
+        let default_projection: syn::Path = syn::parse_quote_spanned!(span =>
+            ::ostd::orpc::oqueue::default_projection::DefaultProjection
+        );
         generics
             .make_where_clause()
             .predicates
-            .push(parse_quote!(#ty: #default_projection));
+            .push(syn::parse_quote_spanned!(span => #ty: #default_projection));
         Ok((
-            quote!(<#ty as #default_projection>::Projection),
-            quote!(<#ty as #default_projection>::default_projection(#value)),
+            quote_spanned!(span => <#ty as #default_projection>::Projection),
+            quote_spanned!(span => <#ty as #default_projection>::default_projection(#value)),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::{Span, TokenStream, TokenTree};
+    use syn::{Data, DeriveInput, Fields, spanned::Spanned};
+
+    use super::expand;
+
+    fn count_trait_paths_at_span(tokens: TokenStream, expected: Span) -> usize {
+        tokens
+            .into_iter()
+            .map(|token| match token {
+                TokenTree::Group(group) => count_trait_paths_at_span(group.stream(), expected),
+                TokenTree::Ident(ident)
+                    if ident == "DefaultProjection"
+                        && ident.span().start() == expected.start()
+                        && ident.span().end() == expected.end() =>
+                {
+                    1
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn enum_field_trait_paths_point_to_their_source_types() {
+        let input: DeriveInput =
+            syn::parse_str("enum Message { First(FirstType), Second(SecondType) }").unwrap();
+        let field_spans = match &input.data {
+            Data::Enum(data) => data
+                .variants
+                .iter()
+                .map(|variant| match &variant.fields {
+                    Fields::Unnamed(fields) => fields.unnamed.first().unwrap().ty.span(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>(),
+            _ => unreachable!(),
+        };
+
+        let output = expand(input).unwrap();
+        for span in field_spans {
+            // Each field appears in the helper type, trait bound, and projection call.
+            assert_eq!(count_trait_paths_at_span(output.clone(), span), 3);
+        }
     }
 }
