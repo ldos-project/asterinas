@@ -83,7 +83,7 @@ extract_result_file() {
     fi
 }
 
-# Start the virtio-fs backend on the host. 
+# Start the virtio-fs backend on the host.
 start_virtiofsd() {
     mkdir -p "$(dirname "${RAID_IO_SOCKET}")" "${RAID_IO_SHARE}"
     rm -f "${RAID_IO_SOCKET}"
@@ -104,7 +104,7 @@ warn_raid_images() {
     echo >&2 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 }
 
-# Prepare the RAID members for one boot. 
+# Prepare the RAID members for one boot.
 prepare_raid_members() {
     local member disk md
     for member in "$@"; do
@@ -149,8 +149,8 @@ run_benchmark() {
     local smp_val=1
     local mem_val="8G"
     local aster_scheme_cmd_part="SCHEME=iommu" # Default scheme
-    
-    # iommu will break VirtIOFS. Turn iommu off for RAID benchmark. 
+
+    # iommu will break VirtIOFS. Turn iommu off for RAID benchmark.
     [[ "$benchmark" == raid_io/* ]] && aster_scheme_cmd_part=""
 
     # Process runtime_configs_str to override defaults and gather extra args
@@ -226,7 +226,7 @@ run_benchmark() {
         )
     fi
 
-    # Add flags for block devices used in the raid benchmark. 
+    # Add flags for block devices used in the raid benchmark.
     if [[ "$benchmark" == raid_io/* ]]; then
         local raid_members virtio_blk_features="disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off"
         IFS=, read -r -a raid_members <<< "${RAID_DEVICES:-}"
