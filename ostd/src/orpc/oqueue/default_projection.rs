@@ -3,6 +3,7 @@
 //! Default projections of OQueue messages for export.
 
 use alloc::{boxed::Box, sync::Arc};
+use core::any::type_name;
 
 use ostd_pod::Pod;
 use serde::Serialize;
@@ -33,38 +34,60 @@ where
     }
 }
 
-/// Supplies an opaque identifier for a value projected with `#[projection(opaque)]`.
-///
-/// By default, the identifier is the address of the value itself. Smart pointers identify the
-/// and references identify the value they point to instead, so that copies of the same pointer
-/// share an identifier.
-pub trait OpaqueId {
-    /// Returns the opaque identifier of this value.
-    fn opaque_id(&self) -> usize;
+/// An ID of an object. This include an opaque ID (often a pointer value), and the type name. The
+/// type name is stored as a reference to a static string, so this struct is small and `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct OID {
+    /// An opaque ID of the object. This value has no meaning, but is unique for the lifetime of the
+    /// object.
+    ///
+    /// NOTE: Ideally, this would be unique over the lifetime of the system. However, that isn't
+    /// true yet.
+    pub id: usize,
+
+    /// The name of the type of the object. This comes from [`core::any::type_name`] and, like that,
+    /// has an undefined format, so it cannot safely be parsed.
+    pub type_name: &'static str,
 }
 
-impl<T: ?Sized> OpaqueId for T {
-    default fn opaque_id(&self) -> usize {
-        core::ptr::from_ref(self) as *const () as usize
+impl OID {
+    /// Create the OID for a value. `T` should be provided explicitly because doing so forces the
+    /// compiler to generate the ID from something of type `T`. That prevents accidentally
+    /// generating the ID from a pointer to a reference or a box-like type. The compiler auto-deref
+    /// rules will generally unwrap the object as needed to get the correct reference.
+    pub fn of_ref<T: ?Sized>(v: &T) -> OID {
+        OID {
+            id: core::ptr::from_ref(v) as *const () as usize,
+            type_name: type_name::<T>(),
+        }
     }
 }
 
+/// Supplies an opaque identifier for a value projected with `#[projection(opaque)]`.
+///
+/// By default, the identifier is the address of the value itself along with the name of the type.
+/// Smart pointers and references identify the value they point to, so that copies of the same smart
+/// pointer share an identifier.
+pub trait OpaqueId {
+    /// Returns the opaque identifier of this value.
+    fn opaque_id(&self) -> OID;
+}
+
 impl<T: ?Sized> OpaqueId for &T {
-    fn opaque_id(&self) -> usize {
-        core::ptr::from_ref(*self) as *const () as usize
+    fn opaque_id(&self) -> OID {
+        OID::of_ref::<T>(self)
     }
 }
 
 impl<T: ?Sized> OpaqueId for Arc<T> {
-    fn opaque_id(&self) -> usize {
-        Arc::as_ptr(self) as *const () as usize
+    fn opaque_id(&self) -> OID {
+        OID::of_ref::<T>(self)
     }
 }
 
 impl<T: ?Sized> OpaqueId for Box<T> {
-    fn opaque_id(&self) -> usize {
-        let ptr: *const T = &**self;
-        ptr as *const () as usize
+    fn opaque_id(&self) -> OID {
+        OID::of_ref::<T>(self)
     }
 }
 
@@ -73,7 +96,7 @@ mod test {
     use serde::Serialize;
 
     use super::DefaultProjection;
-    use crate::prelude::*;
+    use crate::{orpc::oqueue::default_projection::OID, prelude::*};
 
     #[derive(DefaultProjection)]
     struct ProjectedLeaf {
@@ -124,7 +147,11 @@ mod test {
         assert_eq!(decoder.str().unwrap(), "value");
         assert_eq!(decoder.u32().unwrap(), message.leaf.value);
         assert_eq!(decoder.str().unwrap(), "ref_type");
+        assert_eq!(decoder.map().unwrap(), Some(2));
+        assert_eq!(decoder.str().unwrap(), "id");
         decoder.u64().unwrap();
+        assert_eq!(decoder.str().unwrap(), "type_name");
+        assert!(decoder.str().unwrap().contains("str"));
         assert_eq!(decoder.str().unwrap(), "special");
         assert_eq!(decoder.u32().unwrap(), 42);
         assert_eq!(decoder.position(), actual.len());
@@ -152,11 +179,8 @@ mod test {
         };
         let projected = message.default_projection();
 
-        assert_eq!(projected.arc, Arc::as_ptr(&arc) as usize);
-        assert_eq!(
-            projected.boxed,
-            core::ptr::from_ref(&*message.boxed) as usize
-        );
-        assert_eq!(projected.reference, core::ptr::from_ref(&data) as usize);
+        assert_eq!(projected.arc, OID::of_ref(arc.as_ref()));
+        assert_eq!(projected.boxed, OID::of_ref(message.boxed.as_ref()));
+        assert_eq!(projected.reference, OID::of_ref(&data));
     }
 }
