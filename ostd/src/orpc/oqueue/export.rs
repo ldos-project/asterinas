@@ -26,7 +26,7 @@ use snafu::Snafu;
 use super::{
     ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
     LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
-    StrongObserver, UnsupportedSnafu, ValueProducer, WeakAnyOQueueRef,
+    StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -86,6 +86,13 @@ pub trait OQueueExport: Send + Sync {
     fn attach_consumer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
+
+    /// Registers `hook` to run where the OQueue wakes its waiters, until the returned handle is
+    /// dropped. For now that is only after a produce.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or add or remove wake hooks on the
+    /// OQueue.
+    fn on_wake(&self, hook: Box<dyn Fn() + Send>) -> Result<WakeHook, OQueueError>;
 }
 
 /// Error produced by [`CborProducer::produce_cbor`] when the bytes at the front of the buffer
@@ -220,6 +227,11 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         };
         let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
         attach_fn(&oqueue)
+    }
+
+    fn on_wake(&self, hook: Box<dyn Fn() + Send>) -> Result<WakeHook, OQueueError> {
+        let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
+        Ok(oqueue.add_wake_hook(hook))
     }
 }
 
@@ -407,6 +419,8 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
 
 #[cfg(ktest)]
 mod test {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::{path, prelude::*};
 
@@ -469,5 +483,36 @@ mod test {
         buf.clear();
         assert!(file_reader.try_read_into(&mut buf).unwrap());
         assert_eq!(decode_records(&buf), [8]);
+    }
+
+    #[ktest]
+    fn wake_hook_runs_after_each_produce() {
+        let queue = ConsumableOQueueRef::<usize>::new(4, path!(export.wake_hook[0]));
+        let handle = make_produce_export(&queue);
+        let reader = handle.attach_consumer().unwrap();
+        let producer = queue.attach_value_producer().unwrap();
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let hook = handle
+            .on_wake({
+                let count = count.clone();
+                Box::new(move || {
+                    count.fetch_add(1, Ordering::Relaxed);
+                })
+            })
+            .unwrap();
+
+        // Each produce runs the hook; consuming does not.
+        producer.try_produce(1).unwrap();
+        producer.try_produce(2).unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        let mut buf = Vec::new();
+        assert!(reader.try_read_into(&mut buf).unwrap());
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+
+        // A dropped hook no longer runs.
+        drop(hook);
+        producer.try_produce(3).unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 2);
     }
 }

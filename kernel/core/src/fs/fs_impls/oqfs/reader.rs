@@ -17,11 +17,14 @@
 // but the OQueue still exists, so reopening resumes the stream), and `EIO` when the underlying
 // OQueue disappears (is unregistered). This lets a reader tell whether to reconnect or give up.
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborReader, registry},
+    oqueue::{CborReader, OQueueExport, WakeHook, registry},
     path::Path,
 };
 
@@ -108,7 +111,7 @@ impl ReaderInode {
             ReaderKind::Consume => export.attach_consumer(),
         }
         .map_err(|_| Error::with_message(Errno::ENODEV, "failed to attach an OQueue reader"))?;
-        Ok(Box::new(ReaderFile::new(reader)))
+        Ok(Box::new(ReaderFile::new(reader, export.as_ref())?))
     }
 }
 
@@ -178,7 +181,12 @@ struct ReaderFile {
     reader: Mutex<Box<dyn CborReader>>,
     /// Encoded record bytes staged for delivery.
     buffer: Mutex<BufferState>,
+    /// Whether the reader may have a value. Set by the wake hook after each produce, and cleared
+    /// by a read right before it drains the reader.
+    readable: Arc<AtomicBool>,
     pollee: Pollee,
+    /// Keeps `readable` and `pollee` up to date while this handle is open.
+    _wake_hook: WakeHook,
 }
 
 struct BufferState {
@@ -191,16 +199,31 @@ struct BufferState {
 }
 
 impl ReaderFile {
-    fn new(reader: Box<dyn CborReader>) -> Self {
-        Self {
+    fn new(reader: Box<dyn CborReader>, export: &dyn OQueueExport) -> Result<Self> {
+        let pollee = Pollee::new();
+        // A consume queue may already hold values, so start out readable.
+        let readable = Arc::new(AtomicBool::new(true));
+        let wake_hook = export
+            .on_wake(Box::new({
+                let pollee = pollee.clone();
+                let readable = readable.clone();
+                move || {
+                    readable.store(true, Ordering::Relaxed);
+                    pollee.notify(IoEvents::IN);
+                }
+            }))
+            .map_err(|_| Error::with_message(Errno::ENODEV, "the OQueue is gone"))?;
+        Ok(Self {
             reader: Mutex::new(reader),
             buffer: Mutex::new(BufferState {
                 bytes: Vec::new(),
                 pos: 0,
                 ended: false,
             }),
-            pollee: Pollee::new(),
-        }
+            readable,
+            pollee,
+            _wake_hook: wake_hook,
+        })
     }
 
     /// Drains encoded records from the reader into `out`, up to [`MAX_BUFFER_BYTES`].
@@ -213,7 +236,11 @@ impl ReaderFile {
         loop {
             match reader.try_read_into(out) {
                 Ok(true) if out.len() < MAX_BUFFER_BYTES => continue,
-                Ok(true) => break,
+                Ok(true) => {
+                    // Stopped at the cap, so more values may be waiting.
+                    self.readable.store(true, Ordering::Relaxed);
+                    break;
+                }
                 Ok(false) => break,
                 Err(_) => {
                     // Mark the stream as ended if the underlying reader ever returns an error.
@@ -254,6 +281,8 @@ impl ReaderFile {
                     if buffer.pos >= buffer.bytes.len() {
                         buffer.bytes.clear();
                         buffer.pos = 0;
+                        // The stream may no longer be readable, so pollers must re-check.
+                        self.pollee.invalidate();
                     }
                     return Ok(copied);
                 }
@@ -262,7 +291,11 @@ impl ReaderFile {
                 }
             }
 
-            // The buffer is empty and the stream has not ended: refill from the reader.
+            // The buffer is empty and the stream has not ended: refill from the reader. Clear the
+            // flag first, so a value produced after the drain sets it again. The OQueue lock,
+            // taken by the drain and by the produce, orders the two stores.
+            self.readable.store(false, Ordering::Relaxed);
+            self.pollee.invalidate();
             self.refill(blocking);
 
             let idle = {
@@ -278,16 +311,18 @@ impl ReaderFile {
         }
     }
 
-    /// Reports readability for `poll`, filling the buffer without blocking so the result reflects
-    /// the currently-available data.
+    /// Reports the I/O events currently ready on this stream, without touching the OQueue.
     fn check_events(&self) -> IoEvents {
-        self.refill(false);
         let buffer = self.buffer.lock();
-        if buffer.pos < buffer.bytes.len() || buffer.ended {
-            IoEvents::IN
-        } else {
-            IoEvents::empty()
+        let mut events = IoEvents::empty();
+        if buffer.pos < buffer.bytes.len() || buffer.ended || self.readable.load(Ordering::Relaxed)
+        {
+            events |= IoEvents::IN;
         }
+        if buffer.ended {
+            events |= IoEvents::HUP;
+        }
+        events
     }
 }
 

@@ -52,6 +52,42 @@ new_key_type! {
     pub struct ObserverKey;
     /// A unique identifier for an inline strong observer.
     pub struct InlineObserverKey;
+    /// A unique identifier for a wake hook.
+    pub struct WakeHookKey;
+}
+
+/// A hook that an OQueue runs where it wakes its waiters, unregistered when dropped.
+///
+/// For now, hooks run only after a produce, where observers and consumers are woken.
+pub struct WakeHook {
+    oqueue: Weak<dyn UntypedOQueueImplementation>,
+    key: WakeHookKey,
+}
+
+impl WakeHook {
+    /// Registers `hook` on `oqueue`.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or add or remove wake hooks on this
+    /// OQueue.
+    pub(super) fn register(
+        oqueue: Arc<dyn UntypedOQueueImplementation>,
+        hook: Box<dyn Fn() + Send>,
+    ) -> Self {
+        let key = oqueue.add_wake_hook(hook);
+        Self {
+            oqueue: Arc::downgrade(&oqueue),
+            key,
+        }
+    }
+}
+
+impl Drop for WakeHook {
+    fn drop(&mut self) {
+        // A dropped OQueue took its hooks with it, so there is nothing to unregister.
+        if let Some(oqueue) = self.oqueue.upgrade() {
+            oqueue.remove_wake_hook(self.key);
+        }
+    }
 }
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
@@ -82,6 +118,10 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     last_consumer: SpinLock<Option<Weak<Task>>, LocalIrqDisabled>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
+    /// Hooks run alongside the waiter wake-ups. They have their own lock so that they run
+    /// without `inner` held.
+    #[expect(clippy::type_complexity)]
+    wake_hooks: SpinLock<SlotMap<WakeHookKey, Box<dyn Fn() + Send>>, LocalIrqDisabled>,
 }
 
 impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
@@ -113,6 +153,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             consume_wait_queue: WaitQueue::new(),
             last_consumer: SpinLock::new(None),
             produce_wait_queue: WaitQueue::new(),
+            wake_hooks: SpinLock::new(SlotMap::with_key()),
         }
     }
 
@@ -355,6 +396,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Wake observers and consumers after a successful produce.
     fn wake_after_produce(&self) {
         self.observe_wait_queue.wake_all();
+        for hook in self.wake_hooks.lock().values() {
+            hook();
+        }
 
         // Try to wake a consumer which is blocked on this OQueue. If no OQueue was awoken and there
         // was some task which consumed on this OQueue before, wake that.
@@ -564,13 +608,13 @@ struct OQueueInner<D: ElementDescriptor> {
 }
 
 impl<D: ElementDescriptor> OQueueInner<D> {
-    /// True if all ring buffers can produce.
-    ///
-    /// Revoked observers are ignored, cus they won't get produced to at all.
+    /// True if a produce can succeed without blocking.
     fn can_produce(&self) -> bool {
+        // Revoked observers are never produced to, and a full revocable observer is revoked by the
+        // produce rather than blocking it.
         self.observer_ring_buffers
             .values()
-            .all(|r| r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
+            .all(|r| r.revocable || r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
     }
 
@@ -800,6 +844,13 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
     /// Get the oldest cursor which will return a value.
     fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor;
+
+    /// Register a hook to run where the OQueue wakes its waiters. This is used to implement
+    /// [`WakeHook`].
+    fn add_wake_hook(&self, hook: Box<dyn Fn() + Send>) -> WakeHookKey;
+
+    /// Unregister a hook added by [`Self::add_wake_hook`].
+    fn remove_wake_hook(&self, key: WakeHookKey);
 }
 
 assert_obj_safe!(UntypedOQueueImplementation);
@@ -941,6 +992,14 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
 
     fn remove_observe_waker(&self, key: WakerKey) {
         self.observe_wait_queue.remove(key);
+    }
+
+    fn add_wake_hook(&self, hook: Box<dyn Fn() + Send>) -> WakeHookKey {
+        self.wake_hooks.lock().insert(hook)
+    }
+
+    fn remove_wake_hook(&self, key: WakeHookKey) {
+        self.wake_hooks.lock().remove(key);
     }
 }
 

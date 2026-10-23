@@ -125,6 +125,7 @@ mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
+pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -438,6 +439,14 @@ clone_without_t!(GenericAnyOQueueRef, : ElementDescriptor + 'static);
 impl_oqueue_base_forward!(GenericAnyOQueueRef, D: ElementDescriptor, D, inner);
 impl_consumable_oqueue_forward!(GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>, inner);
 impl_oqueue_forward!(GenericAnyOQueueRef, inner);
+
+impl<D: ElementDescriptor + 'static> GenericAnyOQueueRef<D> {
+    /// Registers `hook` to run where this OQueue wakes its waiters, until the returned handle is
+    /// dropped.
+    fn add_wake_hook(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.inner.clone(), hook)
+    }
+}
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 ///
@@ -937,10 +946,20 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
 #[cfg(ktest)]
 mod test {
     use alloc::string::String;
-    use core::assert_matches;
+    use core::{
+        assert_matches,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use super::*;
-    use crate::{prelude::*, static_path, sync::SpinLock, trace_structured_data};
+    use crate::{
+        prelude::*,
+        static_path,
+        sync::SpinLock,
+        task::{TaskOptions, disable_preempt},
+        trace_structured_data,
+    };
 
     #[derive(Debug, Clone, PartialEq, Eq, Element)]
     struct Message {
@@ -984,6 +1003,51 @@ mod test {
         }
 
         // The revoked observer now reports the stream as revoked.
+        assert!(matches!(
+            observer.try_strong_observe(),
+            Err(OQueueError::Revoked { .. })
+        ));
+    }
+
+    #[ktest]
+    fn blocked_producer_is_not_held_back_by_full_revocable_observer() {
+        // A length of 2 holds a single value, so one produce fills each ring.
+        let queue = ConsumableOQueueRef::<u32>::new(2, Path::test());
+        let producer = queue.attach_value_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+
+        // Fill the consumer ring and block a second producer on it.
+        producer.produce(1);
+        let produced = Arc::new(AtomicBool::new(false));
+        TaskOptions::new({
+            let blocked_producer = queue.attach_value_producer().unwrap();
+            let produced = produced.clone();
+            move || {
+                blocked_producer.produce(2);
+                produced.store(true, Ordering::Relaxed);
+            }
+        })
+        .spawn()
+        .unwrap();
+        crate::assertion::sleep(Duration::from_millis(10));
+        assert!(!produced.load(Ordering::Relaxed));
+
+        // Swap the consumed value for one that also fills a newly attached revocable observer,
+        // without letting the blocked producer run in between.
+        let observer = queue
+            .attach_revocable_strong_observer(ObservationQuery::identity())
+            .unwrap();
+        {
+            let _guard = disable_preempt();
+            assert_eq!(consumer.try_consume(), Some(1));
+            producer.try_produce(3).unwrap();
+        }
+
+        // Once the consumer ring drains, only the full revocable observer is left, and a produce
+        // revokes it instead of blocking, so the blocked producer must get through.
+        assert_eq!(consumer.consume(), 3);
+        assert_eventually!(produced.load(Ordering::Relaxed));
+        assert_eq!(consumer.try_consume(), Some(2));
         assert!(matches!(
             observer.try_strong_observe(),
             Err(OQueueError::Revoked { .. })

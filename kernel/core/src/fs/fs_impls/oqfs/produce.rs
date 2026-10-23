@@ -253,6 +253,8 @@ impl PerOpenFileOps for ProduceFile {
 
 impl Pollable for ProduceFile {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        // TODO: Report OUT only when a write would not block. This needs a non-blocking produce
+        // path (`write` returning EAGAIN when the OQueue is full) and a wake hook on freed space.
         self.pollee.poll_with(mask, poller, || IoEvents::OUT)
     }
 }
