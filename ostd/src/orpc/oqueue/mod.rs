@@ -124,7 +124,7 @@ mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
-pub use implementation::ReadinessHook;
+pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
@@ -438,6 +438,14 @@ clone_without_t!(GenericAnyOQueueRef, : ElementDescriptor + 'static);
 impl_oqueue_base_forward!(GenericAnyOQueueRef, D: ElementDescriptor, D, inner);
 impl_consumable_oqueue_forward!(GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>, inner);
 impl_oqueue_forward!(GenericAnyOQueueRef, inner);
+
+impl<D: ElementDescriptor + 'static> GenericAnyOQueueRef<D> {
+    /// Registers `hook` to run where this OQueue wakes its waiters, until the returned handle is
+    /// dropped.
+    fn add_wake_hook(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.inner.clone(), hook)
+    }
+}
 
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 ///

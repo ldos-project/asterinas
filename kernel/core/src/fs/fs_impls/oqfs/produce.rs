@@ -14,7 +14,7 @@ use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborProducer, ProduceCborError, ReadinessHook, registry},
+    oqueue::{CborProducer, ProduceCborError, registry},
     path::Path,
 };
 
@@ -155,31 +155,14 @@ struct ProduceFile {
     /// Bytes written but not yet decoded into a complete CBOR record.
     pending: Mutex<Vec<u8>>,
     pollee: Pollee,
-    /// Notifies `pollee` of new OQueue space while this handle is open.
-    _writable_hook: ReadinessHook,
 }
 
 impl ProduceFile {
     fn new(producer: Box<dyn CborProducer>) -> Self {
-        let pollee = Pollee::new();
-        // Wake pollers whenever the OQueue may have space for another record.
-        let writable_pollee = pollee.clone();
-        let writable_hook =
-            producer.on_writable(Box::new(move || writable_pollee.notify(IoEvents::OUT)));
         Self {
             producer: Mutex::new(producer),
             pending: Mutex::new(Vec::new()),
-            pollee,
-            _writable_hook: writable_hook,
-        }
-    }
-
-    /// Reports the I/O events currently ready on this handle.
-    fn check_events(&self) -> IoEvents {
-        // A write in progress may take the free space, so only an idle producer reports it.
-        match self.producer.try_lock() {
-            Some(producer) if producer.can_produce() => IoEvents::OUT,
-            _ => IoEvents::empty(),
+            pollee: Pollee::new(),
         }
     }
 
@@ -270,11 +253,8 @@ impl PerOpenFileOps for ProduceFile {
 
 impl Pollable for ProduceFile {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        // Other producers can fill the OQueue without notifying this handle, so check afresh
-        // instead of using the pollee's cached events.
-        if let Some(poller) = poller {
-            self.pollee.register_poller(poller, mask);
-        }
-        self.check_events() & mask
+        // TODO: Report OUT only when a write would not block. This needs a non-blocking produce
+        // path (`write` returning EAGAIN when the OQueue is full) and a wake hook on freed space.
+        self.pollee.poll_with(mask, poller, || IoEvents::OUT)
     }
 }
