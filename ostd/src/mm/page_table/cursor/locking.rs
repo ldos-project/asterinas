@@ -96,18 +96,11 @@ fn try_traverse_and_lock_subtree_root<'rcu, C: PageTableConfig>(
 ) -> Option<PageTableGuard<'rcu, C>> {
     let mut cur_node_guard: Option<PageTableGuard<C>> = None;
     let mut cur_pt_addr = pt.root.paddr();
-    let range = va.end - va.start;
     for cur_level in (1..=C::NR_LEVELS).rev() {
         let start_idx = pte_index::<C>(va.start, cur_level);
         let level_too_high = {
-            // A range that is exactly one page of the current level is locked at this level,
-            // so that a page of that size (e.g., a huge page) can be mapped without descending.
-            if range == page_size::<C>(cur_level) {
-                false
-            } else {
-                let end_idx = pte_index::<C>(va.end - 1, cur_level);
-                cur_level > min_level && start_idx == end_idx
-            }
+            let end_idx = pte_index::<C>(va.end - 1, cur_level);
+            cur_level > min_level && start_idx == end_idx
         };
         if !level_too_high {
             break;

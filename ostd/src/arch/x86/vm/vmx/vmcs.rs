@@ -287,7 +287,7 @@ mod test {
         let vmx = VmxGuard::acquire_vmx().expect("VMX is required");
         let first = Vmcs::new(&vmx).unwrap();
         let second = Vmcs::new(&vmx).unwrap();
-        let _preempt_guard = task::disable_preempt();
+        let preempt_guard = task::disable_preempt();
 
         // Fields from the current VMCS can be read and written.
         first.load(&vmx).unwrap();
@@ -301,10 +301,13 @@ mod test {
         );
 
         // VMX shutdown clears active VMCSs, which can be loaded again later.
+        // Shutting down and re-acquiring VMX might sleep, so preemption must be enabled.
+        drop(preempt_guard);
         drop(vmx);
         assert!(first.meta().state.lock().active_cpu.is_none());
         assert!(second.meta().state.lock().active_cpu.is_none());
         let vmx = VmxGuard::acquire_vmx().unwrap();
+        let _preempt_guard = task::disable_preempt();
         first.load(&vmx).unwrap();
         assert_eq!(
             unsafe { first.read(RIP, &irq::disable_local()).unwrap() },
