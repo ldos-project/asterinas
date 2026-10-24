@@ -611,6 +611,55 @@ mod tests {
     }
 
     #[ktest]
+    fn produce_poll_tracks_space() {
+        crate::time::clocks::init_for_ktest();
+
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("pollwrite"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
+        registry::register_producible(&path, &queue);
+        let consumer = queue.attach_consumer().unwrap();
+
+        let fs = OQueueFs::new();
+        let handle = match fs
+            .root_inode()
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("pollwrite")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(produce::FILE_NAME)
+            .unwrap()
+            .open(AccessMode::O_WRONLY, StatusFlags::empty())
+        {
+            Some(Ok(handle)) => handle,
+            _ => panic!("opening produce should mint a write handle"),
+        };
+        let notified = Arc::new(AtomicUsize::new(0));
+        let mut adaptor = PollAdaptor::with_observer(NotifyCounter(notified.clone()));
+
+        // An OQueue with space is writable.
+        assert_eq!(
+            handle.poll(IoEvents::OUT, Some(adaptor.as_handle_mut())),
+            IoEvents::OUT
+        );
+
+        // A full OQueue is not writable.
+        let producer = queue.attach_value_producer().unwrap();
+        while producer.try_produce(0).is_ok() {}
+        assert!(handle.poll(IoEvents::OUT, None).is_empty());
+
+        // Consuming a value wakes the registered poller and makes the file writable again.
+        consumer.consume();
+        assert!(notified.load(Ordering::Relaxed) > 0);
+        assert_eq!(handle.poll(IoEvents::OUT, None), IoEvents::OUT);
+    }
+
+    #[ktest]
     fn oqueue_files_are_root_only() {
         // Pins the permission restriction across the WHOLE filesystem: the data files
         // (`mkmod!(u+r)` / `mkmod!(u+w)`), every directory (`mkmod!(u+rx)`), and `metadata.yaml`

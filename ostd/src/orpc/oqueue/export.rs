@@ -86,13 +86,6 @@ pub trait OQueueExport: Send + Sync {
     fn attach_consumer(&self) -> Result<Box<dyn CborReader>, OQueueError> {
         Err(UnsupportedSnafu.build())
     }
-
-    /// Registers `hook` to run where the OQueue wakes its waiters, until the returned handle is
-    /// dropped. For now that is only after a produce.
-    ///
-    /// The hook runs in atomic context, so it must not sleep or add or remove wake hooks on the
-    /// OQueue.
-    fn on_wake(&self, hook: Box<dyn Fn() + Send>) -> Result<WakeHook, OQueueError>;
 }
 
 /// Error produced by [`CborProducer::produce_cbor`] when the bytes at the front of the buffer
@@ -129,6 +122,20 @@ pub trait CborProducer: Send {
     /// retry). Returns `Err` if `bytes` starts with malformed CBOR, if the CBOR item does not
     /// decode as the expected message type, or once the underlying OQueue is gone.
     fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError>;
+
+    /// Returns whether [`Self::produce_cbor`] would currently block on a complete record. This is
+    /// a hint: other attachments may change the OQueue immediately afterwards.
+    fn is_full(&self) -> bool;
+
+    /// Registers `hook` to be called when [`Self::produce_cbor`] may stop blocking, until the
+    /// returned [`WakeHook`] is dropped. The hook may be called even though a produce would still
+    /// block, so treat it as a prompt to retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking: it is called with a lock held and interrupts
+    /// disabled. See [`ValueProducer::on_ready`].
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook;
 }
 
 /// A per-reader observer or consumer of CBOR-encoded records from an OQueue, with the message type
@@ -149,6 +156,17 @@ pub trait CborReader: Send {
     /// Returns `Err` (typically [`OQueueError::Revoked`]) once the been revoked (for example,
     /// because the observer fell too far behind), which a reader treats as end-of-stream.
     fn read_into(&self, out: &mut Vec<u8>) -> Result<(), OQueueError>;
+
+    /// Registers `hook` to be called when [`Self::read_into`] may stop blocking, i.e. when
+    /// [`Self::try_read_into`] may return a record or report that the stream ended, until the
+    /// returned [`WakeHook`] is dropped. The hook may be called even though a read would still find
+    /// nothing, so treat it as a prompt to retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking: it is called with a lock held and interrupts
+    /// disabled. See [`Consumer::on_ready`] and [`StrongObserver::on_ready`].
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook;
 }
 
 /// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
@@ -228,11 +246,6 @@ impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
         let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
         attach_fn(&oqueue)
     }
-
-    fn on_wake(&self, hook: Box<dyn Fn() + Send>) -> Result<WakeHook, OQueueError> {
-        let oqueue = self.weak.upgrade().ok_or_else(|| RevokedSnafu.build())?;
-        Ok(oqueue.add_wake_hook(hook))
-    }
 }
 
 /// A [`CborReader`] backed by a [`StrongObserver<U>`], encoding each observed value as a CBOR
@@ -264,6 +277,10 @@ impl<U: Copy + Send + Serialize + 'static> CborReader for CborStrongObserver<U> 
         encode_record(value, out);
         Ok(())
     }
+
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        self.observer.on_ready(hook)
+    }
 }
 
 /// A [`CborReader`] backed by a [`Consumer<T>`], encoding each consumed value as a CBOR record.
@@ -288,6 +305,10 @@ impl<T: Send + Serialize + 'static> CborReader for CborConsumer<T> {
         let value = self.consumer.consume();
         encode_record(value, out);
         Ok(())
+    }
+
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        self.consumer.on_ready(hook)
     }
 }
 
@@ -391,6 +412,14 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
         self.producer.produce(value);
         Ok(item_len)
     }
+
+    fn is_full(&self) -> bool {
+        self.producer.is_full()
+    }
+
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        self.producer.on_ready(hook)
+    }
 }
 
 /// Builds a type-erased export handle carrying a produce attachment and a consume attachment for
@@ -486,21 +515,19 @@ mod test {
     }
 
     #[ktest]
-    fn wake_hook_runs_after_each_produce() {
+    fn reader_on_ready_runs_after_each_produce() {
         let queue = ConsumableOQueueRef::<usize>::new(4, path!(export.wake_hook[0]));
         let handle = make_produce_export(&queue);
         let reader = handle.attach_consumer().unwrap();
         let producer = queue.attach_value_producer().unwrap();
 
         let count = Arc::new(AtomicUsize::new(0));
-        let hook = handle
-            .on_wake({
-                let count = count.clone();
-                Box::new(move || {
-                    count.fetch_add(1, Ordering::Relaxed);
-                })
+        let hook = reader.on_ready({
+            let count = count.clone();
+            Box::new(move || {
+                count.fetch_add(1, Ordering::Relaxed);
             })
-            .unwrap();
+        });
 
         // Each produce runs the hook; consuming does not.
         producer.try_produce(1).unwrap();

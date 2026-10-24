@@ -24,7 +24,7 @@ use core::{
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborReader, OQueueExport, WakeHook, registry},
+    oqueue::{CborReader, WakeHook, registry},
     path::Path,
 };
 
@@ -111,7 +111,7 @@ impl ReaderInode {
             ReaderKind::Consume => export.attach_consumer(),
         }
         .map_err(|_| Error::with_message(Errno::ENODEV, "failed to attach an OQueue reader"))?;
-        Ok(Box::new(ReaderFile::new(reader, export.as_ref())?))
+        Ok(Box::new(ReaderFile::new(reader)))
     }
 }
 
@@ -199,21 +199,19 @@ struct BufferState {
 }
 
 impl ReaderFile {
-    fn new(reader: Box<dyn CborReader>, export: &dyn OQueueExport) -> Result<Self> {
+    fn new(reader: Box<dyn CborReader>) -> Self {
         let pollee = Pollee::new();
         // A consume queue may already hold values, so start out readable.
         let readable = Arc::new(AtomicBool::new(true));
-        let wake_hook = export
-            .on_wake(Box::new({
-                let pollee = pollee.clone();
-                let readable = readable.clone();
-                move || {
-                    readable.store(true, Ordering::Relaxed);
-                    pollee.notify(IoEvents::IN);
-                }
-            }))
-            .map_err(|_| Error::with_message(Errno::ENODEV, "the OQueue is gone"))?;
-        Ok(Self {
+        let wake_hook = reader.on_ready(Box::new({
+            let pollee = pollee.clone();
+            let readable = readable.clone();
+            move || {
+                readable.store(true, Ordering::Relaxed);
+                pollee.notify(IoEvents::IN);
+            }
+        }));
+        Self {
             reader: Mutex::new(reader),
             buffer: Mutex::new(BufferState {
                 bytes: Vec::new(),
@@ -223,7 +221,7 @@ impl ReaderFile {
             readable,
             pollee,
             _wake_hook: wake_hook,
-        })
+        }
     }
 
     /// Drains encoded records from the reader into `out`, up to [`MAX_BUFFER_BYTES`].

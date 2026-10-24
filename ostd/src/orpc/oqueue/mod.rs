@@ -130,7 +130,7 @@ pub use query::ObservationQuery;
 use snafu::Snafu;
 pub use utils::new_reply_pair;
 
-use self::implementation::{InlineObserverKey, ObserverKey};
+use self::implementation::{InlineObserverKey, ObserverKey, WakeEvent};
 use crate::{
     orpc::{
         path::{Path, StaticPath},
@@ -439,14 +439,6 @@ impl_oqueue_base_forward!(GenericAnyOQueueRef, D: ElementDescriptor, D, inner);
 impl_consumable_oqueue_forward!(GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>, inner);
 impl_oqueue_forward!(GenericAnyOQueueRef, inner);
 
-impl<D: ElementDescriptor + 'static> GenericAnyOQueueRef<D> {
-    /// Registers `hook` to run where this OQueue wakes its waiters, until the returned handle is
-    /// dropped.
-    fn add_wake_hook(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
-        WakeHook::register(self.inner.clone(), hook)
-    }
-}
-
 /// A reference to an OQueue of an unknown kind, meaning only observation is allowed.
 ///
 /// Use [`OQueueBaseRef`] any time you would need to explicitly specify the type parameter.
@@ -613,6 +605,26 @@ impl<T: Send + 'static> ValueProducer<T> {
     pub fn has_observers(&self) -> bool {
         self.oqueue.has_observers()
     }
+
+    /// True if [`Self::produce`] would currently block. This is a hint: other attachments may
+    /// change the OQueue immediately afterwards.
+    fn is_full(&self) -> bool {
+        !self.oqueue.can_produce()
+    }
+
+    /// Registers `hook` to be called when [`Self::produce`] may stop blocking, i.e. when
+    /// [`Self::try_produce`] may succeed again, until the returned [`WakeHook`] is dropped. The
+    /// hook may be called even though the operation would still fail, so treat it as a prompt to
+    /// retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking. It is called with a lock held and interrupts
+    /// disabled, on the thread whose consume, observe, or detach made room, so a slow hook delays every other user of this OQueue. It must not
+    /// create or drop a [`WakeHook`] for this OQueue.
+    pub fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.oqueue.clone(), WakeEvent::SpaceFreed, hook)
+    }
 }
 
 /// An attachment to an OQueue which allows producing values values by reference for observation.
@@ -682,6 +694,20 @@ impl<T: Send + 'static> Consumer<T> {
     /// Try to consume a value without blocking. Returns `None` if no value is available.
     pub fn try_consume(&self) -> Option<T> {
         self.oqueue.try_consume()
+    }
+
+    /// Registers `hook` to be called when [`Self::consume`] may stop blocking, i.e. when
+    /// [`Self::try_consume`] may return a value, until the returned [`WakeHook`] is dropped. The
+    /// hook may be called even though the operation would still fail, so treat it as a prompt to
+    /// retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking. It is called with a lock held and interrupts
+    /// disabled, on the producer's thread, so a slow hook delays every other user of this OQueue. It must not
+    /// create or drop a [`WakeHook`] for this OQueue.
+    pub fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.oqueue.clone(), WakeEvent::Produced, hook)
     }
 
     /// Register a function to be called by the OQueue to observe each message. This function does
@@ -800,6 +826,20 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
         } else {
             Ok(None)
         }
+    }
+
+    /// Registers `hook` to be called when [`Self::strong_observe`] may stop blocking, i.e. when
+    /// [`Self::try_strong_observe`] may return a value or report that this observer was revoked,
+    /// until the returned [`WakeHook`] is dropped. The hook may be called even though the
+    /// operation would still find nothing, so treat it as a prompt to retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking. It is called with a lock held and interrupts
+    /// disabled, on the producer's thread, so a slow hook delays every other user of this OQueue. It must not
+    /// create or drop a [`WakeHook`] for this OQueue.
+    pub fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.oqueue.clone(), WakeEvent::Produced, hook)
     }
 
     /// Register a function to be called by the OQueue to observe each message. This function does
@@ -947,7 +987,7 @@ mod test {
     use alloc::string::String;
     use core::{
         assert_matches,
-        sync::atomic::{AtomicBool, Ordering},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
         time::Duration,
     };
 
@@ -1006,6 +1046,54 @@ mod test {
             observer.try_strong_observe(),
             Err(OQueueError::Revoked { .. })
         ));
+    }
+
+    #[ktest]
+    fn space_freed_tracks_full_buffers() {
+        // A length of 2 holds a single value, so one produce fills each ring.
+        let queue = ConsumableOQueueRef::<u32>::new(2, Path::test());
+        let producer = queue.attach_value_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::identity())
+            .unwrap();
+        let freed = Arc::new(AtomicUsize::new(0));
+        let _hook = producer.on_ready({
+            let freed = freed.clone();
+            Box::new(move || {
+                freed.fetch_add(1, Ordering::Relaxed);
+            })
+        });
+
+        // One produce fills both the consumer ring and the observer ring.
+        producer.try_produce(1).unwrap();
+        assert!(producer.is_full());
+
+        // Draining one full buffer is not enough; draining the last one frees space.
+        assert_eq!(consumer.try_consume(), Some(1));
+        assert!(producer.is_full());
+        assert_eq!(freed.load(Ordering::Relaxed), 0);
+        assert_eq!(observer.try_strong_observe().unwrap(), Some(1));
+        assert!(!producer.is_full());
+        assert_eq!(freed.load(Ordering::Relaxed), 1);
+
+        // Detaching full buffers frees space too: first the observer, then the last consumer.
+        producer.try_produce(2).unwrap();
+        drop(observer);
+        assert!(producer.is_full());
+        drop(consumer);
+        assert!(!producer.is_full());
+        assert_eq!(freed.load(Ordering::Relaxed), 2);
+
+        // So does converting a full strong observer to an inline one.
+        let observer = queue
+            .attach_strong_observer(ObservationQuery::identity())
+            .unwrap();
+        producer.try_produce(3).unwrap();
+        assert!(producer.is_full());
+        let _inline = observer.strong_observe_inline(|_| {}).unwrap();
+        assert!(!producer.is_full());
+        assert_eq!(freed.load(Ordering::Relaxed), 3);
     }
 
     #[ktest]
