@@ -129,13 +129,11 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     last_consumer: SpinLock<Option<Weak<Task>>>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
-    /// Hooks run alongside the waiter wake-ups, each with the event it waits on. They have their
-    /// own lock so that they run without `inner` held.
+    /// Hooks run alongside the waiter wake-ups, each with the event it waits on. 
     #[expect(clippy::type_complexity)]
     wake_hooks: SpinLock<SlotMap<WakeHookKey, (WakeEvent, Box<dyn Fn() + Send>)>, LocalIrqDisabled>,
     /// The number of full buffers that block producers: the consumer ring and non-revocable
-    /// strong-observer rings. A produce does not block iff this is 0. Written under `inner`, read
-    /// without it.
+    /// strong-observer rings. A produce does not block iff this is 0. 
     num_full_buffers: AtomicUsize,
 }
 
