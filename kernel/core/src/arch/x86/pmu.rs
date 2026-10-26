@@ -8,10 +8,10 @@ use ostd::{
     new_server,
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
-        oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
+        oqueue::{OQueueBase, ObservationQuery},
         orpc_server,
     },
-    path,
+    trace_structured_data,
 };
 use serde::Serialize;
 use snafu::Whatever;
@@ -31,9 +31,7 @@ struct DtlbMisses {
 // TODO(tewaro, after SOSP) actually support interesting option
 // TODO(tewaro, after SOSP) actually support multi-process
 #[orpc_server]
-pub struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
-}
+pub struct PmuServer {}
 
 impl PmuServer {
     /// Create and spawn a new PmuServer.
@@ -47,9 +45,7 @@ impl PmuServer {
         pmud
     }
     pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self {
-            dtlb_miss_count_oqueue: GenericOQueueRef::new(32, path!(pmu.dtlb_miss_count)),
-        });
+        let server = new_server!(|_| Self {});
         Ok(server)
     }
 
@@ -69,8 +65,6 @@ impl PmuServer {
         // work with
         let notify_server = TimerServer::spawn(Duration::from_millis(100));
 
-        let dtlb_miss_count_producer = self.dtlb_miss_count_oqueue.attach_ref_producer()?;
-
         let notify_observer = notify_server
             .notification_oqueue()
             .attach_strong_observer(ObservationQuery::identity())?;
@@ -83,7 +77,7 @@ impl PmuServer {
                 miss_all_tlb,
             };
 
-            dtlb_miss_count_producer.produce_ref(&misses);
+            trace_structured_data!({ pmu.dtlb_miss_count }, misses, DtlbMisses, length = 32);
         }
     }
 }

@@ -18,16 +18,14 @@ use core::{
 use align_ext::AlignExt;
 use aster_util::per_cpu_counter::PerCpuCounter;
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::VmSpace,
-    new_server,
+    new_server, trace_structured_data,
 };
 
 use super::{
-    PageFaultOQueueMessage, Rmap, RmapEntry, VMAR_CAP_ADDR, VMAR_LOWEST_ADDR,
+    Rmap, RmapEntry, VMAR_CAP_ADDR, VMAR_LOWEST_ADDR,
     huge_pages::{VmMappingPolicyGreedyHugeMapping, huge_mapping_enabled},
     interval_set::{Interval, IntervalSet},
     is_userspace_vaddr, is_userspace_vaddr_range,
@@ -65,9 +63,6 @@ pub struct Vmar {
     weak_self: Weak<Self>,
 
     rss_hwm_counters: [CpuLocalBox<AtomicIsize>; NUM_RSS_COUNTERS],
-    /// OQueue Producer to notify policies about page fault events
-    #[cfg(not(baseline_asterinas))]
-    page_fault_oqueue_producer: OQueueRef<oqueues::ObservableEvent<PageFaultOQueueMessage>>,
 }
 
 impl Vmar {
@@ -92,8 +87,6 @@ impl Vmar {
             num_handles: AtomicUsize::new(1),
             weak_self: weak_self.clone(),
             rss_hwm_counters,
-            #[cfg(not(baseline_asterinas))]
-            page_fault_oqueue_producer: oqueues::PAGE_FAULT_OQUEUE.wait().clone(),
         })
     }
 
@@ -188,6 +181,13 @@ pub(super) struct RssDelta<'a> {
     operated_vmar: &'a Vmar,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(baseline_asterinas), derive(Projectable, serde::Serialize))]
+pub struct RssDeltaChangeEvent {
+    increment: isize,
+    current: usize,
+}
+
 impl<'a> RssDelta<'a> {
     pub(super) fn new(operated_vmar: &'a Vmar) -> Self {
         Self {
@@ -199,16 +199,20 @@ impl<'a> RssDelta<'a> {
     pub(super) fn add(&mut self, rss_type: RssType, increment: isize) {
         #[cfg(not(baseline_asterinas))]
         if rss_type == RssType::Anon {
-            use ostd::orpc::oqueue::OQueue as _;
-
-            if increment > 0 {
-                oqueues::GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed);
+            let current = if increment > 0 {
+                oqueues::GLOBAL_RSS.fetch_add(increment as usize, Ordering::Relaxed)
+                    + increment as usize
             } else {
-                oqueues::GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed);
-            }
-            let _ = oqueues::RSS_DELTA_OQUEUE
-                .wait()
-                .produce_ref(&oqueues::ObservableEvent::new(increment));
+                // The `-increment` is to make conversions to usize correct.
+                oqueues::GLOBAL_RSS.fetch_sub(-increment as usize, Ordering::Relaxed)
+                    - (-increment) as usize
+            };
+
+            trace_structured_data!(
+                { mm.rss_delta.anon },
+                RssDeltaChangeEvent { increment, current },
+                RssDeltaChangeEvent
+            )
         }
 
         self.delta[rss_type as usize] += increment;

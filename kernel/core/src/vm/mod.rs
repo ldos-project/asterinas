@@ -27,7 +27,7 @@ use crate::{
     init::get_init_process,
     prelude::Error,
     process::{PauseProcGuard, Process},
-    vm::vmar::{PageFaultOQueueMessage, RssType, VMAR_CAP_ADDR},
+    vm::vmar::{PageFaultMessage, RssType, VMAR_CAP_ADDR},
 };
 
 #[cfg(not(baseline_asterinas))]
@@ -98,10 +98,19 @@ pub fn num_anon_hugepages() -> i32 {
     count
 }
 
+/// Notification message to inform policies about a page fault
+#[derive(Copy, Clone)]
+pub struct PageFaultRecord {
+    /// Opaque identifier for which vm_space the fault corresponds to
+    pub vm_space_id: u64,
+    /// The fault information provided to the page fault handler
+    pub fault_info: vmar::PageFaultInfo,
+}
+
 #[cfg(not(baseline_asterinas))]
 fn promote_hugepages(
     proc: &Arc<Process>,
-    fault_hint: Option<PageFaultOQueueMessage>,
+    fault_hint: Option<PageFaultRecord>,
 ) -> Result<(), Error> {
     // Ensure that the current process doesn't run until we have scanned it's mappings
     let _ = PauseProcGuard::new(proc.clone());

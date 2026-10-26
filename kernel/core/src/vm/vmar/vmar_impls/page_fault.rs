@@ -2,11 +2,14 @@
 
 #![short_vis_path::add(vmar)]
 
+#[cfg(not(baseline_asterinas))]
+use ostd::Projectable;
+use ostd::trace_structured_data;
 use serde::Serialize;
 
 use super::{Interval, RssDelta, Vmar};
 #[cfg(not(baseline_asterinas))]
-use crate::vm::vmar::{PageFaultOQueueMessage, oqueues};
+use crate::vm::vmar::PageFaultMessage;
 use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
@@ -21,13 +24,14 @@ impl Vmar {
             let res = vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
             #[cfg(not(baseline_asterinas))]
             if res.is_ok() {
-                use ostd::orpc::oqueue::OQueue as _;
-
-                self.page_fault_oqueue_producer
-                    .produce_ref(&oqueues::ObservableEvent::new(PageFaultOQueueMessage {
-                        vm_space_id: self.vm_space.id(),
+                trace_structured_data!(
+                    { mm.page_fault },
+                    PageFaultMessage {
+                        vm_space: &self.vm_space,
                         fault_info: *page_fault_info,
-                    }))?;
+                    },
+                    PageFaultMessage
+                );
             }
             return res;
         }
