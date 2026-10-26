@@ -614,8 +614,14 @@ clean:
 	@cd book && mdbook clean
 	@echo "Cleaning up test target files"
 	@$(MAKE) --no-print-directory -C test/initramfs clean
+	@echo "Cleaning up cached Nix outputs"
+	@./tools/clean_nix_outputs.sh
 	@echo "Uninstalling OSDK"
 	rm -f $(CARGO_OSDK)
+
+.PHONY: clean_nix
+clean_nix:
+	@nix-store --gc
 
 .PHONY: clean_cache
 clean_cache:
