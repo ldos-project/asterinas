@@ -6,38 +6,12 @@ use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    Attribute, Block, FnArg, Ident, ImplItem, ItemImpl, ItemTrait, Lifetime, LitStr, Pat, Path,
-    ReturnType, Signature, Token, TraitItem, Type, TypePath, Visibility,
+    Attribute, Block, FnArg, Ident, ImplItem, ItemImpl, ItemTrait, Lifetime, Pat, Path, ReturnType,
+    Signature, Token, TraitItem, Type, TypePath, Visibility,
     fold::{self, Fold},
     parse::Parse,
-    punctuated::Punctuated,
     spanned::Spanned,
 };
-
-/// Parse an option in the form `name = value`.
-fn parse_option<T: Parse>(
-    input: syn::parse::ParseStream,
-    expected_name: &str,
-) -> syn::Result<Option<T>> {
-    if input.is_empty() {
-        return Ok(None);
-    }
-
-    let name: Ident = input.parse()?;
-    if name != expected_name {
-        return Err(syn::Error::new(
-            name.span(),
-            format!("expected `{expected_name}`"),
-        ));
-    }
-    input.parse::<Token![=]>()?;
-    let value = input.parse()?;
-    if !input.is_empty() {
-        return Err(input.error("unexpected attribute argument"));
-    }
-
-    Ok(Some(value))
-}
 
 /// Get an appropriate module name based on a type name.
 fn module_name(type_name: &Ident) -> Ident {
@@ -48,7 +22,9 @@ fn module_name(type_name: &Ident) -> Ident {
 /// The options of a `trace_methods` attribute on an impl.
 #[derive(Default)]
 pub struct ImplOptions {
+    /// Visibility of generated event types.
     visibility: Option<Visibility>,
+    /// Module containing the implemented trait.
     trait_module: Option<Path>,
 }
 
@@ -61,22 +37,14 @@ impl Parse for ImplOptions {
                 if options.visibility.is_some() {
                     return Err(syn::Error::new(name.span(), "duplicate `visibility`"));
                 }
-                let content;
-                syn::parenthesized!(content in input);
-                options.visibility = Some(content.parse()?);
-                if !content.is_empty() {
-                    return Err(content.error("unexpected `visibility` argument"));
-                }
+                input.parse::<Token![=]>()?;
+                options.visibility = Some(input.parse()?);
             } else if name == "trait_module" {
                 if options.trait_module.is_some() {
                     return Err(syn::Error::new(name.span(), "duplicate `trait_module`"));
                 }
-                let content;
-                syn::parenthesized!(content in input);
-                options.trait_module = Some(content.parse()?);
-                if !content.is_empty() {
-                    return Err(content.error("unexpected `trait_module` argument"));
-                }
+                input.parse::<Token![=]>()?;
+                options.trait_module = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     name.span(),
@@ -93,54 +61,11 @@ impl Parse for ImplOptions {
     }
 }
 
-/// The options of a `trace` attribute on a method.
-#[derive(Default)]
-struct MethodOptions {
-    path: Option<DottedPath>,
-}
-
-impl Parse for MethodOptions {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let path = parse_option::<LitStr>(input, "path")?
-            .map(DottedPath::new)
-            .transpose()?;
-        Ok(Self { path })
-    }
-}
-
-/// A parsed dot separated path
-struct DottedPath {
-    components: Punctuated<Ident, Token![.]>,
-}
-
-impl DottedPath {
-    /// Parse a string literal into a dot separated path.
-    fn new(path: LitStr) -> syn::Result<Self> {
-        let mut components = Punctuated::new();
-        for component in path.value().split('.') {
-            if component.is_empty() {
-                return Err(syn::Error::new(
-                    path.span(),
-                    "OQueue path contains an empty component",
-                ));
-            }
-            let mut ident = syn::parse_str::<Ident>(component).map_err(|_| {
-                syn::Error::new(
-                    path.span(),
-                    "OQueue path components must be valid Rust identifiers",
-                )
-            })?;
-            ident.set_span(path.span());
-            components.push(ident);
-        }
-
-        Ok(Self { components })
-    }
-}
-
 /// The flags for which "directions" should include a given argument.
 struct Include {
+    /// Include the argument in call events.
     call: bool,
+    /// Include the argument in return events.
     return_: bool,
 }
 
@@ -154,26 +79,25 @@ impl Default for Include {
 }
 
 impl Parse for Include {
-    /// Parse an `only(x)` option. Finding the `call` and `return` tokens.
+    /// Parse an `only = call` or `only = (call, return)` option.
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let parameter: Ident = input.parse()?;
         if parameter != "only" {
             return Err(syn::Error::new(parameter.span(), "expected `only`"));
         }
+        input.parse::<Token![=]>()?;
 
-        let content;
-        syn::parenthesized!(content in input);
         let mut include = Self {
             call: false,
             return_: false,
         };
 
-        while !content.is_empty() {
-            if content.peek(Token![return]) {
-                content.parse::<Token![return]>()?;
+        fn parse_choice(input: syn::parse::ParseStream, include: &mut Include) -> syn::Result<()> {
+            if input.peek(Token![return]) {
+                input.parse::<Token![return]>()?;
                 include.return_ = true;
             } else {
-                let target: Ident = content.parse()?;
+                let target: Ident = input.parse()?;
                 if target != "call" {
                     return Err(syn::Error::new(
                         target.span(),
@@ -182,11 +106,20 @@ impl Parse for Include {
                 }
                 include.call = true;
             }
+            Ok(())
+        }
 
-            if content.is_empty() {
-                break;
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            while !content.is_empty() {
+                parse_choice(&content, &mut include)?;
+                if !content.is_empty() {
+                    content.parse::<Token![,]>()?;
+                }
             }
-            content.parse::<Token![,]>()?;
+        } else {
+            parse_choice(input, &mut include)?;
         }
         if !input.is_empty() {
             return Err(input.error("unexpected trace argument"));
@@ -198,35 +131,55 @@ impl Parse for Include {
 
 /// A method argument available to call or return events.
 struct EventField {
+    /// Source span of the argument.
     span: Span,
+    /// Field name in the event type.
     name: Ident,
+    /// Field type in the event type.
     ty: Type,
+    /// Expression passed to the event constructor.
     value: TokenStream,
+    /// Events containing this field.
     include: Include,
 }
 
 /// The call and return event types for a traced method.
 struct MethodSchema {
+    /// Traced method name.
     method_name: Ident,
+    /// Call event type name.
     call_type: Ident,
+    /// Return event type name.
     return_type: Ident,
+    /// Fields derived from method arguments.
     fields: Vec<EventField>,
+    /// Method return type.
     output_type: Type,
+    /// Source span of the return type.
     output_span: Span,
 }
 
 /// The owner and event namespace of a traced impl.
 struct ExpansionContext {
+    /// Module containing the event types.
     event_module: TokenStream,
+    /// Module path used in trace names.
     trace_module_path: TraceModulePath,
+    /// Type or trait named in trace paths.
     owner_name: Ident,
+    /// Type recorded for the receiver.
     receiver_type: Type,
+    /// Concrete `Self` type in inherent methods.
     data_self_type: Option<Type>,
+    /// Helper for converting trait receivers to trait objects.
     receiver_helper: Option<Ident>,
 }
 
+/// Parts of the module path used in trace names.
 struct TraceModulePath {
+    /// Base module path expression.
     prefix: TokenStream,
+    /// Path segments appended to the base.
     segments: Vec<TokenStream>,
 }
 
@@ -285,7 +238,7 @@ impl TraceModulePath {
 }
 
 /// Expand a traced impl with call and return events.
-pub fn trace_structured_data_impl(
+pub fn trace_methods_impl(
     options: ImplOptions,
     mut impl_block: ItemImpl,
 ) -> syn::Result<TokenStream> {
@@ -355,16 +308,11 @@ pub fn trace_structured_data_impl(
         let ImplItem::Method(method) = item else {
             continue;
         };
-        let Some(method_options) = take_method_options(&mut method.attrs)? else {
+        if take_trace_attrs(&mut method.attrs)?.is_empty() {
             continue;
         };
 
-        let schema = instrument_method(
-            &mut method.sig,
-            &mut method.block,
-            &method_options,
-            &context,
-        )?;
+        let schema = instrument_method(&mut method.sig, &mut method.block, &context)?;
         if generates_types {
             event_types.push(generate_event_types(&schema, &item_visibility));
         }
@@ -388,7 +336,7 @@ pub fn trace_structured_data_impl(
 }
 
 /// Expand a traced trait with call and return event types.
-pub fn trace_structured_data_trait(
+pub fn trace_methods_trait(
     options: ImplOptions,
     mut trait_item: ItemTrait,
 ) -> syn::Result<TokenStream> {
@@ -428,13 +376,13 @@ pub fn trace_structured_data_trait(
         let TraitItem::Method(method) = item else {
             continue;
         };
-        let Some(method_options) = take_method_options(&mut method.attrs)? else {
+        if take_trace_attrs(&mut method.attrs)?.is_empty() {
             continue;
-        };
+        }
 
         let schema = if let Some(block) = &mut method.default {
             has_traced_default = true;
-            instrument_method(&mut method.sig, block, &method_options, &context)?
+            instrument_method(&mut method.sig, block, &context)?
         } else {
             analyze_signature(&mut method.sig, &context.receiver_type, None, None)?
         };
@@ -486,7 +434,7 @@ fn impl_type(impl_block: &ItemImpl) -> syn::Result<TypePath> {
     let Type::Path(self_type) = impl_block.self_ty.as_ref() else {
         return Err(syn::Error::new_spanned(
             &impl_block.self_ty,
-            "trace_methods requires a path type",
+            "trace_methods requires a concrete type",
         ));
     };
     if self_type.qself.is_some() {
@@ -499,33 +447,10 @@ fn impl_type(impl_block: &ItemImpl) -> syn::Result<TypePath> {
     Ok(self_type.clone())
 }
 
-/// Get a method's trace options, if it is traced.
-fn take_method_options(attrs: &mut Vec<Attribute>) -> syn::Result<Option<MethodOptions>> {
-    let mut trace_attrs = take_trace_attrs(attrs);
-    if trace_attrs.len() > 1 {
-        return Err(syn::Error::new_spanned(
-            trace_attrs.pop().unwrap(),
-            "duplicate `trace` attribute",
-        ));
-    }
-
-    trace_attrs
-        .pop()
-        .map(|attr| {
-            if attr.tokens.is_empty() {
-                Ok(MethodOptions::default())
-            } else {
-                attr.parse_args()
-            }
-        })
-        .transpose()
-}
-
 /// Add call and return tracing to a method.
 fn instrument_method(
     signature: &mut Signature,
     block: &mut Block,
-    options: &MethodOptions,
     context: &ExpansionContext,
 ) -> syn::Result<MethodSchema> {
     let schema = analyze_signature(
@@ -534,7 +459,7 @@ fn instrument_method(
         context.data_self_type.as_ref(),
         context.receiver_helper.as_ref(),
     )?;
-    instrument_body(block, options, &schema, context);
+    instrument_body(block, &schema, context);
     Ok(schema)
 }
 
@@ -607,12 +532,7 @@ fn generate_event_types(schema: &MethodSchema, visibility: &Visibility) -> Token
 }
 
 /// Emit call and return events around a method's behavior.
-fn instrument_body(
-    block: &mut Block,
-    options: &MethodOptions,
-    schema: &MethodSchema,
-    context: &ExpansionContext,
-) {
+fn instrument_body(block: &mut Block, schema: &MethodSchema, context: &ExpansionContext) {
     let call_fields: Vec<_> = schema
         .fields
         .iter()
@@ -632,18 +552,14 @@ fn instrument_body(
     let call_event = quote!(<#call_value_type>::new(#(#call_values),*));
     let return_event = quote!(<#return_value_type>::new(#(#return_values,)* #return_value));
     let call_trace = trace_expression(
-        options.path.as_ref(),
-        &context.trace_module_path,
-        &context.owner_name,
+        context,
         &schema.method_name,
         quote!(call),
         &call_event,
         &call_value_type,
     );
     let return_trace = trace_expression(
-        options.path.as_ref(),
-        &context.trace_module_path,
-        &context.owner_name,
+        context,
         &schema.method_name,
         quote!(ret),
         &return_event,
@@ -782,7 +698,7 @@ fn method_fields(
 fn take_include(attrs: &mut Vec<Attribute>) -> syn::Result<Include> {
     let mut combined = Include::default();
 
-    for attr in take_trace_attrs(attrs) {
+    for attr in take_trace_attrs(attrs)? {
         let include: Include = attr.parse_args()?;
         combined.call &= include.call;
         combined.return_ &= include.return_;
@@ -792,12 +708,18 @@ fn take_include(attrs: &mut Vec<Attribute>) -> syn::Result<Include> {
 }
 
 /// Take the trace attributes from an item.
-fn take_trace_attrs(attrs: &mut Vec<Attribute>) -> Vec<Attribute> {
-    let (trace_attrs, other_attrs) = std::mem::take(attrs)
+fn take_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<Vec<Attribute>> {
+    let (mut trace_attrs, other_attrs) = std::mem::take(attrs)
         .into_iter()
         .partition(|attr| attr.path.is_ident("trace"));
     *attrs = other_attrs;
-    trace_attrs
+    if trace_attrs.len() > 1 {
+        return Err(syn::Error::new_spanned(
+            trace_attrs.pop().unwrap(),
+            "duplicate `trace` attribute",
+        ));
+    }
+    Ok(trace_attrs)
 }
 
 /// Define a call or return event type.
@@ -861,34 +783,22 @@ fn event_type(event_module: &TokenStream, type_name: &Ident) -> TokenStream {
     quote!(#event_module::#type_name)
 }
 
-/// Emit an event at its explicit or default path.
+/// Emit an event
 fn trace_expression(
-    path: Option<&DottedPath>,
-    module_path: &TraceModulePath,
-    type_name: &Ident,
+    context: &ExpansionContext,
     method_name: &Ident,
     event: TokenStream,
     value: &TokenStream,
     value_type: &TokenStream,
 ) -> TokenStream {
-    if let Some(path) = path {
-        let components = &path.components;
-        return quote! {
-            ::ostd::trace_structured_data!(
-                { #components.#event },
-                #value,
-                #value_type,
-            );
-        };
-    }
-
-    let prefix = &module_path.prefix;
-    let segments = &module_path.segments;
+    let prefix = &context.trace_module_path.prefix;
+    let segments = &context.trace_module_path.segments;
+    let type_name = &context.owner_name;
     let path = quote! {
         ::ostd::orpc::path::Path::traced_method_path(
             #prefix,
             &[#(#segments,)*
-                stringify!(#type_name), stringify!(#method_name), stringify!(#event)]
+              stringify!(#type_name), stringify!(#method_name), stringify!(#event)]
         )
     };
 
@@ -904,7 +814,9 @@ fn trace_expression(
 /// Normalizes method types for use in trace events.
 #[derive(Default)]
 struct TypeNormalizer {
+    /// Type replacing `Self` in event fields.
     self_type: Option<Type>,
+    /// Whether the current type contains `Self`.
     found_self: bool,
 }
 
@@ -1009,15 +921,11 @@ mod tests {
     }
 
     fn expand_impl(options: ImplOptions, item: ItemImpl) -> String {
-        trace_structured_data_impl(options, item)
-            .unwrap()
-            .to_string()
+        trace_methods_impl(options, item).unwrap().to_string()
     }
 
     fn expand_trait(options: ImplOptions, item: ItemTrait) -> String {
-        trace_structured_data_trait(options, item)
-            .unwrap()
-            .to_string()
+        trace_methods_trait(options, item).unwrap().to_string()
     }
 
     fn expand_trait_impl(trait_path: &str) -> String {
@@ -1029,9 +937,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_visibility_in_parentheses() {
-        assert!(syn::parse_str::<ImplOptions>("visibility(pub(crate))").is_ok());
-        assert!(syn::parse_str::<ImplOptions>("visibility(pub(crate), pub)").is_err());
+    fn parses_named_options() {
+        assert!(syn::parse_str::<ImplOptions>("visibility = pub(crate)").is_ok());
+        assert!(syn::parse_str::<ImplOptions>("trait_module = crate::api").is_ok());
+        assert!(
+            syn::parse_str::<ImplOptions>("visibility = pub(crate), trait_module = crate::api")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn parses_only_selection() {
+        let include: Include = syn::parse_str("only = (call, return)").unwrap();
+        assert!(include.call && include.return_);
+        let include: Include = syn::parse_str("only = call").unwrap();
+        assert!(include.call && !include.return_);
+        let include: Include = syn::parse_str("only = return").unwrap();
+        assert!(!include.call && include.return_);
     }
 
     #[test]
@@ -1092,7 +1014,7 @@ mod tests {
             }
         };
 
-        let output = expand_impl(parse_quote!(visibility(pub(crate))), impl_block);
+        let output = expand_impl(parse_quote!(visibility = pub(crate)), impl_block);
 
         assert!(output.contains("pub (crate) mod worker"));
         assert!(output.contains("pub (crate) struct ProcessCall"));
@@ -1107,9 +1029,9 @@ mod tests {
             impl Worker {
                 #[trace(path = "custom.worker.process")]
                 fn process(
-                    #[trace(only())] self: Arc<Self>,
-                    #[trace(only(call))] input: Input,
-                    #[trace(only(return))] context: Context,
+                    #[trace(only = ())] self: Arc<Self>,
+                    #[trace(only = call)] input: Input,
+                    #[trace(only = return)] context: Context,
                 ) -> Result<()> {
                     run(input, &context)
                 }
@@ -1154,7 +1076,7 @@ mod tests {
             }
         };
 
-        let output = expand_trait(parse_quote!(visibility(pub(crate))), trait_item);
+        let output = expand_trait(parse_quote!(visibility = pub(crate)), trait_item);
 
         assert!(output.contains("pub (crate) mod worker_trait"));
         assert!(output.contains("self_ : & '__trace dyn WorkerTrait"));
@@ -1208,7 +1130,7 @@ mod tests {
             }
         };
 
-        let output = expand_impl(parse_quote!(trait_module(crate::api)), impl_block);
+        let output = expand_impl(parse_quote!(trait_module = crate::api), impl_block);
 
         assert!(!output.contains("mod worker_trait"));
         assert!(output.contains("crate :: api :: worker_trait :: ProcessCall"));
@@ -1227,7 +1149,7 @@ mod tests {
             }
         };
 
-        let output = expand_impl(parse_quote!(trait_module(crate::net::socket)), impl_block);
+        let output = expand_impl(parse_quote!(trait_module = crate::net::socket), impl_block);
 
         assert!(output.contains("crate :: net :: socket :: socket :: ConnectCall"));
         assert!(output.contains("stringify ! (net) , stringify ! (socket) , stringify ! (Socket)"));
@@ -1304,7 +1226,7 @@ mod tests {
             }
         };
 
-        let error = trace_structured_data_trait(parse_quote!(), trait_item).unwrap_err();
+        let error = trace_methods_trait(parse_quote!(), trait_item).unwrap_err();
 
         assert_eq!(
             error.to_string(),

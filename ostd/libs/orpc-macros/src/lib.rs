@@ -233,40 +233,44 @@ pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
 /// Creates call and return OQueues for marked methods in a trait or impl.
 ///
-/// A trait or inherent impl generates event types in a snake-case module named after the trait or
-/// implementing type. Traced default trait methods emit events through the generated types. A
-/// generated supertrait lets their receivers be recorded as `&dyn Trait`. A trait impl reuses its
-/// trait's types and produces the events instead. Use `trait_module(...)` on a trait impl to give
-/// the path to the module containing the trait when the trait path is unqualified.
-///
 /// ```ignore
-/// #[trace_methods(visibility(pub(crate)))]
+/// #[trace_methods(visibility = pub(crate))]
 /// trait Socket {
 ///     #[trace]
 ///     fn connect(&self, address: SocketAddr) -> Result<()>;
 /// }
 ///
-/// #[trace_methods(trait_module(crate::net))]
+/// #[trace_methods(trait_module = crate::net)]
 /// impl Socket for TcpSocket {
 ///     #[trace]
-///     fn connect(&self, address: SocketAddr) -> Result<()> { /* ... */ }
+///     fn connect(&self, #[trace(only = call)] address: SocketAddr) -> Result<()> { /* ... */ }
 /// }
 /// ```
 ///
-/// A method's default OQueue paths are derived from its module, type, and method names. Use
-/// `#[trace(path = "custom.path")]` to override the base path. Arguments may be left out of either
-/// event with `#[trace(only(call))]` or `#[trace(only(return))]`. An empty `#[trace(only())]`
-/// omits an argument from both events.
+/// OQueues are named using the crate, the module path, the type or trait name, the method, and
+/// finally either `call` or `return`. For example, if the above declarations are in `net::socket`
+/// in the `aster_core` crate (`kernel/core`), then the `connect` call OQueue will be
+/// `aster_core.net.socket.Socket.connect.call`.
 ///
-/// Trait-owned messages store the receiver as `&dyn Trait`. `Self` in argument and return types is
-/// supported only for inherent impls.
+/// These generate event types in a snake-case module named after the trait or implementing type.
+/// Methods declared in a trait produce `self` as `&dyn Trait`. The OQueues are named after the
+/// *trait* not the type implementing it (so all `impl`s share the same OQueues). Inherent methods
+/// produce `self` as `&Type` and their OQueues are named after the type.
+///
+/// Use `trait_module = ...` on a trait impl to give the path to the module containing the trait
+/// when the trait path is unqualified.
+///
+/// Use `visibility = ...` to specify the visibility of the event types.
+///
+/// Arguments may be left out of either event with `#[trace(only = call)]` or
+/// `#[trace(only = return)]`. An empty `#[trace(only = ())]` omits an argument from both events.
 #[proc_macro_attribute]
 pub fn trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
     let options = parse_macro_input!(attr as ImplOptions);
     let item = parse_macro_input!(input as Item);
     let result = match item {
-        Item::Impl(impl_block) => trace_methods::trace_structured_data_impl(options, impl_block),
-        Item::Trait(trait_item) => trace_methods::trace_structured_data_trait(options, trait_item),
+        Item::Impl(impl_block) => trace_methods::trace_methods_impl(options, impl_block),
+        Item::Trait(trait_item) => trace_methods::trace_methods_trait(options, trait_item),
         item => Err(syn::Error::new_spanned(
             item,
             "trace_methods must be placed on a trait or impl",
