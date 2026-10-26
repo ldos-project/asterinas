@@ -597,15 +597,6 @@ docker_rm:
 
 .PHONY: clean
 clean:
-	@if find target test osdk/target docs '!' -writable 2>/dev/null | grep -q .; then \
-			echo "ERROR: Found unwritable files in build directories"; \
-			echo "ERROR: This must be run from the same environment as the build (generally inside the container)."; \
-			echo "ERROR: You may be running it in the host environment after a build in docker. Run it in docker instead."; \
-			echo "ERROR: (Note: Using "sudo make clean" will not work as the host environment may not have the correct tools.)"; \
-			false; \
-		else \
-			true; \
-		fi
 	@echo "Cleaning up Asterinas workspace target files"
 	@cargo clean
 	@echo "Cleaning up OSDK workspace target files"
@@ -617,7 +608,7 @@ clean:
 	@echo "Cleaning up cached Nix outputs"
 	@./tools/clean_nix_outputs.sh
 	@echo "Uninstalling OSDK"
-	rm -f $(CARGO_OSDK)
+	@rm -f $(CARGO_OSDK)
 
 .PHONY: clean_nix
 clean_nix:
@@ -625,16 +616,8 @@ clean_nix:
 
 .PHONY: clean_cache
 clean_cache:
-	@[ '!' -f /.dockerenv ] || ( \
-		echo "ERROR: Cleaning the Cargo and rustup caches from within the container is not allowed. Run it from the host environment."; \
-		false \
-		)
-	@if find $(DOCKER_RUST_CACHE_LOCATION) '!' -writable 2>/dev/null | grep -q .; then \
-			echo "ERROR: Found unwritable files in cache directory."; \
-			echo "ERROR: The container has probably created root owned files in cache. To fix that, run this as root: sudo make clean_cache"; \
-			false; \
-		else \
-			true; \
+	@if [ -f /.dockerenv ]; then \
+		echo "WARNING: Cleaning the Cargo and rustup caches from within the container can break things. Run it from the host environment."; \
 		fi
 	rm -rf $(DOCKER_RUST_CACHE_LOCATION)
 
