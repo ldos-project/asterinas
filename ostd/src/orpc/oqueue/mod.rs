@@ -252,7 +252,9 @@ pub fn trace_structured_data_with_len<'a, D: ElementDescriptor>(
     producer: &'static spin::Once<GenericRefProducer<D>>,
 ) {
     let producer = producer.call_once(|| {
-        let oqueue = GenericOQueueRef::<D>::new(length, Path::Static(path));
+        let path = Path::Static(path);
+        let oqueue = registry::lookup_by_path::<D>(&path)
+            .unwrap_or_else(|| GenericOQueueRef::<D>::new(length, path).as_any_oqueue());
         oqueue.attach_ref_producer().unwrap()
     });
 
@@ -1153,9 +1155,7 @@ mod test {
     #[cfg(not(baseline_asterinas))]
     #[ktest]
     fn trace_structured_data_macro_same_path_shares_oqueue() {
-        // Two distinct callsites of `trace_structured_data!` that share the same path. Each callsite
-        // gets its own `static PRODUCER`, so this exercises the "multiple macro uses with the same
-        // path" case.
+        // Two distinct callsites of `trace_structured_data!` that share the same path.
         fn produce_a(value: u32) {
             trace_structured_data!({ ostd.oqueue.same_path_shares_oqueue.path }, value, u32);
         }
@@ -1166,8 +1166,7 @@ mod test {
 
         let path: StaticPath = static_path!(ostd.oqueue.same_path_shares_oqueue.path);
 
-        // Touch both callsites so that each attaches to (or creates) an OQueue at the shared path
-        // before we look the OQueue up.
+        // Lazy initialize
         produce_a(10);
         produce_b(20);
 
@@ -1177,9 +1176,7 @@ mod test {
             .attach_weak_observer(4, ObservationQuery::identity())
             .unwrap();
 
-        // Produce from BOTH callsites. If they share one OQueue, a single observer sees values from
-        // both. If each callsite created its own OQueue (the bug), only the last-registered OQueue
-        // is observed here and `produce_a`'s value (11) is lost.
+        // Productions from both should appear in the same OQueue.
         produce_a(11);
         produce_b(21);
 

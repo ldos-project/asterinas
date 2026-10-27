@@ -71,4 +71,3 @@ macro_rules! trace_structured_data {
 macro_rules! trace_structured_data {
     ($($_arg:tt)*) => {};
 }
-
