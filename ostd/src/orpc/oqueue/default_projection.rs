@@ -4,8 +4,8 @@
 
 use alloc::{boxed::Box, sync::Arc};
 
-use ostd_pod::Pod;
 use serde::Serialize;
+pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 pub use crate::DefaultProjection;
 
@@ -22,9 +22,25 @@ pub trait DefaultProjection {
     fn default_projection(&self) -> Self::Projection;
 }
 
+/// Tag to mark types as trivially projectable
+pub trait Projectable {}
+
+impl Projectable for bool {}
+impl Projectable for i32 {}
+impl Projectable for i64 {}
+impl Projectable for isize {}
+impl Projectable for u32 {}
+impl Projectable for u64 {}
+impl Projectable for usize {}
+impl Projectable for f32 {}
+impl Projectable for f64 {}
+
+impl Projectable for core::net::Ipv4Addr {}
+impl Projectable for core::net::Ipv6Addr {}
+
 impl<T> DefaultProjection for T
 where
-    T: Pod + Send + Serialize + 'static,
+    T: Copy + Send + Serialize + Projectable + 'static,
 {
     type Projection = Self;
 
@@ -74,6 +90,13 @@ mod test {
 
     use super::DefaultProjection;
     use crate::prelude::*;
+
+    // If bool is DefaultProjection this should compile.
+    // This is worth testing as bool is treated slightly special and only implements IntoBytes and
+    // not FromBytes, which caused problems when we had a blanked impl on the trait Pod.
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct TestProjectBool(bool);
 
     #[derive(DefaultProjection)]
     struct ProjectedLeaf {
