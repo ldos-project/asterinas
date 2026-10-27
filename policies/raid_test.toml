@@ -1,0 +1,6 @@
+# Policy configuration for `make run_kernel AUTO_TEST=raid` (format: see `default.toml`).
+
+[raid]
+members = ["vdd", "vde", "vdf"]
+# The RAID-1 test exercises the userspace selection-policy server.
+selection = "userspace"

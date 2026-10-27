@@ -21,7 +21,6 @@ kcmd_args = [
     "USER=root",
     "PATH=/bin:/benchmark",
     "init=/init",
-    "raid.members=vdd,vde,vdf",
     "data_capture.device=vdg"
 ]
 init_args = ["sh", "-l"]

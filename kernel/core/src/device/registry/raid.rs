@@ -355,8 +355,8 @@ fn setup_heimdall(
 ///
 /// The member disk names are read from the `raid.members` parameter (see
 /// [`RAID_MEMBERS_PARAM`]) rather than hardcoded, so the disk layout can be
-/// reconfigured from `OSDK.toml` / `tools/qemu_args.sh` without touching the
-/// kernel. Devices are looked up by name via [`aster_block::collect_all`]
+/// reconfigured from the policy config (`policies/*.toml`) and
+/// `tools/qemu_args.sh` without touching the kernel. Devices are looked up by name via [`aster_block::collect_all`]
 /// (the refactored registry keys devices by `DeviceId`, and virtio disks are
 /// auto-named `vda`, `vdb`, ... in probe order).
 fn collect_members() -> Result<Vec<Arc<dyn aster_block::BlockDevice>>> {

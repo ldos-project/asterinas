@@ -1,0 +1,25 @@
+# Kernel policy configuration used by `make kernel` / `make run_kernel` by default.
+#
+# Each key becomes one kernel command-line parameter named `<table>.<key>`, and lists are joined
+# with ",": `[raid] members = ["vdd", "vde"]` becomes `raid.members=vdd,vde`. A commented-out key
+# keeps the kernel's built-in default. Use another file with
+# `make run_kernel POLICY_CONFIG=<path>` (relative to the repository root).
+
+[raid]
+# Member disks of the RAID-1 device, in logical-index order.
+members = ["vdd", "vde", "vdf"]
+# Read-selection policy: roundrobin, linnos, linnos_plus, decision_tree, or userspace.
+selection = "roundrobin"
+# Admission policy: heimdall. Commented out means no admission policy.
+# admission = "heimdall"
+
+# Heimdall inference cadence; only read when `raid.admission` is "heimdall".
+[heimdall]
+# batch_size = 32
+# inference_timeout_ms = 10
+
+[vm]
+# Map a huge page on every page fault whose address alignment allows it; false maps base pages only.
+huge_mapping_enabled = false
+# Run hugepaged, which periodically promotes pages to huge pages (not available in baseline builds).
+hugepaged_enabled = false
