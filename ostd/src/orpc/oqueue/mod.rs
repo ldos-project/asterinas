@@ -1150,6 +1150,44 @@ mod test {
         assert_eq!(observed, vec![Some(21u32), Some(22u32)]);
     }
 
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_same_path_shares_oqueue() {
+        // Two distinct callsites of `trace_structured_data!` that share the same path. Each callsite
+        // gets its own `static PRODUCER`, so this exercises the "multiple macro uses with the same
+        // path" case.
+        fn produce_a(value: u32) {
+            trace_structured_data!({ ostd.oqueue.same_path_shares_oqueue.path }, value, u32);
+        }
+
+        fn produce_b(value: u32) {
+            trace_structured_data!({ ostd.oqueue.same_path_shares_oqueue.path }, value, u32);
+        }
+
+        let path: StaticPath = static_path!(ostd.oqueue.same_path_shares_oqueue.path);
+
+        // Touch both callsites so that each attaches to (or creates) an OQueue at the shared path
+        // before we look the OQueue up.
+        produce_a(10);
+        produce_b(20);
+
+        let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
+            .expect("expected a single OQueue at the shared path");
+        let observer = queue
+            .attach_weak_observer(4, ObservationQuery::identity())
+            .unwrap();
+
+        // Produce from BOTH callsites. If they share one OQueue, a single observer sees values from
+        // both. If each callsite created its own OQueue (the bug), only the last-registered OQueue
+        // is observed here and `produce_a`'s value (11) is lost.
+        produce_a(11);
+        produce_b(21);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(11u32), Some(21u32)]);
+    }
+
     #[ktest]
     fn weak_observe() {
         let (producer, observer) = setup_for_weak_observation(2);
