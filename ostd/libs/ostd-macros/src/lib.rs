@@ -11,7 +11,8 @@ use rand::{Rng, distr::Alphanumeric};
 use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
 
 /// Derives a projection that recursively projects fields using `DefaultProjection`.
-/// Fields that should be opaque identifiers can be marked with `#[projection(opaque)]`.
+/// Fields can be marked with `#[projection(opaque)]` to export an opaque identifier or
+/// `#[projection(self)]` to copy the field without recursively projecting it.
 #[proc_macro_derive(DefaultProjection, attributes(projection))]
 pub fn default_projection_derive(input: TokenStream) -> TokenStream {
     default_projection::derive(input)

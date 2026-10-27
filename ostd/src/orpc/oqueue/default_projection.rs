@@ -13,7 +13,8 @@ pub use crate::DefaultProjection;
 ///
 /// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
 /// values project to themselves; mark fields that should be opaque identifiers with
-/// `#[projection(opaque)]`, which projects them through [`OpaqueId`].
+/// `#[projection(opaque)]`, which projects them through [`OpaqueId`]. Mark a `Copy` field with
+/// `#[projection(self)]` to export its value without recursively projecting it.
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Projection: Copy + Send + Serialize + 'static;
@@ -158,5 +159,38 @@ mod test {
             core::ptr::from_ref(&*message.boxed) as usize
         );
         assert_eq!(projected.reference, core::ptr::from_ref(&data) as usize);
+    }
+
+    #[derive(Clone, Copy, Serialize)]
+    enum SelfProjectedValue {
+        Ready,
+    }
+
+    #[derive(DefaultProjection)]
+    struct SelfProjectedStruct<T> {
+        #[projection(self)]
+        value: T,
+    }
+
+    #[derive(DefaultProjection)]
+    enum SelfProjectedEnum {
+        Value(#[projection(self)] SelfProjectedValue),
+    }
+
+    #[ktest]
+    fn self_projection_copies_struct_and_enum_fields() {
+        let message = SelfProjectedStruct {
+            value: SelfProjectedValue::Ready,
+        };
+        assert!(matches!(
+            message.default_projection().value,
+            SelfProjectedValue::Ready
+        ));
+
+        let message = SelfProjectedEnum::Value(SelfProjectedValue::Ready);
+        assert!(matches!(
+            message.default_projection(),
+            SelfProjectedEnumDefaultProjection::Value(SelfProjectedValue::Ready)
+        ));
     }
 }
