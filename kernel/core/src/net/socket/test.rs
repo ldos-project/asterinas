@@ -30,7 +30,7 @@ fn socket_method_traces_call_and_return() {
     ))
     .expect("Socket::bind call OQueue should exist");
     let return_queue = lookup_by_path::<socket::BindReturnDescriptor>(&path!(
-        aster_core.net.socket.Socket.bind.ret
+        aster_core.net.socket.Socket.bind.return
     ))
     .expect("Socket::bind return OQueue should exist");
 
@@ -42,7 +42,7 @@ fn socket_method_traces_call_and_return() {
             ObservationQuery::new(|event: &socket::BindCall| {
                 (
                     event.self_.common().path().inode().ino(),
-                    event._socket_addr == &SocketAddr::IPv6(Ipv6Addr::LOCALHOST, 0),
+                    event.socket_addr == &SocketAddr::IPv6(Ipv6Addr::LOCALHOST, 0),
                 )
             }),
         )
@@ -53,7 +53,7 @@ fn socket_method_traces_call_and_return() {
             ObservationQuery::new(|event: &socket::BindReturn| {
                 (
                     event.self_.common().path().inode().ino(),
-                    event.value.as_ref().err().map(|error| error.error()),
+                    event.return_value.as_ref().err().map(|error| error.error()),
                 )
             }),
         )

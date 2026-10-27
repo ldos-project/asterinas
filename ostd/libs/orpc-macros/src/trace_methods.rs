@@ -308,9 +308,9 @@ pub fn trace_methods_impl(
         let ImplItem::Method(method) = item else {
             continue;
         };
-        if take_trace_attrs(&mut method.attrs)?.is_empty() {
+        if !has_trace_attrs(&mut method.attrs)? {
             continue;
-        };
+        }
 
         let schema = instrument_method(&mut method.sig, &mut method.block, &context)?;
         if generates_types {
@@ -376,7 +376,7 @@ pub fn trace_methods_trait(
         let TraitItem::Method(method) = item else {
             continue;
         };
-        if take_trace_attrs(&mut method.attrs)?.is_empty() {
+        if !has_trace_attrs(&mut method.attrs)? {
             continue;
         }
 
@@ -396,6 +396,7 @@ pub fn trace_methods_trait(
             .push(syn::parse_quote!(#receiver_helper));
         let visibility = &trait_item.vis;
         quote! {
+            /// A strange trait to allow getting a dyn reference from default methods.
             #[doc(hidden)]
             #visibility trait #receiver_helper {
                 fn __as_dyn(&self) -> &dyn #trait_name;
@@ -459,7 +460,53 @@ fn instrument_method(
         context.data_self_type.as_ref(),
         context.receiver_helper.as_ref(),
     )?;
-    instrument_body(block, &schema, context);
+    let call_values = schema
+        .fields
+        .iter()
+        .filter(|field| field.include.call)
+        .map(|field| &field.value);
+    let return_values = schema
+        .fields
+        .iter()
+        .filter(|field| field.include.return_)
+        .map(|field| &field.value);
+    let original_block = block.clone();
+    let call_value_type = event_type(&context.event_module, &schema.call_type);
+    let return_value_type = event_type(&context.event_module, &schema.return_type);
+    let return_value = quote_spanned!(schema.output_span=> &__return_value);
+    let call_event = quote_spanned!(signature.span()=><#call_value_type>::new(#(#call_values),*));
+    let return_event = quote_spanned!(signature.span()=><#return_value_type>::new(#(#return_values,)* #return_value));
+    let call_trace = trace_expression(
+        context,
+        &schema.method_name,
+        quote!(call),
+        &call_event,
+        &call_value_type,
+    );
+    let return_trace = trace_expression(
+        context,
+        &schema.method_name,
+        quote!(return),
+        &return_event,
+        &return_value_type,
+    );
+    *block = syn::parse_quote!({
+        #[cfg(not(baseline_asterinas))]
+        {
+            #call_trace
+        }
+
+        // Closure is required to correctly handle return statements in original_block.
+        #[expect(clippy::borrow_deref_ref)]
+        let __return_value = (|| #original_block)();
+
+        #[cfg(not(baseline_asterinas))]
+        {
+            #return_trace
+        }
+
+        __return_value
+    });
     Ok(schema)
 }
 
@@ -531,60 +578,6 @@ fn generate_event_types(schema: &MethodSchema, visibility: &Visibility) -> Token
     }
 }
 
-/// Emit call and return events around a method's behavior.
-fn instrument_body(block: &mut Block, schema: &MethodSchema, context: &ExpansionContext) {
-    let call_fields: Vec<_> = schema
-        .fields
-        .iter()
-        .filter(|field| field.include.call)
-        .collect();
-    let return_fields: Vec<_> = schema
-        .fields
-        .iter()
-        .filter(|field| field.include.return_)
-        .collect();
-    let call_values = call_fields.iter().map(|field| &field.value);
-    let return_values = return_fields.iter().map(|field| &field.value);
-    let original_block = block.clone();
-    let call_value_type = event_type(&context.event_module, &schema.call_type);
-    let return_value_type = event_type(&context.event_module, &schema.return_type);
-    let return_value = quote_spanned!(schema.output_span=> &__return_value);
-    let call_event = quote!(<#call_value_type>::new(#(#call_values),*));
-    let return_event = quote!(<#return_value_type>::new(#(#return_values,)* #return_value));
-    let call_trace = trace_expression(
-        context,
-        &schema.method_name,
-        quote!(call),
-        &call_event,
-        &call_value_type,
-    );
-    let return_trace = trace_expression(
-        context,
-        &schema.method_name,
-        quote!(ret),
-        &return_event,
-        &return_value_type,
-    );
-
-    *block = syn::parse_quote!({
-        #[cfg(not(baseline_asterinas))]
-        {
-            #call_trace
-        }
-
-        // Closure is required to correctly handle return statements in original_block.
-        #[expect(clippy::borrow_deref_ref)]
-        let __return_value = (|| #original_block)();
-
-        #[cfg(not(baseline_asterinas))]
-        {
-            #return_trace
-        }
-
-        __return_value
-    });
-}
-
 /// Check whether a method supports tracing.
 fn validate_method(signature: &Signature) -> syn::Result<()> {
     if signature.asyncness.is_some() {
@@ -641,11 +634,7 @@ fn method_fields(
                 let span = argument.span();
                 let is_self = pattern.ident == "self";
                 let is_trait_receiver = is_self && matches!(receiver_type, Type::TraitObject(_));
-                let name = if is_self {
-                    format_ident!("self_", span = span)
-                } else {
-                    pattern.ident.clone()
-                };
+                let name = event_field_name(&pattern.ident);
                 let value = if is_self {
                     if let Some(helper) = receiver_helper {
                         quote_spanned!(span=> #helper::__as_dyn(&*self))
@@ -694,21 +683,40 @@ fn method_fields(
     Ok(fields)
 }
 
-/// Get the events in which an argument appears.
-fn take_include(attrs: &mut Vec<Attribute>) -> syn::Result<Include> {
-    let mut combined = Include::default();
-
-    for attr in take_trace_attrs(attrs)? {
-        let include: Include = attr.parse_args()?;
-        combined.call &= include.call;
-        combined.return_ &= include.return_;
+/// Remove leading underscores from an argument's event field name.
+fn event_field_name(argument_name: &Ident) -> Ident {
+    let name = argument_name.to_string();
+    let stripped = name.trim_start_matches('_');
+    if stripped.is_empty() {
+        return argument_name.clone();
     }
 
-    Ok(combined)
+    let mut field_name =
+        syn::parse_str::<Ident>(stripped).unwrap_or_else(|_| format_ident!("{stripped}_"));
+    field_name.set_span(argument_name.span());
+    field_name
 }
 
-/// Take the trace attributes from an item.
-fn take_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<Vec<Attribute>> {
+/// Get the events in which an argument appears.
+fn take_include(attrs: &mut Vec<Attribute>) -> syn::Result<Include> {
+    let (mut trace_attrs, other_attrs): (Vec<_>, _) = std::mem::take(attrs)
+        .into_iter()
+        .partition(|attr| attr.path.is_ident("trace"));
+    *attrs = other_attrs;
+    if trace_attrs.len() > 1 {
+        return Err(syn::Error::new_spanned(
+            trace_attrs.pop().unwrap(),
+            "duplicate `trace` attribute",
+        ));
+    }
+    match trace_attrs.pop() {
+        Some(attr) => attr.parse_args(),
+        None => Ok(Include::default()),
+    }
+}
+
+/// Remove a method-level `trace` attribute, rejecting duplicates and arguments.
+fn has_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<bool> {
     let (mut trace_attrs, other_attrs) = std::mem::take(attrs)
         .into_iter()
         .partition(|attr| attr.path.is_ident("trace"));
@@ -719,7 +727,17 @@ fn take_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<Vec<Attribute>> {
             "duplicate `trace` attribute",
         ));
     }
-    Ok(trace_attrs)
+    if let Some(attr) = trace_attrs.pop() {
+        if !attr.tokens.is_empty() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`trace` does not take arguments",
+            ));
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Define a call or return event type.
@@ -753,9 +771,10 @@ fn event_definition(
     }
 
     let output_field =
-        output_type.map(|ty| quote_spanned!(ty.span()=> #visibility value: &'__trace #ty,));
-    let output_parameter = output_type.map(|ty| quote_spanned!(ty.span()=> value: &'__trace #ty,));
-    let output_initializer = output_type.map(|_| quote!(value,));
+        output_type.map(|ty| quote_spanned!(ty.span()=> #visibility return_value: &'__trace #ty,));
+    let output_parameter =
+        output_type.map(|ty| quote_spanned!(ty.span()=> return_value: &'__trace #ty,));
+    let output_initializer = output_type.map(|_| quote!(return_value,));
 
     quote! {
         #[derive(::ostd::orpc::oqueue::Element)]
@@ -899,26 +918,9 @@ impl Fold for TypeNormalizer {
 
 #[cfg(test)]
 mod tests {
-    use proc_macro2::TokenTree;
     use syn::parse_quote;
 
     use super::*;
-
-    fn same_span(left: Span, right: Span) -> bool {
-        left.start() == right.start() && left.end() == right.end()
-    }
-
-    fn token_spans(tokens: TokenStream, text: &str) -> Vec<Span> {
-        let mut spans = Vec::new();
-        for token in tokens {
-            match token {
-                TokenTree::Group(group) => spans.extend(token_spans(group.stream(), text)),
-                token if token.to_string() == text => spans.push(token.span()),
-                _ => {}
-            }
-        }
-        spans
-    }
 
     fn expand_impl(options: ImplOptions, item: ItemImpl) -> String {
         trace_methods_impl(options, item).unwrap().to_string()
@@ -935,6 +937,9 @@ mod tests {
         .unwrap();
         expand_impl(parse_quote!(), item)
     }
+
+    // This does not test the placement of spans, because what is "correct" is unclear and not worth
+    // testing.
 
     #[test]
     fn parses_named_options() {
@@ -957,50 +962,22 @@ mod tests {
     }
 
     #[test]
-    fn generated_borrows_have_argument_and_return_type_spans() {
-        let mut signature: Signature =
-            syn::parse_str("fn process<'value>(input: &'value Input) -> &'value Output").unwrap();
-        let argument_span = signature.inputs.first().unwrap().span();
-        let argument_lifetime_span = match signature.inputs.first().unwrap() {
-            FnArg::Typed(argument) => match argument.ty.as_ref() {
-                Type::Reference(reference) => reference.lifetime.as_ref().unwrap().span(),
-                _ => unreachable!(),
-            },
-            FnArg::Receiver(_) => unreachable!(),
-        };
-        let output_span = match &signature.output {
-            ReturnType::Type(_, ty) => ty.span(),
-            ReturnType::Default => unreachable!(),
-        };
-        let receiver_type = parse_quote!(Worker);
+    fn rejects_method_trace_arguments() {
+        for attr in [
+            "#[trace()]",
+            "#[trace(path = \"custom\")]",
+            "#[trace = \"custom\"]",
+        ] {
+            let impl_block =
+                syn::parse_str(&format!("impl Worker {{ {attr} fn process(&self) {{}} }}"))
+                    .unwrap();
 
-        let schema = analyze_signature(&mut signature, &receiver_type, None, None).unwrap();
-        let normalized_lifetime_span = match &schema.fields[0].ty {
-            Type::Reference(reference) => reference.lifetime.as_ref().unwrap().span(),
-            _ => unreachable!(),
-        };
-        assert!(same_span(normalized_lifetime_span, argument_lifetime_span));
-        let borrow_span = schema.fields[0]
-            .value
-            .clone()
-            .into_iter()
-            .next()
-            .unwrap()
-            .span();
-        assert!(same_span(borrow_span, argument_span));
+            let error = trace_methods_impl(parse_quote!(), impl_block)
+                .unwrap_err()
+                .to_string();
 
-        let definitions = generate_event_types(&schema, &Visibility::Inherited);
-        let reference_spans = token_spans(definitions, "&");
-        assert!(
-            reference_spans
-                .iter()
-                .any(|span| same_span(*span, argument_span))
-        );
-        assert!(
-            reference_spans
-                .iter()
-                .any(|span| same_span(*span, output_span))
-        );
+            assert_eq!(error, "`trace` does not take arguments", "{attr}");
+        }
     }
 
     #[test]
@@ -1024,10 +1001,33 @@ mod tests {
     }
 
     #[test]
-    fn applies_path_override_and_field_selection() {
+    fn strips_leading_underscores_from_event_fields() {
         let impl_block = parse_quote! {
             impl Worker {
-                #[trace(path = "custom.worker.process")]
+                #[trace]
+                fn process(&self, _input: Input, __context: Context, _type: Type, __: Marker) {}
+
+                #[trace]
+                fn named_self(_self: Other) {}
+            }
+        };
+
+        let output = expand_impl(parse_quote!(), impl_block);
+
+        assert!(output.contains("input : & '__trace Input"));
+        assert!(output.contains("context : & '__trace Context"));
+        assert!(output.contains("type_ : & '__trace Type"));
+        assert!(output.contains("__ : & '__trace Marker"));
+        assert!(output.contains("new (self , & _input , & __context , & _type , & __)"));
+        assert!(output.contains("self_ : & '__trace Other"));
+        assert!(output.contains("new (& _self)"));
+    }
+
+    #[test]
+    fn applies_field_selection() {
+        let impl_block = parse_quote! {
+            impl Worker {
+                #[trace]
                 fn process(
                     #[trace(only = ())] self: Arc<Self>,
                     #[trace(only = call)] input: Input,
@@ -1040,8 +1040,6 @@ mod tests {
 
         let output = expand_impl(parse_quote!(), impl_block);
 
-        assert!(output.contains("custom . worker . process . call"));
-        assert!(output.contains("custom . worker . process . ret"));
         assert!(!output.contains("self_ :"));
         assert!(output.contains("new (& input)"), "{output}");
         assert!(

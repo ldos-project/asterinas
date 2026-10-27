@@ -247,17 +247,25 @@ pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// OQueues are named using the crate, the module path, the type or trait name, the method, and
+/// OQueues are named using: the crate, the module path, the type or trait name, the method, and
 /// finally either `call` or `return`. For example, if the above declarations are in `net::socket`
 /// in the `aster_core` crate (`kernel/core`), then the `connect` call OQueue will be
-/// `aster_core.net.socket.Socket.connect.call`.
+/// `aster_core.net.socket.Socket.connect.call`. For trait methods, the OQueues are named after the
+/// *trait*, not the type implementing it (so all `impl`s share the same OQueues). For inherent
+/// methods, their OQueues are named after the type.
 ///
-/// These generate event types in a snake-case module named after the trait or implementing type.
-/// Methods declared in a trait produce `self` as `&dyn Trait`. The OQueues are named after the
-/// *trait* not the type implementing it (so all `impl`s share the same OQueues). Inherent methods
-/// produce `self` as `&Type` and their OQueues are named after the type.
+/// The event types are in a `snake_case` module named after the trait or implementing type. They
+/// are named in `CamelCase` based on the method name followed by `Call` or `Return`. For example,
+/// the type are `net::socket::socket::ConnectCall` and `net::socket::socket::ConnectReturn` for
+/// `connect`.
 ///
-/// Use `trait_module = ...` on a trait impl to give the path to the module containing the trait
+/// Fields are named based on argument names (from the `trait` declaration or the `impl` for
+/// inherent methods). The names are the argument names without leading underscores (to make names
+/// independent of if an argument is used), and `return_value` for the return value. Any field names
+/// which conflict with Rust keywords have `_` appended (e.g., `self_`). For methods declared in a
+/// trait, `self` has type `&dyn Trait`. For inherent methods, `self` has type `&Type`
+///
+/// Use `trait_module = ...` on a trait `impl` to give the path to the module containing the trait
 /// when the trait path is unqualified.
 ///
 /// Use `visibility = ...` to specify the visibility of the event types.
