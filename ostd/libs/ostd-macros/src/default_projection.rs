@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote};
+use quote::{format_ident, quote, quote_spanned};
+use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned as _};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -425,13 +425,14 @@ fn project_field(
             quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
         ))
     } else {
+        let span = ty.span();
         generics
             .make_where_clause()
             .predicates
-            .push(parse_quote!(#ty: #default_projection));
+            .push(syn::parse_quote_spanned!(span => #ty: #default_projection));
         Ok((
-            quote!(<#ty as #default_projection>::Projection),
-            quote!(<#ty as #default_projection>::default_projection(#value)),
+            quote_spanned!(span => <#ty as #default_projection>::Projection),
+            quote_spanned!(span => <#ty as #default_projection>::default_projection(#value)),
         ))
     }
 }
