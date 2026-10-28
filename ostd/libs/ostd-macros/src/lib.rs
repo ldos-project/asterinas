@@ -17,6 +17,14 @@ pub fn default_projection_derive(input: TokenStream) -> TokenStream {
     default_projection::derive(input)
 }
 
+/// Marks a type as trivially projectable.
+///
+/// A `Projectable` type projects to itself, so it gets the blanket `DefaultProjection` impl.
+#[proc_macro_derive(Projectable)]
+pub fn projectable_derive(input: TokenStream) -> TokenStream {
+    default_projection::projectable_derive(input)
+}
+
 /// A macro attribute to mark the kernel entry point.
 ///
 /// # Bootstrap Context

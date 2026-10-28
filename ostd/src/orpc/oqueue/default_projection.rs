@@ -26,18 +26,20 @@ pub trait DefaultProjection {
 /// Tag to mark types as trivially projectable
 pub trait Projectable {}
 
-impl Projectable for bool {}
-impl Projectable for i32 {}
-impl Projectable for i64 {}
-impl Projectable for isize {}
-impl Projectable for u32 {}
-impl Projectable for u64 {}
-impl Projectable for usize {}
-impl Projectable for f32 {}
-impl Projectable for f64 {}
+/// Implement Projectable for a set of types,
+macro_rules! impl_projectable {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Projectable for $ty {}
+        )*
+    };
+}
 
-impl Projectable for core::net::Ipv4Addr {}
-impl Projectable for core::net::Ipv6Addr {}
+impl_projectable!(bool);
+impl_projectable!(i8, i16, i32, i64, isize);
+impl_projectable!(u8, u16, u32, u64, usize);
+impl_projectable!(f32, f64);
+impl_projectable!(core::net::Ipv4Addr, core::net::Ipv6Addr);
 
 impl<T> DefaultProjection for T
 where

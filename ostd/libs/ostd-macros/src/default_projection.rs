@@ -2,7 +2,9 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned as _};
+use syn::{
+    Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned as _,
+};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -435,4 +437,14 @@ fn project_field(
             quote_spanned!(span => <#ty as #default_projection>::default_projection(#value)),
         ))
     }
+}
+
+pub fn projectable_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    quote! {
+        impl #impl_generics ::ostd::orpc::oqueue::default_projection::Projectable for #name #ty_generics #where_clause {}
+    }
+    .into()
 }
