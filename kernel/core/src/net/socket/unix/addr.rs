@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use keyable_arc::KeyableArc;
+use ostd::DefaultProjection;
 
 use super::ns::{self, AbstractHandle};
 use crate::{
@@ -9,11 +10,11 @@ use crate::{
     prelude::*,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, DefaultProjection)]
 pub enum UnixSocketAddr {
     Unnamed,
-    Path(Arc<str>),
-    Abstract(Arc<[u8]>),
+    Path(#[projection(opaque)] Arc<str>),
+    Abstract(#[projection(opaque)] Arc<[u8]>),
 }
 
 impl UnixSocketAddr {
