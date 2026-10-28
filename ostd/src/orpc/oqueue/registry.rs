@@ -12,7 +12,7 @@ use log::warn;
 use serde::Serialize;
 
 use super::{
-    ConsumableOQueueRef, OQueueBase as _,
+    ConsumableOQueueRef, OQueueBase as _, ObservationQuery,
     default_projection::DefaultProjection,
     export::{
         OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
@@ -144,35 +144,38 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
     insert_export(path, make_export(oqueue));
 }
 
-/// Registers an OQueue at `path` and exports it to userspace using `T`'s default projection.
+/// Registers an OQueue at `path` and exports it to userspace using the element's default projection.
 ///
 /// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// [`register_with_projection`] to provide a different projection.
-pub fn register_with<T>(path: &Path, oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>)
+pub fn register_with<D, U>(path: &Path, oqueue: &GenericAnyOQueueRef<D>)
 where
-    T: DefaultProjection + Send + 'static,
-    T::Projection: Copy + Send + Serialize + 'static,
+    D: ElementDescriptor,
+    for<'a> D::Element<'a>: DefaultProjection<Projection = U>,
+    U: Copy + Send + Serialize + 'static,
 {
-    register_with_projection(path, oqueue, T::default_projection);
+    register_with_projection(
+        path,
+        oqueue,
+        ObservationQuery::new(|message: &D::Element<'_>| message.default_projection()),
+    );
 }
 
-/// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection
-/// `project: Fn(&T) -> U`.
+/// Registers an OQueue at `path` and exports it to userspace via a caller-supplied query.
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
 /// extracted from it.
-pub fn register_with_projection<T, U, F>(
+pub fn register_with_projection<D, U>(
     path: &Path,
-    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: F,
+    oqueue: &GenericAnyOQueueRef<D>,
+    query: ObservationQuery<D, U>,
 ) where
-    T: Send + 'static,
+    D: ElementDescriptor,
     U: Copy + Send + Serialize + 'static,
-    F: Fn(&T) -> U + Send + Sync + 'static,
 {
     ensure_registered(path, oqueue);
-    insert_export(path, make_export_with(oqueue, project));
+    insert_export(path, make_export_with(oqueue, query));
 }
 
 /// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production
@@ -202,7 +205,7 @@ pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOw
 ///
 /// Panics if a live export already exists at `path`: a path is a single export, so a second live
 /// export there is a programming error.
-fn insert_export<T: Send + 'static>(path: &Path, handle: OQueueExportHandle<T>) {
+fn insert_export<D: ElementDescriptor>(path: &Path, handle: OQueueExportHandle<D>) {
     let mut map = exports();
     let map = map.as_mut().unwrap();
     if let Some(existing) = map.get(path)
@@ -307,7 +310,11 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 #[cfg(ktest)]
 mod test {
     use super::*;
-    use crate::{orpc::oqueue::ConsumableOQueue as _, path, path_pattern, prelude::*};
+    use crate::{
+        orpc::oqueue::{ConsumableOQueue as _, OQueue as _},
+        path, path_pattern,
+        prelude::*,
+    };
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
         ConsumableOQueueRef::<usize>::new(4, path.clone())
@@ -519,7 +526,11 @@ mod test {
         let path = path!(observe.proj[1]);
         let queue = ConsumableOQueueRef::<Sample>::new(16, path.clone());
         // Export only the inner value via a projection; `Sample` itself need not be `Serialize`.
-        register_with_projection(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
+        register_with_projection(
+            &path,
+            &queue.as_any_oqueue(),
+            ObservationQuery::new(|sample: &Sample| sample.0),
+        );
 
         let handle = lookup_export(&path).unwrap();
         let observer = handle.attach_strong_observer().unwrap();
@@ -533,5 +544,70 @@ mod test {
 
         let records = decode_records(&buf);
         assert_eq!(records, [100, 200, 300]);
+    }
+
+    #[ktest]
+    fn export_borrowed_messages_to_independent_readers() {
+        #[derive(crate::orpc::oqueue::Element)]
+        struct Borrowed<'a> {
+            value: &'a u64,
+        }
+
+        let path = path!(observe.borrowed[1]);
+        let queue = crate::orpc::oqueue::OQueueRef::<Borrowed>::new(4, path.clone());
+        register_with_projection(
+            &path,
+            &queue.as_any_oqueue(),
+            ObservationQuery::new(|message: &Borrowed| *message.value),
+        );
+
+        let handle = lookup_export(&path).unwrap();
+        let first = handle.attach_strong_observer().unwrap();
+        let second = handle.attach_strong_observer().unwrap();
+        let producer = queue.attach_ref_producer().unwrap();
+        let value = 42;
+        producer.produce_ref(&Borrowed { value: &value });
+
+        let mut first_record = Vec::new();
+        let mut second_record = Vec::new();
+        assert!(first.try_read_into(&mut first_record).unwrap());
+        assert!(second.try_read_into(&mut second_record).unwrap());
+        assert_eq!(decode_records(&first_record), [42]);
+        assert_eq!(decode_records(&second_record), [42]);
+    }
+
+    #[ktest]
+    fn register_with_exports_borrowed_messages() {
+        #[derive(crate::orpc::oqueue::Element, crate::DefaultProjection)]
+        struct Borrowed<'a> {
+            value: u64,
+            #[projection(opaque)]
+            borrowed: &'a u64,
+        }
+
+        let path = path!(observe.default_borrowed[1]);
+        let queue = crate::orpc::oqueue::OQueueRef::<Borrowed>::new(4, path.clone());
+        register_with(&path, &queue.as_any_oqueue());
+
+        let observer = lookup_export(&path)
+            .unwrap()
+            .attach_strong_observer()
+            .unwrap();
+        let producer = queue.attach_ref_producer().unwrap();
+        let value = 7;
+        producer.produce_ref(&Borrowed {
+            value,
+            borrowed: &value,
+        });
+
+        let mut record = Vec::new();
+        assert!(observer.try_read_into(&mut record).unwrap());
+        let mut decoder = minicbor::Decoder::new(&record);
+        assert_eq!(decoder.map().unwrap(), Some(2));
+        assert_eq!(decoder.str().unwrap(), "value");
+        assert_eq!(decoder.u64().unwrap(), value);
+        assert_eq!(decoder.str().unwrap(), "borrowed");
+        decoder.skip().unwrap();
+        assert_eq!(decoder.position(), record.len());
     }
 }

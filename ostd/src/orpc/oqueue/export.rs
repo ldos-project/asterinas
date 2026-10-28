@@ -15,7 +15,7 @@
 //! the observed values as CBOR. The queue can then be streamed by path alone, without the reader
 //! naming `T`.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 
 use log::warn;
 use minicbor_serde::Serializer;
@@ -146,38 +146,29 @@ pub trait CborReader: Send {
 
 /// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
 /// [`CborReader`]. The value type `U` (identity or a projection) is erased inside the closure.
-type AttachReaderFn<T> = Box<
-    dyn Fn(
-            &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-        ) -> Result<Box<dyn CborReader>, OQueueError>
-        + Send
-        + Sync,
->;
+type AttachReaderFn<D> =
+    Box<dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborReader>, OQueueError> + Send + Sync>;
 
 /// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProducer`]. Only
 /// present on exports registered via [`super::registry::register_producible`].
-type AttachProducerFn<T> = Box<
-    dyn Fn(
-            &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-        ) -> Result<Box<dyn CborProducer>, OQueueError>
-        + Send
-        + Sync,
+type AttachProducerFn<D> = Box<
+    dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborProducer>, OQueueError> + Send + Sync,
 >;
 
-/// The concrete [`OQueueExport`] for an OQueue with message type `T`.
+/// The concrete [`OQueueExport`] for an OQueue with element descriptor `D`.
 ///
 /// `observe`, `produce`, and `consume` are held separately (rather than through a direction
 /// discriminant) so an export can carry any of them, or any combination, independently of one
 /// another.
-pub(super) struct OQueueExportHandle<T: 'static> {
-    weak: WeakAnyOQueueRef<LifetimelessElementDescriptor<T>>,
+pub(super) struct OQueueExportHandle<D: ElementDescriptor> {
+    weak: WeakAnyOQueueRef<D>,
     type_name: &'static str,
-    observe: Option<AttachReaderFn<T>>,
-    produce: Option<AttachProducerFn<T>>,
-    consume: Option<AttachReaderFn<T>>,
+    observe: Option<AttachReaderFn<D>>,
+    produce: Option<AttachProducerFn<D>>,
+    consume: Option<AttachReaderFn<D>>,
 }
 
-impl<T: Send + 'static> OQueueExport for OQueueExportHandle<T> {
+impl<D: ElementDescriptor> OQueueExport for OQueueExportHandle<D> {
     fn type_name(&self) -> &'static str {
         self.type_name
     }
@@ -296,7 +287,7 @@ where
 /// `Serialize` is used).
 pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-) -> OQueueExportHandle<T> {
+) -> OQueueExportHandle<LifetimelessElementDescriptor<T>> {
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
@@ -309,27 +300,20 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 }
 
 /// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
-/// messages are streamed through a caller-supplied projection `project: Fn(&T) -> U`, where `U` is
-/// the `Copy + Serialize` value placed in the stream.
-pub(super) fn make_export_with<T, U, F>(
-    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-    project: F,
-) -> OQueueExportHandle<T>
+/// messages are streamed through `query`, which produces the `Copy + Serialize` stream values.
+pub(super) fn make_export_with<D, U>(
+    oqueue: &GenericAnyOQueueRef<D>,
+    query: ObservationQuery<D, U>,
+) -> OQueueExportHandle<D>
 where
-    T: Send + 'static,
+    D: ElementDescriptor,
     U: Copy + Send + Serialize + 'static,
-    F: Fn(&T) -> U + Send + Sync + 'static,
 {
-    let project = Arc::new(project);
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<U>(),
         observe: Some(Box::new(move |oqueue| {
-            let project = project.clone();
-            attach_cbor_observer(
-                oqueue,
-                ObservationQuery::new(move |msg: &T| (*project)(msg)),
-            )
+            attach_cbor_observer(oqueue, query.clone())
         })),
         produce: None,
         consume: None,
@@ -389,7 +373,7 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
 /// compile time that only a `ConsumableOQueue` can be made producible.
 pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned + 'static>(
     oqueue: &ConsumableOQueueRef<T>,
-) -> OQueueExportHandle<T> {
+) -> OQueueExportHandle<LifetimelessElementDescriptor<T>> {
     OQueueExportHandle {
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
