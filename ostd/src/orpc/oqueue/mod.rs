@@ -131,6 +131,8 @@ use snafu::Snafu;
 pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey};
+#[cfg(not(baseline_asterinas))]
+use crate::orpc::oqueue::default_projection::DefaultProjection;
 use crate::{
     orpc::{
         path::{Path, StaticPath},
@@ -245,16 +247,22 @@ pub trait OQueueBase<D: ElementDescriptor + 'static> {
 
 #[cfg(not(baseline_asterinas))]
 #[doc(hidden)]
-pub fn trace_structured_data_with_len<'a, D: ElementDescriptor>(
+pub fn trace_structured_data_with_len<'a, D: ElementDescriptor, U>(
     path: StaticPath,
     value: &'a D::Element<'a>,
     length: usize,
     producer: &'static spin::Once<GenericRefProducer<D>>,
-) {
+) where
+    for<'b> D::Element<'b>: DefaultProjection<Projection = U>,
+    U: Copy + Send + serde::Serialize + 'static,
+{
     let producer = producer.call_once(|| {
         let path = Path::Static(path);
-        let oqueue = registry::lookup_by_path::<D>(&path)
-            .unwrap_or_else(|| GenericOQueueRef::<D>::new(length, path).as_any_oqueue());
+        let oqueue = registry::lookup_by_path::<D>(&path).unwrap_or_else(|| {
+            let oqueue = GenericOQueueRef::<D>::new(length, path.clone()).as_any_oqueue();
+            registry::register_with(&path, &oqueue);
+            oqueue
+        });
         oqueue.attach_ref_producer().unwrap()
     });
 
@@ -1125,6 +1133,45 @@ mod test {
         let observed = observer.weak_observe_recent(2).unwrap();
 
         assert_eq!(observed, vec![Some(11u32), Some(12u32)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_exports_borrowed_message() {
+        #[derive(Element, crate::DefaultProjection)]
+        struct Borrowed<'a> {
+            count: u32,
+            #[projection(opaque)]
+            pointer: &'a u32,
+        }
+
+        fn produce(count: u32) {
+            trace_structured_data!(
+                { ostd.oqueue.trace_borrowed.path },
+                Borrowed {
+                    count,
+                    pointer: &count,
+                },
+                Borrowed,
+                length = 4
+            );
+        }
+
+        produce(1);
+        let path: StaticPath = static_path!(ostd.oqueue.trace_borrowed.path);
+        let export = registry::lookup_export(&path.into()).unwrap();
+        let observer = export.attach_strong_observer().unwrap();
+        produce(2);
+
+        let mut record = Vec::new();
+        assert!(observer.try_read_into(&mut record).unwrap());
+        let mut decoder = minicbor::Decoder::new(&record);
+        assert_eq!(decoder.map().unwrap(), Some(2));
+        assert_eq!(decoder.str().unwrap(), "count");
+        assert_eq!(decoder.u32().unwrap(), 2);
+        assert_eq!(decoder.str().unwrap(), "pointer");
+        decoder.skip().unwrap();
+        assert_eq!(decoder.position(), record.len());
     }
 
     #[cfg(not(baseline_asterinas))]
