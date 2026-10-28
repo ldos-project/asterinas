@@ -121,6 +121,11 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         self.path.as_ref()
     }
 
+    /// Returns the configured history length of this OQueue.
+    pub(super) fn history_len(&self) -> usize {
+        self.len
+    }
+
     /// Detach a consumer. This will free the consumer ring buffer if there are no consumers left.
     pub(super) fn detach_consumer(self: &Arc<Self>) {
         let mut inner = self.inner.lock();

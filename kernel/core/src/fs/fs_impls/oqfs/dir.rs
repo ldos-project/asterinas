@@ -14,10 +14,10 @@
 //!
 //! A directory plays one of two roles:
 //!
-//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus [`reader::STRONG_OBSERVE_FILE_NAME`],
-//!   [`reader::CONSUME_FILE_NAME`], and/or [`produce::FILE_NAME`], depending on which attachments
-//!   the export currently carries (see [`leaf_file_names`]); an export may carry any of them, or
-//!   any combination, independently.
+//! - **OQueue leaf** — It lists [`metadata::FILE_NAME`] plus [`weak_observe::FILE_NAME`],
+//!   [`reader::STRONG_OBSERVE_FILE_NAME`], [`reader::CONSUME_FILE_NAME`], and/or
+//!   [`produce::FILE_NAME`], depending on which attachments the export currently carries (see
+//!   [`leaf_file_names`]).
 //! - **non-leaf** (including the root) — It lists the distinct next components of every exported
 //!   path that it is a prefix of.
 //!
@@ -35,6 +35,7 @@ use ostd::orpc::{
 
 use super::{
     BLOCK_SIZE, Common, OQUEUE_ROOT_INO, OQueueFs, metadata, produce, reader, reader::ReaderKind,
+    weak_observe,
 };
 use crate::{
     fs::{
@@ -61,9 +62,9 @@ fn live_export_paths() -> impl Iterator<Item = Path> {
 }
 
 /// Returns the fixed files served by an OQueue leaf directory: [`metadata::FILE_NAME`] plus
-/// [`reader::STRONG_OBSERVE_FILE_NAME`], [`reader::CONSUME_FILE_NAME`], and/or [`produce::FILE_NAME`], depending
-/// on which attachments the export currently carries. Only the metadata file is listed if the
-/// export has disappeared.
+/// [`reader::STRONG_OBSERVE_FILE_NAME`], [`reader::CONSUME_FILE_NAME`],
+/// [`weak_observe::FILE_NAME`], and/or [`produce::FILE_NAME`], depending on which attachments the
+/// export currently carries. Only the metadata file is listed if the export has disappeared.
 fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
     let Some(export) = registry::lookup_export(oqueue) else {
         return vec![metadata::FILE_NAME];
@@ -71,6 +72,7 @@ fn leaf_file_names(oqueue: &Path) -> Vec<&'static str> {
 
     let mut names = Vec::new();
     if export.supports_observe() {
+        names.push(weak_observe::FILE_NAME);
         names.push(reader::STRONG_OBSERVE_FILE_NAME);
     }
     if export.supports_consume() {
@@ -316,6 +318,7 @@ impl Inode for DirInode {
                 return Err(Error::new(Errno::ENOENT));
             }
             return match name {
+                weak_observe::FILE_NAME => Ok(weak_observe::new_inode(self.fs.clone(), oqueue)),
                 reader::STRONG_OBSERVE_FILE_NAME => Ok(reader::new_inode(
                     self.fs.clone(),
                     oqueue,
