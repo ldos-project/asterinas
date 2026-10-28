@@ -30,10 +30,10 @@ fn expand_opaque(name: &syn::Ident, generics: &syn::Generics) -> proc_macro2::To
 
     quote! {
         impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Projection = usize;
+            type Projection = ::ostd::orpc::oqueue::default_projection::OID;
 
             fn default_projection(&self) -> Self::Projection {
-                ::core::ptr::from_ref(self) as *const () as usize
+                ::ostd::orpc::oqueue::default_projection::OID::of_ref::<Self>(self)
             }
         }
     }
@@ -421,7 +421,7 @@ fn project_field(
         .is_some_and(|kind| kind == "opaque")
     {
         Ok((
-            quote!(usize),
+            quote!(::ostd::orpc::oqueue::default_projection::OID),
             quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
         ))
     } else {
