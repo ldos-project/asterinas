@@ -252,7 +252,9 @@ pub fn trace_structured_data_with_len<'a, D: ElementDescriptor>(
     producer: &'static spin::Once<GenericRefProducer<D>>,
 ) {
     let producer = producer.call_once(|| {
-        let oqueue = GenericOQueueRef::<D>::new(length, Path::Static(path));
+        let path = Path::Static(path);
+        let oqueue = registry::lookup_by_path::<D>(&path)
+            .unwrap_or_else(|| GenericOQueueRef::<D>::new(length, path).as_any_oqueue());
         oqueue.attach_ref_producer().unwrap()
     });
 
@@ -1148,6 +1150,39 @@ mod test {
         let observed = observer.weak_observe_recent(2).unwrap();
 
         assert_eq!(observed, vec![Some(21u32), Some(22u32)]);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    #[ktest]
+    fn trace_structured_data_macro_same_path_shares_oqueue() {
+        // Two distinct callsites of `trace_structured_data!` that share the same path.
+        fn produce_a(value: u32) {
+            trace_structured_data!({ ostd.oqueue.same_path_shares_oqueue.path }, value, u32);
+        }
+
+        fn produce_b(value: u32) {
+            trace_structured_data!({ ostd.oqueue.same_path_shares_oqueue.path }, value, u32);
+        }
+
+        let path: StaticPath = static_path!(ostd.oqueue.same_path_shares_oqueue.path);
+
+        // Lazy initialize
+        produce_a(10);
+        produce_b(20);
+
+        let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
+            .expect("expected a single OQueue at the shared path");
+        let observer = queue
+            .attach_weak_observer(4, ObservationQuery::identity())
+            .unwrap();
+
+        // Productions from both should appear in the same OQueue.
+        produce_a(11);
+        produce_b(21);
+
+        let observed = observer.weak_observe_recent(2).unwrap();
+
+        assert_eq!(observed, vec![Some(11u32), Some(21u32)]);
     }
 
     #[ktest]
