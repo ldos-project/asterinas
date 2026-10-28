@@ -36,7 +36,7 @@ use crate::{
     process::{Process, spawn_init_process},
     sched,
     sched::SchedPolicy,
-    thread,
+    test, thread,
     thread::kernel_thread::ThreadOptions,
     vm,
 };
@@ -211,6 +211,8 @@ fn first_kthread() {
 
     #[cfg(not(baseline_asterinas))]
     benchmarks::oqueue_roundtrip::init_after_init_process();
+
+    test::init_after_init_process();
 
     #[cfg(not(baseline_asterinas))]
     if VM_HUGEPAGED_ENABLED.load(Ordering::Relaxed) {

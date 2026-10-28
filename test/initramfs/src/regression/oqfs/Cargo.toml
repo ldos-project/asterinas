@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "oqfs-regression-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[[test]]
+name = "oqfs_test"
+path = "tests/oqfs_test.rs"
+
+[dependencies]
+minicbor-serde = { version = "0.6", features = ["std"] }
+serde = "1.0"
+
+[profile.release]
+strip = true

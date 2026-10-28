@@ -62,6 +62,7 @@ mod process;
 mod sched;
 mod security;
 mod syscall;
+mod test;
 mod thread;
 mod time;
 mod util;
