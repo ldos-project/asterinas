@@ -269,7 +269,7 @@ impl Pollable for ProduceFile {
         // A blocked write holds the producer while it waits for space, and poll must not block on
         // it. `write_at` notifies `OUT` once it finishes, so pollers re-check then.
         match self.producer.try_lock() {
-            Some(producer) if !producer.is_full() => IoEvents::OUT & mask,
+            Some(producer) if producer.can_produce() => IoEvents::OUT & mask,
             _ => IoEvents::empty(),
         }
     }

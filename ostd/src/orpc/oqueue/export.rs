@@ -123,9 +123,9 @@ pub trait CborProducer: Send {
     /// decode as the expected message type, or once the underlying OQueue is gone.
     fn produce_cbor(&self, bytes: &[u8]) -> Result<usize, ProduceCborError>;
 
-    /// Returns whether [`Self::produce_cbor`] would currently block on a complete record. This is
-    /// a hint: other attachments may change the OQueue immediately afterwards.
-    fn is_full(&self) -> bool;
+    /// Returns whether [`Self::produce_cbor`] would currently not block on a complete record. This
+    /// is a hint: other attachments may change the OQueue immediately afterwards.
+    fn can_produce(&self) -> bool;
 
     /// Registers `hook` to be called when [`Self::produce_cbor`] may stop blocking, until the
     /// returned [`WakeHook`] is dropped. The hook may be called even though a produce would still
@@ -413,8 +413,8 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
         Ok(item_len)
     }
 
-    fn is_full(&self) -> bool {
-        self.producer.is_full()
+    fn can_produce(&self) -> bool {
+        self.producer.can_produce()
     }
 
     fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {

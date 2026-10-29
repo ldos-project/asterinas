@@ -606,10 +606,10 @@ impl<T: Send + 'static> ValueProducer<T> {
         self.oqueue.has_observers()
     }
 
-    /// True if [`Self::produce`] would currently block. This is a hint: other attachments may
+    /// True if [`Self::produce`] would currently not block. This is a hint: other attachments may
     /// change the OQueue immediately afterwards.
-    fn is_full(&self) -> bool {
-        !self.oqueue.can_produce()
+    fn can_produce(&self) -> bool {
+        self.oqueue.can_produce()
     }
 
     /// Registers `hook` to be called when [`Self::produce`] may stop blocking, i.e. when
@@ -1067,22 +1067,22 @@ mod test {
 
         // One produce fills both the consumer ring and the observer ring.
         producer.try_produce(1).unwrap();
-        assert!(producer.is_full());
+        assert!(!producer.can_produce());
 
         // Draining one full buffer is not enough; draining the last one frees space.
         assert_eq!(consumer.try_consume(), Some(1));
-        assert!(producer.is_full());
+        assert!(!producer.can_produce());
         assert_eq!(freed.load(Ordering::Relaxed), 0);
         assert_eq!(observer.try_strong_observe().unwrap(), Some(1));
-        assert!(!producer.is_full());
+        assert!(producer.can_produce());
         assert_eq!(freed.load(Ordering::Relaxed), 1);
 
         // Detaching full buffers frees space too: first the observer, then the last consumer.
         producer.try_produce(2).unwrap();
         drop(observer);
-        assert!(producer.is_full());
+        assert!(!producer.can_produce());
         drop(consumer);
-        assert!(!producer.is_full());
+        assert!(producer.can_produce());
         assert_eq!(freed.load(Ordering::Relaxed), 2);
 
         // So does converting a full strong observer to an inline one.
@@ -1090,9 +1090,9 @@ mod test {
             .attach_strong_observer(ObservationQuery::identity())
             .unwrap();
         producer.try_produce(3).unwrap();
-        assert!(producer.is_full());
+        assert!(!producer.can_produce());
         let _inline = observer.strong_observe_inline(|_| {}).unwrap();
-        assert!(!producer.is_full());
+        assert!(producer.can_produce());
         assert_eq!(freed.load(Ordering::Relaxed), 3);
     }
 

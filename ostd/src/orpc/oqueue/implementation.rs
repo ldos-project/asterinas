@@ -71,6 +71,7 @@ pub(super) enum WakeEvent {
 /// registered until this is dropped.
 pub struct WakeHook {
     oqueue: Weak<dyn UntypedOQueueImplementation>,
+    event: WakeEvent,
     key: WakeHookKey,
 }
 
@@ -87,6 +88,7 @@ impl WakeHook {
         let key = oqueue.add_wake_hook(event, hook);
         Self {
             oqueue: Arc::downgrade(&oqueue),
+            event,
             key,
         }
     }
@@ -96,7 +98,25 @@ impl Drop for WakeHook {
     fn drop(&mut self) {
         // A dropped OQueue took its hooks with it, so there is nothing to unregister.
         if let Some(oqueue) = self.oqueue.upgrade() {
-            oqueue.remove_wake_hook(self.key);
+            oqueue.remove_wake_hook(self.event, self.key);
+        }
+    }
+}
+
+/// The registered [`WakeHook`]s of an OQueue, one list per [`WakeEvent`] so that a wake-up only
+/// visits the hooks waiting on that event.
+#[derive(Default)]
+struct WakeHooks {
+    produced: SlotMap<WakeHookKey, Box<dyn Fn() + Send>>,
+    space_freed: SlotMap<WakeHookKey, Box<dyn Fn() + Send>>,
+}
+
+impl WakeHooks {
+    /// Returns the hooks waiting on `event`.
+    fn for_event(&mut self, event: WakeEvent) -> &mut SlotMap<WakeHookKey, Box<dyn Fn() + Send>> {
+        match event {
+            WakeEvent::Produced => &mut self.produced,
+            WakeEvent::SpaceFreed => &mut self.space_freed,
         }
     }
 }
@@ -129,11 +149,10 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     last_consumer: SpinLock<Option<Weak<Task>>>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
-    /// Hooks run alongside the waiter wake-ups, each with the event it waits on. 
-    #[expect(clippy::type_complexity)]
-    wake_hooks: SpinLock<SlotMap<WakeHookKey, (WakeEvent, Box<dyn Fn() + Send>)>, LocalIrqDisabled>,
+    /// Hooks run alongside the waiter wake-ups, one list per event.
+    wake_hooks: SpinLock<WakeHooks, LocalIrqDisabled>,
     /// The number of full buffers that block producers: the consumer ring and non-revocable
-    /// strong-observer rings. A produce does not block iff this is 0. 
+    /// strong-observer rings. A produce does not block iff this is 0.
     num_full_buffers: AtomicUsize,
 }
 
@@ -166,7 +185,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             consume_wait_queue: WaitQueue::new(),
             last_consumer: SpinLock::new(None),
             produce_wait_queue: WaitQueue::new(),
-            wake_hooks: SpinLock::new(SlotMap::with_key()),
+            wake_hooks: SpinLock::new(WakeHooks::default()),
             num_full_buffers: AtomicUsize::new(0),
         }
     }
@@ -453,13 +472,17 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         }
     }
 
-    /// Records that a counted buffer stopped being full, if `was_full`. Call this with `inner`
-    /// held, where the buffer changed.
+    /// Updates `num_full_buffers` after a counted buffer changed or was removed, where `was_full`
+    /// says whether that buffer had been full and now no longer is. Call this with `inner` held.
     ///
-    /// Returns whether this freed the last full buffer, in which case the caller must call
+    /// Returns whether no full buffer is left, in which case the caller must call
     /// [`Self::wake_space_freed`] once `inner` is dropped.
     fn unfull(&self, was_full: bool) -> bool {
-        was_full && self.num_full_buffers.fetch_sub(1, Ordering::Release) == 1
+        if !was_full {
+            return false;
+        }
+        let previous = self.num_full_buffers.fetch_sub(1, Ordering::Release);
+        previous == 1
     }
 
     /// Wakes blocked producers and runs the [`WakeEvent::SpaceFreed`] hooks.
@@ -470,10 +493,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 
     /// Runs the hooks registered for `event`.
     fn run_wake_hooks(&self, event: WakeEvent) {
-        for (hook_event, hook) in self.wake_hooks.lock().values() {
-            if *hook_event == event {
-                hook();
-            }
+        for hook in self.wake_hooks.lock().for_event(event).values() {
+            hook();
         }
     }
 
@@ -941,8 +962,8 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
     /// [`WakeHook`].
     fn add_wake_hook(&self, event: WakeEvent, hook: Box<dyn Fn() + Send>) -> WakeHookKey;
 
-    /// Unregister a hook added by [`Self::add_wake_hook`].
-    fn remove_wake_hook(&self, key: WakeHookKey);
+    /// Unregister a hook added by [`Self::add_wake_hook`] for `event`.
+    fn remove_wake_hook(&self, event: WakeEvent, key: WakeHookKey);
 }
 
 assert_obj_safe!(UntypedOQueueImplementation);
@@ -1096,10 +1117,10 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
     }
 
     fn add_wake_hook(&self, event: WakeEvent, hook: Box<dyn Fn() + Send>) -> WakeHookKey {
-        self.wake_hooks.lock().insert((event, hook))
+        self.wake_hooks.lock().for_event(event).insert(hook)
     }
 
-    fn remove_wake_hook(&self, key: WakeHookKey) {
-        self.wake_hooks.lock().remove(key);
+    fn remove_wake_hook(&self, event: WakeEvent, key: WakeHookKey) {
+        self.wake_hooks.lock().for_event(event).remove(key);
     }
 }
