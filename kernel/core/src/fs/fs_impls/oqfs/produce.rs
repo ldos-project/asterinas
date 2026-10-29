@@ -14,7 +14,7 @@ use core::time::Duration;
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborProducer, ProduceCborError, registry},
+    oqueue::{CborProducer, ProduceCborError, WakeHook, registry},
     path::Path,
 };
 
@@ -155,14 +155,22 @@ struct ProduceFile {
     /// Bytes written but not yet decoded into a complete CBOR record.
     pending: Mutex<Vec<u8>>,
     pollee: Pollee,
+    /// Notifies `pollee` when the OQueue gains space while this handle is open.
+    _wake_hook: WakeHook,
 }
 
 impl ProduceFile {
     fn new(producer: Box<dyn CborProducer>) -> Self {
+        let pollee = Pollee::new();
+        let wake_hook = producer.on_ready({
+            let pollee = pollee.clone();
+            Box::new(move || pollee.notify(IoEvents::OUT))
+        });
         Self {
             producer: Mutex::new(producer),
             pending: Mutex::new(Vec::new()),
-            pollee: Pollee::new(),
+            pollee,
+            _wake_hook: wake_hook,
         }
     }
 
@@ -253,6 +261,16 @@ impl PerOpenFileOps for ProduceFile {
 
 impl Pollable for ProduceFile {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.pollee.poll_with(mask, poller, || IoEvents::OUT)
+        // Other producers and our own writes fill the OQueue without notifying this handle, so
+        // check afresh instead of using the pollee's cached events.
+        if let Some(poller) = poller {
+            self.pollee.register_poller(poller, mask);
+        }
+        // A blocked write holds the producer while it waits for space, and poll must not block on
+        // it. `write_at` notifies `OUT` once it finishes, so pollers re-check then.
+        match self.producer.try_lock() {
+            Some(producer) if producer.can_produce() => IoEvents::OUT & mask,
+            _ => IoEvents::empty(),
+        }
     }
 }
