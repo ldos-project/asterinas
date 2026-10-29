@@ -75,6 +75,8 @@ mod coverage;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(baseline_asterinas))]
+pub use ostd_macros::DefaultProjection;
 pub use ostd_macros::{
     early_cmdline_parser, global_frame_allocator, global_heap_allocator,
     global_heap_allocator_slot_map, main, ostd_error, panic_handler,

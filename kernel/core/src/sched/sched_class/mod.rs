@@ -193,6 +193,16 @@ impl SchedAttr {
         self.policy.get()
     }
 
+    /// Retrieves the scheduling policy that a thread cloned from this one starts with.
+    ///
+    /// This is the thread's own policy, not the one it may temporarily have for a forced
+    /// schedule.
+    pub fn inheritable_policy(&self) -> SchedPolicy {
+        // The scheduler tick may restore the policy on this CPU, so keep IRQs off while locked.
+        let prev_policy = self.prev_policy.disable_irq().lock();
+        prev_policy.unwrap_or_else(|| self.policy())
+    }
+
     fn policy_kind(&self) -> SchedPolicyKind {
         self.policy.kind()
     }

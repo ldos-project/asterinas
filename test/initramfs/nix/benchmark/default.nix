@@ -13,6 +13,7 @@ rec {
     configureFlags = [ "--esx" ];
   });
   hackbench = callPackage ./hackbench.nix { };
+  io-replayer = callPackage ./io-replayer.nix { };
   iperf3 = pkgsHostTarget.iperf3;
   lmbench = callPackage ./lmbench.nix { };
   memcached = pkgsHostTarget.memcached;
@@ -67,6 +68,7 @@ rec {
       mkdir -p $out/nginx/conf
       cp -r ${p}/conf/* $out/nginx/conf/
     '');
+    raid_io = packWith io-replayer (p: "cp -r ${p}/bin/io_replayer $out/bin/");
     redis = packWith redis (p: "cp -r ${p}/bin/redis-server $out/bin/");
     schbench = packWith schbench (p: "cp -r ${p}/bin/schbench $out/bin/");
     sqlite = packWith sqlite-speedtest1 (p: "cp -r ${p}/bin/sqlite-speedtest1 $out/bin/");

@@ -47,6 +47,9 @@ RUN make defconfig && \
     scripts/config --enable VIRTIO_MMIO && \
     scripts/config --enable VIRTIO_NET && \
     scripts/config --enable VIRTIO_BLK && \
+    scripts/config --enable MD_RAID1 && \
+    scripts/config --enable FUSE_FS && \
+    scripts/config --enable VIRTIO_FS && \
     make olddefconfig
 
 # KCFLAGS=-Wno-array-bounds is needed because of a problem in a random network driver which causes a

@@ -56,7 +56,7 @@ let
     resolv_conf
   ]
   ++ lib.optionals enablePython [ python3 ]
-  ++ lib.optionals (benchmark != null) [ benchmark.package ]
+  ++ lib.optionals (benchmark != null) [ benchmark.package pkgs.mdadm ]
   ++ lib.optionals (conformance != null) [ conformance.package ]
   ++ lib.optionals (regression != null) [ regression.package ]
   ++ lib.optionals is_evtest_included [ pkgs.evtest ];
@@ -64,7 +64,7 @@ in
 stdenvNoCC.mkDerivation {
   name = "initramfs";
   buildCommand = ''
-    mkdir -p $out/{dev,etc,root,usr,opt,tmp,var,proc,sys}
+    mkdir -p $out/{dev,etc,root,usr,opt,tmp,var,proc,sys,host}
     mkdir -p $out/{benchmark,test,ext2,exfat,nvme,oqueues,raid1}
     mkdir -p $out/usr/{bin,sbin,lib,lib64,local}
     ln -sfn usr/bin $out/bin
@@ -103,6 +103,7 @@ stdenvNoCC.mkDerivation {
 
     ${lib.optionalString (benchmark != null) ''
       cp -r "${benchmark.package}"/* $out/benchmark/
+      cp ${pkgs.mdadm}/bin/mdadm $out/bin/
     ''}
 
     ${lib.optionalString (conformance != null) ''

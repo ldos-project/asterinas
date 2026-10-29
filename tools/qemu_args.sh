@@ -69,7 +69,7 @@ if [ -n "${RAID_DEVICES:-}" ]; then
             exit 1
         fi
     done
-    RAID_CACHE="directsync"
+    RAID_CACHE="none"
 else
     echo "[$1] No RAID_DEVICES specified, using disk images instead." 1>&2
     RAID_IMG_DIR="./test/initramfs/build"
@@ -88,7 +88,7 @@ else
             cp "$RAID_DEV_0" "$RAID_IMG"
         fi
     done
-    RAID_CACHE="writeback"
+    RAID_CACHE="none"
 fi
 
 # Draw all host ports from a single `shuf` invocation,
