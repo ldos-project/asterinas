@@ -21,7 +21,7 @@ uses of the term.
 state can be viewed from outside. This can include anything from viewing the allocation events
 within the kernel to application request processing.
 
-***Observable Object***: An object with an identity (a unique ID within the system) whose methods
+***Mariposa Object***: An object with an identity (a unique ID within the system) whose methods
 are observable. See the [objects page](objects.md).
 
 ***Observe***: To strongly or weakly observe something on an OQueue.
