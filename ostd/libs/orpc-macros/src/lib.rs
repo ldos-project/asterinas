@@ -287,6 +287,16 @@ pub fn trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
     result.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
+/// Keeps traced methods unchanged in baseline mode, removing their tracing annotations.
+#[proc_macro_attribute]
+pub fn baseline_trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let _options = parse_macro_input!(attr as ImplOptions);
+    let item = parse_macro_input!(input as Item);
+    trace_methods::baseline_trace_methods(item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 /// Implement `serde::Serialize` for a struct by serializing it as a tuple, instead of a map with
 /// field names. This reduces the encoding overhead at the cost of the data no longer being fully
 /// self describing. It has type information, but not field names.

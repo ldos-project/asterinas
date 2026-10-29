@@ -6,8 +6,8 @@ use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    Attribute, Block, FnArg, Ident, ImplItem, ItemImpl, ItemTrait, Lifetime, Pat, Path, ReturnType,
-    Signature, Token, TraitItem, Type, TypePath, Visibility,
+    Attribute, Block, FnArg, Ident, ImplItem, Item, ItemImpl, ItemTrait, Lifetime, Pat, Path,
+    ReturnType, Signature, Token, TraitItem, Type, TypePath, Visibility,
     fold::{self, Fold},
     parse::Parse,
     spanned::Spanned,
@@ -59,6 +59,52 @@ impl Parse for ImplOptions {
 
         Ok(options)
     }
+}
+
+/// Removes tracing annotations from a trait or impl for baseline builds.
+pub fn baseline_trace_methods(mut item: Item) -> syn::Result<TokenStream> {
+    match &mut item {
+        Item::Impl(impl_block) => {
+            for item in &mut impl_block.items {
+                if let ImplItem::Method(method) = item {
+                    remove_trace_annotations(&mut method.attrs, &mut method.sig)?;
+                }
+            }
+        }
+        Item::Trait(trait_item) => {
+            for item in &mut trait_item.items {
+                if let TraitItem::Method(method) = item {
+                    remove_trace_annotations(&mut method.attrs, &mut method.sig)?;
+                }
+            }
+        }
+        _ => {
+            return Err(syn::Error::new_spanned(
+                item,
+                "trace_methods must be placed on a trait or impl",
+            ));
+        }
+    }
+
+    Ok(quote!(#item))
+}
+
+fn remove_trace_annotations(
+    attrs: &mut Vec<Attribute>,
+    signature: &mut Signature,
+) -> syn::Result<()> {
+    has_trace_attrs(attrs)?;
+    for argument in &mut signature.inputs {
+        match argument {
+            FnArg::Receiver(receiver) => {
+                take_include(&mut receiver.attrs)?;
+            }
+            FnArg::Typed(argument) => {
+                take_include(&mut argument.attrs)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The flags for which "directions" should include a given argument.
@@ -918,6 +964,7 @@ impl Fold for TypeNormalizer {
 
 #[cfg(test)]
 mod tests {
+    use quote::quote;
     use syn::parse_quote;
 
     use super::*;
@@ -940,6 +987,32 @@ mod tests {
 
     // This does not test the placement of spans, because what is "correct" is unclear and not worth
     // testing.
+
+    #[test]
+    fn baseline_impl_keeps_method_bodies_without_trace_annotations() {
+        let item = parse_quote! {
+            impl Worker {
+                #[trace]
+                fn process(&self, #[trace(only = return)] value: u32) -> u32 {
+                    value + 1
+                }
+            }
+        };
+
+        let expanded = baseline_trace_methods(item).unwrap();
+
+        assert_eq!(
+            expanded.to_string(),
+            quote! {
+                impl Worker {
+                    fn process(&self, value: u32) -> u32 {
+                        value + 1
+                    }
+                }
+            }
+            .to_string()
+        );
+    }
 
     #[test]
     fn parses_named_options() {
