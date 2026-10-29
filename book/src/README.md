@@ -1,14 +1,35 @@
-# The Asterinas Book
+<p align="center">
+    <img src="images/mariposa-orange-hex.svg" alt="mariposa-logo" width="300">
+</p>
+<p align="center">
+    <img src="images/combination-mark-white-orange-hex.svg" alt="mariposa-logo" height="120">
+</p>
+
+# The Mariposa Book
+
+
+Welcome to the documentation for Mariposa, an open-source research kernel based on Asterinas. The
+entire Asterinas portion of this documentation is the work of the upstream Asterinas team. They
+should be given a lot of the credit, while we will accept all the blame.
+
+Mariposa is part of the [LDOS: Learning Directed Operating System](https://ldos.utexas.edu/) project.
+
+*<small>This material is based upon work supported by the U.S. National Science Foundation (NSF)
+under Grant Number 2326576. Any opinions, findings and conclusions or recommendations expressed in
+this material do not necessarily reflect the views of the U.S. National Science Foundation.</small>*
+
+## [Mariposa Documentation](mariposa/index.html)
+
+This covers the Mariposa design and architecture. It provides high-level ideas and concepts. For
+code-level specifics, refer to the [documentation in the source as rendered by Rust doc](LINK).
+
+<hr style="height:3px;border:none;color:#333;background-color:#333;">
+
+## Asterinas Book Structure
 
 <p align="center">
     <img src="images/logo_en.svg" alt="asterinas-logo" width="620"><br>
 </p>
-
-Welcome to the documentation for Asterinas,
-an open-source project and community
-focused on developing cutting-edge Rust OS kernels.
-
-## Book Structure
 
 This book is divided into six distinct parts:
 
