@@ -4,13 +4,15 @@
 Mariposa specific or otherwise important terms, there is a [glossary](glossary.md).)*
 
 Mariposa is a variant of Asterinas and is the "clean-slate" kernel of the [LDOS project]. It is
-designed as a platform for exploring new operating system policies using machine learning and LLMs.
+designed as a platform for exploring and deploying new operating system policies using machine
+learning and LLMs. We specifically target data-rich bespoke policies (designed by humans or agents)
 
 Mariposa has three main design goals:
 
 1. **Observability:** The kernel should expose a wide range of events and state for use by
    policies.
-2. **Reconfigurability:** The kernel should allow components to be replaced and reconfigured easily.
+2. **Reconfigurability:** The kernel should allow mechanisms and policies to be replaced and
+   reconfigured easily.
 3. **Features and performance:** The kernel should provide features required for benchmarks and
    research. It should also provide good enough performance to demonstrate our research.
 
@@ -29,11 +31,14 @@ architecture or implementation.
 Due to the realities of this project we have made some architectural choices: (Follow the links for
 more information on each.)
 
-[**We will be using an Object-Oriented approach.**](#observable-objects) This matches the upstream
+[**We will be using an Object-Oriented approach.**](#mariposa-objects) This matches the upstream
 design of smaller objects with well defined interfaces (Rust traits), as opposed to the larger
-object design of micro-kernels. It also matches the Linux design of structs which have a defined
-interface exposed by a set of functions or a function table (e.g., VFS). Unlike Linux we will be
-explicitly defining these interfaces such that multiple types can implement the same interface.
+object design of micro-kernels. For example, an object might be the memory allocator and it may use
+allocation policy and page allocator objects. This contrasts with a micro-kernel which will combine
+all kinds of memory management mechanisms and policies into a single object. Our small object design
+aligns with the Linux design of structs which have a defined interface exposed by a set of functions
+or a function table (e.g., VFS). Unlike Linux we will be explicitly defining these interfaces such
+that multiple types can implement the same interface.
 
 [**We use Observable Queues to expose events and state to policies (or other loosely coupled
 components).**](#observable-queues-oqueues) OQueues are low-overhead, with a near zero cost when
@@ -66,13 +71,13 @@ A core component of the Mariposa system are Observable Queues (OQueues). OQueues
 concurrent queue which provides additional operations to enable observation of the values in the
 queue. The operations supported on an OQueue are:
 
-* **Produce**: Enqueue a value. Multiple threads can produce.
-* **Consume**: Dequeue a value. Multiple threads can consume, and each value will be received by
+* **Produce**: Enqueue a value. Multiple objects can produce, potentially concurrently.
+* **Consume**: Dequeue a value. Multiple objects can consume, and each value will be received by
   exactly one consumer.
 * **Strong observe**: Observe the values in the OQueue as a stream. The values are not *consumed*
   in the above sense. Each strong observer receives *all* values.
-* **Weak observe**: Get specific values from the history of values still available in the OQueue.
-  When a weak observer tries to get a value, the value may already have been discarded.
+* **Weak observe**: Get historical values from the OQueue. The length of the available history is
+  limited.
 
 The basic usage of an OQueue is as follows. Note that manually producing into an OQueue will be
 rare. Most observation will be done using one of the tracing macros. See
@@ -225,15 +230,16 @@ Depending on the exact OQueue this directory will contain files:
 
 **Future Work:** `weak_observer` and faster non-CBOR access are planned.
 
-## Observable Objects
+## Mariposa Objects
 
 (This is a high-level overview. See the [objects page](objects.md) for details.)
 
 Mariposa builds on the roughly object-oriented design of Asterinas, in which information and
-behavior are combined into objects with interfaces defined by Rust traits. On top of this,
-observable objects have an identity (a unique ID) and expose their methods for observation: each
-call and return is an event in an OQueue. This allows interactions between objects to be observed,
-allows introspection into the system, and allows the system to be dynamically reconfigured.
+behavior are combined into objects with interfaces defined by Rust traits. On top of this, "Mariposa
+objects" are objects that have an identity (a unique ID) and expose their methods for observation:
+each call and return is an event in an OQueue. These objects allow their interactions to be
+observed, allows introspection into the system, and allows the system to be dynamically
+reconfigured.
 
 There is one core object-orient design principle that you should keep in mind:
 

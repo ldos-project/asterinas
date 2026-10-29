@@ -177,7 +177,7 @@ should also implement serde `Serialize` (the CBOR export uses it). The default p
 in cases where no other projection is selected. It is how the OQueue filesystem exposes data in an
 OQueue, so all userspace accessible OQueues are required to have one.
 
-Some references to [observable objects](objects.md) are projected as their ID. In particular,
+Some references to [Mariposa objects](objects.md) are projected as their ID. In particular,
 `Arc<T: OObject>` implements `DefaultProjection` with `type Projected = ObjectId`. This widens
 the set of object types with a derivable default projection, and provides enough information to
 reconstruct a range of useful information about the object by joining information from multiple
@@ -235,7 +235,7 @@ internally.
 
 ## OQueues for Object Methods
 
-Observable objects and their traits have public APIs and, as such, should be observable. This means
+Mariposa objects and their traits have public APIs and, as such, should be observable. This means
 that a call OQueue and a return OQueue are created for each trait method. There is an OQueue for
 each method, and the elements include the object ID. There is *not* an OQueue for each method on
 each object.

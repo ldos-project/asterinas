@@ -1,8 +1,8 @@
 # Slots
 
-Slots provide modularity for objects which call one another directly. This can be mechanisms
-interacting, or policies which are called from the mechanism. For example, an eviction policy that
-needs to be run directly during out of memory situations.
+Slots provide modularity for objects which call one another directly. This can be mechanisms and
+policies interacting with one another. For example, an eviction policy that needs to be run directly
+during out of memory situations.
 
 ## Design
 
