@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Prints the kernel command-line parameters set by a policy config (see `policies/default.toml`)."""
+"""Prints the kernel command-line parameters set by a TOML config (see `kcmd_configs/default.toml`)."""
 
 import sys
 import tomllib

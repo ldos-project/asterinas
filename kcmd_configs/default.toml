@@ -1,0 +1,42 @@
+# Kernel command-line configuration used by `make kernel` / `make run_kernel` by default (see
+# `KCMD_CONFIG` in the Makefile).
+#
+# Each key becomes one kernel command-line parameter: a key inside `[table]` is named
+# `<table>.<key>`, and lists are joined with ",", so `[raid] members = ["vdd", "vde"]` becomes
+# `raid.members=vdd,vde`. A parameter that is not specified keeps its Makefile or kernel default.
+
+# Console log level. Not specified here, so the Makefile's `LOG_LEVEL` applies.
+# loglevel = "warn"
+
+[raid]
+# Member disks of the RAID-1 device, in logical-index order.
+members = ["vdd", "vde", "vdf"]
+# Read-selection policy: roundrobin, linnos, linnos_plus, decision_tree, or userspace.
+selection = "roundrobin"
+# Admission policy: heimdall. Not specified means no admission policy.
+# admission = "heimdall"
+
+# Heimdall inference cadence; only read when `raid.admission` is "heimdall".
+[heimdall]
+# batch_size = 32
+# inference_timeout_ms = 10
+
+[vm]
+# Map a huge page on every page fault whose address alignment allows it; false maps base pages only.
+huge_mapping_enabled = false
+# Run hugepaged, which periodically promotes pages to huge pages (not available in baseline builds).
+hugepaged_enabled = false
+
+[data_capture]
+# Block device that captured OQueue data is written to.
+device = "vdg"
+# Sync captured data to the device every N ms. Not specified means no periodic sync.
+# sync_period = 1000
+
+[scheduler]
+# Capture scheduling events (also needs `FEATURES=ostd/capture_scheduling`).
+capture_data = false
+
+[io]
+# Capture block device I/O operations.
+capture_block_io = false

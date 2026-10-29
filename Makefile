@@ -22,8 +22,8 @@ FEATURES ?=
 ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
 BASELINE_ASTERINAS ?= 0
-# Kernel policy config (see `policies/default.toml`).
-POLICY_CONFIG ?= policies/default.toml
+# TOML file of kernel command-line parameters (see `kcmd_configs/default.toml`).
+KCMD_CONFIG ?= kcmd_configs/default.toml
 RUSTFLAGS ?=
 COVERAGE ?= 0
 
@@ -170,7 +170,7 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), raid)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
-POLICY_CONFIG = policies/raid_test.toml
+KCMD_CONFIG = kcmd_configs/raid_test.toml
 else ifeq ($(AUTO_TEST), oqbench)
 # Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel thread <->
 # userspace peer pipeline completes a clean round trip and the samples reach the capture device. The
@@ -212,14 +212,14 @@ endif
 INITARGS ?=
 CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(INITARGS), --init-args="$(ARG)")
 
+# Added after the Makefile's own kernel args and before `KCMDARGS`; on a repeated parameter the later
+# value wins. Errors are reported by `check_kcmd_config`, so only targets that build the kernel fail.
+KCMD_CONFIG_ARGS := $(shell python3 tools/kcmd_config.py $(KCMD_CONFIG) 2>/dev/null)
+CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(KCMD_CONFIG_ARGS), --kcmd-args="$(ARG)")
+
 # If KCMDARGS is set, it will be passed as kernel command line args. In the kernel you can access these via KCmdlineArg.
 KCMDARGS ?=
 CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(KCMDARGS), --kcmd-args="$(ARG)")
-
-# Not exported: the bare `export` below would otherwise run the script for every command.
-# Recipes pass it before `$(CARGO_OSDK_BUILD_ARGS)` (which holds `KCMDARGS`); the later value wins.
-POLICY_KCMD_ARGS = $(foreach ARG, $(shell python3 tools/policy_kcmd_args.py $(POLICY_CONFIG)), --kcmd-args="$(ARG)")
-unexport POLICY_KCMD_ARGS
 
 ifeq ($(INTEL_TDX), 1)
 BOOT_PROTOCOL = linux-efi-handover64
@@ -331,11 +331,11 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
-.PHONY: check_policy_config
-check_policy_config:
-	@echo "Kernel policies from $(POLICY_CONFIG):"
-	@python3 tools/policy_kcmd_args.py $(POLICY_CONFIG) \
-		|| (echo "Error: cannot read the policy config '$(POLICY_CONFIG)'"; exit 1)
+.PHONY: check_kcmd_config
+check_kcmd_config:
+	@echo "Kernel command-line config $(KCMD_CONFIG):"
+	@python3 tools/kcmd_config.py $(KCMD_CONFIG) \
+		|| (echo "Error: cannot read the kernel command-line config '$(KCMD_CONFIG)'"; exit 1)
 
 .PHONY: check_vdso
 check_vdso:
@@ -354,13 +354,13 @@ initramfs: check_vdso
 
 # Build the kernel with an initramfs
 .PHONY: kernel
-kernel: check_policy_config initramfs $(CARGO_OSDK)
-	@cd kernel && cargo osdk build $(POLICY_KCMD_ARGS) $(CARGO_OSDK_BUILD_ARGS)
+kernel: check_kcmd_config initramfs $(CARGO_OSDK)
+	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
-run_kernel: check_policy_config initramfs $(CARGO_OSDK)
-	@cd kernel && cargo osdk run $(POLICY_KCMD_ARGS) $(CARGO_OSDK_BUILD_ARGS)
+run_kernel: check_kcmd_config initramfs $(CARGO_OSDK)
+	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 # TODO(arthurp, https://github.com/ldos-project/asterinas/issues/237): Using `^` to anchor to the
 # beginning of the line is probably better. But the dataloss bug makes that spuriously fail.
@@ -441,11 +441,11 @@ kill_qemu:
 	pkill qemu-system-x86
 
 .PHONY: gdb_server
-gdb_server: check_policy_config initramfs $(CARGO_OSDK)
+gdb_server: check_kcmd_config initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
-	@cd kernel && cargo osdk run $(POLICY_KCMD_ARGS) $(CARGO_OSDK_BUILD_ARGS) --gdb-server wait-client,vscode,addr=:$(GDB_TCP_PORT)
+	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --gdb-server wait-client,vscode,addr=:$(GDB_TCP_PORT)
 
 .PHONY: gdb_client
 gdb_client: initramfs $(CARGO_OSDK)
@@ -455,11 +455,11 @@ gdb_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk debug $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT)
 
 .PHONY: profile_server
-profile_server: check_policy_config initramfs $(CARGO_OSDK)
+profile_server: check_kcmd_config initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
-	@cd kernel && cargo osdk run $(POLICY_KCMD_ARGS) $(CARGO_OSDK_BUILD_ARGS) --gdb-server addr=:$(GDB_TCP_PORT)
+	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS) --gdb-server addr=:$(GDB_TCP_PORT)
 
 .PHONY: profile_client
 profile_client: initramfs $(CARGO_OSDK)
