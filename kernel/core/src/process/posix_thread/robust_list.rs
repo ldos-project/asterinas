@@ -7,7 +7,10 @@ use ostd::{mm::VmIo, task::Task};
 use crate::{
     context::current_userspace,
     prelude::*,
-    process::posix_thread::futex::{FutexVisibility, futex_wake},
+    process::posix_thread::futex::{
+        FUTEX_OWNER_DIED, FUTEX_TID_MASK, FUTEX_WAITERS, FutexVisibility, futex_wake,
+        futex_wake_pi_waiter,
+    },
     thread::Tid,
 };
 
@@ -158,10 +161,6 @@ impl Iterator for FutexIter<'_> {
     }
 }
 
-const FUTEX_WAITERS: u32 = 0x8000_0000;
-const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
-const FUTEX_TID_MASK: u32 = 0x3FFF_FFFF;
-
 /// Attempts to wake a robust futex owned by the given thread.
 ///
 /// If the futex is still owned by `tid`, it is marked with
@@ -205,11 +204,18 @@ pub fn wake_robust_futex(futex: RobustFutex, tid: Tid) -> Result<()> {
         match writer.atomic_compare_exchange(&reader, old_val, new_val)? {
             (cur_val, false) => old_val = cur_val, // Try again with `cur_val`.
             (_, true) => {
-                // Wake up one waiter and break out from the loop. PI futexes are not supported
-                // yet, so they have no waiters to wake here.
-                if !futex.is_pi && new_val & FUTEX_WAITERS != 0 {
+                // Wake up one waiter and break out from the loop.
+                if new_val & FUTEX_WAITERS != 0 {
                     debug!("wake the robust futex at {:#x}", futex_addr);
-                    futex_wake(futex_addr, 1, FutexVisibility::Shared)?;
+                    if futex.is_pi {
+                        // A PI futex's waiters are only woken by handing over ownership. Wake the
+                        // top one to retake the now-unowned lock. glibc uses private futexes for
+                        // process-private PI mutexes, so check both namespaces.
+                        futex_wake_pi_waiter(futex_addr, FutexVisibility::Private)?;
+                        futex_wake_pi_waiter(futex_addr, FutexVisibility::Shared)?;
+                    } else {
+                        futex_wake(futex_addr, 1, FutexVisibility::Shared)?;
+                    }
                 }
                 break;
             }
