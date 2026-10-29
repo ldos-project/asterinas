@@ -57,11 +57,21 @@ macro_rules! trace_structured_data {
     ({$($path:tt)*}, $value:expr, $ty:ty $(,)?) => {{ $crate::trace_structured_data!({$($path)*}, $value, $ty, length = 1024) }};
 
     ({$($path:tt)*}, $value:expr, $ty:ty, length = $length:expr $(,)?) => {{
-        use spin::Once;
-        static PRODUCER: Once<$crate::orpc::oqueue::RefProducer<$ty>> = Once::new();
+        static PRODUCER: ::spin::Once<$crate::orpc::oqueue::RefProducer<$ty>> = ::spin::Once::new();
 
         let path: $crate::orpc::path::StaticPath = $crate::static_path!($($path)+);
         $crate::orpc::oqueue::trace_structured_data_with_len(path, &($value), $length, &PRODUCER)
+    }};
+}
+
+#[cfg(not(baseline_asterinas))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __trace_structured_data_at_path {
+    ($path:expr, $value:expr, $ty:ty $(,)?) => {{
+        static PRODUCER: ::spin::Once<$crate::orpc::oqueue::RefProducer<$ty>> = ::spin::Once::new();
+
+        $crate::orpc::oqueue::trace_structured_data_at_path(|| $path, &($value), 1024, &PRODUCER)
     }};
 }
 

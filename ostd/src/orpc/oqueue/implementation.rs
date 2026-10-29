@@ -27,6 +27,7 @@ use core::{
     any::{Any, TypeId},
     marker::PhantomData,
     ops::DerefMut,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use log::warn;
@@ -52,6 +53,72 @@ new_key_type! {
     pub struct ObserverKey;
     /// A unique identifier for an inline strong observer.
     pub struct InlineObserverKey;
+    /// A unique identifier for a wake hook.
+    pub struct WakeHookKey;
+}
+
+/// The OQueue event a [`WakeHook`] waits on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum WakeEvent {
+    /// A value was produced, so observers and consumers may have something to read.
+    Produced,
+    /// The last full buffer that blocked producers gained space, so a produce would not block.
+    SpaceFreed,
+}
+
+/// A hook registered with `on_ready` on [`ValueProducer`](super::ValueProducer),
+/// [`Consumer`](super::Consumer), or [`StrongObserver`](super::StrongObserver). The hook stays
+/// registered until this is dropped.
+pub struct WakeHook {
+    oqueue: Weak<dyn UntypedOQueueImplementation>,
+    event: WakeEvent,
+    key: WakeHookKey,
+}
+
+impl WakeHook {
+    /// Registers `hook` to run on each `event` of `oqueue`.
+    ///
+    /// The hook runs in atomic context, so it must not sleep or add or remove wake hooks on this
+    /// OQueue.
+    pub(super) fn register(
+        oqueue: Arc<dyn UntypedOQueueImplementation>,
+        event: WakeEvent,
+        hook: Box<dyn Fn() + Send>,
+    ) -> Self {
+        let key = oqueue.add_wake_hook(event, hook);
+        Self {
+            oqueue: Arc::downgrade(&oqueue),
+            event,
+            key,
+        }
+    }
+}
+
+impl Drop for WakeHook {
+    fn drop(&mut self) {
+        // A dropped OQueue took its hooks with it, so there is nothing to unregister.
+        if let Some(oqueue) = self.oqueue.upgrade() {
+            oqueue.remove_wake_hook(self.event, self.key);
+        }
+    }
+}
+
+/// The registered [`WakeHook`]s of an OQueue, one list per [`WakeEvent`] so that a wake-up only
+/// visits the hooks waiting on that event.
+#[derive(Default)]
+struct WakeHooks {
+    produced: SlotMap<WakeHookKey, Box<dyn Fn() + Send>>,
+    space_freed: SlotMap<WakeHookKey, Box<dyn Fn() + Send>>,
+}
+
+impl WakeHooks {
+    /// Returns the hooks waiting on `event`.
+    fn for_event(&mut self, event: WakeEvent) -> &mut SlotMap<WakeHookKey, Box<dyn Fn() + Send>> {
+        match event {
+            WakeEvent::Produced => &mut self.produced,
+            WakeEvent::SpaceFreed => &mut self.space_freed,
+        }
+    }
 }
 
 /// The underlying implementation of OQueues. This is used within an `Arc` to reference the OQueue
@@ -82,6 +149,11 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     last_consumer: SpinLock<Option<Weak<Task>>, LocalIrqDisabled>,
     /// Wait queue for producers. Awoken when there is space for more elements.
     produce_wait_queue: WaitQueue,
+    /// Hooks run alongside the waiter wake-ups, one list per event.
+    wake_hooks: SpinLock<WakeHooks, LocalIrqDisabled>,
+    /// The number of full buffers that block producers: the consumer ring and non-revocable
+    /// strong-observer rings. A produce does not block iff this is 0.
+    num_full_buffers: AtomicUsize,
 }
 
 impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
@@ -113,6 +185,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             consume_wait_queue: WaitQueue::new(),
             last_consumer: SpinLock::new(None),
             produce_wait_queue: WaitQueue::new(),
+            wake_hooks: SpinLock::new(WakeHooks::default()),
+            num_full_buffers: AtomicUsize::new(0),
         }
     }
 
@@ -125,8 +199,14 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     pub(super) fn detach_consumer(self: &Arc<Self>) {
         let mut inner = self.inner.lock();
         inner.n_consumers -= 1;
+        let mut freed = false;
         if inner.n_consumers == 0 {
-            inner.consumer_ring_buffer = None;
+            let ring_buffer = inner.consumer_ring_buffer.take();
+            freed = self.unfull(ring_buffer.is_some_and(|rb| !rb.can_produce()));
+        }
+        drop(inner);
+        if freed {
+            self.wake_space_freed();
         }
     }
 
@@ -248,6 +328,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             .observer_ring_buffers
             .remove(observer_id)
             .expect("tried to attach inline strong observer for observer_id which did not exist");
+        let freed = this.unfull(observation_ring_buffer.blocks_producers());
         let query = (observation_ring_buffer.query as Box<dyn Any>)
             .downcast::<ObservationQuery<D, U>>()
             .expect("tried to attach inline strong observer with a different type from original attachment");
@@ -272,6 +353,10 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }
         });
         let key = inner.inline_strong_observers.insert(handler);
+        drop(inner);
+        if freed {
+            this.wake_space_freed();
+        }
 
         Ok(key)
     }
@@ -307,8 +392,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
 impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// True if try_produce into self is *expected* to succeed. It may still fail if there is a
     /// concurrent producer.
-    fn can_produce(&self) -> bool {
-        self.inner.lock().can_produce()
+    pub(super) fn can_produce(&self) -> bool {
+        self.num_full_buffers.load(Ordering::Acquire) == 0
     }
 
     /// Produce a value by reference, blocking until it completes.
@@ -330,18 +415,34 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         // A slow observer must never block a producer, so drop any whose ring is full. As this is
         // an observation OQueue (no consumers), this also means production always succeeds.
         inner.revoke_full_observers();
+        debug_assert_eq!(
+            inner.can_produce(),
+            self.can_produce(),
+            "num_full_buffers is out of sync with the ring buffers"
+        );
         if inner.can_produce() {
+            // Every counted ring has room here, so a counted ring that is full afterwards has just
+            // become full.
+            let mut newly_full = 0;
             for ObservationRingBuffer {
-                query, ring_buffer, ..
+                query,
+                ring_buffer,
+                revocable,
+                ..
             } in inner.observer_ring_buffers.values_mut()
             {
                 if let Some(ring_buffer) = ring_buffer {
                     query.call_into(v, ring_buffer);
+                    if !*revocable && !ring_buffer.can_produce() {
+                        newly_full += 1;
+                    }
                 }
             }
             for f in inner.inline_strong_observers.values() {
                 f(v)
             }
+            self.num_full_buffers
+                .fetch_add(newly_full, Ordering::Relaxed);
             drop(inner);
 
             self.wake_after_produce();
@@ -355,6 +456,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Wake observers and consumers after a successful produce.
     fn wake_after_produce(&self) {
         self.observe_wait_queue.wake_all();
+        self.run_wake_hooks(WakeEvent::Produced);
 
         // Try to wake a consumer which is blocked on this OQueue. If no OQueue was awoken and there
         // was some task which consumed on this OQueue before, wake that.
@@ -367,6 +469,32 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             } else {
                 *last_consumer = None;
             }
+        }
+    }
+
+    /// Updates `num_full_buffers` after a counted buffer changed or was removed, where `was_full`
+    /// says whether that buffer had been full and now no longer is. Call this with `inner` held.
+    ///
+    /// Returns whether no full buffer is left, in which case the caller must call
+    /// [`Self::wake_space_freed`] once `inner` is dropped.
+    fn unfull(&self, was_full: bool) -> bool {
+        if !was_full {
+            return false;
+        }
+        let previous = self.num_full_buffers.fetch_sub(1, Ordering::Release);
+        previous == 1
+    }
+
+    /// Wakes blocked producers and runs the [`WakeEvent::SpaceFreed`] hooks.
+    fn wake_space_freed(&self) {
+        self.produce_wait_queue.wake_all();
+        self.run_wake_hooks(WakeEvent::SpaceFreed);
+    }
+
+    /// Runs the hooks registered for `event`.
+    fn run_wake_hooks(&self, event: WakeEvent) {
+        for hook in self.wake_hooks.lock().for_event(event).values() {
+            hook();
         }
     }
 
@@ -414,13 +542,27 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
         let mut inner = self.inner.lock();
         // A slow observer must never block a producer, so drop any whose ring is full.
         inner.revoke_full_observers();
+        debug_assert_eq!(
+            inner.can_produce(),
+            self.can_produce(),
+            "num_full_buffers is out of sync with the ring buffers"
+        );
         if inner.can_produce() {
+            // Every counted ring has room here, so a counted ring that is full afterwards has just
+            // become full.
+            let mut newly_full = 0;
             for ObservationRingBuffer {
-                query, ring_buffer, ..
+                query,
+                ring_buffer,
+                revocable,
+                ..
             } in inner.observer_ring_buffers.values_mut()
             {
                 if let Some(ring_buffer) = ring_buffer {
                     query.call_into(&v, ring_buffer);
+                    if !*revocable && !ring_buffer.can_produce() {
+                        newly_full += 1;
+                    }
                 }
             }
             for f in inner.inline_strong_observers.values() {
@@ -430,6 +572,9 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             if let Some(ring_buffer) = &mut inner.consumer_ring_buffer {
                 let v = ring_buffer.try_produce(v);
                 assert!(v.is_none());
+                if !ring_buffer.can_produce() {
+                    newly_full += 1;
+                }
             } else if let Some(consumer) = &inner.inline_consumer {
                 consumer(v);
             } else {
@@ -439,6 +584,8 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                     "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
                 );
             }
+            self.num_full_buffers
+                .fetch_add(newly_full, Ordering::Relaxed);
             drop(inner);
 
             self.wake_after_produce();
@@ -466,20 +613,19 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
     /// Attempt to consume a value from the consumer ring buffer, taking ownership of the value.
     pub(super) fn try_consume(&self) -> Option<T> {
         let mut inner = self.inner.lock();
+        let ring_buffer = inner
+            .consumer_ring_buffer
+            .as_mut()
+            .expect("consume not supported");
+        let was_full = !ring_buffer.can_produce();
         // SAFETY: The consumer ring buffer is never used for observation.
-        let ret = unsafe {
-            inner
-                .consumer_ring_buffer
-                .as_mut()
-                .expect("consume not supported")
-                .try_consume()
-        };
+        let ret = unsafe { ring_buffer.try_consume() };
+        let freed = ret.is_some() && self.unfull(was_full);
         drop(inner);
         *self.last_consumer.lock().deref_mut() =
             Task::current().map(|t| Arc::downgrade(&t.cloned()));
-        // TODO: This should check if there is actually space to produce.
-        if ret.is_some() {
-            self.produce_wait_queue.wake_all();
+        if freed {
+            self.wake_space_freed();
         }
         ret
     }
@@ -564,13 +710,13 @@ struct OQueueInner<D: ElementDescriptor> {
 }
 
 impl<D: ElementDescriptor> OQueueInner<D> {
-    /// True if all ring buffers can produce.
-    ///
-    /// Revoked observers are ignored, cus they won't get produced to at all.
+    /// True if a produce can succeed without blocking.
     fn can_produce(&self) -> bool {
+        // Revoked observers are never produced to, and a full revocable observer is revoked by the
+        // produce rather than blocking it.
         self.observer_ring_buffers
             .values()
-            .all(|r| r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
+            .all(|r| r.revocable || r.ring_buffer.as_ref().is_none_or(|rb| rb.can_produce()))
             && self.consumer_ring_buffer.iter().all(|r| r.can_produce())
     }
 
@@ -651,6 +797,17 @@ struct ObservationRingBuffer<D: ElementDescriptor> {
     /// backpressure to producers. Set for userspace-facing observers where kernel liveness must
     /// not depend on the reader keeping up.
     revocable: bool,
+}
+
+impl<D: ElementDescriptor> ObservationRingBuffer<D> {
+    /// True if this ring is full and blocks producers, i.e. it counts in `num_full_buffers`.
+    fn blocks_producers(&self) -> bool {
+        !self.revocable
+            && self
+                .ring_buffer
+                .as_ref()
+                .is_some_and(|rb| !rb.can_produce())
+    }
 }
 
 impl<D: ElementDescriptor + 'static> ObservationRingBuffer<D> {
@@ -800,6 +957,13 @@ pub(super) trait UntypedOQueueImplementation: Sync + Send + Any {
 
     /// Get the oldest cursor which will return a value.
     fn oldest_cursor(&self, observer_id: ObserverKey) -> Cursor;
+
+    /// Register a hook to run where the OQueue wakes its waiters. This is used to implement
+    /// [`WakeHook`].
+    fn add_wake_hook(&self, event: WakeEvent, hook: Box<dyn Fn() + Send>) -> WakeHookKey;
+
+    /// Unregister a hook added by [`Self::add_wake_hook`] for `event`.
+    fn remove_wake_hook(&self, event: WakeEvent, key: WakeHookKey);
 }
 
 assert_obj_safe!(UntypedOQueueImplementation);
@@ -807,7 +971,14 @@ assert_obj_safe!(UntypedOQueueImplementation);
 impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImplementation<D> {
     fn detach_observer(&self, observer_id: ObserverKey) {
         let mut inner = self.inner.lock();
-        inner.observer_ring_buffers.remove(observer_id);
+        let freed = inner
+            .observer_ring_buffers
+            .remove(observer_id)
+            .is_some_and(|r| self.unfull(r.blocks_producers()));
+        drop(inner);
+        if freed {
+            self.wake_space_freed();
+        }
     }
 
     fn detach_inline_strong_observer(&self, inline_observer_id: InlineObserverKey) {
@@ -825,6 +996,7 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
         let ObservationRingBuffer {
             try_strong_observe_into,
             ring_buffer,
+            revocable,
             ..
         } = inner
             .observer_ring_buffers
@@ -837,12 +1009,13 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
             return super::RevokedSnafu.fail();
         };
 
+        let was_full = !*revocable && !ring_buffer.can_produce();
         // SAFETY: weak_observe_into and ring_buffer where created together with the same type U.
         let ret = unsafe { try_strong_observe_into(ring_buffer, dest) };
+        let freed = ret && self.unfull(was_full);
         drop(inner);
-        // TODO(#309):PERFORMANCE: This should check if there is actually space to produce.
-        if ret {
-            self.produce_wait_queue.wake_all();
+        if freed {
+            self.wake_space_freed();
         }
         Ok(ret)
     }
@@ -941,6 +1114,14 @@ impl<D: ElementDescriptor + 'static> UntypedOQueueImplementation for OQueueImple
 
     fn remove_observe_waker(&self, key: WakerKey) {
         self.observe_wait_queue.remove(key);
+    }
+
+    fn add_wake_hook(&self, event: WakeEvent, hook: Box<dyn Fn() + Send>) -> WakeHookKey {
+        self.wake_hooks.lock().for_event(event).insert(hook)
+    }
+
+    fn remove_wake_hook(&self, event: WakeEvent, key: WakeHookKey) {
+        self.wake_hooks.lock().for_event(event).remove(key);
     }
 }
 

@@ -8,13 +8,16 @@ mod orpc_server;
 mod orpc_trait;
 mod parsing_utils;
 mod select;
+mod trace_methods;
 mod tuple_serialize;
 
 use proc_macro::TokenStream;
 use syn::{
-    ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
+    Item, ItemImpl, ItemStruct, ItemTrait, Path, Token, Visibility, parse_macro_input,
     punctuated::Punctuated,
 };
+
+use crate::trace_methods::ImplOptions;
 
 /// Declare a trait as an ORPC trait that can be implemented by ORPC server.
 ///
@@ -226,6 +229,72 @@ pub fn select(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
     input
+}
+
+/// Creates call and return OQueues for marked methods in a trait or impl.
+///
+/// ```ignore
+/// #[trace_methods(visibility = pub(crate))]
+/// trait Socket {
+///     #[trace]
+///     fn connect(&self, address: SocketAddr) -> Result<()>;
+/// }
+///
+/// #[trace_methods(trait_module = crate::net)]
+/// impl Socket for TcpSocket {
+///     #[trace]
+///     fn connect(&self, #[trace(only = call)] address: SocketAddr) -> Result<()> { /* ... */ }
+/// }
+/// ```
+///
+/// OQueues are named using: the crate, the module path, the type or trait name, the method, and
+/// finally either `call` or `return`. For example, if the above declarations are in `net::socket`
+/// in the `aster_core` crate (`kernel/core`), then the `connect` call OQueue will be
+/// `aster_core.net.socket.Socket.connect.call`. For trait methods, the OQueues are named after the
+/// *trait*, not the type implementing it (so all `impl`s share the same OQueues). For inherent
+/// methods, their OQueues are named after the type.
+///
+/// The event types are in a `snake_case` module named after the trait or implementing type. They
+/// are named in `CamelCase` based on the method name followed by `Call` or `Return`. For example,
+/// the type are `net::socket::socket::ConnectCall` and `net::socket::socket::ConnectReturn` for
+/// `connect`.
+///
+/// Fields are named based on argument names (from the `trait` declaration or the `impl` for
+/// inherent methods). The names are the argument names without leading underscores (to make names
+/// independent of if an argument is used), and `return_value` for the return value. Any field names
+/// which conflict with Rust keywords have `_` appended (e.g., `self_`). For methods declared in a
+/// trait, `self` has type `&dyn Trait`. For inherent methods, `self` has type `&Type`
+///
+/// Use `trait_module = ...` on a trait `impl` to give the path to the module containing the trait
+/// when the trait path is unqualified.
+///
+/// Use `visibility = ...` to specify the visibility of the event types.
+///
+/// Arguments may be left out of either event with `#[trace(only = call)]` or
+/// `#[trace(only = return)]`. An empty `#[trace(only = ())]` omits an argument from both events.
+#[proc_macro_attribute]
+pub fn trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let options = parse_macro_input!(attr as ImplOptions);
+    let item = parse_macro_input!(input as Item);
+    let result = match item {
+        Item::Impl(impl_block) => trace_methods::trace_methods_impl(options, impl_block),
+        Item::Trait(trait_item) => trace_methods::trace_methods_trait(options, trait_item),
+        item => Err(syn::Error::new_spanned(
+            item,
+            "trace_methods must be placed on a trait or impl",
+        )),
+    };
+    result.unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+/// Keeps traced methods unchanged in baseline mode, removing their tracing annotations.
+#[proc_macro_attribute]
+pub fn baseline_trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let _options = parse_macro_input!(attr as ImplOptions);
+    let item = parse_macro_input!(input as Item);
+    trace_methods::baseline_trace_methods(item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// Implement `serde::Serialize` for a struct by serializing it as a tuple, instead of a map with
