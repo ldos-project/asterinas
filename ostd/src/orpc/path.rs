@@ -244,6 +244,24 @@ impl Path {
         )
     }
 
+    /// Builds the default path for an OQueue generated from a traced method.
+    ///
+    /// User code should always use the `path!` macro. This is only for macro generated code.
+    #[doc(hidden)]
+    pub fn traced_method_path(delimited_path: Option<&'static str>, rest: &[&'static str]) -> Self {
+        if let Some(delimited_path) = delimited_path {
+            Self::new(
+                delimited_path
+                    .split("::")
+                    .chain(rest.iter().copied())
+                    .map(PathComponent::Name)
+                    .collect(),
+            )
+        } else {
+            Self::new(rest.iter().copied().map(PathComponent::Name).collect())
+        }
+    }
+
     #[cfg(ktest)]
     /// Create an arbitrary path to use for testing.
     pub fn test() -> Path {
@@ -254,6 +272,13 @@ impl Path {
     fn is_static(&self) -> bool {
         matches!(self, Self::Static(_))
     }
+}
+
+/// Get the create name from an overall module path. This is simply the first segment of the module
+/// path.
+#[doc(hidden)]
+pub fn crate_name_from_module_path(module_path: &'static str) -> &'static str {
+    module_path.split("::").next().unwrap()
 }
 
 /// A pattern for matching against a path component.
