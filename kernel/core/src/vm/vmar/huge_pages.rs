@@ -29,7 +29,7 @@ aster_cmdline::define_flag_param!(
 
 /// Returns true if huge page mappings should be preserved when a MADV_DONTNEED is issued.
 #[expect(unused)]
-pub fn huge_mapping_preserve_on_dontneed() -> bool {
+pub(crate) fn huge_mapping_preserve_on_dontneed() -> bool {
     MAP_HUGE_PRESERVE_ON_DONTNEED.load(Ordering::Relaxed)
 }
 

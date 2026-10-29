@@ -19,7 +19,6 @@ targets = ["x86_64-unknown-none"]
 align_ext.workspace = true
 bitflags.workspace = true
 bitvec.workspace = true
-crossbeam-utils.workspace = true
 gimli.workspace = true
 id-alloc.workspace = true
 inherit-methods-macro.workspace = true
@@ -36,7 +35,7 @@ serde.workspace = true
 snafu.workspace = true
 spin.workspace = true
 smallvec.workspace = true
-tinyvec.workspace = true
+tinyvec = { workspace = true, optional = true }
 zerocopy.workspace = true
 hashbrown.workspace = true
 
@@ -82,7 +81,7 @@ unwinding = { workspace = true, features = ["fde-static"] }
 
 [features]
 default = ["cvm_guest"]
-capture_stacks = []
+capture_stacks = ["dep:tinyvec"]
 track_mutex = []
 capture_scheduling = []
 # The guest OS support for Confidential VMs (CVMs), e.g., Intel TDX

@@ -31,7 +31,7 @@ use crate::parsing_utils::generics_to_phantom;
 ///     payload: String,
 /// }
 /// ```
-pub fn element_derive(input: TokenStream) -> TokenStream {
+pub(crate) fn element_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemStruct);
     let struct_ident = &input.ident;
     let vis = &input.vis;

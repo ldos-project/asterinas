@@ -157,7 +157,7 @@ impl<'rcu, C: PageTableConfig> Cursor<'rcu, C> {
     }
 
     /// Splits all huge pages locked by the cursor into base pages.
-    pub fn split_if_mapped_huge_all(&mut self) {
+    pub(crate) fn split_if_mapped_huge_all(&mut self) {
         let va = self.virt_addr();
         let end = self.barrier_va.end;
         // TODO(aneesh): We need to ensure that we don't jump all the way to the end of the addr
@@ -415,7 +415,7 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
     /// If the current virtual address is mapped as a huge page, split it into base pages.
     ///
     /// This is the same as [`Cursor::split_if_mapped_huge_all`]
-    pub fn split_if_mapped_huge_all(&mut self) {
+    pub(crate) fn split_if_mapped_huge_all(&mut self) {
         self.0.split_if_mapped_huge_all();
     }
 

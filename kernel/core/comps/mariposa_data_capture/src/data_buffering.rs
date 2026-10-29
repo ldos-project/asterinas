@@ -31,14 +31,14 @@ struct DataBuf {
 
 impl DataBuf {
     /// Creates a new DataBuf with the specified size.
-    pub fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         DataBuf {
             data: Serializer::new(Vec::with_capacity(size)),
         }
     }
 
     /// Writes a [`Serialize`] value to the buffer at the current offset.
-    pub fn write_value<T>(&mut self, v: &T)
+    pub(crate) fn write_value<T>(&mut self, v: &T)
     where
         T: Serialize,
     {
@@ -46,18 +46,18 @@ impl DataBuf {
     }
 
     /// Writes raw bytes to the buffer at the current position.
-    pub fn write_bytes(&mut self, v: &[u8]) {
+    pub(crate) fn write_bytes(&mut self, v: &[u8]) {
         let data = self.data.encoder_mut().writer_mut();
         data.extend(v);
     }
 
     /// Returns a slice containing all written data in the buffer.
-    pub fn written_data(&self) -> &[u8] {
+    pub(crate) fn written_data(&self) -> &[u8] {
         self.data.encoder().writer()
     }
 
     /// Removes the leading n bytes by shifting remaining data to start of buffer.
-    pub fn delete(&mut self, n: usize) {
+    pub(crate) fn delete(&mut self, n: usize) {
         let data = self.data.encoder_mut().writer_mut();
         let remaining = data.len() - n;
         data.drain(0..n);
@@ -65,7 +65,7 @@ impl DataBuf {
     }
 
     /// Returns the number of bytes currently in the buffer.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.written_data().len()
     }
 }
@@ -80,7 +80,7 @@ pub(crate) struct ChunkingWriteWrapper {
 
 impl ChunkingWriteWrapper {
     /// Create a new wrapper for chunking writes.
-    pub fn new(
+    pub(crate) fn new(
         buffer_size: usize,
         block_device: Arc<dyn BlockDevice>,
         start_bid: Bid,
@@ -97,7 +97,7 @@ impl ChunkingWriteWrapper {
     /// Writes a [`Serialize`] value to the output.
     ///
     /// See [`DataBuf::write_value`].
-    pub fn write_value<T>(&mut self, v: &T)
+    pub(crate) fn write_value<T>(&mut self, v: &T)
     where
         T: Serialize,
     {
@@ -105,7 +105,7 @@ impl ChunkingWriteWrapper {
     }
 
     /// Flushes a block to storage if it contains more than one block's worth of data.
-    pub fn flush_if_needed(&mut self) -> Result<(), DataCaptureError> {
+    pub(crate) fn flush_if_needed(&mut self) -> Result<(), DataCaptureError> {
         if self.data_buf.len() > BLOCK_SIZE {
             let n_written = self.flush()?;
             self.current_bid = self.current_bid + 1;
@@ -120,7 +120,7 @@ impl ChunkingWriteWrapper {
     ///
     /// The same page may be written again if this is called again and if it was not full when this
     /// was called the first time.
-    pub fn flush(&mut self) -> Result<usize, DataCaptureError> {
+    pub(crate) fn flush(&mut self) -> Result<usize, DataCaptureError> {
         ensure!(self.current_bid < self.end_bid, InsufficientSpaceSnafu);
 
         let raw_data = self.data_buf.written_data();
@@ -140,14 +140,18 @@ impl ChunkingWriteWrapper {
     }
 
     /// Sync all of the data to the block device.
-    pub fn sync(&mut self) -> Result<(), DataCaptureError> {
+    pub(crate) fn sync(&mut self) -> Result<(), DataCaptureError> {
         self.flush()?;
         self.block_device.sync()?;
         Ok(())
     }
 
     /// Writes a structured header with magic number, type information, and paths.
-    pub fn write_header<T>(&mut self, name: &str, paths: &[Path]) -> Result<(), DataCaptureError> {
+    pub(crate) fn write_header<T>(
+        &mut self,
+        name: &str,
+        paths: &[Path],
+    ) -> Result<(), DataCaptureError> {
         // Write magic number
         self.data_buf.write_bytes(MAGIC);
 

@@ -9,7 +9,7 @@ use super::{time, *};
 use crate::time::Clock as _;
 
 /// Returns true if any benchmark parameters have been set.
-pub fn is_benchmark_enabled() -> bool {
+pub(crate) fn is_benchmark_enabled() -> bool {
     BENCH_NAME.get().is_some()
 }
 
@@ -20,7 +20,7 @@ mod oqueue;
 #[cfg(not(baseline_asterinas))]
 pub(super) mod oqueue_roundtrip;
 
-pub trait Benchmark {
+pub(crate) trait Benchmark {
     fn init(&mut self, _n_threads: usize, _n_repeat: usize, _iter: usize) {}
     fn run(&self, completed: Arc<AtomicUsize>);
     fn finalize(&self) {}
@@ -28,7 +28,7 @@ pub trait Benchmark {
     fn name(&self) -> &str;
 }
 
-pub struct BenchmarkHarness {
+pub(crate) struct BenchmarkHarness {
     pub n_threads: usize,
     pub n_repeat: usize,
     pub benchmark: String,
@@ -37,7 +37,7 @@ pub struct BenchmarkHarness {
 }
 
 impl BenchmarkHarness {
-    pub fn run() {
+    pub(crate) fn run() {
         let mut bench = Self::new();
 
         fn_call::register_benchmarks(&mut bench);
@@ -65,7 +65,7 @@ impl BenchmarkHarness {
         }
     }
 
-    pub fn register_benchmark(&mut self, bench: Box<dyn Benchmark>) {
+    pub(crate) fn register_benchmark(&mut self, bench: Box<dyn Benchmark>) {
         let name = bench.name();
         if self.benchmarks.iter().any(|b| b.name() == name) {
             panic!("Duplicate benchmark {} registered!", bench.name());
@@ -74,7 +74,7 @@ impl BenchmarkHarness {
         self.benchmarks.push(bench);
     }
 
-    pub fn main(&mut self) {
+    pub(crate) fn main(&mut self) {
         let benchmark = self
             .benchmarks
             .iter_mut()

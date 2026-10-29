@@ -100,7 +100,7 @@ fn init() {
 ///
 /// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/221): Something less ad-hoc.
 #[cfg(ktest)]
-pub fn init_for_ktest() {
+pub(crate) fn init_for_ktest() {
     static INITIALIZED: Once<()> = Once::new();
 
     INITIALIZED.call_once(|| {

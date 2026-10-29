@@ -254,6 +254,7 @@ mod tests {
             file::{AccessMode, PerOpenFileOps, StatusFlags},
             vfs::inode::FileOps,
         },
+        prelude::Result,
         process::signal::PollAdaptor,
     };
 
@@ -262,7 +263,7 @@ mod tests {
         inode: Arc<dyn Inode>,
         access_mode: AccessMode,
         status_flags: StatusFlags,
-    ) -> Option<crate::prelude::Result<Box<dyn PerOpenFileOps>>> {
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         let dentry = Dentry::new_root(inode.clone());
         inode.open(&dentry, access_mode, status_flags)
     }
@@ -572,18 +573,19 @@ mod tests {
         registry::register(&path, &queue.as_any_oqueue());
 
         let fs = OQueueFs::new();
-        let stream = match fs
-            .root_inode()
-            .lookup("oqfstest")
-            .unwrap()
-            .lookup("pollread")
-            .unwrap()
-            .lookup("0")
-            .unwrap()
-            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-        {
+        let stream = match open_inode(
+            fs.root_inode()
+                .lookup("oqfstest")
+                .unwrap()
+                .lookup("pollread")
+                .unwrap()
+                .lookup("0")
+                .unwrap()
+                .lookup(reader::STRONG_OBSERVE_FILE_NAME)
+                .unwrap(),
+            AccessMode::O_RDONLY,
+            StatusFlags::O_NONBLOCK,
+        ) {
             Some(Ok(stream)) => stream,
             _ => panic!("opening strong_observe should mint a stream handle"),
         };
@@ -635,18 +637,19 @@ mod tests {
         let consumer = queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
-        let handle = match fs
-            .root_inode()
-            .lookup("oqfstest")
-            .unwrap()
-            .lookup("pollwrite")
-            .unwrap()
-            .lookup("0")
-            .unwrap()
-            .lookup(produce::FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_WRONLY, StatusFlags::empty())
-        {
+        let handle = match open_inode(
+            fs.root_inode()
+                .lookup("oqfstest")
+                .unwrap()
+                .lookup("pollwrite")
+                .unwrap()
+                .lookup("0")
+                .unwrap()
+                .lookup(produce::FILE_NAME)
+                .unwrap(),
+            AccessMode::O_WRONLY,
+            StatusFlags::empty(),
+        ) {
             Some(Ok(handle)) => handle,
             _ => panic!("opening produce should mint a write handle"),
         };

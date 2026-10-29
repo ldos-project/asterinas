@@ -37,7 +37,7 @@ pub struct PmuServer {
 
 impl PmuServer {
     /// Create and spawn a new PmuServer.
-    pub fn spawn() -> Arc<Self> {
+    pub(crate) fn spawn() -> Arc<Self> {
         let pmud = Self::new().unwrap();
         // TODO(tewaro, after SOSP) needs to run inline with jiffies and defer push to oqueue
         spawn_thread(pmud.clone(), {
@@ -46,7 +46,7 @@ impl PmuServer {
         });
         pmud
     }
-    pub fn new() -> Result<Arc<Self>, Whatever> {
+    pub(crate) fn new() -> Result<Arc<Self>, Whatever> {
         let server = new_server!(|_| Self {
             dtlb_miss_count_oqueue: GenericOQueueRef::new(32, path!(pmu.dtlb_miss_count)),
         });
@@ -54,16 +54,16 @@ impl PmuServer {
     }
 
     /// Resets counter and automatically stops it from continuing.
-    pub fn reset(&self) {
+    pub(crate) fn reset(&self) {
         ostd::arch::pmu::pmu_reset();
     }
 
     /// Starts collecting at the hardcoded interval set by the system.
-    pub fn start(&self) {
+    pub(crate) fn start(&self) {
         ostd::arch::pmu::pmu_start();
     }
 
-    pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
+    pub(crate) fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
         // TODO(tewaro, after SOSP): for now we assume one cpu, when we come back to make this
         // multi-cpu we should also investigate making this multi-process as it will be easier to
         // work with

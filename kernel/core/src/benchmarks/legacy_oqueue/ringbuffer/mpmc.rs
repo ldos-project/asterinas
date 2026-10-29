@@ -82,7 +82,11 @@ const MPMCOQUEUE_HEAD_SENTINEL: usize = 1 << 63;
 /// observers. A consumed message cannot be viewed by a future strong observer, but could be viewed
 /// by a weak observer. Note that if either of STRONG_OBSERVERS or WEAK_OBSERVERS is set to true,
 /// then T must be Copy, otherwise the OQueue trait will not be implemented.
-pub struct MPMCOQueue<T, const STRONG_OBSERVERS: bool = true, const WEAK_OBSERVERS: bool = true> {
+pub(crate) struct MPMCOQueue<
+    T,
+    const STRONG_OBSERVERS: bool = true,
+    const WEAK_OBSERVERS: bool = true,
+> {
     this: Weak<Self>,
     capacity: NonZero<usize>,
     max_strong_observers: usize,
@@ -157,7 +161,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>
 {
     /// Create a new MPMCOQueue with a maximum size and a maximum number of strong observers.
-    pub fn new(capacity: usize, max_strong_observers: usize) -> Arc<Self> {
+    pub(crate) fn new(capacity: usize, max_strong_observers: usize) -> Arc<Self> {
         assert!(max_strong_observers == 0 || STRONG_OBSERVERS);
         assert!(capacity.is_power_of_two());
         assert!(capacity > 0);
@@ -182,7 +186,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
     }
 
     /// Get the capacity of the queue
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.capacity.into()
     }
 
@@ -457,7 +461,7 @@ impl<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool>
 }
 
 /// The producer handle for [`MPMCOQueue`].
-pub struct MPMCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+pub(crate) struct MPMCProducer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
     oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
@@ -506,7 +510,7 @@ impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool
 }
 
 /// The consumer handle for [`MPMCOQueue`].
-pub struct MPMCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
+pub(crate) struct MPMCConsumer<T, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool> {
     oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, WEAK_OBSERVERS>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
@@ -560,7 +564,7 @@ impl<T: Send + 'static, const STRONG_OBSERVERS: bool, const WEAK_OBSERVERS: bool
 }
 
 /// The strong observer handle for [`MPMCOQueue`].
-pub struct MPMCStrongObserver<T, const WEAK_OBSERVERS: bool> {
+pub(crate) struct MPMCStrongObserver<T, const WEAK_OBSERVERS: bool> {
     oqueue: Arc<MPMCOQueue<T, true, WEAK_OBSERVERS>>,
     observer_id: usize,
     // Make this Send, but not Sync
@@ -608,7 +612,7 @@ impl<T: Copy + Send, const WEAK_OBSERVERS: bool> StrongObserver<T>
 }
 
 /// The weak-observer handle for [`MPMCOQueue`].
-pub struct MPMCWeakObserver<T, const STRONG_OBSERVERS: bool> {
+pub(crate) struct MPMCWeakObserver<T, const STRONG_OBSERVERS: bool> {
     oqueue: Arc<MPMCOQueue<T, STRONG_OBSERVERS, true>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,

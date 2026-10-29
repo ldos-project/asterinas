@@ -42,12 +42,12 @@ pub(super) unsafe fn check_ept_support(_irq_guard: &DisabledLocalIrqGuard) -> Re
     // SAFETY: The caller guarantees VMX support.
     let primary_allowed_1 = (unsafe { rdmsr(IA32_VMX_PROCBASED_CTLS) } >> 32) as u32;
     if primary_allowed_1 & PrimaryControls::SECONDARY_CONTROLS.bits() == 0 {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
     // SAFETY: The primary-control check established secondary-control support.
     let secondary_allowed_1 = (unsafe { rdmsr(IA32_VMX_PROCBASED_CTLS2) } >> 32) as u32;
     if secondary_allowed_1 & SecondaryControls::ENABLE_EPT.bits() == 0 {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
 
     // SAFETY: The secondary-control check established EPT support.
@@ -63,7 +63,7 @@ pub(super) unsafe fn check_ept_support(_irq_guard: &DisabledLocalIrqGuard) -> Re
         // All-context INVEPT.
         | (1 << 26);
     if cap & REQUIRED != REQUIRED {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
     Ok(())
 }

@@ -86,7 +86,7 @@ impl ProcessVm {
     /// Creates a new `ProcessVm` for testing
     #[cfg(ktest)]
     #[expect(unused)]
-    pub fn new_test() -> Self {
+    pub(crate) fn new_test() -> Self {
         use crate::fs::pseudofs::AnonInodeFs;
 
         Self::new(AnonInodeFs::new_path(|_| "test_executable".to_string()))

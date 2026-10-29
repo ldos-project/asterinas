@@ -118,10 +118,10 @@ impl Drop for VmxGuard {
 impl VmxGuardState {
     fn acquire_vmx(&mut self) -> Result<()> {
         if self.is_poisoned {
-            return crate::error::InvalidArgsSnafu.fail();
+            return error::InvalidArgsSnafu.fail();
         }
         if self.active_guards == usize::MAX {
-            return crate::error::OverflowSnafu.fail();
+            return error::OverflowSnafu.fail();
         }
         if self.active_guards != 0 {
             self.active_guards += 1;
@@ -326,7 +326,7 @@ impl VmxCpuState {
 
 fn read_and_validate_capability(vmx_cr4: u64, _irq_guard: &DisabledLocalIrqGuard) -> Result<u32> {
     if !has_extensions(IsaExtensions::VMX) {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
 
     // SAFETY: A CPU that enumerates VMX provides the architectural VMX MSRs read below.
@@ -342,20 +342,20 @@ fn read_and_validate_capability(vmx_cr4: u64, _irq_guard: &DisabledLocalIrqGuard
     };
 
     if feature_control & FEATURE_CONTROL_VMX_OUTSIDE_SMX == 0 {
-        return crate::error::AccessDeniedSnafu.fail();
+        return error::AccessDeniedSnafu.fail();
     }
 
     if !control_register_is_valid(Cr0::read_raw(), cr0_fixed0, cr0_fixed1)
         || !control_register_is_valid(vmx_cr4, cr4_fixed0, cr4_fixed1)
     {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
 
     // OSTD's linear mapping uses write-back memory. See Intel SDM,
     // Vol. 3D, Appendix A.1, for the VMCS memory-type requirement.
     const VMCS_MEMORY_TYPE_WB: u64 = 6;
     if (vmx_basic >> 50) & 0xf != VMCS_MEMORY_TYPE_WB {
-        return crate::error::NotEnoughResourcesSnafu.fail();
+        return error::NotEnoughResourcesSnafu.fail();
     }
 
     Ok(vmx_basic as u32 & 0x7fff_ffff)

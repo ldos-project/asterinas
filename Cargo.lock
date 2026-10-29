@@ -1333,7 +1333,6 @@ name = "mariposa_data_capture"
 version = "0.1.0"
 dependencies = [
  "aster-block",
- "aster-logger",
  "component",
  "io-util",
  "log",
@@ -1530,7 +1529,6 @@ dependencies = [
  "bit_field",
  "bitflags 1.3.2",
  "bitvec",
- "crossbeam-utils",
  "fdt",
  "gimli 0.28.1",
  "hashbrown 0.14.5",
