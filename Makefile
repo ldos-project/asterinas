@@ -22,6 +22,8 @@ FEATURES ?=
 ENABLE_RAID_TEST ?= 0
 NO_DEFAULT_FEATURES ?= 0
 BASELINE_ASTERINAS ?= 0
+# TOML file of kernel command-line parameters (see `kcmd_configs/default.toml`).
+KCMD_CONFIG ?= kcmd_configs/default.toml
 RUSTFLAGS ?=
 COVERAGE ?= 0
 
@@ -168,9 +170,7 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
 else ifeq ($(AUTO_TEST), raid)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
-# Only the RAID1 test depends on the userspace selection-policy server, so this stays scoped to
-# `AUTO_TEST=raid` rather than being an always-applied `OSDK.toml` kcmd arg.
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="raid.selection=userspace"
+KCMD_CONFIG = kcmd_configs/raid_test.toml
 else ifeq ($(AUTO_TEST), oqbench)
 # Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel thread <->
 # userspace peer pipeline completes a clean round trip and the samples reach the capture device. The
@@ -211,6 +211,11 @@ endif
 # launched instead of the shell.
 INITARGS ?=
 CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(INITARGS), --init-args="$(ARG)")
+
+# Added after the Makefile's own kernel args and before `KCMDARGS`; on a repeated parameter the later
+# value wins. Errors are reported by `check_kcmd_config`, so only targets that build the kernel fail.
+KCMD_CONFIG_ARGS := $(shell python3 tools/kcmd_config.py $(KCMD_CONFIG) 2>/dev/null)
+CARGO_OSDK_BUILD_ARGS += $(foreach ARG, $(KCMD_CONFIG_ARGS), --kcmd-args="$(ARG)")
 
 # If KCMDARGS is set, it will be passed as kernel command line args. In the kernel you can access these via KCmdlineArg.
 KCMDARGS ?=
@@ -326,6 +331,12 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+.PHONY: check_kcmd_config
+check_kcmd_config:
+	@echo "Kernel command-line config $(KCMD_CONFIG):"
+	@python3 tools/kcmd_config.py $(KCMD_CONFIG) \
+		|| (echo "Error: cannot read the kernel command-line config '$(KCMD_CONFIG)'"; exit 1)
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable
@@ -343,12 +354,12 @@ initramfs: check_vdso
 
 # Build the kernel with an initramfs
 .PHONY: kernel
-kernel: initramfs $(CARGO_OSDK)
+kernel: check_kcmd_config initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
-run_kernel: initramfs $(CARGO_OSDK)
+run_kernel: check_kcmd_config initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 # TODO(arthurp, https://github.com/ldos-project/asterinas/issues/237): Using `^` to anchor to the
@@ -430,7 +441,7 @@ kill_qemu:
 	pkill qemu-system-x86
 
 .PHONY: gdb_server
-gdb_server: initramfs $(CARGO_OSDK)
+gdb_server: check_kcmd_config initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
@@ -444,7 +455,7 @@ gdb_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk debug $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT)
 
 .PHONY: profile_server
-profile_server: initramfs $(CARGO_OSDK)
+profile_server: check_kcmd_config initramfs $(CARGO_OSDK)
 	@[ $(ENABLE_KVM) -eq 1 ] && \
 		([ $(KVM_EXISTS) -eq 1 ] || \
 			echo Warning: KVM not present on your system)
