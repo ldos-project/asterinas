@@ -8,16 +8,7 @@
 # the upstream asterinas/linux_vdso repository.
 #
 # TODO: Like the Docker image, this does not provide the riscv64 or aarch64 vDSO.
-{
-  stdenv,
-  fetchurl,
-  bc,
-  bison,
-  flex,
-  perl,
-  elfutils,
-  openssl,
-}:
+{ stdenv, fetchurl, bc, bison, flex, perl, elfutils, openssl, }:
 
 stdenv.mkDerivation rec {
   pname = "asterinas-vdso";
@@ -25,20 +16,13 @@ stdenv.mkDerivation rec {
 
   # Keep this in sync with the Dockerfile's linux-6.2.10.tar.xz.
   src = fetchurl {
-    url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz";
+    url =
+      "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${version}.tar.xz";
     hash = "sha256-V8Viw80nU/IyVJyrBcitdw7YSK6GQBYZx1gb3/rupP4=";
   };
 
-  nativeBuildInputs = [
-    bc
-    bison
-    flex
-    perl
-  ];
-  buildInputs = [
-    elfutils
-    openssl
-  ];
+  nativeBuildInputs = [ bc bison flex perl ];
+  buildInputs = [ elfutils openssl ];
 
   # The kernel build manages its own flags.
   hardeningDisable = [ "all" ];

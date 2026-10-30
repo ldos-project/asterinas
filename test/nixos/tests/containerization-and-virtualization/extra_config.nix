@@ -1,10 +1,7 @@
 { pkgs, ... }:
 
 {
-  environment.systemPackages = with pkgs; [
-    skopeo
-    qemu_kvm
-  ];
+  environment.systemPackages = with pkgs; [ skopeo qemu_kvm ];
   virtualisation.podman.enable = true;
 
   environment.variables = {

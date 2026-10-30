@@ -1,8 +1,4 @@
-{
-  stdenvNoCC,
-  pkgsBuildBuild,
-  initramfs,
-}:
+{ stdenvNoCC, pkgsBuildBuild, initramfs, }:
 stdenvNoCC.mkDerivation {
   name = "rootfs-image";
   nativeBuildInputs = with pkgsBuildBuild; [ e2fsprogs ];

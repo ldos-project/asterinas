@@ -1,10 +1,4 @@
-{
-  config,
-  lib,
-  pkgs,
-  options,
-  ...
-}:
+{ config, lib, pkgs, options, ... }:
 let
   kernel = builtins.path {
     name = "asterinas-osdk-bin";
@@ -72,8 +66,7 @@ let
       }
     ];
   };
-in
-{
+in {
   boot.loader.grub.enable = true;
   boot.loader.grub.configurationLimit = 1;
   boot.loader.grub.efiSupport = true;
@@ -95,9 +88,7 @@ in
   '';
   # Suppress error and warning messages of systemd.
   # TODO: Fix errors and warnings from systemd and remove this setting.
-  environment.sessionVariables = {
-    SYSTEMD_LOG_LEVEL = "crit";
-  };
+  environment.sessionVariables = { SYSTEMD_LOG_LEVEL = "crit"; };
   system.systemBuilderCommands = ''
     echo "PATH=/bin:/nix/var/nix/profiles/system/sw/bin earlycon loglevel=${config.aster_nixos.log-level} console=${config.aster_nixos.console} systemd.getty_auto=no -- root=/dev/vda2 init=/nix/var/nix/profiles/system/init rd.break=${
       if config.aster_nixos.break-into-stage-1-shell then "1" else "0"
@@ -112,17 +103,12 @@ in
   '';
   system.activationScripts.modprobe = lib.mkForce "";
 
-  nix.nixPath = [
-    "nixpkgs=${pkgs.path}"
-  ]
-  ++ builtins.filter (entry: !(lib.hasPrefix "nixpkgs=" entry)) options.nix.nixPath.default
-  ++ [ "nixpkgs-overlays=/etc/nixos/overlays" ];
+  nix.nixPath = [ "nixpkgs=${pkgs.path}" ]
+    ++ builtins.filter (entry: !(lib.hasPrefix "nixpkgs=" entry))
+    options.nix.nixPath.default ++ [ "nixpkgs-overlays=/etc/nixos/overlays" ];
   system.extraDependencies = [ (builtins.storePath pkgs.path) ];
   nix.settings = {
-    experimental-features = [
-      "nix-command"
-      "flakes"
-    ];
+    experimental-features = [ "nix-command" "flakes" ];
     filter-syscalls = false;
     require-sigs = false;
     sandbox = false;

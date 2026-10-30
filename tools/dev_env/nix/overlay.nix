@@ -7,13 +7,11 @@ final: prev:
   # Rust nightly from rust-toolchain.toml, including components and targets.
   # The shell also carries rust-analyzer from the same nightly; the toml
   # stays the single source of truth and the rustup contract is unchanged.
-  asterinas-rust-toolchain =
-    let
-      toolchain = (builtins.fromTOML (builtins.readFile ../../../rust-toolchain.toml)).toolchain;
-    in
-    final.rust-bin.fromRustupToolchain (
-      toolchain // { components = toolchain.components ++ [ "rust-analyzer" ]; }
-    );
+  asterinas-rust-toolchain = let
+    toolchain = (builtins.fromTOML
+      (builtins.readFile ../../../rust-toolchain.toml)).toolchain;
+  in final.rust-bin.fromRustupToolchain
+  (toolchain // { components = toolchain.components ++ [ "rust-analyzer" ]; });
 
   # Linux vDSO embedded by the kernel build, built from the same Linux release
   # as tools/dev_env/docker/kernel-dev/Dockerfile rather than taken from the

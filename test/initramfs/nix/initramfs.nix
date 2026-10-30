@@ -1,21 +1,6 @@
-{
-  lib,
-  pkgs,
-  stdenvNoCC,
-  fetchFromGitHub,
-  hostPlatform,
-  writeClosure,
-  busybox,
-  oqueue-reader,
-  raid-policy-server,
-  oqbench-server,
-  benchmark,
-  conformance,
-  regression,
-  dnsServer,
-  authorized_keys,
-  enablePython,
-}:
+{ lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
+, oqueue-reader, raid-policy-server, oqbench-server, benchmark, conformance
+, regression, dnsServer, authorized_keys, enablePython, }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -23,45 +8,34 @@ let
     root = ./../etc;
     fileset = ./../etc;
   };
-  python3 = pkgs.python312.withPackages (
-    python-pkgs: with python-pkgs; [
-      pip
-      cbor2
-    ]
-  );
+  python3 =
+    pkgs.python312.withPackages (python-pkgs: with python-pkgs; [ pip cbor2 ]);
   # The openssh dependency is only for the sftp-server binary. The actual ssh server is still provided by dropbear.
   openssh = pkgs.openssh;
   dropbear = pkgs.dropbear.override {
     enableSCP = true;
     sftpPath = "/bin/sftp-server";
   };
-  dropbear_conf = pkgs.callPackage ./dropbear-conf.nix { authorized_keys = authorized_keys; };
-  gvisor_libs =
-    if conformance != null && conformance.testSuite == "gvisor" then
-      builtins.path {
-        name = "gvisor-libs";
-        path = "/lib/x86_64-linux-gnu";
-      }
-    else
-      null;
+  dropbear_conf =
+    pkgs.callPackage ./dropbear-conf.nix { authorized_keys = authorized_keys; };
+  gvisor_libs = if conformance != null && conformance.testSuite == "gvisor" then
+    builtins.path {
+      name = "gvisor-libs";
+      path = "/lib/x86_64-linux-gnu";
+    }
+  else
+    null;
   resolv_conf = pkgs.callPackage ./resolv_conf.nix { dnsServer = dnsServer; };
   # Whether the initramfs should include evtest, a common tool to debug input devices (`/dev/input/eventX`)
   is_evtest_included = false;
 
-  all_pkgs = [
-    busybox
-    dropbear
-    openssh
-    etc
-    resolv_conf
-  ]
-  ++ lib.optionals enablePython [ python3 ]
-  ++ lib.optionals (benchmark != null) [ benchmark.package pkgs.mdadm ]
-  ++ lib.optionals (conformance != null) [ conformance.package ]
-  ++ lib.optionals (regression != null) [ regression.package ]
-  ++ lib.optionals is_evtest_included [ pkgs.evtest ];
-in
-stdenvNoCC.mkDerivation {
+  all_pkgs = [ busybox dropbear openssh etc resolv_conf ]
+    ++ lib.optionals enablePython [ python3 ]
+    ++ lib.optionals (benchmark != null) [ benchmark.package pkgs.mdadm ]
+    ++ lib.optionals (conformance != null) [ conformance.package ]
+    ++ lib.optionals (regression != null) [ regression.package ]
+    ++ lib.optionals is_evtest_included [ pkgs.evtest ];
+in stdenvNoCC.mkDerivation {
   name = "initramfs";
   buildCommand = ''
     mkdir -p $out/{dev,etc,root,usr,opt,tmp,var,proc,sys,host}
@@ -110,7 +84,8 @@ stdenvNoCC.mkDerivation {
       cp -r "${conformance.package}"/* $out/
     ''}
 
-    ${lib.optionalString (conformance != null && conformance.testSuite == "gvisor") ''
+    ${lib.optionalString
+    (conformance != null && conformance.testSuite == "gvisor") ''
       # FIXME: Build gvisor syscall test with nix to avoid manual library copying.
       mkdir -p $out/lib/x86_64-linux-gnu
       cp -L ${gvisor_libs}/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2

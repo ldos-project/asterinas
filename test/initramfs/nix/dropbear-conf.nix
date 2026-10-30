@@ -1,9 +1,4 @@
-{
-  lib,
-  pkgs,
-  stdenvNoCC,
-  authorized_keys ? "",
-}:
+{ lib, pkgs, stdenvNoCC, authorized_keys ? "", }:
 let
   start_dropbear_sh = builtins.toFile "start_dropbear.sh" ''
     # Launcher script for dropbear
@@ -18,8 +13,7 @@ let
     dropbear -s -p 10.0.2.15:22
   '';
   authorized_keys_file = builtins.toFile "authorized_keys" authorized_keys;
-in
-stdenvNoCC.mkDerivation {
+in stdenvNoCC.mkDerivation {
   name = "dropbear-conf";
   buildCommand = ''
     # Insert the provided user keys into the image

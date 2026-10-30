@@ -12,10 +12,7 @@ rustPlatform.buildRustPackage {
   # `oqueue-reader`. A dynamically-linked binary's ELF interpreter and libc would point into the
   # nix store, which is not present in the initramfs, so the guest could never `exec` it. Static
   # linking avoids that entirely. `glibc.static` provides `libc.a`.
-  buildInputs = [
-    glibc
-    glibc.static
-  ];
+  buildInputs = [ glibc glibc.static ];
   # `crt-static` makes rustc link the static glibc above instead of the normal dynamic one.
   RUSTFLAGS = "-C target-feature=+crt-static";
 

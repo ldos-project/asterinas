@@ -69,14 +69,8 @@ let
       }
     '';
   };
-in
-{
-  environment.systemPackages = with pkgs; [
-    apacheHttpd
-    caddy
-    nginx
-    openresty
-  ];
+in {
+  environment.systemPackages = with pkgs; [ apacheHttpd caddy nginx openresty ];
 
   users.groups.apache = { };
 

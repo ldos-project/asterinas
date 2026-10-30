@@ -1,25 +1,20 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ config, lib, pkgs, ... }:
 
-/*
-  Module: XFCE desktop defaults (wallpaper and icons)
-  Purpose:
-    - Provide system-wide default XFCE desktop settings via /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml.
-    - Set a default wallpaper and desktop icon visibility (home, filesystem, removable, trash).
+/* Module: XFCE desktop defaults (wallpaper and icons)
+   Purpose:
+     - Provide system-wide default XFCE desktop settings via /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml.
+     - Set a default wallpaper and desktop icon visibility (home, filesystem, removable, trash).
 
-  How it integrates with XFCE:
-    - XFCE reads settings from the xfconf daemon (channel: "xfce4-desktop").
-    - If a per-user file exists at ~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml,
-      that overrides the system default in /etc/xdg. This module does NOT override per-user settings.
+   How it integrates with XFCE:
+     - XFCE reads settings from the xfconf daemon (channel: "xfce4-desktop").
+     - If a per-user file exists at ~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml,
+       that overrides the system default in /etc/xdg. This module does NOT override per-user settings.
 */
 
 let
   wallpaper = pkgs.fetchurl {
-    url = "https://ldos.utexas.edu/sites/default/files/2024-03/under-stairs.jpg";
+    url =
+      "https://ldos.utexas.edu/sites/default/files/2024-03/under-stairs.jpg";
     sha256 = "191nc88n4y4n3srxdn6g4y8fcc3vmld8wjc8xc6376602bi90i6n";
   };
 
@@ -63,10 +58,10 @@ let
   '';
 
   xfceXMLPath = "xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml";
-in
-lib.mkIf (config.services.xserver.enable && config.services.xserver.desktopManager.xfce.enable) {
-  environment.etc.${xfceXMLPath} = {
-    source = xfceDesktopXml;
-    mode = "0644";
-  };
-}
+in lib.mkIf (config.services.xserver.enable
+  && config.services.xserver.desktopManager.xfce.enable) {
+    environment.etc.${xfceXMLPath} = {
+      source = xfceDesktopXml;
+      mode = "0644";
+    };
+  }
