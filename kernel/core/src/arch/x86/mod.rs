@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-pub mod cpu;
+pub(crate) mod cpu;
 #[cfg(not(baseline_asterinas))]
-pub mod pmu;
+pub(crate) mod pmu;
 mod power;
-pub mod ptrace;
-pub mod signal;
+pub(crate) mod ptrace;
+pub(crate) mod signal;
 
-pub fn init() {
+pub(crate) fn init() {
     power::init();
 }

@@ -15,12 +15,12 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct Heap {
+pub(crate) struct Heap {
     inner: Mutex<Option<HeapInner>>,
 }
 
 #[derive(Debug)]
-pub struct LockedHeap<'a> {
+pub(crate) struct LockedHeap<'a> {
     inner: MutexGuard<'a, Option<HeapInner>>,
 }
 
@@ -77,7 +77,6 @@ impl Heap {
         let vmar_map_options = {
             let perms = VmPerms::READ | VmPerms::WRITE;
             vmar.new_map(PAGE_SIZE, perms)
-                .unwrap()
                 .offset(VmarMapOffset::FixedNoReplace(heap_start))
         };
         vmar_map_options.build()?;
@@ -92,7 +91,7 @@ impl Heap {
     }
 
     /// Locks the heap and returns a guard to access the heap information.
-    pub fn lock(&self) -> LockedHeap<'_> {
+    pub(crate) fn lock(&self) -> LockedHeap<'_> {
         LockedHeap {
             inner: self.inner.lock(),
         }
@@ -104,7 +103,11 @@ impl Heap {
     /// This behavior is consistent with the Linux `brk` syscall.
     //
     // Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/mm/mmap.c#L115>
-    pub fn modify_heap_end(&self, new_heap_end: Vaddr, ctx: &Context) -> Result<Vaddr, Vaddr> {
+    pub(crate) fn modify_heap_end(
+        &self,
+        new_heap_end: Vaddr,
+        ctx: &Context,
+    ) -> Result<Vaddr, Vaddr> {
         let user_space = ctx.user_space();
         let vmar = user_space.vmar();
 
@@ -117,8 +120,8 @@ impl Heap {
 
         // Check if the new heap end is valid.
         if new_heap_end < heap_start
+            || new_heap_end > VMAR_CAP_ADDR
             || check_data_rlimit(inner.data_segment_size, &new_heap_range, ctx).is_err()
-            || new_heap_end.checked_add(PAGE_SIZE).is_none()
         {
             return Err(current_heap_end);
         }
@@ -135,13 +138,26 @@ impl Heap {
             return Ok(new_heap_end);
         }
 
-        // Because the mapped heap region may contain multiple mappings, which can be
-        // done by `mmap` syscall or other ways, we need to be careful when modifying
-        // the heap mapping.
-        // For simplicity, we set `check_single_mapping` to `true` to ensure that the
-        // heap region contains only a single mapping.
-        vmar.resize_mapping(heap_start, old_size, new_size, true)
-            .map_err(|_| current_heap_end)?;
+        // The heap may be split into multiple mappings or contain holes after `mprotect`,
+        // `mmap`, or `munmap`. Like Linux, shrinking removes every mapping in the released
+        // tail regardless of those boundaries.
+        if new_size < old_size {
+            vmar.remove_mapping(new_heap_end_aligned..current_heap_end_aligned);
+        } else {
+            let expansion_size = new_size - old_size;
+            let expansion_start = heap_start + old_size;
+
+            // Map the newly exposed tail with the default heap permissions instead of
+            // inheriting permissions changed by `mprotect`. Compatible anonymous mappings
+            // may be merged by the VMAR when the new mapping is inserted.
+            // References: <https://elixir.bootlin.com/linux/v6.16.9/source/mm/vma.c#L2723-L2748>
+            let vmar_map_options = {
+                let perms = VmPerms::READ | VmPerms::WRITE;
+                vmar.new_map(expansion_size, perms)
+                    .offset(VmarMapOffset::FixedNoReplace(expansion_start))
+            };
+            vmar_map_options.build().map_err(|_| current_heap_end)?;
+        }
 
         inner.heap_range = new_heap_range;
         Ok(new_heap_end)
@@ -150,12 +166,12 @@ impl Heap {
 
 impl LockedHeap<'_> {
     /// Returns the lowest address of the heap.
-    pub fn heap_low(&self) -> Vaddr {
+    pub(crate) fn heap_low(&self) -> Vaddr {
         self.heap_range().start
     }
 
     /// Returns the current heap range.
-    pub fn heap_range(&self) -> &Range<Vaddr> {
+    pub(crate) fn heap_range(&self) -> &Range<Vaddr> {
         let inner = self.inner.as_ref().expect("Heap is not initialized");
 
         &inner.heap_range

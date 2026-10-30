@@ -18,7 +18,7 @@ use crate::{
     error::AccessDeniedSnafu,
     io::IoMem,
     mm::{
-        Frame, MAX_USERSPACE_VADDR, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame, VmReader,
+        Frame, HasPaddrRange, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame, VmReader,
         VmWriter,
         frame::FrameRef,
         io::Fallible,
@@ -182,8 +182,25 @@ impl VmSpace {
         guard: &'a G,
         va: &Range<Vaddr>,
     ) -> Result<CursorMut<'a>> {
+        self.cursor_mut_with_min_level(guard, va, 1)
+    }
+
+    /// Gets a mutable cursor in the virtual address range that locks at `min_level` or higher.
+    ///
+    /// Use this instead of [`Self::cursor_mut`] to map pages above level 1 (i.e., huge pages),
+    /// passing the highest page level to be mapped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min_level` is outside `1..=NR_LEVELS`.
+    pub fn cursor_mut_with_min_level<'a, G: AsAtomicModeGuard>(
+        &'a self,
+        guard: &'a G,
+        va: &Range<Vaddr>,
+        min_level: PagingLevel,
+    ) -> Result<CursorMut<'a>> {
         Ok(CursorMut {
-            pt_cursor: self.pt.cursor_mut(guard, va)?,
+            pt_cursor: self.pt.cursor_mut_with_min_level(guard, va, min_level)?,
             flusher: TlbFlusher::new(&self.cpus, disable_preempt()),
             vmspace: self,
         })
@@ -225,11 +242,9 @@ impl VmSpace {
     /// Users must ensure that no other page table is activated in the current task during the
     /// lifetime of the created `VmReader`. This guarantees that the `VmReader` can operate correctly.
     pub fn reader(&self, vaddr: Vaddr, len: usize) -> Result<VmReader<'_, Fallible>> {
-        if current_page_table_paddr() != self.pt.root_paddr() {
-            return AccessDeniedSnafu.fail();
-        }
-
-        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
+        if current_page_table_paddr() != self.pt.root_paddr()
+            || !super::is_in_user_space(vaddr, len)
+        {
             return AccessDeniedSnafu.fail();
         }
 
@@ -245,11 +260,9 @@ impl VmSpace {
     /// Users must ensure that no other page table is activated in the current task during the
     /// lifetime of the created `VmWriter`. This guarantees that the `VmWriter` can operate correctly.
     pub fn writer(&self, vaddr: Vaddr, len: usize) -> Result<VmWriter<'_, Fallible>> {
-        if current_page_table_paddr() != self.pt.root_paddr() {
-            return AccessDeniedSnafu.fail();
-        }
-
-        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
+        if current_page_table_paddr() != self.pt.root_paddr()
+            || !super::is_in_user_space(vaddr, len)
+        {
             return AccessDeniedSnafu.fail();
         }
 
@@ -282,11 +295,9 @@ impl VmSpace {
         vaddr: Vaddr,
         len: usize,
     ) -> Result<(VmReader<'_, Fallible>, VmWriter<'_, Fallible>)> {
-        if current_page_table_paddr() != self.pt.root_paddr() {
-            return AccessDeniedSnafu.fail();
-        }
-
-        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
+        if current_page_table_paddr() != self.pt.root_paddr()
+            || !super::is_in_user_space(vaddr, len)
+        {
             return AccessDeniedSnafu.fail();
         }
 
@@ -357,7 +368,9 @@ impl Cursor<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if the length is longer than the remaining range of the cursor.
+    /// Panics if:
+    ///  - the length is longer than the remaining range of the cursor;
+    ///  - the length is not page-aligned.
     pub fn find_next(&mut self, len: usize) -> Option<Vaddr> {
         self.0.find_next(len)
     }
@@ -445,7 +458,9 @@ impl<'a> CursorMut<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if the current virtual address is already mapped.
+    /// Panics if:
+    ///  - the current virtual address is already mapped;
+    ///  - the current virtual address is outside the cursor's range.
     pub fn map(&mut self, frame: UFrame, prop: PageProperty) {
         let item = VmItem::new_tracked(frame, prop);
 
@@ -470,21 +485,27 @@ impl<'a> CursorMut<'a> {
     /// # Panics
     ///
     /// Panics if
-    ///  - `len` or `offset` is not aligned to the page size;
+    ///  - `len`, `offset`, or the address range of the `IoMem` instance is
+    ///    not aligned to the page size;
     ///  - the current virtual address is already mapped.
     pub fn map_iomem(&mut self, io_mem: IoMem, prop: PageProperty, len: usize, offset: usize) {
         assert_eq!(len % PAGE_SIZE, 0);
         assert_eq!(offset % PAGE_SIZE, 0);
 
-        if offset >= io_mem.size() {
+        let io_mem_paddr = io_mem.paddr();
+        let io_mem_size = io_mem.size();
+        assert_eq!(io_mem_paddr % PAGE_SIZE, 0);
+        assert_eq!(io_mem_size % PAGE_SIZE, 0);
+
+        if offset >= io_mem_size {
             return;
         }
 
-        let paddr_begin = io_mem.paddr() + offset;
-        let paddr_end = if io_mem.size() - offset < len {
-            io_mem.paddr() + io_mem.size()
+        let paddr_begin = io_mem_paddr + offset;
+        let paddr_end = if io_mem_size - offset < len {
+            io_mem_paddr + io_mem_size
         } else {
-            io_mem.paddr() + len + offset
+            io_mem_paddr + len + offset
         };
 
         for current_paddr in (paddr_begin..paddr_end).step_by(PAGE_SIZE) {
@@ -495,13 +516,15 @@ impl<'a> CursorMut<'a> {
             };
         }
 
+        fn io_mem_contains(parent: &IoMem, child: &IoMem) -> bool {
+            parent.paddr() <= child.paddr() && child.end_paddr() <= parent.end_paddr()
+        }
+
         // If the `iomems` list in `VmSpace` does not contain the current I/O
         // memory, push it to maintain the correct reference count.
         let mut iomems = self.vmspace.iomems.lock();
-        if !iomems
-            .iter()
-            .any(|iomem| iomem.paddr() == io_mem.paddr() && iomem.size() == io_mem.size())
-        {
+        if !iomems.iter().any(|iomem| io_mem_contains(iomem, &io_mem)) {
+            iomems.retain(|iomem| !io_mem_contains(&io_mem, iomem));
             iomems.push(io_mem);
         }
     }
@@ -524,8 +547,8 @@ impl<'a> CursorMut<'a> {
     /// Clears the mapping starting from the current slot,
     /// and returns the number of unmapped pages.
     ///
-    /// This method will bring the cursor forward by `len` bytes in the virtual
-    /// address space after the modification.
+    /// This method will bring the cursor forward by at least `len` bytes
+    /// in the virtual address space, but not past the end of the cursor's range.
     ///
     /// Already-absent mappings encountered by the cursor will be skipped. It
     /// is valid to unmap a range that is not mapped.
@@ -627,7 +650,9 @@ impl<'a> CursorMut<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if the length is longer than the remaining range of the cursor.
+    /// Panics if:
+    ///  - the length is longer than the remaining range of the cursor;
+    ///  - the length is not page-aligned.
     pub fn protect_next(
         &mut self,
         len: usize,

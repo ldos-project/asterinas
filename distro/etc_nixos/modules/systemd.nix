@@ -12,12 +12,11 @@
   systemd.services.network-setup.enable = false;
   systemd.services.resolvconf.enable = false;
   systemd.services.systemd-random-seed.enable = false;
-  systemd.services.systemd-tmpfiles-clean.enable = false;
-  systemd.services.systemd-tmpfiles-setup.enable = false;
   services.timesyncd.enable = false;
   services.udev.enable = false;
 
   services.getty.autologinUser = "root";
+  services.getty.loginProgram = "${pkgs.util-linux.bin}/bin/login";
   users.users.root = {
     shell = "${pkgs.bash}/bin/bash";
     hashedPassword = null;
@@ -35,8 +34,11 @@
       "autovt@tty6.service"
     ];
 
-  systemd.extraConfig = ''
-    LogLevel=crit
-    ShowStatus=no
-  '';
+  systemd.settings.Manager = {
+    LogLevel = "crit";
+    ShowStatus = "no";
+    # Login sessions inherit these limits. Nix needs far more file descriptors
+    # than the default limit of 1024 when it downloads a large closure.
+    DefaultLimitNOFILE = "1048576:1048576";
+  };
 }

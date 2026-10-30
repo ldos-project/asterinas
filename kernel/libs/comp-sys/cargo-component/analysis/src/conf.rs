@@ -1,8 +1,11 @@
 // Licensed under the Apache License, Version 2.0 or the MIT License.
 // Copyright (C) 2023-2024 Ant Group.
 
-use std::collections::{BTreeMap, HashSet};
-use std::{env, fs, io, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    env, fs, io,
+    path::PathBuf,
+};
 
 use once_cell::sync::OnceCell;
 use toml::Value;
@@ -160,7 +163,7 @@ impl Path {
         Self { segments }
     }
 
-    pub fn iter(&self) -> std::slice::Iter<String> {
+    pub fn iter(&self) -> std::slice::Iter<'_, String> {
         self.segments.iter()
     }
 

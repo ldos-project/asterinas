@@ -6,8 +6,6 @@
 
 use core::fmt::Display;
 
-use ostd::io::IoMem;
-
 use super::{
     AccessMode, FileCommon, InodeHandle, SettableStatusFlags, StatusFlags, file_table::FdFlags,
     inode_handle::SeekFrom,
@@ -18,28 +16,29 @@ use crate::{
     prelude::*,
     process::{Process, signal::Pollable},
     util::ioctl::RawIoctl,
-    vm::page_cache::Vmo,
+    vm::{
+        page_cache::Vmo,
+        vmar::{FileMmapRequest, MapHandle},
+    },
 };
 
 /// The basic operations defined on a file
-pub trait FileLike: Pollable + Send + Sync + Any {
+pub(crate) trait FileLike: Pollable + Send + Sync + Any {
     /// Reads data from this file.
     ///
     /// By default, this method returns `EBADF`
     /// if the file is not readable,
     /// or `EINVAL` if the file type does not support `read`.
     /// These are distinct conditions:
-    /// [`access_mode`] may say that a file is readable,
+    /// `access_mode` may say that a file is readable,
     /// while the file type still does not support `read`,
     /// as with epoll files and pid files.
     ///
     /// Implementors should override this method if the file type supports reads.
-    /// An overriding implementation must check whether [`access_mode`] is readable
+    /// An overriding implementation must check whether `access_mode` is readable
     /// before performing the operation.
-    ///
-    /// [`access_mode`]: FileLike::access_mode
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        if !self.access_mode().is_readable() {
+        if !self.common().access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened for reading");
         }
         return_errno_with_message!(Errno::EINVAL, "read is not supported for this file type");
@@ -51,17 +50,15 @@ pub trait FileLike: Pollable + Send + Sync + Any {
     /// if the file is not writable,
     /// or `EINVAL` if the file type does not support `write`.
     /// These are distinct conditions:
-    /// [`access_mode`] may say that a file is writable,
+    /// `access_mode` may say that a file is writable,
     /// while the file type still does not support `write`,
     /// as with epoll files and pid files.
     ///
     /// Implementors should override this method if the file type supports writes.
-    /// An overriding implementation must check whether [`access_mode`] is writable
+    /// An overriding implementation must check whether `access_mode` is writable
     /// before performing the operation.
-    ///
-    /// [`access_mode`]: FileLike::access_mode
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
-        if !self.access_mode().is_writable() {
+        if !self.common().access_mode().is_writable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened for writing");
         }
         return_errno_with_message!(Errno::EINVAL, "write is not supported for this file type");
@@ -99,7 +96,10 @@ pub trait FileLike: Pollable + Send + Sync + Any {
     ///
     /// If this file has a corresponding mappable object of [`Mappable`],
     /// then it can be either an inode or an MMIO region.
-    fn mappable(&self) -> Result<Mappable> {
+    ///
+    /// Implementations may inspect the mapping request to reject unsupported
+    /// mapping semantics.
+    fn mappable(&self, request: FileMmapRequest) -> Result<MappableObject<'_>> {
         // `ENODEV` means that "The underlying filesystem of the specified file does not support
         // memory mapping".
         // Reference: <https://man7.org/linux/man-pages/man2/mmap.2.html>.
@@ -116,28 +116,6 @@ pub trait FileLike: Pollable + Send + Sync + Any {
         // support them.
         SettableStatusFlags::minimal()
     }
-
-    /// Returns the access mode of this file.
-    ///
-    /// The access mode indicates whether the file descriptor is readable or writable.
-    /// Readability is required for operations
-    /// such as [`read`], [`read_at`], and read-only memory mappings.
-    /// Writability is required for operations
-    /// such as [`write`], [`write_at`], [`resize`], [`fallocate`],
-    /// and writable memory mappings.
-    ///
-    /// For inode-backed files,
-    /// their access modes are determined dynamically for each opened file.
-    /// For special files such as epoll files, eventfd files, and pid files,
-    /// they are determined statically by the file types.
-    ///
-    /// [`read`]: FileLike::read
-    /// [`read_at`]: FileLike::read_at
-    /// [`write`]: FileLike::write
-    /// [`write_at`]: FileLike::write_at
-    /// [`resize`]: FileLike::resize
-    /// [`fallocate`]: FileLike::fallocate
-    fn access_mode(&self) -> AccessMode;
 
     fn seek(&self, seek_from: SeekFrom) -> Result<usize> {
         return_errno_with_message!(Errno::ESPIPE, "seek is not supported");
@@ -169,16 +147,47 @@ pub trait FileLike: Pollable + Send + Sync + Any {
     ///    collected later in its `Display::display()` method, after dropping the file table's spin
     ///    lock.
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display>;
+
+    /// Synchronizes the file according to `mode`.
+    ///
+    /// File-like objects do not support synchronization by default. Linux returns `EINVAL`
+    /// when a file's operations do not provide an `fsync` method.
+    /// Reference: <https://github.com/torvalds/linux/blob/v6.16/fs/sync.c#L179-L188>
+    fn sync(&self, _mode: SyncMode) -> Result<()> {
+        return_errno_with_message!(Errno::EINVAL, "the file does not support synchronization")
+    }
 }
 
 impl dyn FileLike {
     /// Returns the path associated with the file description.
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         self.common().path()
     }
 
+    /// Returns the access mode of this file.
+    ///
+    /// The access mode indicates whether the file descriptor is readable or writable.
+    /// Readability is required for operations
+    /// such as [`read`], [`read_at`], and read-only memory mappings.
+    /// Writability is required for operations
+    /// such as [`write`], [`write_at`], [`resize`], [`fallocate`],
+    /// and writable memory mappings.
+    ///
+    /// The access mode is set when the file description is created
+    /// and remains unchanged for its lifetime.
+    ///
+    /// [`read`]: FileLike::read
+    /// [`read_at`]: FileLike::read_at
+    /// [`write`]: FileLike::write
+    /// [`write_at`]: FileLike::write_at
+    /// [`resize`]: FileLike::resize
+    /// [`fallocate`]: FileLike::fallocate
+    pub(crate) fn access_mode(&self) -> AccessMode {
+        self.common().access_mode()
+    }
+
     /// Returns the status flags of the file description.
-    pub fn status_flags(&self) -> StatusFlags {
+    pub(crate) fn status_flags(&self) -> StatusFlags {
         self.common().status_flags()
     }
 
@@ -186,7 +195,7 @@ impl dyn FileLike {
     ///
     /// `O_ASYNC` is ignored if it is not supported. An attempt to enable
     /// unsupported `O_DIRECT` returns `EINVAL`.
-    pub fn update_status_flags(&self, mut update: StatusFlagsUpdate) -> Result<()> {
+    pub(crate) fn update_status_flags(&self, mut update: StatusFlagsUpdate) -> Result<()> {
         let settable_flags = self.settable_status_flags();
         if update.flags().contains(StatusFlags::O_DIRECT)
             && !settable_flags.contains(StatusFlags::O_DIRECT)
@@ -202,7 +211,7 @@ impl dyn FileLike {
     }
 
     /// Updates the `O_NONBLOCK` status flag.
-    pub fn update_status_nonblock(&self, is_nonblocking: bool) {
+    pub(crate) fn update_status_nonblock(&self, is_nonblocking: bool) {
         let update = if is_nonblocking {
             StatusFlagsUpdate::set(StatusFlags::O_NONBLOCK)
         } else {
@@ -216,7 +225,7 @@ impl dyn FileLike {
     ///
     /// An attempt to enable `O_ASYNC` on a file that does not support it returns
     /// `ENOTTY`.
-    pub fn update_status_async(&self, is_async: bool) -> Result<()> {
+    pub(crate) fn update_status_async(&self, is_async: bool) -> Result<()> {
         let settable_flags = self.settable_status_flags();
         if is_async && !settable_flags.contains(StatusFlags::O_ASYNC) {
             return_errno_with_message!(Errno::ENOTTY, "signal-driven I/O is not supported");
@@ -237,41 +246,41 @@ impl dyn FileLike {
     /// Passing `None` clears the current owner.
     ///
     /// The owner receives `SIGIO` for I/O events on the file description when `O_ASYNC` is set.
-    pub fn set_owner(&self, owner: Option<&Arc<Process>>) {
+    pub(crate) fn set_owner(&self, owner: Option<&Arc<Process>>) {
         self.common().owner().set(self, owner);
     }
 
-    pub fn downcast_ref<T: FileLike>(&self) -> Option<&T> {
+    pub(crate) fn downcast_ref<T: FileLike>(&self) -> Option<&T> {
         (self as &dyn Any).downcast_ref::<T>()
     }
 
-    pub fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
         let mut writer = VmWriter::from(buf).to_fallible();
         self.read(&mut writer)
     }
 
-    pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
+    pub(crate) fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
         let mut reader = VmReader::from(buf).to_fallible();
         self.write(&mut reader)
     }
 
-    pub fn read_bytes_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+    pub(crate) fn read_bytes_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let mut writer = VmWriter::from(buf).to_fallible();
         self.read_at(offset, &mut writer)
     }
 
     #[expect(dead_code)]
-    pub fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
+    pub(crate) fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let mut reader = VmReader::from(buf).to_fallible();
         self.write_at(offset, &mut reader)
     }
 
-    pub fn as_socket_or_err(&self) -> Result<&dyn Socket> {
+    pub(crate) fn as_socket_or_err(&self) -> Result<&dyn Socket> {
         self.as_socket()
             .ok_or_else(|| Error::with_message(Errno::ENOTSOCK, "the file is not a socket"))
     }
 
-    pub fn as_inode_handle_or_err(&self) -> Result<&InodeHandle> {
+    pub(crate) fn as_inode_handle_or_err(&self) -> Result<&InodeHandle> {
         self.downcast_ref().ok_or_else(|| {
             Error::with_message(Errno::EINVAL, "the file is not related to an inode")
         })
@@ -280,7 +289,7 @@ impl dyn FileLike {
 
 /// An atomic update to a subset of file status flags.
 #[derive(Clone, Copy, Debug)]
-pub struct StatusFlagsUpdate {
+pub(crate) struct StatusFlagsUpdate {
     mask: StatusFlags,
     flags: StatusFlags,
 }
@@ -289,7 +298,7 @@ impl StatusFlagsUpdate {
     /// Creates an update that replaces all updatable flags with `flags`.
     ///
     /// Replacing flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
-    pub fn replace(mut flags: StatusFlags) -> Self {
+    pub(crate) fn replace(mut flags: StatusFlags) -> Self {
         flags &= StatusFlags::SETFL_MASK;
         Self::new(StatusFlags::SETFL_MASK, flags)
     }
@@ -297,7 +306,7 @@ impl StatusFlagsUpdate {
     /// Creates an update that sets `flags`.
     ///
     /// Setting flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
-    pub fn set(mut flags: StatusFlags) -> Self {
+    pub(crate) fn set(mut flags: StatusFlags) -> Self {
         flags &= StatusFlags::SETFL_MASK;
         Self::new(flags, flags)
     }
@@ -305,7 +314,7 @@ impl StatusFlagsUpdate {
     /// Creates an update that unsets `flags`.
     ///
     /// Unsetting flags outside [`StatusFlags::SETFL_MASK`] is a no-op.
-    pub fn unset(mut flags: StatusFlags) -> Self {
+    pub(crate) fn unset(mut flags: StatusFlags) -> Self {
         flags &= StatusFlags::SETFL_MASK;
         Self::new(flags, StatusFlags::empty())
     }
@@ -337,10 +346,57 @@ impl StatusFlagsUpdate {
 }
 
 /// An object that may be memory mapped into the user address space.
-#[derive(Clone, Debug)]
-pub enum Mappable {
+pub enum MappableObject<'a> {
     /// A VMO (i.e., page cache).
     Vmo(Arc<Vmo>),
-    /// An MMIO region.
-    IoMem(IoMem),
+    /// A device mapping.
+    Device(&'a dyn Mappable),
+}
+
+/// A trait that describes memory mapping behavior for special files (in `mmap`).
+pub trait Mappable {
+    /// Fills the memory region to map with `handle`.
+    ///
+    /// `offset` specifies the file offset, which must be page-aligned.
+    ///
+    /// This method may fail after some pages have already been installed
+    /// through `handle`. In this case, the caller should remove those pages
+    /// and destroy the memory mapping.
+    fn map(&self, offset: usize, handle: MapHandle) -> Result<Box<dyn MappedObject>>;
+}
+
+/// A trait that describes memory mapping behavior for special files (after `mmap`).
+pub trait MappedObject: Send + Sync + Debug {
+    /// Duplicates the memory mapping at the specific offset.
+    ///
+    /// `offset` specifies the memory address offset within the mapping, which must be smaller than
+    /// the mapping size and page-aligned.
+    fn dup_at_offset(&self, offset: usize) -> Box<dyn MappedObject>;
+
+    /// Handles the page fault.
+    ///
+    /// `offset` specifies the memory address offset within the mapping, which must be smaller than
+    /// the mapping size and page-aligned.
+    fn handle_page_fault(&self, _offset: usize, _handle: MapHandle) -> Result<()> {
+        return_errno_with_message!(
+            Errno::EFAULT,
+            "device memory page faults cannot be resolved"
+        );
+    }
+}
+
+impl dyn MappedObject {
+    /// Duplicates the memory mapping.
+    pub(crate) fn dup(&self) -> Box<dyn MappedObject> {
+        self.dup_at_offset(0)
+    }
+}
+
+/// Specifies the extent of a file synchronization operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncMode {
+    /// Synchronizes file data and the metadata required to retrieve it.
+    Data,
+    /// Synchronizes file data and all associated metadata.
+    Full,
 }

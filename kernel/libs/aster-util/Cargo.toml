@@ -9,6 +9,7 @@ edition.workspace = true
 snafu.workspace = true
 aster-rights.workspace = true
 aster-rights-proc.workspace = true
+bitvec.workspace = true
 inherit-methods-macro.workspace = true
 osdk-heap-allocator.workspace = true
 ostd.workspace = true

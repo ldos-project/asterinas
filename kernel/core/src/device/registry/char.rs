@@ -7,8 +7,8 @@ use core::ops::Range;
 use device_id::{DeviceId, MajorId};
 
 use crate::{
-    device::{Device, DeviceType, add_node},
-    fs::vfs::path::PathResolver,
+    device::Device,
+    fs::devtmpfs::{self, DevtmpfsNode},
     prelude::*,
 };
 
@@ -21,22 +21,35 @@ pub fn register(device: Arc<dyn Device>) -> Result<()> {
     if registry.contains_key(&id) {
         return_errno_with_message!(Errno::EEXIST, "the char device already exists");
     }
-    registry.insert(id, device);
+    registry.insert(id, device.clone());
 
+    if let Some(meta) = device.devtmpfs_meta()
+        && let Err(error) =
+            devtmpfs::create_node(DevtmpfsNode::new(device.type_(), device.id(), meta))
+    {
+        registry.remove(&id);
+        return Err(error);
+    }
     Ok(())
 }
 
 /// Unregisters an existing char device, returning the device if found.
 pub fn unregister(id: DeviceId) -> Result<Arc<dyn Device>> {
-    DEVICE_REGISTRY
-        .lock()
+    let mut registry = DEVICE_REGISTRY.lock();
+    let device = registry
         .remove(&id.to_raw())
-        .ok_or_else(|| Error::with_message(Errno::ENOENT, "the char device does not exist"))
-}
+        .ok_or_else(|| Error::with_message(Errno::ENOENT, "the char device does not exist"))?;
 
-/// Collects all char devices.
-pub fn collect_all() -> Vec<Arc<dyn Device>> {
-    DEVICE_REGISTRY.lock().values().cloned().collect()
+    if let Some(meta) = device.devtmpfs_meta()
+        && let Err(error) =
+            devtmpfs::delete_node(DevtmpfsNode::new(device.type_(), device.id(), meta))
+    {
+        warn!(
+            "failed to delete devtmpfs node for char device {:?}: {:?}",
+            id, error
+        );
+    }
+    Ok(device)
 }
 
 /// Looks up a char device of a given device ID.
@@ -47,7 +60,7 @@ pub(super) fn lookup(id: DeviceId) -> Option<Arc<dyn Device>> {
 /// The maximum value of the major device ID of a char device.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/fs/char_dev.c#L104>.
-pub const MAX_MAJOR: u16 = 511;
+pub(crate) const MAX_MAJOR: u16 = 511;
 
 /// The ranges of free char majors.
 ///
@@ -60,7 +73,7 @@ static MAJORS: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
 ///
 /// The returned `MajorIdOwner` object represents the ownership to the major ID.
 /// Until the object is dropped, this major ID cannot be acquired via `acquire_major` or `allocate_major` again.
-pub fn acquire_major(major: MajorId) -> Result<MajorIdOwner> {
+pub(crate) fn acquire_major(major: MajorId) -> Result<MajorIdOwner> {
     if major.get() > MAX_MAJOR {
         return_errno_with_message!(Errno::EINVAL, "the major ID is invalid");
     }
@@ -77,7 +90,7 @@ pub fn acquire_major(major: MajorId) -> Result<MajorIdOwner> {
 /// The returned `MajorIdOwner` object represents the ownership to the major ID.
 /// Until the object is dropped, this major ID cannot be acquired via `acquire_major` or `allocate_major` again.
 #[expect(dead_code)]
-pub fn allocate_major() -> Result<MajorIdOwner> {
+pub(crate) fn allocate_major() -> Result<MajorIdOwner> {
     let mut majors = MAJORS.lock();
 
     for id in DYNAMIC_MAJOR_ID_RANGES
@@ -95,11 +108,11 @@ pub fn allocate_major() -> Result<MajorIdOwner> {
 /// An owned major ID.
 ///
 /// Each instances of this type will unregister the major ID when dropped.
-pub struct MajorIdOwner(MajorId);
+pub(crate) struct MajorIdOwner(MajorId);
 
 impl MajorIdOwner {
     /// Returns the major ID.
-    pub fn get(&self) -> MajorId {
+    pub(crate) fn get(&self) -> MajorId {
         self.0
     }
 }
@@ -108,15 +121,4 @@ impl Drop for MajorIdOwner {
     fn drop(&mut self) {
         MAJORS.lock().remove(&self.0.get());
     }
-}
-
-pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {
-    for device in collect_all() {
-        if let Some(devtmpfs_meta) = device.devtmpfs_meta() {
-            let dev_id = device.id().as_encoded_u64();
-            add_node(DeviceType::Char, dev_id, &devtmpfs_meta, path_resolver)?;
-        }
-    }
-
-    Ok(())
 }

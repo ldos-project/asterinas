@@ -21,7 +21,7 @@ const MAX_EMPTY_SLABS: usize = 16;
 ///  - and a list of full slabs.
 ///
 /// So the cache is partially sorted, to allow caching and reusing memory.
-pub struct SlabCache<const SLOT_SIZE: usize> {
+pub(crate) struct SlabCache<const SLOT_SIZE: usize> {
     empty: LinkedList<SlabMeta<SLOT_SIZE>>,
     partial: LinkedList<SlabMeta<SLOT_SIZE>>,
     full: LinkedList<SlabMeta<SLOT_SIZE>>,
@@ -29,7 +29,7 @@ pub struct SlabCache<const SLOT_SIZE: usize> {
 
 impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
     /// Creates a new slab cache.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             empty: LinkedList::new(),
             partial: LinkedList::new(),
@@ -41,7 +41,7 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
     ///
     /// The caller must provide which cache is it because we don't know from
     /// `&mut self`. The information is used for deallocation.
-    pub fn alloc(&mut self) -> Result<HeapSlot, AllocError> {
+    pub(crate) fn alloc(&mut self) -> Result<HeapSlot, AllocError> {
         // Try to allocate from the partial slabs first.
         if !self.partial.is_empty() {
             let mut cursor = self.partial.cursor_back_mut();
@@ -62,7 +62,7 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
         }
 
         // If no empty slab is available, allocate new slabs.
-        let Ok(mut allocated_empty) = Slab::new() else {
+        let Some(mut allocated_empty) = Self::alloc_slab() else {
             log::error!("Failed to allocate a new slab");
             return Err(AllocError);
         };
@@ -71,7 +71,7 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
 
         // Allocate more empty slabs and push them into the cache.
         for _ in 0..EXPECTED_EMPTY_SLABS {
-            if let Ok(allocated_empty) = Slab::new() {
+            if let Some(allocated_empty) = Self::alloc_slab() {
                 self.empty.push_front(allocated_empty);
             } else {
                 break;
@@ -84,7 +84,7 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
     /// Deallocates a slot into the cache.
     ///
     /// The slot must be allocated from the cache.
-    pub fn dealloc(&mut self, slot: HeapSlot) -> Result<(), AllocError> {
+    pub(crate) fn dealloc(&mut self, slot: HeapSlot) -> Result<(), AllocError> {
         let which = which_slab(&slot).ok_or_else(|| {
             log::error!("Can't find the slab for the slot");
             AllocError
@@ -111,10 +111,18 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
         if self.empty.size() > MAX_EMPTY_SLABS {
             while self.empty.size() > EXPECTED_EMPTY_SLABS {
                 self.empty.pop_front();
+                crate::TOTAL_SLAB_ALLOCATED.sub(PAGE_SIZE);
             }
         }
 
         Ok(())
+    }
+
+    /// Allocates a new slab and accounts for the page it consumes.
+    fn alloc_slab() -> Option<Slab<SLOT_SIZE>> {
+        let slab = Slab::new().ok()?;
+        crate::TOTAL_SLAB_ALLOCATED.add(PAGE_SIZE);
+        Some(slab)
     }
 
     fn add_slab(&mut self, slab: Slab<SLOT_SIZE>) {
@@ -124,6 +132,18 @@ impl<const SLOT_SIZE: usize> SlabCache<SLOT_SIZE> {
             self.partial.push_back(slab);
         } else {
             self.empty.push_front(slab);
+        }
+    }
+}
+
+impl<const SLOT_SIZE: usize> Drop for SlabCache<SLOT_SIZE> {
+    /// Releases all remaining slabs back to the frame allocator and accounts
+    /// for the freed pages.
+    fn drop(&mut self) {
+        for list in [&mut self.empty, &mut self.partial, &mut self.full] {
+            while list.pop_front().is_some() {
+                crate::TOTAL_SLAB_ALLOCATED.sub(PAGE_SIZE);
+            }
         }
     }
 }

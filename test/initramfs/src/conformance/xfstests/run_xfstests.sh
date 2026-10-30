@@ -7,38 +7,46 @@ set -eu
 # RUNTIME_PATH is substituted by the Nix build.
 export PATH=__RUNTIME_PATH__
 
+XFSTESTS_FS_TYPE=${XFSTESTS_FS_TYPE:-ext2}
+export FSTYP="$XFSTESTS_FS_TYPE"
+
 XFSTESTS_DIR=/opt/xfstests
+XFSTESTS_FS_DIR="$XFSTESTS_DIR/$XFSTESTS_FS_TYPE"
+XFSTESTS_CONFIG="$XFSTESTS_FS_DIR/config/xfstests.config"
+XFSTESTS_PREPARE="$XFSTESTS_FS_DIR/prepare.sh"
+XFSTESTS_BLOCK_LIST="$XFSTESTS_FS_DIR/run_list/block.list"
 cd "$XFSTESTS_DIR"
 
-TEST_DEV=${XFSTESTS_TEST_DEV:-/dev/vdd}
-SCRATCH_DEV=${XFSTESTS_SCRATCH_DEV:-/dev/vde}
-export TEST_DEV SCRATCH_DEV
+if [ ! -d "$XFSTESTS_FS_DIR" ]; then
+    echo "Unsupported xfstests filesystem type: $XFSTESTS_FS_TYPE" >&2
+    exit 2
+fi
+if [ ! -f "$XFSTESTS_CONFIG" ]; then
+    echo "Missing xfstests config: $XFSTESTS_CONFIG" >&2
+    exit 2
+fi
+if [ ! -f "$XFSTESTS_PREPARE" ]; then
+    echo "Missing xfstests preparation script: $XFSTESTS_PREPARE" >&2
+    exit 2
+fi
 
-# Mount xfstests images with explicit error checking so a mount failure is not
-# silently skipped (which would cause ./check to run against empty directories
-# and still print the "all passed" success line).
-for entry in "$TEST_DEV:$XFSTESTS_DIR/test:test" "$SCRATCH_DEV:$XFSTESTS_DIR/scratch:scratch"; do
-    dev="${entry%%:*}"; rest="${entry#*:}"; mnt="${rest%%:*}"; role="${rest##*:}"
-    if [ ! -b "$dev" ]; then
-        echo "Expected $dev to be a block device for xfstests $role" >&2
-        exit 1
-    fi
-    if ! mount -t ext2 "$dev" "$mnt"; then
-        echo "Failed to mount $dev on $mnt ($role)" >&2
-        exit 1
-    fi
-    if ! mountpoint -q "$mnt"; then
-        echo "$mnt is not a mountpoint after mount(8) succeeded ($role)" >&2
-        exit 1
-    fi
-done
+export HOST_OPTIONS="$XFSTESTS_CONFIG"
+
+# Prepare scripts consume the same filesystem variables that `./check` later
+# loads through `HOST_OPTIONS`.
+# shellcheck source=/dev/null
+. "$XFSTESTS_CONFIG"
+
+# shellcheck source=/dev/null
+. "$XFSTESTS_PREPARE"
 
 RUNLIST_FILE=""
-TEST_ARGS=""
+REQUESTED_TESTS=$(mktemp)
+SELECTED_TESTS=$(mktemp)
+
+trap 'rm -f "$REQUESTED_TESTS" "$SELECTED_TESTS"' EXIT
 
 # Parse -R flag and collect direct test names.
-# Test names are simple identifiers (e.g. "generic/001") so accumulating
-# them in a space-separated string is safe.
 while [ $# -gt 0 ]; do
   case "$1" in
     -R|--runlist)
@@ -51,35 +59,89 @@ while [ $# -gt 0 ]; do
       ;;
     --)
       shift
-      TEST_ARGS="$TEST_ARGS $*"
+      while [ $# -gt 0 ]; do
+        printf '%s\n' "$1" >> "$REQUESTED_TESTS"
+        shift
+      done
       break
       ;;
     *)
-      TEST_ARGS="$TEST_ARGS $1"
+      printf '%s\n' "$1" >> "$REQUESTED_TESTS"
       shift
       ;;
   esac
 done
 
-if [ -n "$RUNLIST_FILE" ]; then
-  if [ ! -f "$RUNLIST_FILE" ]; then
-    echo "Run list file not found: $RUNLIST_FILE" >&2
+# When a selector is set, run only the selected test ids and ignore the blocklist.
+CONFORMANCE_TEST_SELECTOR=${CONFORMANCE_TEST_SELECTOR:-}
+
+if [ -n "$CONFORMANCE_TEST_SELECTOR" ]; then
+  printf '%s\n' "$CONFORMANCE_TEST_SELECTOR" | tr ',' '\n' > "$REQUESTED_TESTS"
+
+  selected_count=0
+  invalid_selector=0
+  while IFS= read -r test_name || [ -n "$test_name" ]; do
+    test_name=${test_name#"${test_name%%[![:space:]]*}"}
+    test_name=${test_name%"${test_name##*[![:space:]]}"}
+    [ -z "$test_name" ] && continue
+
+    selected_count=$((selected_count + 1))
+    case "$test_name" in
+      /*|-*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*//*|*/*/*)
+        ;;
+      */*)
+        if [ -f "$XFSTESTS_DIR/tests/$test_name" ]; then
+          printf '%s\n' "$test_name" >> "$SELECTED_TESTS"
+          continue
+        fi
+        ;;
+    esac
+
+    echo "Error: unknown xfstests test: $test_name" >&2
+    invalid_selector=1
+  done < "$REQUESTED_TESTS"
+
+  if [ "$selected_count" -eq 0 ]; then
+    echo "$0: CONFORMANCE_TEST_SELECTOR contains no test names" >&2
     exit 2
   fi
-  while IFS= read -r test; do
-    case "$test" in
-      ""|\#*) continue ;;
+  if [ "$invalid_selector" -ne 0 ]; then
+    exit 2
+  fi
+
+  sort -u -o "$SELECTED_TESTS" "$SELECTED_TESTS"
+else
+  cat "$REQUESTED_TESTS" > "$SELECTED_TESTS"
+  if [ -n "$RUNLIST_FILE" ]; then
+    case "$RUNLIST_FILE" in
+      */*)
+        echo "Run list must be a filename: $RUNLIST_FILE" >&2
+        exit 2
+        ;;
     esac
-    TEST_ARGS="$TEST_ARGS $test"
-  done < "$RUNLIST_FILE"
+    RUNLIST_FILE="$XFSTESTS_FS_DIR/run_list/$RUNLIST_FILE"
+    if [ ! -f "$RUNLIST_FILE" ]; then
+      echo "Run list file not found: $RUNLIST_FILE" >&2
+      exit 2
+    fi
+    while IFS= read -r test; do
+      test=${test%%#*}
+      case "$test" in
+        *[![:space:]]*) ;;
+        *) continue ;;
+      esac
+      printf '%s\n' "$test" >> "$SELECTED_TESTS"
+    done < "$RUNLIST_FILE"
+  fi
 fi
 
-# Prepend block-list exclusion so blocked tests are skipped.
-if [ -f "$XFSTESTS_DIR/block.list" ]; then
-    TEST_ARGS="-E $XFSTESTS_DIR/block.list $TEST_ARGS"
+set --
+if [ -z "$CONFORMANCE_TEST_SELECTOR" ] && [ -f "$XFSTESTS_BLOCK_LIST" ]; then
+    set -- -E "$XFSTESTS_BLOCK_LIST"
 fi
+while IFS= read -r test_name || [ -n "$test_name" ]; do
+    [ -z "$test_name" ] && continue
+    set -- "$@" "$test_name"
+done < "$SELECTED_TESTS"
 
-# Word-splitting is intentional here: TEST_ARGS contains only test names
-# and the -E flag, none of which contain whitespace or shell metacharacters.
-# shellcheck disable=SC2086
-./check $TEST_ARGS
+./check "$@"

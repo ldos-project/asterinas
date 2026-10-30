@@ -5,7 +5,7 @@ use syn::{Expr, Item, ItemImpl, Stmt, parse_quote, spanned::Spanned};
 use crate::parsing_utils::{ORPCMethodKind, make_oqueues_field_name};
 
 /// Implementation of the `orpc_impl` attribute macro.
-pub fn orpc_impl_macro_impl(
+pub(crate) fn orpc_impl_macro_impl(
     _attr: proc_macro::TokenStream,
     input: ItemImpl,
 ) -> proc_macro2::TokenStream {

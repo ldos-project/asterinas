@@ -115,7 +115,7 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     stopped_wait_queue: WaitQueue,
 }
 
-pub struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
+pub(crate) struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
     path: Path,
     command_consumer: Consumer<DataCaptureFileCommand<T>>,
     block_device: Arc<dyn BlockDevice>,

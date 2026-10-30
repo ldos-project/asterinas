@@ -41,17 +41,17 @@ impl<'a> CapableContext<'a> {
         dead_code,
         reason = "Asterinas currently has only the initial user namespace"
     )]
-    pub const fn target_user_ns(&self) -> &UserNamespace {
+    pub(crate) const fn target_user_ns(&self) -> &UserNamespace {
         self.target_user_ns
     }
 
     /// Returns the thread whose credentials are checked.
-    pub const fn posix_thread(&self) -> &PosixThread {
+    pub(crate) const fn posix_thread(&self) -> &PosixThread {
         self.posix_thread
     }
 
     /// Returns the required capability.
-    pub const fn required_cap(&self) -> CapSet {
+    pub(crate) const fn required_cap(&self) -> CapSet {
         self.required_cap
     }
 }

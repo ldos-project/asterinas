@@ -1,4 +1,4 @@
-{ lib, pkgs, stdenvNoCC, authorized_keys ? "" }:
+{ lib, pkgs, stdenvNoCC, authorized_keys ? "", }:
 let
   start_dropbear_sh = builtins.toFile "start_dropbear.sh" ''
     # Launcher script for dropbear

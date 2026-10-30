@@ -26,6 +26,8 @@ BASELINE_ASTERINAS ?= 0
 KCMD_CONFIG ?= kcmd_configs/default.toml
 RUSTFLAGS ?=
 COVERAGE ?= 0
+INITRAMFS ?= on
+CMDLINE ?=
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
 # - tty0: The active virtual terminal (VT).
@@ -34,7 +36,11 @@ COVERAGE ?= 0
 # Asterinas will automatically fall back to tty0 if hvc0 is not available.
 # Note that currently the virtual terminal (tty0) can only work with
 # linux-efi-handover64 and linux-efi-pe64 boot protocol.
+ifeq ($(SCHEME), sifive_u)
+CONSOLE ?= ttyS0
+else
 CONSOLE ?= hvc0
+endif
 # End of global build options.
 
 # GDB debugging and profiling options.
@@ -52,23 +58,38 @@ AUTO_TEST ?= none
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
 CONFORMANCE_TEST_WORKDIR ?= /tmp
-# Whitespace-separated extra blocklist paths for conformance runners.
+# Comma-separated extra blocklists for conformance runners.
 # - `gvisor` treats each entry as a directory relative to its runner directory,
 #   and loads a per-test blocklist file from that directory.
 # - `kselftest` treats each entry as a blocklist file relative to its runner
 #   directory, and appends that file directly.
-EXTRA_BLOCKLISTS ?= ""
+CONFORMANCE_TEST_EXTRA_BLOCKLISTS ?= ""
+# Comma-separated tests to run within the selected conformance suite.
+#
+# This variable allows one to select one or multiple tests to run.
+# When this environment variable is present,
+# the blocklist of a conformance test will be ignored.
+#
+# - gvisor:    a test *binary* name, e.g. `epoll_test` (narrow the cases inside
+#              it with `CONFORMANCE_TEST_GVISOR_FILTER`).
+# - kselftest: a `<collection>:<case>` entry, e.g. `timers:posix_timers`.
+# - ltp:       a syscall testcase id, e.g. `rename01`.
+# - xfstests:  a test id, e.g. `generic/001`.
+CONFORMANCE_TEST_SELECTOR ?= ""
+# gVisor-only positive gtest filter, applied inside one selected gVisor test
+# binary, e.g. `EpollTest.CloseFile:EpollTest.Oneshot`.
+CONFORMANCE_TEST_GVISOR_FILTER ?= ""
 # Parameters for xfstests.
-XFSTESTS_RUNLIST ?= /opt/xfstests/short.list
+XFSTESTS_FS_TYPE ?= ext2
+XFSTESTS_RUNLIST ?= short.list
 XFSTESTS_DISK_SIZE ?= 12G
-XFSTESTS_TEST_DEV ?= /dev/vdd
-XFSTESTS_SCRATCH_DEV ?= /dev/vde
+
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
 # End of auto test features.
 
 # Network settings
-# NETDEV possible values are user,tap
+# NETDEV possible values are user, tap, and none. SCHEME=microvm does not support none.
 NETDEV ?= user
 VHOST ?= off
 # The name server listed by /etc/resolv.conf inside the Asterinas VM
@@ -83,8 +104,16 @@ DOCKER_CONTAINER_NAME ?= mariposa-$(shell whoami)
 # Rust cache
 DOCKER_RUST_CACHE_LOCATION ?= $(shell pwd)/.cache
 
+# Virtio-fs settings. Set VIRTIOFS=on to attach a virtio-fs device. Set
+# VIRTIOFS_SCRATCH=on to attach a second device (requires VIRTIOFS=on).
+# VIRTIOFS_CACHE accepts auto, always, never, or metadata.
+VIRTIOFS ?= off
+VIRTIOFS_SCRATCH ?= off
+VIRTIOFS_CACHE ?= auto
+# End of Virtio-fs settings.
+
 # NixOS settings
-NIXOS_DISK_SIZE_IN_MB ?= 8192
+NIXOS_DISK_SIZE_IN_MB ?= 16384
 NIXOS_DISABLE_SYSTEMD ?= false
 # The following option is only effective when NIXOS_DISABLE_SYSTEMD is set to 'true'.
 # Use a login shell to ensure that environment variables are initialized correctly.
@@ -131,6 +160,9 @@ CARGO_OSDK_COMMON_ARGS :=
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="loglevel=$(LOG_LEVEL)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="earlycon"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
+ifneq ($(strip $(CMDLINE)),)
+CARGO_OSDK_BUILD_ARGS += $(foreach arg,$(CMDLINE),--kcmd-args="$(arg)")
+endif
 CARGO_OSDK_TEST_ARGS :=
 # Common arguments for all `cargo clippy` and `cargo osdk clippy` commands.
 CLIPPY_COMMON_ARGS :=
@@ -156,8 +188,12 @@ ifeq ($(AUTO_TEST), conformance)
 ENABLE_CONFORMANCE_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TEST_WORKDIR)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_EXTRA_BLOCKLISTS=$(CONFORMANCE_TEST_EXTRA_BLOCKLISTS)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SELECTOR=$(CONFORMANCE_TEST_SELECTOR)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_GVISOR_FILTER=$(CONFORMANCE_TEST_GVISOR_FILTER)"
 ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
+include test/initramfs/src/conformance/xfstests/build_config.mk
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
@@ -189,16 +225,16 @@ endif
 
 ifeq ($(RELEASE_LTO), 1)
 CARGO_OSDK_COMMON_ARGS += --profile release-lto
-OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 else ifeq ($(RELEASE), 1)
 CARGO_OSDK_COMMON_ARGS += --release
 	ifeq ($(TARGET_ARCH), riscv64)
 	# FIXME: Unwinding in RISC-V seems to cost more stack space, so we increase
 	# the stack size for it. This may need further investigation.
 	# See https://github.com/asterinas/asterinas/pull/2383#discussion_r2307673156
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 16
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 	else
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 	endif
 endif
 
@@ -226,12 +262,16 @@ BOOT_PROTOCOL = linux-efi-handover64
 CARGO_OSDK_COMMON_ARGS += --scheme tdx
 endif
 
-ifeq ($(BOOT_PROTOCOL), multiboot)
-BOOT_METHOD = qemu-direct
+ifneq (,$(filter multiboot pvh,$(BOOT_PROTOCOL)))
+BOOT_METHOD = vmm-direct
+endif
+
+ifeq ($(BOOT_PROTOCOL), pvh)
+override FEATURES += pvh_boot
 endif
 
 ifeq ($(SCHEME), microvm)
-BOOT_METHOD = qemu-direct
+BOOT_METHOD = vmm-direct
 endif
 
 ifeq ($(SCHEME), "")
@@ -239,6 +279,8 @@ ifeq ($(SCHEME), "")
 	SCHEME = riscv
 	else ifeq ($(TARGET_ARCH), loongarch64)
 	SCHEME = loongarch
+	else ifeq ($(TARGET_ARCH), aarch64)
+	SCHEME = aarch64
 	endif
 endif
 
@@ -271,28 +313,43 @@ endif
 
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's
 # GRUB release, which is installed in /usr/bin in our Docker image.
+GRUB_MKRESCUE ?= /usr/bin/grub-mkrescue
 ifeq ($(BOOT_PROTOCOL), linux-efi-handover64)
-CARGO_OSDK_COMMON_ARGS += --grub-mkrescue=/usr/bin/grub-mkrescue --grub-boot-protocol="linux"
+CARGO_OSDK_COMMON_ARGS += --grub-mkrescue="$(GRUB_MKRESCUE)" --grub-boot-protocol="linux"
 else ifeq ($(BOOT_PROTOCOL), linux-efi-pe64)
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol="linux"
 else ifeq ($(BOOT_PROTOCOL), linux-legacy32)
 CARGO_OSDK_COMMON_ARGS += --linux-x86-legacy-boot --grub-boot-protocol="linux" --strip-elf
+else ifeq ($(BOOT_PROTOCOL), pvh)
+# PVH uses the vmm-direct boot method, so there is no GRUB boot protocol to pass.
 else
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol=$(BOOT_PROTOCOL)
 endif
 
 ifeq ($(ENABLE_KVM), 1)
-	ifeq ($(KVM_EXISTS), 1)
-		ifeq ($(TARGET_ARCH), x86_64)
-			CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
-		endif
+	ifeq ($(shell [ -e /dev/kvm ] && [ "$$(uname -m)" = "$(TARGET_ARCH)" ] && echo yes),yes)
+	CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
 	endif
 endif
 
 # Skip GZIP to make encoding and decoding of initramfs faster
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
 CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio)
+else
+CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio.gz)
+endif
+
+ifeq ($(INITRAMFS),on)
 CARGO_OSDK_COMMON_ARGS += $(CARGO_OSDK_INITRAMFS_OPTION)
+endif
+CARGO_OSDK_VIRTIOFSD := ./tools/run_virtiofsd.sh --cache-mode $(VIRTIOFS_CACHE) --work-dir
+ifeq ($(VIRTIOFS),on)
+# Each Make invocation gets an isolated virtio-fs work directory under /tmp.
+VIRTIOFS_WORK_DIR := $(shell mktemp -d -p /tmp asterinas-virtiofs-XXXXXX)
+CARGO_OSDK_COMMON_ARGS += --qemu-with-daemon="$(CARGO_OSDK_VIRTIOFSD) $(VIRTIOFS_WORK_DIR)"
+endif
+ifeq ($(VIRTIOFS_SCRATCH),on)
+CARGO_OSDK_COMMON_ARGS += --qemu-with-daemon="$(CARGO_OSDK_VIRTIOFSD) $(VIRTIOFS_WORK_DIR)/scratch"
 endif
 
 CARGO_OSDK_BUILD_ARGS += $(CARGO_OSDK_COMMON_ARGS)
@@ -350,16 +407,32 @@ check_vdso:
 
 .PHONY: initramfs
 initramfs: check_vdso
-	@$(MAKE) --no-print-directory -C test/initramfs
+	@$(MAKE) --no-print-directory -C test/initramfs initramfs-boot-images
+
+.PHONY: rootfs
+rootfs: check_vdso
+	@$(MAKE) --no-print-directory -C test/initramfs rootfs-boot-images
 
 # Build the kernel with an initramfs
 .PHONY: kernel
-kernel: check_kcmd_config initramfs $(CARGO_OSDK)
+kernel: check_kcmd_config $(CARGO_OSDK)
+ifeq ($(INITRAMFS),on)
+kernel: initramfs
+else
+kernel: rootfs
+endif
+kernel:
 	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
-run_kernel: check_kcmd_config initramfs $(CARGO_OSDK)
+run_kernel: check_kcmd_config $(CARGO_OSDK)
+ifeq ($(INITRAMFS),on)
+run_kernel: initramfs
+else
+run_kernel: rootfs
+endif
+run_kernel:
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 # TODO(arthurp, https://github.com/ldos-project/asterinas/issues/237): Using `^` to anchor to the
@@ -526,7 +599,7 @@ format:
 	@
 	@# Format the code using various tools
 	@./tools/format_all.sh
-	@nixfmt ./distro
+	@./tools/nixfmt.sh flake.nix distro tools/dev_env/nix
 	@$(MAKE) --no-print-directory -C test/initramfs format
 	@$(MAKE) --no-print-directory -C test/nixos format
 	@black $(PYTHON_PROJECTS) $(EXTRA_PYTHON_FILES)
@@ -556,8 +629,8 @@ check: $(CARGO_OSDK)
 	@# Check compilation of the Rust code
 	@./tools/clippy_check.sh workspace -- $(CLIPPY_COMMON_ARGS)
 	@
-	@# Check formatting issues of Nix files under distro directory
-	@nixfmt --check ./distro
+	@# Check Nix formatting
+	@./tools/nixfmt.sh --check flake.nix distro tools/dev_env/nix
 	@
 	@# Check formatting issues of the C code and Nix files (regression tests)
 	@$(MAKE) --no-print-directory -C test/initramfs check
@@ -608,15 +681,6 @@ docker_rm:
 
 .PHONY: clean
 clean:
-	@if find target test osdk/target docs '!' -writable 2>/dev/null | grep -q .; then \
-			echo "ERROR: Found unwritable files in build directories"; \
-			echo "ERROR: This must be run from the same environment as the build (generally inside the container)."; \
-			echo "ERROR: You may be running it in the host environment after a build in docker. Run it in docker instead."; \
-			echo "ERROR: (Note: Using "sudo make clean" will not work as the host environment may not have the correct tools.)"; \
-			false; \
-		else \
-			true; \
-		fi
 	@echo "Cleaning up Asterinas workspace target files"
 	@cargo clean
 	@echo "Cleaning up OSDK workspace target files"

@@ -50,7 +50,7 @@ const MAP_32BIT_HIGH_LIMIT: Vaddr = 0x8000_0000;
 /// initialism).
 ///
 /// A VMAR is the address space of a process.
-pub struct Vmar {
+pub(crate) struct Vmar {
     /// VMAR inner
     inner: RwMutex<VmarInner>,
     /// The attached `VmSpace`
@@ -98,11 +98,11 @@ impl Vmar {
     }
 
     /// Returns the current RSS count for the given RSS type.
-    pub fn get_rss_counter(&self, rss_type: RssType) -> usize {
+    pub(crate) fn get_rss_counter(&self, rss_type: RssType) -> usize {
         self.rss_counters[rss_type as usize].sum_all_cpus()
     }
 
-    pub fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
+    pub(crate) fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
         let mut total: isize = 0;
         for cpu in all_cpus() {
             total = total.wrapping_add(
@@ -121,22 +121,22 @@ impl Vmar {
     }
 
     /// Returns the total size of the mappings in bytes.
-    pub fn get_mappings_total_size(&self) -> usize {
+    pub(crate) fn get_mappings_total_size(&self) -> usize {
         self.inner.read().total_vm
     }
 
     /// Returns the attached `VmSpace`.
-    pub fn vm_space(&self) -> &Arc<VmSpace> {
+    pub(crate) fn vm_space(&self) -> &Arc<VmSpace> {
         &self.vm_space
     }
 
     /// Returns the attached `ProcessVm`.
-    pub fn process_vm(&self) -> &ProcessVm {
+    pub(crate) fn process_vm(&self) -> &ProcessVm {
         &self.process_vm
     }
 
     /// Returns whether this VMAR has multiple handles.
-    pub fn has_multiple_handles(&self) -> bool {
+    pub(crate) fn has_multiple_handles(&self) -> bool {
         self.num_handles.load(Ordering::Relaxed) > 1
     }
 
@@ -175,8 +175,8 @@ impl Vmar {
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/include/linux/mm_types_task.h#L26-L32>
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, TryFromInt, PartialEq, Eq)]
-pub enum RssType {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+pub(crate) enum RssType {
     File = 0,
     Anon = 1,
 }
@@ -439,8 +439,9 @@ impl VmarInner {
         offset: Vaddr,
         size: usize,
         rss_delta: &mut RssDelta,
-    ) -> Result<Range<Vaddr>> {
+    ) -> Range<Vaddr> {
         let range = offset..offset + size;
+
         let mut mappings_to_remove = Vec::new();
         for vm_mapping in self.vm_mappings.find(&range) {
             mappings_to_remove.push(vm_mapping.map_to_addr());
@@ -469,7 +470,7 @@ impl VmarInner {
             rss_delta.add(taken.rss_type(), -(taken.unmap(&vmar.vm_space) as isize));
         }
 
-        Ok(offset..(offset + size))
+        range
     }
 
     /// Allocates a free region for mapping, searching from high address to low address.
@@ -585,7 +586,7 @@ impl VmarInner {
                 map_addr + new_size,
                 old_size - new_size,
                 rss_delta,
-            )?;
+            );
             return Ok(());
         }
 

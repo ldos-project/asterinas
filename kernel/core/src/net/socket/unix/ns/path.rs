@@ -10,7 +10,7 @@ use crate::{
     prelude::*,
 };
 
-pub fn lookup_socket_file(path: &str) -> Result<Path> {
+pub(crate) fn lookup_socket_file(path: &str) -> Result<Path> {
     let path = {
         let current = Task::current().unwrap();
         let fs_ref = current.as_thread_local().unwrap().borrow_fs();
@@ -37,7 +37,7 @@ pub fn lookup_socket_file(path: &str) -> Result<Path> {
     Ok(path)
 }
 
-pub fn create_socket_file(path_name: &str) -> Result<Path> {
+pub(crate) fn create_socket_file(path_name: &str) -> Result<Path> {
     let result = (|| {
         let current = Task::current().unwrap();
         let fs_ref = current.as_thread_local().unwrap().borrow_fs();
@@ -48,7 +48,7 @@ pub fn create_socket_file(path_name: &str) -> Result<Path> {
             .lookup_unresolved_no_follow(&fs_path)?
             .into_parent_and_filename()?;
 
-        parent.new_fs_child(&file_name, InodeType::Socket, mkmod!(u+rw))
+        parent.new_child(&file_name, InodeType::Socket, mkmod!(u+rw))
     })();
 
     result.map_err(|err| {

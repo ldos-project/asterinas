@@ -201,7 +201,7 @@ impl OwnedPath {
     /// Create a new path with the given components.
     ///
     /// For internal use only.
-    pub fn new(components: Vec<PathComponent>) -> Self {
+    pub(crate) fn new(components: Vec<PathComponent>) -> Self {
         Self { components }
     }
 

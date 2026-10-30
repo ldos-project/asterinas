@@ -22,7 +22,7 @@ mod test_utils {
 
     /// Creates a new user page table that has mapped a virtual range to a physical frame.
     #[track_caller]
-    pub fn create_user_pt_mapped_at(virt_range: Range<Vaddr>) -> PageTable<UserPtConfig> {
+    pub(super) fn create_user_pt_mapped_at(virt_range: Range<Vaddr>) -> PageTable<UserPtConfig> {
         let page_table = PageTable::<UserPtConfig>::empty();
 
         let frame = FrameAllocOptions::new().alloc_frame().unwrap();
@@ -42,21 +42,24 @@ mod test_utils {
 
     /// Maps a range of virtual addresses to physical addresses with specified properties.
     #[track_caller]
-    pub fn map_untracked(
+    pub(super) fn map_untracked(
         pt: &PageTable<TestPtConfig>,
         va: Range<Vaddr>,
         pa: Paddr,
         prop: PageProperty,
     ) {
         let preempt_guard = disable_preempt();
-        let mut cursor = pt.cursor_mut(&preempt_guard, &va).unwrap();
+        let min_level = max_page_level::<TestPtConfig>(va.len());
+        let mut cursor = pt
+            .cursor_mut_with_min_level(&preempt_guard, &va, min_level)
+            .unwrap();
         for (paddr, level) in largest_pages::<TestPtConfig>(va.start, pa, va.len()) {
             unsafe { cursor.map((paddr, level, prop)) };
         }
     }
 
     /// Applies a protection operation to a range of virtual addresses within a PageTable.
-    pub fn protect_range<C: PageTableConfig>(
+    pub(super) fn protect_range<C: PageTableConfig>(
         page_table: &PageTable<C>,
         range: &Range<Vaddr>,
         mut protect_op: impl FnMut(&mut PageProperty),
@@ -72,7 +75,7 @@ mod test_utils {
     }
 
     #[derive(Clone, Debug, Default)]
-    pub struct VeryHugePagingConsts;
+    pub(super) struct VeryHugePagingConsts;
 
     impl PagingConstsTrait for VeryHugePagingConsts {
         const NR_LEVELS: PagingLevel = 4;
@@ -84,7 +87,7 @@ mod test_utils {
     }
 
     #[derive(Clone, Debug)]
-    pub struct TestPtConfig;
+    pub(super) struct TestPtConfig;
 
     // SAFETY: `item_raw_info`, `item_into_raw`, `item_from_raw`, and
     // `item_ref_from_raw` are correctly implemented with respect to the `Item`
@@ -126,8 +129,8 @@ mod test_utils {
         fn init_split_item_subpage(_item: Self::Item, _level: PagingLevel) {}
     }
 
-    pub type TestPtItem = (Paddr, PagingLevel, PageProperty);
-    pub struct TestPtItemRef<'a>(pub TestPtItem, pub PhantomData<&'a ()>);
+    pub(super) type TestPtItem = (Paddr, PagingLevel, PageProperty);
+    pub(super) struct TestPtItemRef<'a>(pub TestPtItem, pub PhantomData<&'a ()>);
 
     /// A subset iterator for bitflags.
     ///
@@ -135,7 +138,7 @@ mod test_utils {
     ///
     /// When given a bitflag `full`, it iterates over all subsets of `full` in
     /// descending order of their integer values.
-    pub struct SubsetIter {
+    pub(super) struct SubsetIter {
         full: u8,
         cur: u8,
         finished: bool,
@@ -143,7 +146,7 @@ mod test_utils {
 
     impl SubsetIter {
         /// Create a new subset iterator for the given full bitflag.
-        pub fn new(full: u8) -> Self {
+        pub(super) fn new(full: u8) -> Self {
             SubsetIter {
                 full,
                 cur: full,
@@ -182,7 +185,7 @@ mod test_utils {
     }
 
     /// Generates all possible page properties.
-    pub fn all_page_properties() -> impl Iterator<Item = PageProperty> {
+    pub(super) fn all_page_properties() -> impl Iterator<Item = PageProperty> {
         let flag_subsets =
             SubsetIter::new(PageFlags::all().bits()).map(|f| PageFlags::from_bits(f).unwrap());
         flag_subsets.flat_map(|flags| {
@@ -338,6 +341,58 @@ mod range_checks {
         let virt_range =
             (MAX_USERSPACE_VADDR - (PAGE_SIZE / 2))..(MAX_USERSPACE_VADDR + (PAGE_SIZE / 2));
         let _ = create_user_pt_mapped_at(virt_range);
+    }
+}
+
+mod lock_levels {
+    use super::{test_utils::*, *};
+
+    #[ktest]
+    fn map_huge_pages_with_minimum_lock_level() {
+        let huge_size = page_size::<TestPtConfig>(2);
+        let giant_size = page_size::<TestPtConfig>(3);
+        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
+        let guard = disable_preempt();
+        for (level, range) in [
+            (1, PAGE_SIZE..2 * PAGE_SIZE),
+            (2, huge_size..2 * huge_size),
+            (3, giant_size..2 * giant_size),
+            (2, giant_size - huge_size..giant_size + huge_size),
+        ] {
+            let pt = PageTable::<TestPtConfig>::empty();
+            let size = page_size::<TestPtConfig>(level);
+            let min_level = max_page_level::<TestPtConfig>(range.len());
+            assert_eq!(min_level, level);
+            let mut cursor = pt
+                .cursor_mut_with_min_level(&guard, &range, min_level)
+                .unwrap();
+            for pa in (0..range.len()).step_by(size) {
+                // SAFETY: The test page table is never activated and mappings are untracked.
+                unsafe { cursor.map((pa, level, prop)) };
+            }
+            assert_eq!(cursor.virt_addr(), range.end);
+            assert!(cursor.jump(range.end).is_err());
+            cursor.jump(range.start).unwrap();
+            let (mapped_range, item) = cursor.query().unwrap();
+            assert_eq!(mapped_range, range.start..range.start + size);
+            assert_eq!(item.unwrap().0, (0, level, prop));
+            assert_eq!(pt.page_walk(range.end - 1), Some((range.len() - 1, prop)));
+            assert!(pt.page_walk(range.end).is_none());
+        }
+    }
+
+    #[ktest]
+    #[should_panic(expected = "cursor level not suitable for mapping")]
+    fn map_above_locked_level() {
+        let pt = PageTable::<TestPtConfig>::empty();
+        let guard = disable_preempt();
+        let mut cursor = pt
+            .cursor_mut(&guard, &(0..page_size::<TestPtConfig>(2)))
+            .unwrap();
+        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
+
+        // SAFETY: The test page table is never activated and mappings are untracked.
+        unsafe { cursor.map((0, 2, prop)) };
     }
 }
 
@@ -759,9 +814,9 @@ mod unmap {
             panic!("expected to take a stray page table");
         };
 
-        // Should take a level-3 page table.
-        assert_eq!(va, 0);
-        assert_eq!(len, large_range.len());
+        // Should take a level-2 page table with 512 entries.
+        assert_eq!(va, PAGE_SIZE * 512);
+        assert_eq!(len, PAGE_SIZE * 512);
         assert_eq!(num_frames, 1);
     }
 }

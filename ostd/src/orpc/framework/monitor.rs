@@ -48,7 +48,7 @@ mod tests {
         monitor: TestStateMonitor,
     }
 
-    pub struct TestState {
+    pub(super) struct TestState {
         x: i32,
     }
 
@@ -58,7 +58,7 @@ mod tests {
         /// something is produced. This attachment is done with a generated method called
         /// `attach_update`.
         #[strong_observer]
-        pub fn update(&mut self, x: i32) -> Result<(), RPCError> {
+        pub(super) fn update(&mut self, x: i32) -> Result<(), RPCError> {
             self.x = (self.x + x * 3) / 4;
             Ok(())
         }
@@ -66,12 +66,12 @@ mod tests {
         /// A method which can be attached as a consumer. This is analogous to the observer
         /// capabilities of `update`.
         #[consumer]
-        pub fn next(&mut self, _: ()) -> Result<(), RPCError> {
+        pub(super) fn next(&mut self, _: ()) -> Result<(), RPCError> {
             self.x += 1;
             Ok(())
         }
 
-        pub fn get(&mut self) -> Result<i32, RPCError> {
+        pub(super) fn get(&mut self) -> Result<i32, RPCError> {
             Ok(self.x)
         }
     }

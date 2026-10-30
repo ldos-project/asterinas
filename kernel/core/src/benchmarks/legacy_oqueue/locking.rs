@@ -25,7 +25,7 @@ use super::{Consumer, Cursor, OQueue, OQueueAttachError, Producer, StrongObserve
 /// An OQueue implementation which supports `Send`-only values. It supports an unlimited number of producers and
 /// consumers. It does not support observers (weak or strong). It is implemented using a single lock for the entire
 /// OQueue.
-pub struct LockingQueue<T> {
+pub(crate) struct LockingQueue<T> {
     this: Weak<LockingQueue<T>>,
     inner: SpinLock<LockingOQueueInner<T>, LocalIrqDisabled>,
     buffer_size: usize,
@@ -36,7 +36,7 @@ pub struct LockingQueue<T> {
 impl<T> LockingQueue<T> {
     /// Create a new LockingQueue with the specified size.
     #[allow(unused)]
-    pub fn new(buffer_size: usize) -> Arc<Self> {
+    pub(crate) fn new(buffer_size: usize) -> Arc<Self> {
         Self::new_with_observers(buffer_size, 0)
     }
 
@@ -69,7 +69,7 @@ impl<T> LockingQueue<T> {
 
 /// An OQueue implementation which supports `Send + Clone` values and supports observation. It also supports and unlimited
 /// number of producers and consumers. It is implemented using a single lock for the entire OQueue.
-pub struct ObservableLockingQueue<T> {
+pub(crate) struct ObservableLockingQueue<T> {
     // TODO: This creates a layer of indirection that isn't strictly needed, however removing it is tricky because we
     // have composition not inheritance so the self available in `inner` is "wrong" in that it isn't the value carried
     // around by the `Arc` the user has. This means that the weak-this cannot be correct without having an Arc directly
@@ -86,7 +86,7 @@ pub struct ObservableLockingQueue<T> {
 impl<T> ObservableLockingQueue<T> {
     /// Create a new OQueue (with observer support) with the given buffer size and supported strong observers. The cost
     /// of an unused observer is very low, so giving a large value here is reasonable.
-    pub fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
+    pub(crate) fn new(buffer_size: usize, max_strong_observers: usize) -> Arc<Self> {
         let inner = LockingQueue::new_with_observers(buffer_size, max_strong_observers);
         Arc::new_cyclic(|this| ObservableLockingQueue {
             inner,

@@ -38,7 +38,7 @@ use crate::{
 
 bitflags! {
     #[derive(Default)]
-    pub struct CloneFlags: u32 {
+    pub(crate) struct CloneFlags: u32 {
         const CLONE_NEWTIME = 0x00000080;       /* New time namespace */
         const CLONE_VM      = 0x00000100;       /* Set if VM shared between processes.  */
         const CLONE_FS      = 0x00000200;       /* Set if fs info shared between processes.  */
@@ -102,7 +102,7 @@ bitflags! {
 ///     ---             cgroup          See CLONE_INTO_CGROUP
 /// ```
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CloneArgs {
+pub(crate) struct CloneArgs {
     pub flags: CloneFlags,
     pub pidfd: Option<Vaddr>,
     pub child_tid: Vaddr,
@@ -118,7 +118,7 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     /// Prepares a new [`CloneArgs`] based on the arguments for clone(2).
-    pub fn for_clone(
+    pub(crate) fn for_clone(
         raw_flags: u64,
         parent_tid: Vaddr,
         child_tid: Vaddr,
@@ -162,14 +162,14 @@ impl CloneArgs {
         })
     }
 
-    pub fn for_fork() -> Self {
+    pub(crate) fn for_fork() -> Self {
         Self {
             exit_signal: Some(SIGCHLD),
             ..Default::default()
         }
     }
 
-    pub fn for_vfork() -> Self {
+    pub(crate) fn for_vfork() -> Self {
         Self {
             flags: CloneFlags::CLONE_VFORK | CloneFlags::CLONE_VM,
             exit_signal: Some(SIGCHLD),
@@ -290,7 +290,7 @@ impl CloneFlags {
 ///
 /// FIXME: currently, the child process or thread will be scheduled to run at once,
 /// but this may not be the expected behavior.
-pub fn clone_child(
+pub(crate) fn clone_child(
     ctx: &Context,
     parent_context: &UserContext,
     clone_args: CloneArgs,
@@ -505,7 +505,7 @@ fn clone_child_process(
     let clone_flags = clone_args.flags;
 
     // Clone the virtual memory space
-    let child_vmar = clone_vmar(thread_local.vmar().borrow().as_ref().unwrap(), clone_flags)?;
+    let child_vmar = clone_vmar(thread_local.vmar().borrow().as_ref().unwrap(), clone_flags);
 
     // Clone the user context
     #[cfg_attr(target_arch = "x86_64", expect(unused_mut))]
@@ -673,13 +673,13 @@ fn clone_parent_settid(
     Ok(())
 }
 
-fn clone_vmar(parent_vmar: &VmarHandle, clone_flags: CloneFlags) -> Result<VmarHandle> {
+fn clone_vmar(parent_vmar: &VmarHandle, clone_flags: CloneFlags) -> VmarHandle {
     // If CLONE_VM is set, the child and parent share the same VMAR.
     // Otherwise, the child has a copy of the parent's VMAR.
     if clone_flags.contains(CloneFlags::CLONE_VM) {
-        Ok(parent_vmar.clone_handle())
+        parent_vmar.clone_handle()
     } else {
-        Ok(Vmar::fork_from(parent_vmar)?)
+        Vmar::fork_from(parent_vmar)
     }
 }
 

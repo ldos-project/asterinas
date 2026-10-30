@@ -6,13 +6,11 @@ use unbound::UnboundNetlink;
 use super::{GroupIdSet, NetlinkSocketAddr};
 use crate::{
     events::IoEvents,
-    fs::{
-        file::{FileCommon, StatusFlags},
-        pseudofs::SockFs,
-    },
+    fs::file::FileCommon,
     net::socket::{
         Socket,
         netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
+        new_socket_common,
         options::{
             Error as SocketError, SocketOption,
             macros::{sock_option_mut, sock_option_ref},
@@ -34,7 +32,7 @@ use crate::{
 mod bound;
 mod unbound;
 
-pub struct NetlinkSocket<P: SupportedNetlinkProtocol> {
+pub(crate) struct NetlinkSocket<P: SupportedNetlinkProtocol> {
     inner: RwMutex<Inner<UnboundNetlink<P>, BoundNetlink<P::Message>>>,
     options: RwLock<OptionSet>,
     socket_type: SockType,
@@ -61,22 +59,17 @@ impl<P: SupportedNetlinkProtocol> NetlinkSocket<P>
 where
     BoundNetlink<P::Message>: Bound<Endpoint = NetlinkSocketAddr>,
 {
-    pub fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
         debug_assert!(socket_type == SockType::SOCK_RAW || socket_type == SockType::SOCK_DGRAM);
 
         let unbound = UnboundNetlink::new();
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound)),
             options: RwLock::new(OptionSet::new()),
             socket_type,
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 

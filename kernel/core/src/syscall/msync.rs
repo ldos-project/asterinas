@@ -4,9 +4,16 @@ use align_ext::AlignExt;
 use ostd::ignore_err;
 
 use super::SyscallReturn;
-use crate::{prelude::*, thread::kernel_thread::ThreadOptions, vm::vmar::VMAR_CAP_ADDR};
+use crate::{
+    fs::file::SyncMode, prelude::*, thread::kernel_thread::ThreadOptions, vm::vmar::VMAR_CAP_ADDR,
+};
 
-pub fn sys_msync(addr: Vaddr, len: usize, flag: i32, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_msync(
+    addr: Vaddr,
+    len: usize,
+    flag: i32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     let flags = MsyncFlags::from_bits(flag)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     debug!("addr = 0x{:x}, len = {}, flags = {:?}", addr, len, flags);
@@ -51,7 +58,7 @@ pub fn sys_msync(addr: Vaddr, len: usize, flag: i32, ctx: &Context) -> Result<Sy
     let task_fn = move || {
         for inode in inodes {
             // TODO: Sync a necessary range instead of syncing the whole inode.
-            ignore_err!(inode.sync_all());
+            ignore_err!(inode.sync(SyncMode::Full));
         }
     };
 

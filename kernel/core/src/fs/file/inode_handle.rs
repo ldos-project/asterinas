@@ -4,11 +4,9 @@
 
 use core::fmt::Display;
 
-use aster_rights::Rights;
-
 use super::{
-    AccessMode, CreationFlags, FileCommon, FileLike, InodeType, Mappable, SettableStatusFlags,
-    StatusFlags, file_table::FdFlags, flock::FlockItem,
+    AccessMode, CreationFlags, FileCommon, FileLike, InodeType, MappableObject,
+    SettableStatusFlags, StatusFlags, SyncMode, file_table::FdFlags, flock::FlockItem,
 };
 use crate::{
     events::IoEvents,
@@ -19,25 +17,37 @@ use crate::{
             inode_ext::InodeExt,
             path::Path,
             range_lock::{RangeLockItem, RangeLockOwner, RangeLockType},
+            xattr::clear_file_priv,
         },
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
     util::ioctl::RawIoctl,
+    vm::vmar::FileMmapRequest,
 };
 
-pub struct InodeHandle {
-    common: FileCommon,
+pub(crate) struct InodeHandle {
     /// `open_file` is similar to the `file_private` field in Linux's `file` structure. If
     /// `open_file` is `Some(_)`, typical file operations including `read`, `write`, `poll`,
     /// and `ioctl` will be provided by the per-open file object instead of `path`.
     open_file: Option<Box<dyn PerOpenFileOps>>,
     offset: Mutex<usize>,
-    rights: Rights,
+    /// Path and common states of the handle.
+    //
+    // This field is placed last so that its `Path` keeps the corresponding filesystem alive
+    // while `open_file` is dropped, because releasing `open_file` may access that filesystem.
+    //
+    // Struct fields are dropped in declaration order.
+    // Reference: <https://doc.rust-lang.org/reference/destructors.html>.
+    common: FileCommon,
 }
 
 impl InodeHandle {
-    pub fn new(path: Path, access_mode: AccessMode, status_flags: StatusFlags) -> Result<Self> {
+    pub(crate) fn new(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+    ) -> Result<Self> {
         let inode = path.inode();
         if !status_flags.contains(StatusFlags::O_PATH) {
             // "Opening a file or directory with the O_PATH flag requires no permissions on the
@@ -49,45 +59,47 @@ impl InodeHandle {
         Self::new_unchecked_access(path, access_mode, status_flags)
     }
 
-    pub fn new_unchecked_access(
+    pub(crate) fn new_unchecked_access(
         path: Path,
-        access_mode: AccessMode,
+        mut access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Result<Self> {
         let inode = path.inode();
-        let (open_file, rights) = if status_flags.contains(StatusFlags::O_PATH) {
-            (None, Rights::empty())
+        let open_file = if status_flags.contains(StatusFlags::O_PATH) {
+            // The file is opened with `O_PATH`. We follow Linux to report `O_RDONLY` here (e.g.,
+            // in `/proc/[pid]/fdinfo/[n]`).
+            access_mode = AccessMode::O_RDONLY;
+            None
         } else if inode.type_() == InodeType::Dir && access_mode.is_writable() {
             return_errno_with_message!(Errno::EISDIR, "a directory cannot be opened writable");
         } else {
-            let open_file = inode.open(access_mode, status_flags).transpose()?;
-            let rights = Rights::from(access_mode);
-            (open_file, rights)
+            inode
+                .open(path.dentry(), access_mode, status_flags)
+                .transpose()?
         };
 
         Ok(Self {
-            common: FileCommon::new(path, status_flags),
             open_file,
             offset: Mutex::new(0),
-            rights,
+            common: FileCommon::new(path, access_mode, status_flags),
         })
     }
 
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         self.common.path()
     }
 
-    pub fn status_flags(&self) -> StatusFlags {
+    pub(crate) fn access_mode(&self) -> AccessMode {
+        self.common.access_mode()
+    }
+
+    pub(crate) fn status_flags(&self) -> StatusFlags {
         self.common.status_flags()
     }
 
-    pub fn offset(&self) -> usize {
+    pub(crate) fn offset(&self) -> usize {
         let offset = self.offset.lock();
         *offset
-    }
-
-    pub(in crate::fs) fn rights(&self) -> Rights {
-        self.rights
     }
 
     fn file_ops_and_is_offset_aware(&self) -> (&dyn FileOps, bool) {
@@ -119,8 +131,8 @@ impl InodeHandle {
         Ok(inode.as_ref())
     }
 
-    pub fn readdir(&self, visitor: &mut dyn DirentVisitor) -> Result<usize> {
-        if !self.rights.contains(Rights::READ) {
+    pub(crate) fn readdir(&self, visitor: &mut dyn DirentVisitor) -> Result<usize> {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
         }
 
@@ -135,8 +147,8 @@ impl InodeHandle {
         Ok(read_cnt)
     }
 
-    pub fn test_range_lock(&self, mut lock: RangeLockItem) -> Result<RangeLockItem> {
-        if self.rights.is_empty() {
+    pub(crate) fn test_range_lock(&self, mut lock: RangeLockItem) -> Result<RangeLockItem> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -155,20 +167,24 @@ impl InodeHandle {
         Ok(req_lock)
     }
 
-    pub fn set_range_lock(&self, lock: &RangeLockItem, is_nonblocking: bool) -> Result<()> {
+    pub(crate) fn set_range_lock(&self, lock: &RangeLockItem, is_nonblocking: bool) -> Result<()> {
         match lock.type_() {
             RangeLockType::ReadLock => {
-                if !self.rights.contains(Rights::READ) {
+                if self.status_flags().contains(StatusFlags::O_PATH)
+                    || !self.access_mode().is_readable()
+                {
                     return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
                 }
             }
             RangeLockType::WriteLock => {
-                if !self.rights.contains(Rights::WRITE) {
+                if self.status_flags().contains(StatusFlags::O_PATH)
+                    || !self.access_mode().is_writable()
+                {
                     return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
                 }
             }
             RangeLockType::Unlock => {
-                if self.rights.is_empty() {
+                if self.status_flags().contains(StatusFlags::O_PATH) {
                     return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
                 }
             }
@@ -187,7 +203,7 @@ impl InodeHandle {
         range_lock_list.set_lock(lock, is_nonblocking)
     }
 
-    pub fn release_range_locks(&self, owner: RangeLockOwner) {
+    pub(crate) fn release_range_locks(&self, owner: RangeLockOwner) {
         if let Some(range_lock_list) = self
             .path()
             .inode()
@@ -209,8 +225,8 @@ impl InodeHandle {
         }
     }
 
-    pub fn set_flock(&self, lock: FlockItem, is_nonblocking: bool) -> Result<()> {
-        if self.rights.is_empty() {
+    pub(crate) fn set_flock(&self, lock: FlockItem, is_nonblocking: bool) -> Result<()> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -218,8 +234,8 @@ impl InodeHandle {
         flock_list.set_lock(lock, is_nonblocking)
     }
 
-    pub fn unlock_flock(&self) -> Result<()> {
-        if self.rights.is_empty() {
+    pub(crate) fn unlock_flock(&self) -> Result<()> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -235,8 +251,8 @@ impl InodeHandle {
         Ok(())
     }
 
-    pub fn downcast_open_file<T: 'static>(&self) -> Result<Option<&T>> {
-        if self.rights.is_empty() {
+    pub(crate) fn downcast_open_file<T: 'static>(&self) -> Result<Option<&T>> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -254,7 +270,7 @@ impl Pollable for InodeHandle {
             return open_file.poll(mask, poller);
         }
 
-        if self.rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             IoEvents::NVAL
         } else {
             let events = IoEvents::IN | IoEvents::OUT;
@@ -265,7 +281,7 @@ impl Pollable for InodeHandle {
 
 impl FileLike for InodeHandle {
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        if !self.rights.contains(Rights::READ) {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
         }
 
@@ -285,8 +301,11 @@ impl FileLike for InodeHandle {
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {
-        if !self.rights.contains(Rights::WRITE) {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_writable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
+        }
+        if reader.remain() > 0 {
+            clear_file_priv(self.path().dentry())?;
         }
 
         let (file_ops, is_offset_aware) = self.file_ops_and_is_offset_aware();
@@ -313,7 +332,7 @@ impl FileLike for InodeHandle {
 
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let file_ops = self.file_ops_for_positional_io()?;
-        if !self.rights.contains(Rights::READ) {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
         }
 
@@ -324,8 +343,11 @@ impl FileLike for InodeHandle {
 
     fn write_at(&self, mut offset: usize, reader: &mut VmReader) -> Result<usize> {
         let file_ops = self.file_ops_for_positional_io()?;
-        if !self.rights.contains(Rights::WRITE) {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_writable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
+        }
+        if reader.remain() > 0 {
+            clear_file_priv(self.path().dentry())?;
         }
 
         let status_flags = self.status_flags();
@@ -342,7 +364,7 @@ impl FileLike for InodeHandle {
     }
 
     fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
-        if self.rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -353,30 +375,32 @@ impl FileLike for InodeHandle {
         return_errno_with_message!(Errno::ENOTTY, "ioctl is not supported");
     }
 
-    fn mappable(&self) -> Result<Mappable> {
-        if self.rights.is_empty() {
+    fn mappable(&self, request: FileMmapRequest) -> Result<MappableObject<'_>> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
+        }
+
+        if let Some(ref open_file) = self.open_file {
+            // If the file is a special file (e.g., device file), we should
+            // return the file-specific mappable object.
+            return open_file.mappable(request);
         }
 
         let inode = self.path().inode();
         if let Some(page_cache) = inode.page_cache() {
-            // If the inode has a page cache, it is a file-backed mapping and
-            // we return the VMO as the mappable object.
-            Ok(Mappable::Vmo(page_cache))
-        } else if let Some(ref open_file) = self.open_file {
-            // Otherwise, it is a special file (e.g. device file) and we should
-            // return the file-specific mappable object.
-            open_file.mappable()
+            // Otherwise, if the inode has a page cache, it is a file-backed
+            // mapping and we return the VMO as the mappable object.
+            Ok(MappableObject::Vmo(page_cache))
         } else {
             return_errno_with_message!(Errno::ENODEV, "the file is not mappable");
         }
     }
 
     fn resize(&self, new_size: usize) -> Result<()> {
-        if self.rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
-        if !self.rights.contains(Rights::WRITE) {
+        if !self.access_mode().is_writable() {
             return_errno_with_message!(Errno::EINVAL, "the file is not opened writable");
         }
 
@@ -384,7 +408,9 @@ impl FileLike for InodeHandle {
             // FIXME: It's allowed to `ftruncate` an append-only file on Linux.
             return_errno_with_message!(Errno::EPERM, "can not resize append-only file");
         }
-        self.path().inode().resize(new_size)
+        // `ftruncate` uses the descriptor's write mode and must not recheck current inode
+        // permissions. See <https://man7.org/linux/man-pages/man2/truncate.2.html>.
+        self.path().resize_unchecked_access(new_size)
     }
 
     fn settable_status_flags(&self) -> SettableStatusFlags {
@@ -400,12 +426,8 @@ impl FileLike for InodeHandle {
         }
     }
 
-    fn access_mode(&self) -> AccessMode {
-        self.rights.into()
-    }
-
     fn seek(&self, pos: SeekFrom) -> Result<usize> {
-        if self.rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -426,11 +448,12 @@ impl FileLike for InodeHandle {
     }
 
     fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
-        if !self.rights.contains(Rights::WRITE) {
+        if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_writable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
         }
 
-        let inode = self.path().inode().as_ref();
+        let dentry = self.path().dentry();
+        let inode = dentry.inode().as_ref();
         let inode_type = inode.type_();
 
         // TODO: `fallocate` on pipe files also fails with `ESPIPE`.
@@ -464,6 +487,7 @@ impl FileLike for InodeHandle {
             );
         }
 
+        clear_file_priv(dentry)?;
         inode.fallocate(mode, offset, len)
     }
 
@@ -496,6 +520,18 @@ impl FileLike for InodeHandle {
             fd_flags,
         })
     }
+
+    fn sync(&self, mode: SyncMode) -> Result<()> {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
+            return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
+        }
+
+        if let Some(ref open_file) = self.open_file {
+            return open_file.sync(mode);
+        }
+
+        self.path().sync(mode)
+    }
 }
 
 impl Drop for InodeHandle {
@@ -510,14 +546,13 @@ impl Debug for InodeHandle {
             .field("path", &self.path())
             .field("offset", &self.offset())
             .field("status_flags", &self.status_flags())
-            .field("rights", &self.rights)
             .finish_non_exhaustive()
     }
 }
 
 /// Describes the position to seek from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SeekFrom {
+pub(crate) enum SeekFrom {
     Start(usize),
     End(isize),
     Current(isize),
@@ -561,7 +596,7 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
     }
 
     // See `FileLike::mappable`.
-    fn mappable(&self) -> Result<Mappable> {
+    fn mappable(&self, _request: FileMmapRequest) -> Result<MappableObject<'_>> {
         return_errno_with_message!(Errno::EINVAL, "the file is not mappable");
     }
 
@@ -574,6 +609,14 @@ pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
         // `O_ASYNC` and `O_DIRECT` can only be set on file descriptions that explicitly
         // support them.
         SettableStatusFlags::minimal()
+    }
+
+    /// Synchronizes the file according to `mode`.
+    ///
+    /// Per-open file operations do not support synchronization by default.
+    /// Implementations that support synchronization must override this method.
+    fn sync(&self, _mode: SyncMode) -> Result<()> {
+        return_errno_with_message!(Errno::EINVAL, "the file does not support synchronization")
     }
 }
 

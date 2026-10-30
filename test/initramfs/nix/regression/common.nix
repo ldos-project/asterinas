@@ -1,5 +1,5 @@
 { lib, stdenv, glibc, hostPlatform, dir, testPlatform ? "asterinas"
-, extraAttrs ? { }, extraBuildInputs ? [ ] }:
+, extraAttrs ? { }, extraBuildInputs ? [ ], }:
 stdenv.mkDerivation ({
   pname = "${dir}-test";
   version = "0.1.0";

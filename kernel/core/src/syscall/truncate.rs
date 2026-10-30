@@ -12,7 +12,11 @@ use crate::{
     process::ResourceType,
 };
 
-pub fn sys_ftruncate(raw_fd: RawFileDesc, len: isize, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_ftruncate(
+    raw_fd: RawFileDesc,
+    len: isize,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     debug!("raw_fd = {}, length = {}", raw_fd, len);
 
     check_length(len, ctx)?;
@@ -24,7 +28,7 @@ pub fn sys_ftruncate(raw_fd: RawFileDesc, len: isize, ctx: &Context) -> Result<S
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_truncate(path_ptr: Vaddr, len: isize, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_truncate(path_ptr: Vaddr, len: isize, ctx: &Context) -> Result<SyscallReturn> {
     let path_name = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
     debug!("path = {:?}, length = {}", path_name, len);
 
@@ -44,10 +48,9 @@ pub fn sys_truncate(path_ptr: Vaddr, len: isize, ctx: &Context) -> Result<Syscal
     Ok(SyscallReturn::Return(0))
 }
 
-#[inline]
 fn check_length(len: isize, ctx: &Context) -> Result<()> {
     if len < 0 {
-        return_errno_with_message!(Errno::EINVAL, "length is negative");
+        return_errno_with_message!(Errno::EINVAL, "the length to truncate is negative");
     }
 
     let max_file_size = {
@@ -57,7 +60,7 @@ fn check_length(len: isize, ctx: &Context) -> Result<()> {
             .get_cur() as usize
     };
     if len as usize > max_file_size {
-        return_errno_with_message!(Errno::EFBIG, "length is larger than the maximum file size");
+        return_errno_with_message!(Errno::EFBIG, "the length to truncate is too large");
     }
     Ok(())
 }

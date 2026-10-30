@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-pub struct PidFile {
+pub(crate) struct PidFile {
     process: Weak<Process>,
     common: FileCommon,
 }
@@ -31,7 +31,7 @@ impl Debug for PidFile {
 }
 
 impl PidFile {
-    pub fn new(process: Arc<Process>, is_nonblocking: bool) -> Self {
+    pub(crate) fn new(process: Arc<Process>, is_nonblocking: bool) -> Self {
         let pseudo_path = PidfdFs::new_path(|_| "anon_inode:[pidfd]".to_string());
         let status_flags = if is_nonblocking {
             StatusFlags::O_NONBLOCK
@@ -41,7 +41,8 @@ impl PidFile {
 
         Self {
             process: Arc::downgrade(&process),
-            common: FileCommon::new(pseudo_path, status_flags),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/kernel/fork.c#L1898>.
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, status_flags),
         }
     }
 
@@ -65,7 +66,7 @@ impl PidFile {
         self.common.is_nonblocking()
     }
 
-    pub fn process_opt(&self) -> Option<Arc<Process>> {
+    pub(crate) fn process_opt(&self) -> Option<Arc<Process>> {
         self.process.upgrade()
     }
 }
@@ -83,11 +84,6 @@ impl FileLike for PidFile {
             Errno::EINVAL,
             "PID file cannot be written at a specific offset"
         );
-    }
-
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/kernel/fork.c#L1898>.
-        AccessMode::O_RDWR
     }
 
     fn common(&self) -> &FileCommon {
@@ -112,7 +108,7 @@ impl FileLike for PidFile {
             }
         }
 
-        let mut flags = self.common.status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common.status_flags().bits() | self.common.access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }

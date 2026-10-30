@@ -6,6 +6,7 @@ use alloc::{
     collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
+    vec::Vec,
 };
 
 use inherit_methods_macro::inherit_methods;
@@ -22,22 +23,68 @@ use super::{
 };
 use crate::{SysBranchNode, SysNode, SysSymlink};
 
+/// Returns whether `name` is valid for a non-root `SysTree` node [`SysObj`]
+/// or an attribute [`SysAttr`](crate::SysAttr).
+///
+/// A valid name is nonempty, is neither `.` nor `..`, and contains no `/` or `NUL`.
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty() && !matches!(name, "." | "..") && !name.contains(['/', '\0'])
+}
+
+/// Computes the relative path from the directory `from_dir` to the target `to`.
+///
+/// Both arguments are absolute paths within one `SysTree` as returned by
+/// [`SysObj::path`] (the root is `/`). The result is suitable as the target of a
+/// symlink placed inside `from_dir`, e.g. the relative path from `/class/mem` to
+/// `/devices/virtual/mem/null` is `../../devices/virtual/mem/null`.
+///
+/// The result always ends with the last component of `to`, as the symlinks in
+/// Linux's sysfs do: the relative path from `/devices/a/b/c` to `/devices/a`
+/// is `../../../a`, not `../..`.
+pub fn relative_path(from_dir: &str, to: &str) -> String {
+    let from: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
+    let to: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
+    let Some((last, to_parent)) = to.split_last() else {
+        return String::from("/");
+    };
+    let common = from
+        .iter()
+        .zip(to_parent.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = String::new();
+    for _ in common..from.len() {
+        result.push_str("../");
+    }
+    for component in &to_parent[common..] {
+        result.push_str(component);
+        result.push('/');
+    }
+    result.push_str(last);
+    result
+}
+
 /// Fields for all `SysObj` types, including `SysNode` and `SysBranchNode`.
 #[derive(Debug)]
-pub struct ObjFields<T: SysObj> {
+pub struct ObjFields<T: SysObj + ?Sized> {
     id: SysNodeId,
     name: SysStr,
     parent: Once<Weak<dyn SysBranchNode>>,
     weak_self: Weak<T>,
 }
 
-impl<T: SysObj> ObjFields<T> {
+impl<T: SysObj + ?Sized> ObjFields<T> {
+    /// Creates object fields for a non-root node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the name is empty, `.` or `..`, or contains `/` or `NUL`.
     pub fn new(name: SysStr, weak_self: Weak<T>) -> Self {
+        assert!(is_valid_name(&name), "invalid SysTree node name");
         Self {
-            id: SysNodeId::new(),
             name,
-            parent: Once::new(),
-            weak_self,
+            ..Self::new_root(weak_self)
         }
     }
 
@@ -66,13 +113,23 @@ impl<T: SysObj> ObjFields<T> {
     pub fn weak_self(&self) -> &Weak<T> {
         &self.weak_self
     }
+
+    /// Creates object fields with an empty name for a root node.
+    fn new_root(weak_self: Weak<T>) -> Self {
+        Self {
+            id: SysNodeId::new(),
+            name: SysStr::from(""),
+            parent: Once::new(),
+            weak_self,
+        }
+    }
 }
 
 /// Fields for normal nodes in the `SysTree`.
 #[derive(Debug)]
 pub struct NormalNodeFields<T: SysNode> {
     base: ObjFields<T>,
-    attr_set: SysAttrSet,
+    attr_set: Arc<SysAttrSet>,
 }
 
 #[inherit_methods(from = "self.base")]
@@ -80,7 +137,7 @@ impl<T: SysNode> NormalNodeFields<T> {
     pub fn new(name: SysStr, attr_set: SysAttrSet, weak_self: Weak<T>) -> Self {
         Self {
             base: ObjFields::new(name, weak_self),
-            attr_set,
+            attr_set: Arc::new(attr_set),
         }
     }
 
@@ -96,7 +153,7 @@ impl<T: SysNode> NormalNodeFields<T> {
 
     pub fn weak_self(&self) -> &Weak<T>;
 
-    pub fn attr_set(&self) -> &SysAttrSet {
+    pub fn attr_set(&self) -> &Arc<SysAttrSet> {
         &self.attr_set
     }
 }
@@ -182,9 +239,16 @@ impl<C: SysObj + ?Sized, T: SysBranchNode> AttrLessBranchNodeFields<C, T> {
         &self.children
     }
 
-    pub fn attr_set(&self) -> &SysAttrSet {
-        static EMPTY: SysAttrSet = SysAttrSet::new_empty();
-        &EMPTY
+    pub fn attr_set(&self) -> &Arc<SysAttrSet> {
+        SysAttrSet::empty()
+    }
+
+    /// Creates attribute-less branch fields with an empty name for a root node.
+    fn new_root(weak_self: Weak<T>) -> Self {
+        Self {
+            base: ObjFields::new_root(weak_self),
+            children: RwMutex::new(BTreeMap::new()),
+        }
     }
 }
 
@@ -192,7 +256,7 @@ impl<C: SysObj + ?Sized, T: SysBranchNode> AttrLessBranchNodeFields<C, T> {
 #[derive(Debug)]
 pub struct BranchNodeFields<C: SysObj + ?Sized, T: SysBranchNode> {
     base: AttrLessBranchNodeFields<C, T>,
-    attr_set: SysAttrSet,
+    attr_set: Arc<SysAttrSet>,
 }
 
 #[inherit_methods(from = "self.base")]
@@ -200,7 +264,7 @@ impl<C: SysObj + ?Sized, T: SysBranchNode> BranchNodeFields<C, T> {
     pub fn new(name: SysStr, attr_set: SysAttrSet, weak_self: Weak<T>) -> Self {
         Self {
             base: AttrLessBranchNodeFields::new(name, weak_self),
-            attr_set,
+            attr_set: Arc::new(attr_set),
         }
     }
 
@@ -230,8 +294,16 @@ impl<C: SysObj + ?Sized, T: SysBranchNode> BranchNodeFields<C, T> {
 
     pub fn children_ref(&self) -> &RwMutex<BTreeMap<SysStr, Arc<C>>>;
 
-    pub fn attr_set(&self) -> &SysAttrSet {
+    pub fn attr_set(&self) -> &Arc<SysAttrSet> {
         &self.attr_set
+    }
+
+    /// Creates branch fields with an empty name for a root node.
+    pub(crate) fn new_root(attr_set: SysAttrSet, weak_self: Weak<T>) -> Self {
+        Self {
+            base: AttrLessBranchNodeFields::new_root(weak_self),
+            attr_set: Arc::new(attr_set),
+        }
     }
 }
 
@@ -273,8 +345,8 @@ impl<T: SysSymlink> SymlinkNodeFields<T> {
 macro_rules! _inner_impl_sys_node {
     ($struct_name:ident, $field:ident, $helper_trait:ty) => {
         impl $crate::SysNode for $struct_name {
-            fn node_attrs(&self) -> &$crate::SysAttrSet {
-                self.$field.attr_set()
+            fn node_attrs(&self) -> alloc::sync::Arc<$crate::SysAttrSet> {
+                self.$field.attr_set().clone()
             }
 
             fn is_attr_absent(&self, name: &str) -> bool {
@@ -390,11 +462,12 @@ pub trait _InheritSysLeafNode<T: SysNode> {
 /// method with the same name from the target `field` or, in the absence of a method with the same
 /// name, the default implementation provided by the trait.
 ///
-/// Note that for the `SysNode` trait, `read_attr` can be automatically implemented in terms of `read_attr_at`,
-/// and `write_attr_at` can be automatically implemented in terms of `write_attr` since most
-/// sysfs attributes do not support partial writes and will ignore the `offset`. Therefore, it is **recommended**
-/// to override the `read_attr_at` and `write_attr` methods. In addition, users can use
-/// [`aster_util::printer::VmPrinter`] to easily handle the `offset` when overriding the `read_attr_at` method.
+/// Note that for the `SysNode` trait, `read_attr` can be automatically implemented in terms of
+/// `read_attr_at`, and `write_attr_at` can be automatically implemented in terms of `write_attr`
+/// since most sysfs attributes do not support partial writes and will ignore the `offset`.
+/// Therefore, it is **recommended** to override the `read_attr_at` and `write_attr` methods. In
+/// addition, users can use [`aster_util::printer::VmPrinter`] to easily handle the `offset` when
+/// overriding the `read_attr_at` method.
 ///
 /// ## Examples
 ///
@@ -463,7 +536,11 @@ macro_rules! inherit_sys_leaf_node {
             }
         }
 
-        $crate::_inner_impl_sys_node!($struct_name, $field, $crate::_InheritSysLeafNode<$struct_name>);
+        $crate::_inner_impl_sys_node!(
+            $struct_name,
+            $field,
+            $crate::_InheritSysLeafNode<$struct_name>
+        );
     };
 }
 
@@ -514,8 +591,9 @@ pub trait _InheritSysBranchNode<T: SysBranchNode> {
 /// Users must ensures the target field is a [`BranchNodeFields`] type or a
 /// [`AttrLessBranchNodeFields`] type.
 ///
-/// The parameters and requirements of this macro are the same to those of [`inherit_sys_leaf_node`].
-/// Here lists the additional override rules for the [`SysBranchNode`] trait methods:
+/// The parameters and requirements of this macro are the same to those of
+/// [`inherit_sys_leaf_node`]. Here lists the additional override rules for the [`SysBranchNode`]
+/// trait methods:
 ///
 /// - No method is required to be implemented by users.
 /// - Methods with default implementations that users can override:
@@ -600,10 +678,18 @@ macro_rules! inherit_sys_branch_node {
             }
         }
 
-        $crate::_inner_impl_sys_node!($struct_name, $field, $crate::_InheritSysBranchNode<$struct_name>);
+        $crate::_inner_impl_sys_node!(
+            $struct_name,
+            $field,
+            $crate::_InheritSysBranchNode<$struct_name>
+        );
 
         impl $crate::SysBranchNode for $struct_name {
-            fn visit_child_with(&self, name: &str, f: &mut dyn FnMut(Option<&alloc::sync::Arc<dyn $crate::SysObj>>)) {
+            fn visit_child_with(
+                &self,
+                name: &str,
+                f: &mut dyn FnMut(Option<&alloc::sync::Arc<dyn $crate::SysObj>>)
+            ) {
                 let children_guard = self.$field.children_ref().read();
                 let child = children_guard
                     .get(name)
@@ -636,11 +722,17 @@ macro_rules! inherit_sys_branch_node {
                     .map(|child| child as Arc<dyn $crate::SysObj>)
             }
 
-            fn create_child(&self, name: &str) -> $crate::Result<alloc::sync::Arc<dyn $crate::SysObj>> {
+            fn create_child(
+                &self,
+                name: &str
+            ) -> $crate::Result<alloc::sync::Arc<dyn $crate::SysObj>> {
                 <_ as $crate::_InheritSysBranchNode<Self>>::create_child(self, name)
             }
 
-            fn remove_child(&self, name: &str) -> $crate::Result<alloc::sync::Arc<dyn $crate::SysObj>> {
+            fn remove_child(
+                &self,
+                name: &str
+            ) -> $crate::Result<alloc::sync::Arc<dyn $crate::SysObj>> {
                 self.$field
                     .remove_child(name)
                     .map(|child| child as Arc<dyn $crate::SysObj>)

@@ -1,35 +1,33 @@
 { target ? "x86_64", enableBenchmarkTest ? false, enableConformanceTest ? false
 , enableRegressionTest ? false, conformanceTestSuite ? "ltp"
-, conformanceTestWorkDir ? "/tmp", regressionTestPlatform ? "asterinas"
-, dnsServer ? "none", smp ? 1, initramfsCompressed ? true, authorized_keys ? ""
-, enablePython ? false }:
+, conformanceTestWorkDir ? "/tmp", conformanceTestSelector ? ""
+, regressionTestPlatform ? "asterinas", dnsServer ? "none", smp ? 1
+, initramfsCompressed ? true, authorized_keys ? "", enablePython ? false
+, benchmarkName ? "none", system ? builtins.currentSystem, }:
 let
   crossSystem.config = if target == "x86_64" then
     "x86_64-unknown-linux-gnu"
   else if target == "riscv64" then
     "riscv64-unknown-linux-gnu"
+  else if target == "aarch64" then
+    "aarch64-unknown-linux-gnu"
   else
     throw "Target arch ${target} not yet supported.";
 
-  # Pinned nixpkgs (nix version: 2.34.8, channel: nixos-26.05, release date: 2026-08-27)
-  nixpkgs = fetchTarball {
-    url =
-      "https://github.com/NixOS/nixpkgs/archive/d57af924f160a5084293c71c2043f058bd1cdb60.tar.gz";
-    sha256 = "141q9r08vhpxbly1bzy0h4mswfjbmbjp033ncb74mav9k2xyj07f";
-  };
-  pkgs = import nixpkgs {
+  pkgs = import ../../../distro/nixpkgs.nix {
     config = { };
     overlays = [ ];
-    inherit crossSystem;
+    inherit system crossSystem;
   };
 in rec {
   # Packages needed by initramfs
   busybox = pkgs.busybox;
-  benchmark = pkgs.callPackage ./benchmark { };
+  benchmark = pkgs.callPackage ./benchmark { inherit benchmarkName; };
   conformance = pkgs.callPackage ./conformance {
     inherit smp;
     testSuite = conformanceTestSuite;
     workDir = conformanceTestWorkDir;
+    testSelector = conformanceTestSelector;
   };
   regression =
     pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
@@ -54,6 +52,7 @@ in rec {
     inherit initramfs;
     compressed = initramfsCompressed;
   };
+  rootfs-image = pkgs.callPackage ./rootfs-image.nix { inherit initramfs; };
 
   # Packages needed by host
   apacheHttpd = pkgs.apacheHttpd;
@@ -64,8 +63,12 @@ in rec {
     CPPFLAGS = "-fcommon -fpermissive";
   });
   lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
-  redis = (pkgs.redis.overrideAttrs (_: { doCheck = false; })).override {
-    withSystemd = false;
-  };
+  redis = (pkgs.redis.overrideAttrs (old: {
+    doCheck = false;
+    makeFlags = (old.makeFlags or [ ]) ++ [
+      "CC=${pkgs.stdenv.cc.targetPrefix}cc"
+      "LD=${pkgs.stdenv.cc.targetPrefix}cc"
+    ];
+  })).override { withSystemd = false; };
   ycsb = pkgs.callPackage ./ycsb.nix { };
 }

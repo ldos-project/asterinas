@@ -37,7 +37,7 @@ jobs:
         run: |
           ./tools/github_workflows/prepare_for_docker_build_and_push.sh "${{ secrets.DOCKERHUB_USERNAME }}" "${{ secrets.DOCKERHUB_TOKEN }}"
 
-  publish_osdk_image:
+  publish_osdk_dev_image:
     needs: prepare
     if: ${{ needs.prepare.outputs.osdk_existed != 'true' }}
     uses: docker/github-builder/.github/workflows/build.yml@v1
@@ -63,9 +63,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  publish_nix_image:
-    needs: [prepare, publish_osdk_image]
-    # Run even if publish_osdk_image was skipped because the OSDK image exists.
+  publish_prebuilt_nix_packages_image:
+    needs: [prepare, publish_osdk_dev_image]
+    # Run even if publish_osdk_dev_image was skipped because the OSDK image exists.
     if: ${{ !cancelled() && !failure() && needs.prepare.outputs.nix_existed != 'true' }}
     uses: docker/github-builder/.github/workflows/build.yml@v1
     permissions:
@@ -78,7 +78,7 @@ jobs:
       #platforms: linux/amd64,linux/arm64
       platforms: linux/amd64
       context: .
-      file: ./tools/docker/nix/Dockerfile
+      file: ./tools/dev_env/docker/prebuilt-nix-packages/Dockerfile
       meta-images: ldosproject/nix
       meta-tags: |
         type=raw,value=${{ needs.prepare.outputs.image_version }}
@@ -90,9 +90,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-  publish_asterinas_image:
-    needs: [prepare, publish_nix_image]
-    # Run even if publish_nix_image was skipped because the Nix image exists.
+  publish_kernel_dev_image:
+    needs: [prepare, publish_prebuilt_nix_packages_image]
+    # Run even if publish_prebuilt_nix_packages_image was skipped because the Nix image exists.
     if: ${{ !cancelled() && !failure() && needs.prepare.outputs.asterinas_existed != 'true' }}
     uses: docker/github-builder/.github/workflows/build.yml@v1
     permissions:
@@ -105,7 +105,7 @@ jobs:
       #platforms: linux/amd64,linux/arm64
       platforms: linux/amd64
       context: .
-      file: ./tools/docker/Dockerfile
+      file: ./tools/dev_env/docker/kernel-dev/Dockerfile
       meta-images: ldosproject/asterinas
       meta-tags: |
         type=raw,value=${{ needs.prepare.outputs.image_version }}

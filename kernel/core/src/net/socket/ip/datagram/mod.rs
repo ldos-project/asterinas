@@ -7,15 +7,16 @@ use unbound::{BindOptions, UnboundDatagram};
 use super::{addr::UNSPECIFIED_LOCAL_ENDPOINT, ioctl::ipv4_ioctl};
 use crate::{
     events::IoEvents,
-    fs::{
-        file::{FileCommon, StatusFlags},
-        pseudofs::SockFs,
-    },
+    fs::file::FileCommon,
     net::{
-        iface::is_broadcast_endpoint,
+        route::is_broadcast_endpoint,
         socket::{
             Socket,
-            ip::options::{IpOptionSet, SetIpLevelOption},
+            ip::{
+                common::map_unspecified_to_localhost,
+                options::{IpOptionSet, SetIpLevelOption},
+            },
+            new_socket_common,
             options::{Error as SocketError, SocketOption, macros::sock_option_mut},
             private::SocketPrivate,
             util::{
@@ -36,7 +37,7 @@ mod bound;
 pub(super) mod observer;
 mod unbound;
 
-pub struct DatagramSocket {
+pub(crate) struct DatagramSocket {
     // Lock order: `inner` first, `options` second
     inner: RwMutex<Inner<UnboundDatagram, BoundDatagram>>,
     options: RwLock<OptionSet>,
@@ -62,19 +63,14 @@ impl OptionSet {
 }
 
 impl DatagramSocket {
-    pub fn new(is_nonblocking: bool) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
-        let status_flags = if is_nonblocking {
-            StatusFlags::O_NONBLOCK
-        } else {
-            StatusFlags::empty()
-        };
         Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            common: FileCommon::new(SockFs::new_path(), status_flags),
+            common: new_socket_common(is_nonblocking),
         })
     }
 
@@ -159,7 +155,7 @@ impl Socket for DatagramSocket {
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
-        let endpoint = socket_addr.try_into()?;
+        let endpoint = map_unspecified_to_localhost(socket_addr.try_into()?);
         let can_broadcast = self.options.read().socket.broadcast();
         if !can_broadcast && is_broadcast_endpoint(&endpoint) {
             return_errno_with_message!(

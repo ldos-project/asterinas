@@ -19,6 +19,30 @@ ostd.workspace = true
 bitflags.workspace = true
 ```
 
+### Keep the kernel crate graph layered and acyclic (`layered-kernel-crates`) {#layered-kernel-crates}
+
+For modularity,
+the Asterinas kernel under `kernel/` is decomposed into
+an acyclic graph of kernel crates arranged in layers.
+A kernel crate may depend on crates in the same layer or any lower layer.
+The layers are, from highest to lowest:
+
+1. The assembler crate (`kernel/src/`).
+2. High-level component crates (`kernel/comps/`).
+3. The `aster-core` crate (`kernel/core/`).
+4. Low-level component crates (`kernel/core/comps/`).
+5. Kernel libraries (`kernel/libs/`).
+
+A new kernel subsystem, driver, or utility type
+should be added as a separate crate outside `aster-core` by default.
+Add new code directly to `aster-core` only when necessary.
+
+All these kernel crates may depend on OSTD.
+
+When lower-layer code needs behavior implemented above it,
+define the interface and registration mechanism in the lower layer
+and let the higher component register its implementation.
+
 ### Add module-level documentation for major components (`module-docs`) {#module-docs}
 
 A module file that serves as
@@ -58,29 +82,38 @@ pub static I8042_CONTROLLER: ...
 
 The `asterinas` assembler crate does not expose any `pub` Rust items.
 
-### Keep the kernel crate graph layered and acyclic (`layered-kernel-crates`) {#layered-kernel-crates}
+### Visibility modifiers encode intent, not just effect (`encode-intent-in-vis`) {#encode-intent-in-vis}
 
-For modularity,
-the Asterinas kernel under `kernel/` is decomposed into
-an acyclic graph of kernel crates arranged in layers.
-A kernel crate may depend on crates in the same layer or any lower layer.
-The layers are, from highest to lowest:
+A plain `pub` says "export me as far as possible":
+along its defining module path,
+the item's _effective_ visibility is capped
+by every enclosing module up to the crate root
+(and a `pub use` elsewhere can re-export it around that cap entirely).
+In a large project like Asterinas,
+a `pub` item may sit deep in the module hierarchy,
+making its effective visibility hard to see locally
+and fragile against visibility changes in its ancestors.
 
-1. The assembler crate (`kernel/src/`).
-2. High-level component crates (`kernel/comps/`).
-3. The `aster-core` crate (`kernel/core/`).
-4. Low-level component crates (`kernel/core/comps/`).
-5. Kernel libraries (`kernel/libs/`).
+Therefore, a visibility modifier in Asterinas declares
+the maximum _intended_ exposure of an item,
+regardless of what its ancestors happen to allow:
 
-A new kernel subsystem, driver, or utility type
-should be added as a separate crate outside `aster-core` by default.
-Add new code directly to `aster-core` only when necessary.
+* `pub` means "exported from this crate".
+  Reserve it for items with an actual consumer in another crate.
+* `pub(crate)`, `pub(super)`, `pub(in super::super)`, and `pub(in crate::a)`
+  mean "this item must never escape the named scope",
+  even when an enclosing private module already restricts it further.
+  If the `path` part of a `pub(in path)` modifier is long,
+  apply [`short-vis-path`](#short-vis-path).
 
-All these kernel crates may depend on OSTD.
+One exception is struct fields and union fields:
+a `pub` field of a visibility-restricted struct or union is acceptable,
+because the field sits only a few lines from the type's own modifier,
+so its real visibility remains locally obvious.
 
-When lower-layer code needs behavior implemented above it,
-define the interface and registration mechanism in the lower layer
-and let the higher component register its implementation.
+This guideline is partially enforced by the rustc lint
+[`unreachable_pub`](https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html#unreachable-pub),
+which flags any `pub` item not actually reachable from outside its crate.
 
 ### Restrict subsystem visibility with a short name (`short-vis-path`) {#short-vis-path}
 

@@ -14,7 +14,7 @@ use crate::{
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_mknodat(
+pub(super) fn sys_mknodat(
     dirfd: RawFileDesc,
     path_addr: Vaddr,
     mode: u16,
@@ -45,7 +45,7 @@ pub fn sys_mknodat(
 
     match inode_type {
         InodeType::File => {
-            let _ = dir_path.new_fs_child(&name, InodeType::File, inode_mode)?;
+            let _ = dir_path.new_child(&name, InodeType::File, inode_mode)?;
         }
         InodeType::CharDevice => {
             let _ = dir_path.mknod(&name, inode_mode, MknodType::CharDevice(dev as u64))?;
@@ -57,7 +57,7 @@ pub fn sys_mknodat(
             let _ = dir_path.mknod(&name, inode_mode, MknodType::NamedPipe)?;
         }
         InodeType::Socket => {
-            let _ = dir_path.new_fs_child(&name, InodeType::Socket, inode_mode)?;
+            let _ = dir_path.new_child(&name, InodeType::Socket, inode_mode)?;
         }
         _ => return_errno_with_message!(Errno::EPERM, "unimplemented file types"),
     }
@@ -65,6 +65,11 @@ pub fn sys_mknodat(
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_mknod(path_addr: Vaddr, mode: u16, dev: usize, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_mknod(
+    path_addr: Vaddr,
+    mode: u16,
+    dev: usize,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     sys_mknodat(AT_FDCWD, path_addr, mode, dev, ctx)
 }

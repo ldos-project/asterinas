@@ -9,7 +9,7 @@ use aster_systree::{
 
 use crate::{
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, SyncMode, mkmod},
         utils::DirentVisitor,
         vfs::{
             file_system::{FileSystem, SuperBlock},
@@ -17,6 +17,7 @@ use crate::{
                 Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
                 RevalidationPolicy, SymbolicLink,
             },
+            path::Dentry as VfsDentry,
         },
     },
     prelude::*,
@@ -203,7 +204,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
             if sysnode.is_attr_absent(name) {
                 return_errno_with_message!(Errno::ENOENT, "attribute is not present");
             }
-            let Some(attr) = sysnode.node_attrs().get(name) else {
+            let Some(attr) = sysnode.node_attrs().get(name).cloned() else {
                 return_errno_with_message!(Errno::ENOENT, "child node or attribute not found");
             };
 
@@ -218,12 +219,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
                 }
             };
 
-            let inode = Self::new_attr(
-                attr.clone(),
-                parent_node_arc,
-                Arc::downgrade(&self.this()),
-                &sb,
-            );
+            let inode = Self::new_attr(attr, parent_node_arc, Arc::downgrade(&self.this()), &sb);
             Ok(inode)
         }
     }
@@ -236,7 +232,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
         if sysnode.is_attr_absent(name) {
             return_errno_with_message!(Errno::ENOENT, "attribute is not present");
         }
-        let Some(attr) = sysnode.node_attrs().get(name) else {
+        let Some(attr) = sysnode.node_attrs().get(name).cloned() else {
             return_errno_with_message!(Errno::ENOENT, "child node or attribute not found");
         };
 
@@ -249,16 +245,11 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
         };
 
         let sb = self.fs().sb();
-        let inode = Self::new_attr(
-            attr.clone(),
-            leaf_node_arc,
-            Arc::downgrade(&self.this()),
-            &sb,
-        );
+        let inode = Self::new_attr(attr, leaf_node_arc, Arc::downgrade(&self.this()), &sb);
         Ok(inode)
     }
 
-    fn new_dentry_iter(&self, min_ino: Ino) -> impl Iterator<Item = Dentry> + '_
+    fn collect_dentries(&self, min_ino: Ino) -> Vec<Dentry>
     where
         Self: Sized + 'static,
     {
@@ -273,7 +264,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
                 let child_objs = branch_node.children();
                 let node_iter = NodeDentryIter::new(child_objs, min_ino);
                 let special_iter = ThisAndParentDentryIter::new(self, min_ino);
-                attr_iter.chain(node_iter).chain(special_iter)
+                attr_iter.chain(node_iter).chain(special_iter).collect()
             }
             SysTreeNodeKind::Leaf(leaf_node) => {
                 let attrs = leaf_node.node_attrs();
@@ -284,13 +275,10 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
                 );
                 let node_iter = NodeDentryIter::new(Vec::new(), min_ino);
                 let special_iter = ThisAndParentDentryIter::new(self, min_ino);
-                attr_iter.chain(node_iter).chain(special_iter)
+                attr_iter.chain(node_iter).chain(special_iter).collect()
             }
             SysTreeNodeKind::Attr(_, _) | SysTreeNodeKind::Symlink(_) => {
-                let attr_iter = AttrDentryIter::new(None, self.metadata().ino, min_ino);
-                let node_iter = NodeDentryIter::new(Vec::new(), min_ino);
-                let special_iter = ThisAndParentDentryIter::new(self, min_ino);
-                attr_iter.chain(node_iter).chain(special_iter)
+                ThisAndParentDentryIter::new(self, min_ino).collect()
             }
         }
     }
@@ -377,14 +365,14 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> FileOps for KInode {
         // as an _inode number_.
         // By inode numbers, directory entries will have a _stable_ order
         // across different calls to `readdir_at`.
-        // The `new_dentry_iter` is responsible for filtering out entries
+        // The `collect_dentries` is responsible for filtering out entries
         // with inode numbers less than `start_ino`.
         let start_ino = offset as Ino;
         let mut count = 0;
         let mut last_ino = start_ino;
 
         let dentries = {
-            let mut dentries: Vec<_> = self.new_dentry_iter(start_ino).collect();
+            let mut dentries = self.collect_dentries(start_ino);
             dentries.sort_by_key(|d| d.ino);
             dentries
         };
@@ -431,7 +419,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         self.mode()
     }
 
-    default fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    default fn set_mode(&self, _self_dentry: &VfsDentry, mode: InodeMode) -> Result<()> {
         self.set_mode(mode)
     }
 
@@ -439,7 +427,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         self.metadata().size
     }
 
-    default fn resize(&self, _new_size: usize) -> Result<()> {
+    default fn resize(&self, _self_dentry: &VfsDentry, _new_size: usize) -> Result<()> {
         // The `resize` operation should be ignored by kernelfs inodes,
         // and should not incur an error.
         Ok(())
@@ -449,25 +437,25 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         self.metadata().last_access_at
     }
 
-    default fn set_atime(&self, _time: Duration) {}
+    default fn set_atime(&self, _self_dentry: &VfsDentry, _time: Duration) {}
 
     default fn mtime(&self) -> Duration {
         self.metadata().last_modify_at
     }
 
-    default fn set_mtime(&self, _time: Duration) {}
+    default fn set_mtime(&self, _self_dentry: &VfsDentry, _time: Duration) {}
 
     default fn ctime(&self) -> Duration {
         self.metadata().last_meta_change_at
     }
 
-    default fn set_ctime(&self, _time: Duration) {}
+    default fn set_ctime(&self, _self_dentry: &VfsDentry, _time: Duration) {}
 
     default fn owner(&self) -> Result<Uid> {
         Ok(self.metadata().uid)
     }
 
-    default fn set_owner(&self, _uid: Uid) -> Result<()> {
+    default fn set_owner(&self, _self_dentry: &VfsDentry, _uid: Uid) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
@@ -475,7 +463,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         Ok(self.metadata().gid)
     }
 
-    default fn set_group(&self, _gid: Gid) -> Result<()> {
+    default fn set_group(&self, _self_dentry: &VfsDentry, _gid: Gid) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
@@ -489,6 +477,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
 
     default fn create(
         &self,
+        _self_dentry: &VfsDentry,
         name: &str,
         _type_: InodeType,
         mode: InodeMode,
@@ -525,6 +514,7 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
 
     default fn mknod(
         &self,
+        _self_dentry: &VfsDentry,
         _name: &str,
         _mode: InodeMode,
         _dev: MknodType,
@@ -532,23 +522,29 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         Err(Error::new(Errno::EPERM))
     }
 
-    default fn link(&self, _old: &Arc<dyn Inode>, _name: &str) -> Result<()> {
+    default fn link(
+        &self,
+        _self_dentry: &VfsDentry,
+        _old_dentry: &VfsDentry,
+        _name: &str,
+    ) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
-    default fn unlink(&self, _name: &str) -> Result<()> {
+    default fn unlink(&self, _child_dentry: &VfsDentry) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
-    default fn rmdir(&self, _name: &str) -> Result<()> {
+    default fn rmdir(&self, _child_dentry: &VfsDentry) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
     default fn rename(
         &self,
-        _old_name: &str,
-        _target: &Arc<dyn Inode>,
+        _old_child_dentry: &VfsDentry,
+        _new_dir_dentry: &VfsDentry,
         _new_name: &str,
+        _replaced_inode: Option<&Arc<dyn Inode>>,
         _mode: RenameMode,
     ) -> Result<()> {
         Err(Error::new(Errno::EPERM))
@@ -590,23 +586,16 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
         }
     }
 
-    default fn write_link(&self, _target: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
-
     default fn open(
         &self,
+        _self_dentry: &VfsDentry,
         _access_mode: AccessMode,
         _status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         None
     }
 
-    default fn sync_all(&self) -> Result<()> {
-        Ok(())
-    }
-
-    default fn sync_data(&self) -> Result<()> {
+    default fn sync(&self, _mode: SyncMode) -> Result<()> {
         Ok(())
     }
 
@@ -785,15 +774,16 @@ mod ino {
 
     const ATTR_ID_BITS: u8 = 8;
 
-    pub fn from_sysnode_id(node_id: &SysNodeId) -> Ino {
+    pub(crate) fn from_sysnode_id(node_id: &SysNodeId) -> Ino {
         node_id.as_u64() << ATTR_ID_BITS
     }
 
-    pub fn from_dir_ino_and_attr_id(dir_ino: Ino, attr_id: u8) -> Ino {
-        dir_ino + (attr_id as Ino)
+    pub(crate) fn from_dir_ino_and_attr_id(dir_ino: Ino, attr_id: u8) -> Ino {
+        // Attribute IDs start at zero, so offset them past the directory's inode.
+        dir_ino + (attr_id as Ino) + 1
     }
 
-    pub fn from_node_kind(inner: &SysTreeNodeKind) -> Ino {
+    pub(crate) fn from_node_kind(inner: &SysTreeNodeKind) -> Ino {
         match inner {
             SysTreeNodeKind::Branch(branch_node) => from_sysnode_id(branch_node.id()),
             SysTreeNodeKind::Leaf(leaf_node) => from_sysnode_id(leaf_node.id()),
