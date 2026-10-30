@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use aster_time::Instant;
 use ostd::{
-    new_server,
+    Projectable, new_server,
     orpc::{
         framework::{notifier::Notifier, spawn_thread},
         oqueue::{OQueueBase, ObservationQuery},
@@ -19,7 +19,7 @@ use snafu::Whatever;
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Projectable, Serialize)]
 struct DtlbMisses {
     timestamp: Instant,
     miss_l1_tlb: u64,

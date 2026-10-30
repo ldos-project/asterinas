@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::{DefaultProjection, Projectable};
+use ostd::Projectable;
 use serde::Serialize;
 
 use crate::prelude::*;

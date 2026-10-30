@@ -19,6 +19,7 @@ use align_ext::AlignExt;
 use aster_util::per_cpu_counter::PerCpuCounter;
 use osdk_heap_allocator::{CpuLocalBox, alloc_cpu_local};
 use ostd::{
+    Projectable,
     cpu::{CpuId, all_cpus},
     mm::VmSpace,
     new_server, trace_structured_data,
@@ -181,8 +182,7 @@ pub(super) struct RssDelta<'a> {
     operated_vmar: &'a Vmar,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(baseline_asterinas), derive(Projectable, serde::Serialize))]
+#[derive(Clone, Copy, Debug, Projectable, serde::Serialize)]
 pub struct RssDeltaChangeEvent {
     increment: isize,
     current: usize,

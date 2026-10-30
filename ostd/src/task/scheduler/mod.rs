@@ -70,17 +70,16 @@ pub mod info;
 
 use core::time::Duration;
 
-use orpc_macros::Element;
 use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
-#[cfg(not(baseline_asterinas))]
-use crate::orpc::oqueue::default_projection::DefaultProjection;
 use crate::{
+    DefaultProjection,
     cpu::{CpuId, CpuSet, PinCurrentCpu},
+    orpc::oqueue::Element,
     prelude::*,
     task::disable_preempt,
     timer,
@@ -172,18 +171,17 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
-#[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
+#[derive(Element, DefaultProjection)]
 pub struct SchedulingEvent {
     /// The task
-    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
+    #[projection(opaque)]
     pub task: Arc<Task>,
     /// The kind of event
     pub kind: SchedulingEventKind,
 }
 
 /// The kind of a [`SchedulingEvent`].
-#[derive(Debug, Clone, Copy, Serialize)]
-#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
+#[derive(Debug, Clone, Copy, Serialize, DefaultProjection)]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,

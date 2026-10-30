@@ -13,9 +13,8 @@ mod vmar_impls;
 
 use alloc::sync::Arc;
 
-#[cfg(not(baseline_asterinas))]
-use ostd::DefaultProjection;
 use ostd::{
+    DefaultProjection,
     mm::{Vaddr, VmSpace},
     orpc::oqueue::Element,
 };
@@ -46,11 +45,10 @@ fn is_userspace_vaddr_range(vaddr: Vaddr, len: usize) -> bool {
 
 // TODO(aneesh) can this just be PageFaultInfo directly?
 /// Notification message to inform policies about a page fault
-#[derive(Element)]
-#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
+#[derive(Element, DefaultProjection)]
 pub struct PageFaultMessage<'a> {
     /// The vm space of this page fault
-    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
+    #[projection(opaque)]
     pub vm_space: &'a Arc<VmSpace>,
     /// The fault information provided to the page fault handler
     pub fault_info: PageFaultInfo,
@@ -58,16 +56,12 @@ pub struct PageFaultMessage<'a> {
 
 #[cfg(not(baseline_asterinas))]
 pub mod oqueues {
-    use core::{sync::atomic::AtomicUsize, time::Duration};
+    use core::sync::atomic::AtomicUsize;
 
-    use ostd::orpc::oqueue::{GenericOQueueRef, OQueueRef};
+    use ostd::orpc::oqueue::GenericOQueueRef;
     use spin::Once;
 
-    use super::PageFaultMessage;
-    use crate::{
-        time::{Clock, clocks::MonotonicRawClock},
-        vm::vmar::PageFaultMessageDescriptor,
-    };
+    use crate::vm::vmar::PageFaultMessageDescriptor;
 
     pub(super) static PAGE_FAULT_OQUEUE: Once<GenericOQueueRef<PageFaultMessageDescriptor>> =
         Once::new();

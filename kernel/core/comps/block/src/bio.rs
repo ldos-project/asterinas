@@ -13,7 +13,7 @@ use io_util::{
     batch::{IoBatch, IoCompletion},
 };
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{Element, OQueueError, RefProducer};
+use ostd::orpc::oqueue::{OQueueError, RefProducer};
 use ostd::{
     Error,
     error::{AccessDeniedSnafu, NotEnoughResourcesSnafu},
@@ -22,6 +22,7 @@ use ostd::{
         dma::DmaStream,
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
+    orpc::oqueue::Element,
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
 };
 use serde::Serialize;
@@ -253,7 +254,7 @@ impl From<BioEnqueueError> for Error {
 /// A submitted `Bio` object.
 ///
 /// The request queue of block device only accepts a `SubmittedBio` into the queue.
-#[cfg_attr(not(baseline_asterinas), derive(Element))]
+#[derive(Element)]
 pub struct SubmittedBio {
     metadata: Arc<BioMetadata>,
     sid_offset: u64,

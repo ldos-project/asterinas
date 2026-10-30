@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::wire::{Ipv4Address, Ipv6Address, PortNum};
-use ostd::orpc::oqueue::default_projection::DefaultProjection;
+use ostd::DefaultProjection;
 
 use crate::{
     net::socket::{netlink::NetlinkSocketAddr, unix::UnixSocketAddr, vsock::VsockSocketAddr},

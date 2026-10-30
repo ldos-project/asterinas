@@ -27,7 +27,7 @@ use crate::{
     init::get_init_process,
     prelude::Error,
     process::{PauseProcGuard, Process},
-    vm::vmar::{PageFaultMessage, RssType, VMAR_CAP_ADDR},
+    vm::vmar::{RssType, VMAR_CAP_ADDR},
 };
 
 #[cfg(not(baseline_asterinas))]

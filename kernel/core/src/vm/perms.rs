@@ -2,7 +2,7 @@
 
 use aster_rights::Rights;
 use bitflags::bitflags;
-use ostd::mm::PageFlags;
+use ostd::{Projectable, mm::PageFlags};
 use serde::Serialize;
 
 use crate::prelude::*;
@@ -10,7 +10,7 @@ use crate::prelude::*;
 bitflags! {
     /// The memory access permissions of memory mappings.
     // NOTE: `check` hardcodes `MAY_READ >> 3 == READ`, and so for r/w/x bits.
-    #[derive(Serialize)]
+    #[derive(Projectable, Serialize)]
     pub struct VmPerms: u32 {
         /// Readable.
         const READ    = 1 << 0;

@@ -2,9 +2,7 @@
 
 #![short_vis_path::add(vmar)]
 
-#[cfg(not(baseline_asterinas))]
-use ostd::Projectable;
-use ostd::trace_structured_data;
+use ostd::{Projectable, trace_structured_data};
 use serde::Serialize;
 
 use super::{Interval, RssDelta, Vmar};
@@ -50,7 +48,7 @@ impl Vmar {
 /// or `Err(())` (no error information) otherwise.
 ///
 /// [`CpuException`]: ostd::arch::cpu::context::CpuException
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Projectable, Serialize)]
 pub struct PageFaultInfo {
     /// The virtual address where a page fault occurred.
     pub(crate) address: Vaddr,

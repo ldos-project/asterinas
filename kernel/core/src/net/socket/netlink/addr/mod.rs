@@ -3,7 +3,7 @@
 mod multicast;
 
 pub use multicast::{GroupIdSet, MAX_GROUPS};
-use ostd::{DefaultProjection, Projectable};
+use ostd::Projectable;
 use serde::Serialize;
 
 use crate::{net::socket::util::SocketAddr, prelude::*};
