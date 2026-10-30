@@ -14,7 +14,7 @@ Usage:
       Runs `cargo clippy --all-targets --no-deps` for the standalone `osdk`
       crate, passing [ARGS] to cargo clippy.
 
-  [OSDK_TARGET_ARCH=x86_64|riscv64|loongarch64] \
+  [OSDK_TARGET_ARCH=x86_64|riscv64|loongarch64] [BASELINE_ASTERINAS=0|1] \
   ./tools/clippy_check.sh workspace [ARGS]
       Runs the workspace clippy checks used by `make check`.
       This checks:
@@ -22,6 +22,8 @@ Usage:
         - non-default workspace members with `cargo clippy --all-targets`
         - `ostd/libs/linux-bzimage/setup` separately on `x86_64`
       [ARGS] are passed to the underlying cargo/cargo osdk clippy calls.
+      With BASELINE_ASTERINAS=1, the `udeps` checks are skipped because
+      `cfg(baseline_asterinas)` compiles out code that uses some dependencies.
 
 Options:
   -h, --help
@@ -54,6 +56,15 @@ build_package_args() {
     done <<< "$package_names"
 }
 
+# Runs `cargo [osdk] udeps` with the given arguments unless checking the
+# baseline configuration.
+run_udeps() {
+    if [[ "${BASELINE_ASTERINAS:-0}" = "1" ]]; then
+        return
+    fi
+    "$@"
+}
+
 run_check_osdk() {
     ensure_command cargo
 
@@ -76,7 +87,7 @@ run_workspace_clippy() {
         cd "$PROJECT_ROOT"
         RUSTFLAGS="-Dwarnings" cargo osdk clippy -- --no-deps "$@"
         RUSTFLAGS="-Dwarnings" cargo osdk clippy --ktests -- --no-deps "$@"
-        cargo osdk udeps
+        run_udeps cargo osdk udeps
     )
 
     build_package_args "--non-default-ones" non_default_package_args
@@ -96,7 +107,7 @@ run_workspace_clippy() {
         (
             cd "$PROJECT_ROOT"
             RUSTFLAGS="-Dwarnings" cargo clippy "${filtered_non_default_package_args[@]}" --all-targets --no-deps "$@"
-            cargo udeps "${filtered_non_default_package_args[@]}"
+            run_udeps cargo udeps "${filtered_non_default_package_args[@]}"
         )
     fi
 
@@ -108,7 +119,7 @@ run_workspace_clippy() {
             cd "$PROJECT_ROOT/$LINUX_BZIMAGE_SETUP_DIR"
             RUSTFLAGS="-Dwarnings" cargo osdk clippy -- --no-deps "$@"
             RUSTFLAGS="-Dwarnings" cargo osdk clippy --ktests -- --no-deps "$@"
-            cargo osdk udeps
+            run_udeps cargo osdk udeps
         )
     fi
 }
