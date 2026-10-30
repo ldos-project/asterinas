@@ -225,16 +225,16 @@ endif
 
 ifeq ($(RELEASE_LTO), 1)
 CARGO_OSDK_COMMON_ARGS += --profile release-lto
-OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 else ifeq ($(RELEASE), 1)
 CARGO_OSDK_COMMON_ARGS += --release
 	ifeq ($(TARGET_ARCH), riscv64)
 	# FIXME: Unwinding in RISC-V seems to cost more stack space, so we increase
 	# the stack size for it. This may need further investigation.
 	# See https://github.com/asterinas/asterinas/pull/2383#discussion_r2307673156
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 16
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 	else
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 8
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
 	endif
 endif
 
@@ -681,15 +681,6 @@ docker_rm:
 
 .PHONY: clean
 clean:
-	@if find target test osdk/target docs '!' -writable 2>/dev/null | grep -q .; then \
-			echo "ERROR: Found unwritable files in build directories"; \
-			echo "ERROR: This must be run from the same environment as the build (generally inside the container)."; \
-			echo "ERROR: You may be running it in the host environment after a build in docker. Run it in docker instead."; \
-			echo "ERROR: (Note: Using "sudo make clean" will not work as the host environment may not have the correct tools.)"; \
-			false; \
-		else \
-			true; \
-		fi
 	@echo "Cleaning up Asterinas workspace target files"
 	@cargo clean
 	@echo "Cleaning up OSDK workspace target files"
