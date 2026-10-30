@@ -25,6 +25,18 @@ pub fn projectable_derive(input: TokenStream) -> TokenStream {
     default_projection::projectable_derive(input)
 }
 
+/// Accepts projection derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(DefaultProjectionNoop, attributes(projection))]
+pub fn default_projection_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
+/// Accepts projectable derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(ProjectableNoop)]
+pub fn projectable_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
 /// A macro attribute to mark the kernel entry point.
 ///
 /// # Bootstrap Context

@@ -262,6 +262,12 @@ pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
     tuple_serialize::tuple_serialize_derive(input)
 }
 
+/// Accepts `Element` derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(ElementNoop)]
+pub fn element_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
 /// Derive macro for the `Element` trait.
 ///
 /// This macro generates an `ElementDescriptor` for types with lifetime parameters,
