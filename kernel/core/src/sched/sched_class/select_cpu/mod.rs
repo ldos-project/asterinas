@@ -27,6 +27,8 @@ pub(super) enum SelectReason {
     Wake,
     /// A sleeping task was woken and must run immediately.
     ForceSchedule,
+    /// A running task was preempted (or yielded) and is still runnable.
+    Preempt,
 }
 
 impl From<EnqueueFlags> for SelectReason {

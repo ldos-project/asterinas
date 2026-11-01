@@ -136,6 +136,9 @@ struct PerCpuClassRqSet {
     fair: fair::FairClassRq,
     idle: idle::IdleClassRq,
     current: Option<(SchedEntity, CurrentRuntime)>,
+    /// A task just preempted on this CPU, waiting to be placed by the CPU-selection policy once
+    /// this run queue's lock is released (see [`ClassScheduler::mut_local_rq_with`]).
+    preempted: Option<SchedEntity>,
 }
 
 /// Stores the runtime information of the current task.
@@ -369,8 +372,16 @@ impl Scheduler for ClassScheduler {
 
     fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
         let guard = disable_local();
-        let mut lock = self.rqs[guard.current_cpu().as_usize()].lock();
-        f(&mut *lock)
+        let preempted = {
+            let mut rq = self.rqs[guard.current_cpu().as_usize()].lock();
+            f(&mut *rq);
+            rq.preempted.take()
+        };
+        // Placed after the lock is released: the policy may pick another CPU, and holding two
+        // run-queue locks at once could deadlock with a CPU doing the same in reverse.
+        if let Some(entity) = preempted {
+            self.requeue_preempted(entity);
+        }
     }
 
     fn local_rq_with(&self, f: &mut dyn FnMut(&dyn LocalRunQueue)) {
@@ -396,6 +407,7 @@ impl ClassScheduler {
                 fair: fair::FairClassRq::new(cpu),
                 idle: idle::IdleClassRq::new(),
                 current: None,
+                preempted: None,
             })
         };
         ClassScheduler {
@@ -410,6 +422,20 @@ impl ClassScheduler {
             Some(policy) => &**policy,
             None => &self.default_select_policy,
         }
+    }
+
+    /// Queues a task that was preempted while still runnable on the CPU chosen by the policy.
+    ///
+    /// The task may still be running on its old CPU until that CPU finishes switching away. If the
+    /// new CPU picks it first, OSTD's context switch waits for the old CPU to let go of it.
+    fn requeue_preempted(&self, (task, thread): SchedEntity) {
+        let cpu = self.select_cpu(&thread, SelectReason::Preempt);
+        let mut rq = self.rqs[cpu.as_usize()].lock();
+        // Move the run-queue marker straight to the new CPU. It must never pass through `None`,
+        // which `PosixThread::sleeping_state` reads as "asleep".
+        task.cpu().set_anyway(cpu);
+        thread.sched_attr().set_last_cpu(cpu);
+        rq.enqueue_entity((task, thread), None);
     }
 
     /// Asks the active CPU-selection policy where `thread` should be queued.
@@ -482,7 +508,10 @@ impl LocalRunQueue for PerCpuClassRqSet {
             // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
             // as the current task here.
             if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new())) {
-                self.enqueue_entity(old, None);
+                // `old` is still runnable. `ClassScheduler::mut_local_rq_with` places it after
+                // this lock is released, because the policy may send it to another CPU.
+                debug_assert!(self.preempted.is_none());
+                self.preempted = Some(old);
             }
             self.current.as_ref().map(|((task, _), _)| task)
         })
