@@ -13,6 +13,7 @@ SUBDIRS := \
 	pthread \
 	ptrace \
 	sched \
+	sched_rr \
 	signal \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)

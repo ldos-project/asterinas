@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: MPL-2.0
+
+// Workloads for checking CPU migration with `sched.select_cpu=round_robin`.
+//
+//   sched_rr sleep <iters>             one thread that sleeps <iters> times
+//   sched_rr spin <threads> <seconds>  CPU-bound threads that never sleep
+//
+// Each thread prints its TID so that the scheduler capture can be filtered by
+// it. This is not part of `run_test.sh`, because it needs a specific boot
+// parameter and a host-side check of the capture.
+
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
+
+static void *spin(void *arg)
+{
+	time_t end = time(NULL) + *(int *)arg;
+
+	printf("spin tid=%ld\n", syscall(SYS_gettid));
+	while (time(NULL) < end)
+		;
+	return NULL;
+}
+
+int main(int argc, char **argv)
+{
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	if (argc == 3 && strcmp(argv[1], "sleep") == 0) {
+		int iters = atoi(argv[2]);
+
+		printf("sleep tid=%ld\n", syscall(SYS_gettid));
+		// Every wake-up goes through `select_cpu`.
+		for (int i = 0; i < iters; i++)
+			usleep(5000);
+		return 0;
+	}
+
+	if (argc == 4 && strcmp(argv[1], "spin") == 0) {
+		int n = atoi(argv[2]), secs = atoi(argv[3]);
+		pthread_t threads[n];
+
+		for (int i = 0; i < n; i++)
+			pthread_create(&threads[i], NULL, spin, &secs);
+		for (int i = 0; i < n; i++)
+			pthread_join(threads[i], NULL);
+		return 0;
+	}
+
+	fprintf(stderr,
+		"usage: sched_rr sleep <iters> | spin <threads> <seconds>\n");
+	return 1;
+}
