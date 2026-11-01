@@ -46,14 +46,14 @@ pub use self::{
 };
 use self::{
     policy::{SchedPolicyKind, SchedPolicyState},
-    select_cpu::{LastCpuPolicy, SelectCpuInput, SelectCpuPolicy, SelectReason},
+    select_cpu::{LastCpuPolicy, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy, SelectReason},
 };
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
 
 /// The kernel command-line parameter naming the CPU-selection policy.
 ///
-/// Set via `sched.select_cpu=<name>`, where `<name>` is `last_cpu` (default).
+/// Set via `sched.select_cpu=<name>`, where `<name>` is `last_cpu` (default) or `round_robin`.
 const SELECT_CPU_PARAM: &str = "sched.select_cpu";
 
 /// The CPU-selection policy used when `sched.select_cpu` is not set.
@@ -93,6 +93,7 @@ pub fn init_select_cpu_policy() {
     // `None` keeps the built-in `LastCpuPolicy`, so its spawn tie-breaking carries on unchanged.
     let (name, policy): (&str, Option<Box<dyn SelectCpuPolicy>>) = match requested {
         "last_cpu" => ("last_cpu", None),
+        "round_robin" => ("round_robin", Some(Box::new(RoundRobinPolicy))),
         other => {
             warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
             ("last_cpu", None)

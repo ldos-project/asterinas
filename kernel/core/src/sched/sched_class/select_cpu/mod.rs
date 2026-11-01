@@ -14,8 +14,9 @@ use ostd::{
 };
 
 mod last_cpu;
+mod round_robin;
 
-pub(super) use self::last_cpu::LastCpuPolicy;
+pub(super) use self::{last_cpu::LastCpuPolicy, round_robin::RoundRobinPolicy};
 
 /// Why the scheduler is asking for a CPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
