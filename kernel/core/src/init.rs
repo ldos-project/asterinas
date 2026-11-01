@@ -56,6 +56,8 @@ pub(super) fn main() {
     // Initialize the global states for all CPUs.
     ostd::early_println!("OSTD initialized. Preparing components.");
     component::init_all(InitStage::Bootstrap, component::parse_metadata!()).unwrap();
+    // The kernel command line is parsed by now, so the CPU-selection policy can be chosen.
+    sched::init_select_cpu_policy();
     init();
 
     // Initialize the per-CPU states for BSP.

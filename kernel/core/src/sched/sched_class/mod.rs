@@ -4,12 +4,13 @@
 
 #![warn(unused)]
 
-use alloc::{boxed::Box, sync::Arc};
-use core::{fmt, ops::Bound, sync::atomic::Ordering, time::Duration};
+use alloc::{boxed::Box, string::String, sync::Arc};
+use core::{fmt, sync::atomic::Ordering, time::Duration};
 
 use ostd::{
     arch::read_tsc as sched_clock,
-    cpu::{CpuId, CpuSet, PinCurrentCpu, all_cpus},
+    cpu::{CpuId, PinCurrentCpu, all_cpus},
+    info,
     irq::disable_local,
     sync::{LocalIrqDisabled, SpinLock},
     task::{
@@ -22,6 +23,7 @@ use ostd::{
     util::id_set::Id,
     warn,
 };
+use spin::Once;
 
 use super::{
     nice::Nice,
@@ -35,18 +37,39 @@ mod time;
 mod fair;
 mod idle;
 mod real_time;
+mod select_cpu;
 mod stop;
 
-use self::policy::{SchedPolicyKind, SchedPolicyState};
 pub use self::{
     policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
 };
+use self::{
+    policy::{SchedPolicyKind, SchedPolicyState},
+    select_cpu::{LastCpuPolicy, SelectCpuInput, SelectCpuPolicy, SelectReason},
+};
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
 
+/// The kernel command-line parameter naming the CPU-selection policy.
+///
+/// Set via `sched.select_cpu=<name>`, where `<name>` is `last_cpu` (default).
+const SELECT_CPU_PARAM: &str = "sched.select_cpu";
+
+/// The CPU-selection policy used when `sched.select_cpu` is not set.
+const DEFAULT_SELECT_CPU_POLICY: &str = "last_cpu";
+
+/// The CPU-selection policy name, populated from the `sched.select_cpu` kernel command-line
+/// argument (see [`SELECT_CPU_PARAM`]).
+static SELECT_CPU_POLICY: Once<String> = Once::new();
+aster_cmdline::define_kv_param!(SELECT_CPU_PARAM, SELECT_CPU_POLICY);
+
+/// The scheduler instance, kept so that the CPU-selection policy can be installed after boot.
+static CLASS_SCHEDULER: Once<&'static ClassScheduler> = Once::new();
+
 pub fn init() {
-    let scheduler = Box::leak(Box::new(ClassScheduler::new()));
+    let scheduler: &'static ClassScheduler = Box::leak(Box::new(ClassScheduler::new()));
+    CLASS_SCHEDULER.call_once(|| scheduler);
 
     // Inject the scheduler into the ostd for actual scheduling work.
     inject_scheduler(scheduler);
@@ -55,6 +78,31 @@ pub fn init() {
     // We set this after injecting the scheduler into ostd,
     // so that the loadavg statistics are updated after the scheduler is used.
     set_stats_from_scheduler(scheduler);
+}
+
+/// Installs the CPU-selection policy named by `sched.select_cpu`.
+///
+/// [`init`] runs before the kernel command line is parsed, so the policy cannot be chosen there.
+/// This must run after `component::init_all(InitStage::Bootstrap)`, which parses the parameters.
+/// Tasks placed before this call use [`LastCpuPolicy`].
+pub fn init_select_cpu_policy() {
+    let requested = SELECT_CPU_POLICY
+        .get()
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_SELECT_CPU_POLICY);
+    // `None` keeps the built-in `LastCpuPolicy`, so its spawn tie-breaking carries on unchanged.
+    let (name, policy): (&str, Option<Box<dyn SelectCpuPolicy>>) = match requested {
+        "last_cpu" => ("last_cpu", None),
+        other => {
+            warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
+            ("last_cpu", None)
+        }
+    };
+    if let Some(policy) = policy {
+        let scheduler = CLASS_SCHEDULER.get().unwrap();
+        scheduler.select_policy.call_once(|| policy);
+    }
+    info!("sched: CPU-selection policy is '{name}'");
 }
 
 pub fn init_on_each_cpu() {
@@ -71,7 +119,11 @@ pub struct ClassScheduler {
     /// preventing potential deadlocks due to the fact that
     /// the runqueues may be accessed in both the task and interrupt context (L1 and L2).
     rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
-    last_chosen_cpu: AtomicCpuId,
+    /// The CPU-selection policy chosen by `sched.select_cpu`, installed by
+    /// [`init_select_cpu_policy`].
+    select_policy: Once<Box<dyn SelectCpuPolicy>>,
+    /// Used until `select_policy` is installed, and when the parameter is unset.
+    default_select_policy: LastCpuPolicy,
 }
 
 /// Represents the run queue for each CPU core. It stores a list of run queues for
@@ -263,7 +315,7 @@ impl Scheduler for ClassScheduler {
         let thread = task.as_thread()?.clone();
 
         let (still_in_rq, cpu) = {
-            let selected_cpu_id = self.select_cpu(&thread, flags);
+            let selected_cpu_id = self.select_cpu(&thread, flags.into());
 
             // If the task had already run on a CPU, use that.
             if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
@@ -347,63 +399,30 @@ impl ClassScheduler {
         };
         ClassScheduler {
             rqs: all_cpus().map(class_rq).collect(),
-            last_chosen_cpu: AtomicCpuId::default(),
+            select_policy: Once::new(),
+            default_select_policy: LastCpuPolicy::new(),
         }
     }
 
-    // TODO: Implement a better algorithm and replace the current naive implementation.
-    fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
-        // TODO(arthurp, https://github.com/ldos-project/asterinas/issues/59): last_cpu is never
-        // cleared so once it is set, to the task can never move. last_cpu is set at:
-        // kernel/src/sched/sched_class/mod.rs:224 (ClassScheduler::enqueue)
-        if let Some(last_cpu) = thread.sched_attr().last_cpu() {
-            return last_cpu;
+    fn select_policy(&self) -> &dyn SelectCpuPolicy {
+        match self.select_policy.get() {
+            Some(policy) => &**policy,
+            None => &self.default_select_policy,
         }
-        debug_assert!(flags == EnqueueFlags::Spawn);
+    }
 
+    /// Asks the active CPU-selection policy where `thread` should be queued.
+    fn select_cpu(&self, thread: &Thread, reason: SelectReason) -> CpuId {
         let guard = disable_local();
-
-        let mut selected = guard.current_cpu();
-        let mut minimum_load = u32::MAX;
-
-        // Set `selected` as `candidate` if the candidate's load is smaller.
-        let test_candidate = |candidate: CpuId| {
-            let PerCpuLoadStats { queue_len, .. } =
-                self.rqs[candidate.as_usize()].lock().load_stats();
-            let load = queue_len;
-            if load < minimum_load {
-                minimum_load = load;
-                selected = candidate;
-            }
-        };
-
         let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
-        match self.last_chosen_cpu.get() {
-            Some(cpu) => {
-                // Perform a round-robin selection starting after the last chosen CPU.
-                //
-                // It still checks every CPU in the affinity set to find the one with the
-                // minimum load, but avoids selecting the same CPU again in case of a tie.
-                Self::cycle_after(cpu, &affinity).for_each(test_candidate)
-            }
-            None => affinity.iter().for_each(test_candidate),
-        }
-
-        self.last_chosen_cpu.set_anyway(selected);
-        selected
-    }
-
-    /// Returns a cycling iterator over the CPUs in the [`CpuSet`], starting *after*
-    /// the given [`CpuId`].
-    ///
-    /// The iteration order is ascending up to the wrapping point, after which it
-    /// continues from the first CPU in the set in ascending order again.
-    ///
-    /// If the given [`CpuId`] is in the set, it will be the last element yielded.
-    fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
-        cpu_set
-            .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
-            .chain(cpu_set.iter_in(..=cpu))
+        let queue_len = |cpu: CpuId| self.rqs[cpu.as_usize()].lock().load_stats().queue_len;
+        self.select_policy().select_cpu(&SelectCpuInput {
+            reason,
+            last_cpu: thread.sched_attr().last_cpu(),
+            affinity: &affinity,
+            current_cpu: guard.current_cpu(),
+            queue_len: &queue_len,
+        })
     }
 }
 
