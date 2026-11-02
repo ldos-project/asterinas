@@ -55,6 +55,13 @@ pub fn init() {
     // Inject the scheduler into the ostd for actual scheduling work.
     inject_scheduler(scheduler);
 
+    // Let exported scheduling events name POSIX threads by TID, matching other kernel events.
+    #[cfg(not(baseline_asterinas))]
+    ostd::task::scheduler::inject_task_tid_fn(|task| {
+        use crate::process::posix_thread::AsPosixThread;
+        task.as_posix_thread().map(|thread| thread.tid())
+    });
+
     // Set the scheduler into the system for statistics.
     // We set this after injecting the scheduler into ostd,
     // so that the loadavg statistics are updated after the scheduler is used.
