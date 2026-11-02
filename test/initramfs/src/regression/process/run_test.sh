@@ -25,6 +25,7 @@ fi
 
 ./exit/exit_code
 ./exit/exit_procfs
+./exit/robust_list
 
 [ "$(uname -m)" = "x86_64" ] && ./fork/fork
 ./fork_c/fork
