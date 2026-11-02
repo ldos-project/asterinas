@@ -389,7 +389,12 @@ pub fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
         // The task may have been queued under its old policy or, if we set it above while it was
         // being enqueued, under the new one, so look for it in any queue. If it is not found, it
         // is being enqueued on this CPU and will be once we unlock, under the new policy.
-        let removed = rq.fair.remove(&task) || rq.real_time.remove_at_any_prio(&task);
+        //
+        // Usually a real-time task is queued at the priority its `SchedAttr` holds, so try that
+        // first. Only a concurrent policy change makes us scan every priority.
+        let removed = rq.fair.remove(&task)
+            || rq.real_time.remove(&task)
+            || rq.real_time.remove_at_any_prio(&task);
         thread.sched_attr().set_policy(policy);
         if !removed {
             return;
@@ -401,7 +406,7 @@ pub fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
         rq.enqueue_entity((task, thread.clone()), None);
         drop(rq);
         if should_preempt {
-            ostd::task::scheduler::request_preempt(cpu);
+            ostd::task::scheduler::set_need_preempt(cpu);
         }
         return;
     }

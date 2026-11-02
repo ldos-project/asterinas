@@ -20,18 +20,6 @@ pub struct PiWaiter {
     pub waited_ns: u64,
 }
 
-/// The contention on one PI futex.
-// Not every policy uses every field.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-pub struct PiContention<'a> {
-    pub owner: Tid,
-    /// The owner's own scheduling policy, without any boost.
-    pub owner_base: SchedPolicy,
-    /// The threads waiting for the futex. It is never empty.
-    pub waiters: &'a [PiWaiter],
-}
-
 /// Decides how to boost the owner of a contended PI futex.
 ///
 /// The policy is consulted whenever the set of waiters or the owner of a PI futex changes. While
@@ -40,9 +28,17 @@ pub struct PiContention<'a> {
 ///
 /// It is called with a global lock held, so it must be quick and must not block.
 pub trait LockPrioPolicy: Send + Sync {
-    /// Returns the policy the owner should run with while it holds the futex, or `None` to leave
-    /// its own policy.
-    fn boost(&self, contention: &PiContention) -> Option<SchedPolicy>;
+    /// Returns the policy that `owner` should run with while it holds the futex, or `None` to
+    /// leave its own policy.
+    ///
+    /// `owner_base` is the owner's own scheduling policy, without any boost. `waiters` are the
+    /// threads waiting for the futex; it is never empty.
+    fn boost(
+        &self,
+        owner: Tid,
+        owner_base: SchedPolicy,
+        waiters: &[PiWaiter],
+    ) -> Option<SchedPolicy>;
 }
 
 /// Boosts the owner to the most urgent waiter's policy, like Linux's priority inheritance.
@@ -54,16 +50,20 @@ pub trait LockPrioPolicy: Send + Sync {
 pub struct InheritPolicy;
 
 impl LockPrioPolicy for InheritPolicy {
-    fn boost(&self, contention: &PiContention) -> Option<SchedPolicy> {
+    fn boost(
+        &self,
+        _owner: Tid,
+        owner_base: SchedPolicy,
+        waiters: &[PiWaiter],
+    ) -> Option<SchedPolicy> {
         // A smaller `SchedPolicy` is more urgent.
-        let top = contention
-            .waiters
+        let top = waiters
             .iter()
             .map(|waiter| match waiter.policy {
                 policy @ (SchedPolicy::Stop | SchedPolicy::RealTime { .. }) => policy,
                 SchedPolicy::Fair(_) | SchedPolicy::Idle => SchedPolicy::Fair(Nice::default()),
             })
             .min()?;
-        (top < contention.owner_base).then_some(top)
+        (top < owner_base).then_some(top)
     }
 }

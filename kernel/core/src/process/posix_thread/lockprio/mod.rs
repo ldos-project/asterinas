@@ -18,11 +18,15 @@
 //!   it keeps once unboosted, but `sched_getscheduler` reports the boosted policy meanwhile.
 //!   Threads it clones meanwhile do start with its own policy, as on Linux.
 
+// TODO: Move the parts of this that are not specific to futexes (tracking who waits on whom,
+// consulting a `LockPrioPolicy`, and applying and undoing boosts) into a general priority
+// inheritance facility in OSTD. OQueues are expected to need some form of priority inheritance too.
+
 pub mod policy;
 
 use spin::Once;
 
-pub use self::policy::{InheritPolicy, LockPrioPolicy, PiContention, PiWaiter};
+pub use self::policy::{InheritPolicy, LockPrioPolicy, PiWaiter};
 use super::futex::FutexKey;
 use crate::{
     prelude::*,
@@ -163,12 +167,7 @@ pub(super) fn apply(tid: Tid, thread: Option<&Arc<Thread>>) {
     let mut target = base;
     for record in state.futexes.iter().filter(|record| record.owner == tid) {
         contended_futexes += 1;
-        let contention = PiContention {
-            owner: tid,
-            owner_base: base,
-            waiters: &record.waiters,
-        };
-        if let Some(boost) = policy.boost(&contention) {
+        if let Some(boost) = policy.boost(tid, base, &record.waiters) {
             // A smaller `SchedPolicy` is more urgent.
             target = target.min(boost);
         }
@@ -219,10 +218,14 @@ pub(super) fn forget_thread(tid: Tid) {
     state.futexes.retain(|record| record.owner != tid);
 }
 
+// TODO: This module follows the pattern used for `scheduler.events` and `futex.pi.events`: a
+// `Once` holding the producer, an `init` that creates and registers the OQueue, a `produce`
+// wrapper, and a no-op copy of both for `baseline_asterinas`. Factor this into a general
+// structure, perhaps with utilities to create it, and use it consistently instead of repeating it.
 #[cfg(not(baseline_asterinas))]
 mod decisions {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
+        orpc::oqueue::{GenericOQueueRef, OQueue as _, RefProducer},
         path,
     };
     use serde::Serialize;
@@ -250,11 +253,9 @@ mod decisions {
 
     pub fn init() {
         PRODUCER.call_once(|| {
-            let path = path!(lockprio.decisions);
-            let oqueue = GenericOQueueRef::new(1024, path.clone());
-            // Export the queue under the OQueue filesystem (`/oqueues/lockprio/decisions`).
-            registry::register(&path, &oqueue.as_any_oqueue());
-            oqueue
+            // Only weak observers may attach, so producing a decision never blocks or drops it. As
+            // a result, the queue can only be observed in-kernel; it is not exported to userspace.
+            GenericOQueueRef::new_weak_observers_only(1024, path!(lockprio.decisions))
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")
         });
@@ -262,8 +263,8 @@ mod decisions {
 
     pub fn produce(owner: Tid, from: SchedPolicy, to: SchedPolicy, contended_futexes: u32) {
         if let Some(producer) = PRODUCER.get() {
-            // Drop the decision if the queue is full; never block on an observer.
-            let _ = producer.try_produce_ref(&LockPrioDecision {
+            // This never blocks, as the queue only has weak observers.
+            producer.produce_ref(&LockPrioDecision {
                 time_ns: now_ns(),
                 owner,
                 from: from.into(),
