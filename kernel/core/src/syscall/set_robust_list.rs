@@ -21,8 +21,10 @@ pub fn sys_set_robust_list(
     }
 
     // Like Linux, only remember the address. User space keeps updating the list, so it is read
-    // when the thread exits.
-    ctx.thread_local.robust_list().set(robust_list_head_ptr);
+    // when the thread exits. A null head means no list, as reading it then would fail anyway.
+    ctx.thread_local
+        .robust_list()
+        .set((robust_list_head_ptr != 0).then_some(robust_list_head_ptr));
 
     Ok(SyscallReturn::Return(0))
 }
