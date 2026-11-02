@@ -9,7 +9,7 @@ use super::{SelectCpuInput, SelectCpuPolicy, cycle_after, least_loaded_cpu};
 /// A new task starts on the least-loaded allowed CPU. This policy exists to exercise migration:
 /// every later placement moves the task to another CPU, unless its affinity mask allows only one.
 pub(in crate::sched::sched_class) struct RoundRobinPolicy {
-    /// The CPU chosen for the most recent spawn; ties are broken starting after it.
+    /// The CPU chosen for the most recent spawn.
     last_chosen_cpu: AtomicCpuId,
 }
 

@@ -78,9 +78,7 @@ fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_
 /// Picks the CPU for a task that is placed for the first time: the allowed CPU with the shortest
 /// queue.
 ///
-/// Policies call this when `input.last_cpu` is `None`, which happens only on spawn. Ties are broken
-/// round-robin, starting after `last_chosen_cpu`. That is state owned by the calling policy, and
-/// this function updates it to the CPU it returns.
+/// Policies call this when `input.last_cpu` is `None`, which happens only on spawn.
 fn least_loaded_cpu(input: &SelectCpuInput, last_chosen_cpu: &AtomicCpuId) -> CpuId {
     debug_assert!(input.reason == SelectReason::Spawn);
 

@@ -6,11 +6,10 @@ use super::{SelectCpuInput, SelectCpuPolicy, least_loaded_cpu};
 
 /// Keeps every task on the CPU it was first placed on.
 ///
-/// On spawn it picks the least-loaded allowed CPU, breaking ties round-robin after the CPU it chose
-/// last time. After that it always returns the task's last CPU, even if the affinity mask has
-/// changed since.
+/// A new task starts on the least-loaded allowed CPU. After that it always gets its last CPU, even
+/// if its affinity mask has changed since.
 pub(in crate::sched::sched_class) struct LastCpuPolicy {
-    /// The CPU chosen for the most recent spawn; ties are broken starting after it.
+    /// The CPU chosen for the most recent spawn.
     last_chosen_cpu: AtomicCpuId,
 }
 

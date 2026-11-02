@@ -52,8 +52,6 @@ use self::{
 type SchedEntity = (Arc<Task>, Arc<Thread>);
 
 /// The kernel command-line parameter naming the CPU-selection policy.
-///
-/// Set via `sched.select_cpu=<name>`, where `<name>` is `last_cpu` (default) or `round_robin`.
 const SELECT_CPU_PARAM: &str = "sched.select_cpu";
 
 /// The CPU-selection policy used when `sched.select_cpu` is not set.
@@ -64,7 +62,7 @@ const DEFAULT_SELECT_CPU_POLICY: &str = "last_cpu";
 static SELECT_CPU_POLICY: Once<String> = Once::new();
 aster_cmdline::define_kv_param!(SELECT_CPU_PARAM, SELECT_CPU_POLICY);
 
-/// The scheduler instance, kept so that the CPU-selection policy can be installed after boot.
+/// The scheduler instance.
 static CLASS_SCHEDULER: Once<&'static ClassScheduler> = Once::new();
 
 pub fn init() {
@@ -82,9 +80,8 @@ pub fn init() {
 
 /// Installs the CPU-selection policy named by `sched.select_cpu`.
 ///
-/// [`init`] runs before the kernel command line is parsed, so the policy cannot be chosen there.
-/// This must run after `component::init_all(InitStage::Bootstrap)`, which parses the parameters.
-/// Tasks placed before this call use [`LastCpuPolicy`].
+/// Must be called after `component::init_all(InitStage::Bootstrap)`, which parses the kernel
+/// command line, and before any task is spawned or woken.
 pub fn init_select_cpu_policy() {
     let requested = SELECT_CPU_POLICY
         .get()
@@ -117,8 +114,8 @@ pub struct ClassScheduler {
     /// preventing potential deadlocks due to the fact that
     /// the runqueues may be accessed in both the task and interrupt context (L1 and L2).
     rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
-    /// The CPU-selection policy chosen by `sched.select_cpu`, installed by
-    /// [`init_select_cpu_policy`].
+
+    /// The CPU-selection policy chosen by `sched.select_cpu`.
     select_policy: Once<Box<dyn SelectCpuPolicy>>,
 }
 
@@ -131,8 +128,6 @@ struct PerCpuClassRqSet {
     fair: fair::FairClassRq,
     idle: idle::IdleClassRq,
     current: Option<(SchedEntity, CurrentRuntime)>,
-    /// A task just preempted on this CPU, waiting to be placed by the CPU-selection policy once
-    /// this run queue's lock is released (see [`ClassScheduler::mut_local_rq_with`]).
     preempted: Option<SchedEntity>,
 }
 
@@ -372,8 +367,6 @@ impl Scheduler for ClassScheduler {
             f(&mut *rq);
             rq.preempted.take()
         };
-        // Placed after the lock is released: the policy may pick another CPU, and holding two
-        // run-queue locks at once could deadlock with a CPU doing the same in reverse.
         if let Some(entity) = preempted {
             self.requeue_preempted(entity);
         }
@@ -412,9 +405,6 @@ impl ClassScheduler {
     }
 
     /// Queues a task that was preempted while still runnable on the CPU chosen by the policy.
-    ///
-    /// The task may still be running on its old CPU until that CPU finishes switching away. If the
-    /// new CPU picks it first, OSTD's context switch waits for the old CPU to let go of it.
     fn requeue_preempted(&self, (task, thread): SchedEntity) {
         let cpu = self.select_cpu(&thread, SelectReason::Preempt);
         let mut rq = self.rqs[cpu.as_usize()].lock();
@@ -422,6 +412,8 @@ impl ClassScheduler {
         // which `PosixThread::sleeping_state` reads as "asleep".
         task.cpu().set_anyway(cpu);
         thread.sched_attr().set_last_cpu(cpu);
+        // The task may still be running on its old CPU. If the new CPU picks it first, OSTD's
+        // context switch waits for the old CPU to let go of it.
         rq.enqueue_entity((task, thread), None);
     }
 
@@ -437,12 +429,10 @@ impl ClassScheduler {
             current_cpu: guard.current_cpu(),
             queue_len: &queue_len,
         };
-        match self.select_policy.get() {
-            Some(policy) => policy.select_cpu(&input),
-            // The kernel command line is not read yet, so use `last_cpu`. A fresh instance forgets
-            // its spawn tie-breaking between calls, which is fine for this short window.
-            None => LastCpuPolicy::new().select_cpu(&input),
-        }
+        self.select_policy
+            .get()
+            .expect("no task is placed before `init_select_cpu_policy`")
+            .select_cpu(&input)
     }
 }
 
