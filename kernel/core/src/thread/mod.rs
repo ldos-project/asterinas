@@ -104,6 +104,11 @@ impl Thread {
         Task::current()?.as_thread().cloned()
     }
 
+    /// Returns the task associated with this thread, or `None` if it has been dropped.
+    pub fn try_task(&self) -> Option<Arc<Task>> {
+        self.task.upgrade()
+    }
+
     /// Returns the task associated with this thread.
     #[expect(dead_code)]
     pub fn task(&self) -> Arc<Task> {

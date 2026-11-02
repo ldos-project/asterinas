@@ -592,6 +592,14 @@ pub(super) fn run_new_task(runnable: Arc<Task>) {
     }
 }
 
+/// Asks the CPU `cpu_id` to reschedule at its next preemption point.
+///
+/// A scheduler calls this when it changes a queued task's priority outside of
+/// [`Scheduler::enqueue`] so that the task now outranks the task running on that CPU.
+pub fn request_preempt(cpu_id: CpuId) {
+    set_need_preempt(cpu_id);
+}
+
 fn set_need_preempt(cpu_id: CpuId) {
     let preempt_guard = disable_preempt();
 
