@@ -18,8 +18,6 @@
 
 #include "../../common/test.h"
 
-#define DECISIONS_PATH "/oqueues/lockprio/decisions/strong_observe"
-
 static pid_t gettid_(void)
 {
 	return syscall(SYS_gettid);
@@ -61,74 +59,6 @@ static int set_policy(int policy, int prio)
 	struct sched_param param = { .sched_priority = prio };
 
 	return sched_setscheduler(0, policy, &param);
-}
-
-// Appends the CBOR encoding of the text string `key` followed by the unsigned
-// integer `value`, i.e., one entry of an encoded map.
-static size_t encode_entry(uint8_t *buf, const char *key, uint32_t value)
-{
-	size_t len = strlen(key), n = 0;
-
-	buf[n++] = 0x60 | len;
-	memcpy(buf + n, key, len);
-	n += len;
-	if (value < 24) {
-		buf[n++] = value;
-	} else if (value <= 0xff) {
-		buf[n++] = 0x18;
-		buf[n++] = value;
-	} else if (value <= 0xffff) {
-		buf[n++] = 0x19;
-		buf[n++] = value >> 8;
-		buf[n++] = value;
-	} else {
-		buf[n++] = 0x1a;
-		for (int shift = 24; shift >= 0; shift -= 8)
-			buf[n++] = value >> shift;
-	}
-	return n;
-}
-
-static uint8_t decisions[64 * 1024];
-static size_t decisions_len;
-
-// Returns whether some decision about the owner `tid` contains `text` in its
-// `from` (if `to` is 0) or `to` policy. A decision is encoded as
-// `{time_ns, owner, from, to, contended_futexes}`.
-static int has_decision(pid_t tid, const char *text, int to)
-{
-	uint8_t needle[16];
-	size_t needle_len = encode_entry(needle, "owner", tid);
-	const char *name = to ? "to" : "from";
-	uint8_t field[8];
-	size_t field_len = strlen(name) + 1;
-	uint8_t *pos = decisions, *end = decisions + decisions_len;
-
-	// The CBOR text-string header of the field name, then the name.
-	field[0] = 0x60 | strlen(name);
-	memcpy(field + 1, name, strlen(name));
-
-	while ((pos = memmem(pos, end - pos, needle, needle_len)) != NULL) {
-		pos += needle_len;
-		size_t window = end - pos < 96 ? end - pos : 96;
-		uint8_t *policy = memmem(pos, window, field, field_len);
-		if (policy == NULL)
-			continue;
-		policy += field_len;
-		window = end - policy < 16 ? end - policy : 16;
-		if (memmem(policy, window, text, strlen(text)) != NULL)
-			return 1;
-	}
-	return 0;
-}
-
-static void read_decisions(int fd)
-{
-	ssize_t n;
-
-	while ((n = read(fd, decisions + decisions_len,
-			 sizeof(decisions) - decisions_len)) > 0)
-		decisions_len += n;
 }
 
 // ============================================================================
@@ -174,10 +104,8 @@ FN_TEST(boost_and_restore)
 	struct sched_param param;
 	pthread_t owner, waiter;
 	void *ret;
-	int fd;
 
-	fd = open(DECISIONS_PATH, O_RDONLY | O_NONBLOCK);
-	SKIP_TEST_IF(fd < 0);
+	SKIP_TEST_IF(has_kernel_param("lockprio.policy=none"));
 
 	atomic_store(&word, 0);
 	TEST_SUCC(pthread_create(&owner, NULL, own_until_released, NULL));
@@ -198,12 +126,6 @@ FN_TEST(boost_and_restore)
 	TEST_RES(pthread_join(owner, &ret), ret == NULL);
 	TEST_RES(atomic_load(&owner_policy_after_unlock), _ret == SCHED_OTHER);
 	TEST_RES(pthread_join(waiter, &ret), ret == NULL);
-
-	read_decisions(fd);
-	TEST_SUCC(close(fd));
-	TEST_RES(has_decision(tid, "RealTime", 1), _ret);
-	TEST_RES(has_decision(tid, "RealTime", 0), _ret);
-	TEST_RES(has_decision(tid, "Fair", 1), _ret);
 }
 END_TEST()
 

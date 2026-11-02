@@ -112,6 +112,11 @@ pub(crate) fn init() {
     });
 }
 
+// TODO: The `scheduler.events` OQueue is set up with a pattern that is repeated for other OQueues
+// (e.g., `futex.pi.events` and `lockprio.decisions` in the kernel): a `Once` holding the producer,
+// an `init` that creates and registers the OQueue, and a `cfg`-gated produce path. Factor this
+// into a general structure, perhaps with utilities to create it, and use it consistently instead of
+// repeating it.
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
 
@@ -596,11 +601,7 @@ pub(super) fn run_new_task(runnable: Arc<Task>) {
 ///
 /// A scheduler calls this when it changes a queued task's priority outside of
 /// [`Scheduler::enqueue`] so that the task now outranks the task running on that CPU.
-pub fn request_preempt(cpu_id: CpuId) {
-    set_need_preempt(cpu_id);
-}
-
-fn set_need_preempt(cpu_id: CpuId) {
+pub fn set_need_preempt(cpu_id: CpuId) {
     let preempt_guard = disable_preempt();
 
     if preempt_guard.current_cpu() == cpu_id {
@@ -693,6 +694,12 @@ where
         // Publish scheduling events best-effort: never block the scheduler on an observer. A full
         // ring drops the event (and revokes a revocable observer), keeping the reschedule path
         // fast and non-blocking.
+        //
+        // TODO: Do not copy this best-effort pattern. Instead, make `scheduler.events` an OQueue
+        // that only allows weak observers (`GenericOQueueRef::new_weak_observers_only`), so that
+        // producing never blocks or drops events. That needs a way for userspace and the data
+        // capture in `kernel/core/src/init.rs` to observe it weakly, as both attach strong
+        // observers today.
         if let Some(t) = Task::current() {
             crate::ignore_err!(
                 producer

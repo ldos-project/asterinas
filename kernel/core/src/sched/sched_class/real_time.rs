@@ -227,13 +227,13 @@ impl RealTimeClassRq {
         self.index = !self.index;
     }
 
-    /// Enqueues the task at the front of the active array.
-    ///
-    /// Unlike [`SchedClassRq::enqueue`], which places the task in the
-    /// inactive array, this places the task at the very front of the run
-    /// queue, so that it is picked next by [`Self::pick_next`].
     /// Removes the task from the run queue whatever priority it was queued at, unlike
     /// [`SchedClassRq::remove`]. Returns whether it was present.
+    ///
+    /// This scans every priority level, so prefer [`SchedClassRq::remove`] when the task is likely
+    /// queued at its current priority.
+    // TODO: Avoid the scan once the run queue moves to a data structure that can find a task
+    // directly (e.g., an intrusive list with the task recording its queue).
     pub(super) fn remove_at_any_prio(&mut self, task: &Arc<Task>) -> bool {
         let removed = self
             .array
@@ -245,6 +245,11 @@ impl RealTimeClassRq {
         removed
     }
 
+    /// Enqueues the task at the front of the active array.
+    ///
+    /// Unlike [`SchedClassRq::enqueue`], which places the task in the
+    /// inactive array, this places the task at the very front of the run
+    /// queue, so that it is picked next by [`Self::pick_next`].
     pub(super) fn enqueue_front(&mut self, task: Arc<Task>) {
         let sched_attr = task.as_thread().unwrap().sched_attr();
         let prio = sched_attr.real_time.prio.load(Relaxed);

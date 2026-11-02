@@ -8,8 +8,9 @@
 //! directly. `WaitEnd` and `Handoff` events then report how long the wait lasted and who the lock
 //! went to.
 //!
-//! Events are produced best-effort: if the queue is full, the event is dropped rather than
-//! stalling the locking thread.
+//! Only weak observers may attach to the queue, so producing an event never blocks the locking
+//! thread or drops the event. As a result, the queue can only be observed in-kernel; it is not
+//! exported to userspace.
 
 use serde::Serialize;
 
@@ -88,10 +89,14 @@ pub fn policy_of(thread: &Thread) -> SchedPolicyView {
     thread.sched_attr().policy().into()
 }
 
+// TODO: This module follows the pattern used for `scheduler.events` and `lockprio.decisions`: a
+// `Once` holding the producer, an `init` that creates and registers the OQueue, a `produce`
+// wrapper, and a no-op copy of both for `baseline_asterinas`. Factor this into a general
+// structure, perhaps with utilities to create it, and use it consistently instead of repeating it.
 #[cfg(not(baseline_asterinas))]
 mod imp {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
+        orpc::oqueue::{GenericOQueueRef, OQueue as _, RefProducer},
         path,
     };
     use spin::Once;
@@ -102,11 +107,7 @@ mod imp {
 
     pub fn init() {
         PRODUCER.call_once(|| {
-            let path = path!(futex.pi.events);
-            let oqueue = GenericOQueueRef::new(1024, path.clone());
-            // Export the queue under the OQueue filesystem (`/oqueues/futex/pi/events`).
-            registry::register(&path, &oqueue.as_any_oqueue());
-            oqueue
+            GenericOQueueRef::new_weak_observers_only(1024, path!(futex.pi.events))
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")
         });
@@ -114,8 +115,8 @@ mod imp {
 
     pub fn produce(event: impl FnOnce() -> PiFutexEvent) {
         if let Some(producer) = PRODUCER.get() {
-            // Drop the event if the queue is full; never block a locking thread on an observer.
-            let _ = producer.try_produce_ref(&event());
+            // This never blocks, as the queue only has weak observers.
+            producer.produce_ref(&event());
         }
     }
 }
