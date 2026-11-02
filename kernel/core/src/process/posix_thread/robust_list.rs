@@ -49,6 +49,9 @@ pub struct RobustFutex {
 ///
 /// This corresponds to Linux's `fetch_robust_entry`.
 fn split_entry_ptr(entry_ptr: Vaddr) -> (Vaddr, bool) {
+    // Linux uses the first bit of the address to indicate whether the futex is a PI futex or not.
+    // This is a little bit hacky, and it would be better to have a separate type, but it's hard to
+    // achieve without breaking the linux userspace API.
     (entry_ptr & !1, entry_ptr & 1 != 0)
 }
 
@@ -116,6 +119,7 @@ impl Iterator for FutexIter<'_> {
 
         let (pending, pending_is_pi) = split_entry_ptr(self.robust_list.list_op_pending);
         // The list is circular, ending where it points back to the head.
+        // This is another convention inherited from linux userspace.
         while self.entry != self.head_addr {
             if self.count == ROBUST_LIST_LIMIT {
                 break;
