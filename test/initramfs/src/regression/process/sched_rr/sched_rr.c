@@ -8,6 +8,14 @@
 // Each thread prints its TID so that the scheduler capture can be filtered by
 // it. This is not part of `run_test.sh`, because it needs a specific boot
 // parameter and a host-side check of the capture.
+// 
+// This test progrem should be used with the round_robin task placement policy. 
+// The round robin policy always place the task at (last_cpu + 1) % (#cpu) cpu 
+// everytime a "select_cpu" is called for that task. 
+// 
+// For a specific task created in this script, if you see the CPU that the task 
+// corresponding to your task ID appears something like 0,1,2,3,0,1,2,3 then 
+// that means the polcy works and the task is migrated between the CPUs correctly. 
 
 #define _GNU_SOURCE
 #include <pthread.h>
