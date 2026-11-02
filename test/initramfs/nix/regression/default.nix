@@ -16,6 +16,7 @@ let
     "io"
     "ipc"
     "memory"
+    "oqfs"
     "process"
     "security"
     "time"
