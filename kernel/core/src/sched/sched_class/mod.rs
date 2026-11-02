@@ -90,19 +90,16 @@ pub fn init_select_cpu_policy() {
         .get()
         .map(String::as_str)
         .unwrap_or(DEFAULT_SELECT_CPU_POLICY);
-    // `None` keeps the built-in `LastCpuPolicy`, so its spawn tie-breaking carries on unchanged.
-    let (name, policy): (&str, Option<Box<dyn SelectCpuPolicy>>) = match requested {
-        "last_cpu" => ("last_cpu", None),
-        "round_robin" => ("round_robin", Some(Box::new(RoundRobinPolicy))),
+    let (name, policy): (&str, Box<dyn SelectCpuPolicy>) = match requested {
+        "last_cpu" => ("last_cpu", Box::new(LastCpuPolicy::new())),
+        "round_robin" => ("round_robin", Box::new(RoundRobinPolicy::new())),
         other => {
             warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
-            ("last_cpu", None)
+            ("last_cpu", Box::new(LastCpuPolicy::new()))
         }
     };
-    if let Some(policy) = policy {
-        let scheduler = CLASS_SCHEDULER.get().unwrap();
-        scheduler.select_policy.call_once(|| policy);
-    }
+    let scheduler = CLASS_SCHEDULER.get().unwrap();
+    scheduler.select_policy.call_once(|| policy);
     info!("sched: CPU-selection policy is '{name}'");
 }
 
@@ -123,8 +120,6 @@ pub struct ClassScheduler {
     /// The CPU-selection policy chosen by `sched.select_cpu`, installed by
     /// [`init_select_cpu_policy`].
     select_policy: Once<Box<dyn SelectCpuPolicy>>,
-    /// Used until `select_policy` is installed, and when the parameter is unset.
-    default_select_policy: LastCpuPolicy,
 }
 
 /// Represents the run queue for each CPU core. It stores a list of run queues for
@@ -413,14 +408,6 @@ impl ClassScheduler {
         ClassScheduler {
             rqs: all_cpus().map(class_rq).collect(),
             select_policy: Once::new(),
-            default_select_policy: LastCpuPolicy::new(),
-        }
-    }
-
-    fn select_policy(&self) -> &dyn SelectCpuPolicy {
-        match self.select_policy.get() {
-            Some(policy) => &**policy,
-            None => &self.default_select_policy,
         }
     }
 
@@ -443,13 +430,19 @@ impl ClassScheduler {
         let guard = disable_local();
         let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         let queue_len = |cpu: CpuId| self.rqs[cpu.as_usize()].lock().load_stats().queue_len;
-        self.select_policy().select_cpu(&SelectCpuInput {
+        let input = SelectCpuInput {
             reason,
             last_cpu: thread.sched_attr().last_cpu(),
             affinity: &affinity,
             current_cpu: guard.current_cpu(),
             queue_len: &queue_len,
-        })
+        };
+        match self.select_policy.get() {
+            Some(policy) => policy.select_cpu(&input),
+            // The kernel command line is not read yet, so use `last_cpu`. A fresh instance forgets
+            // its spawn tie-breaking between calls, which is fine for this short window.
+            None => LastCpuPolicy::new().select_cpu(&input),
+        }
     }
 }
 

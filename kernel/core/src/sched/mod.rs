@@ -10,10 +10,6 @@
 //! * [Real-time](`sched_class::real_time`) with round-robin or FIFO scheduling.
 //! * [Fair](`sched_class::fair`) which attempts to provide equal runtime for tasks.
 
-// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/59): With the default `last_cpu`
-// CPU-selection policy, tasks are fixed to a CPU once they are scheduled. Other policies are picked
-// with the `sched.select_cpu` kernel parameter.
-
 mod nice;
 mod sched_class;
 mod stats;

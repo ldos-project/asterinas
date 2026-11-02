@@ -10,7 +10,7 @@ use core::ops::Bound;
 
 use ostd::{
     cpu::{CpuId, CpuSet},
-    task::scheduler::EnqueueFlags,
+    task::{AtomicCpuId, scheduler::EnqueueFlags},
 };
 
 mod last_cpu;
@@ -73,4 +73,40 @@ fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_
     cpu_set
         .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
         .chain(cpu_set.iter_in(..=cpu))
+}
+
+/// Picks the CPU for a task that is placed for the first time: the allowed CPU with the shortest
+/// queue.
+///
+/// Policies call this when `input.last_cpu` is `None`, which happens only on spawn. Ties are broken
+/// round-robin, starting after `last_chosen_cpu`. That is state owned by the calling policy, and
+/// this function updates it to the CPU it returns.
+fn least_loaded_cpu(input: &SelectCpuInput, last_chosen_cpu: &AtomicCpuId) -> CpuId {
+    debug_assert!(input.reason == SelectReason::Spawn);
+
+    let mut selected = input.current_cpu;
+    let mut minimum_load = u32::MAX;
+
+    // Set `selected` as `candidate` if the candidate's load is smaller.
+    let test_candidate = |candidate: CpuId| {
+        let load = (input.queue_len)(candidate);
+        if load < minimum_load {
+            minimum_load = load;
+            selected = candidate;
+        }
+    };
+
+    match last_chosen_cpu.get() {
+        Some(cpu) => {
+            // Perform a round-robin selection starting after the last chosen CPU.
+            //
+            // It still checks every CPU in the affinity set to find the one with the
+            // minimum load, but avoids selecting the same CPU again in case of a tie.
+            cycle_after(cpu, input.affinity).for_each(test_candidate)
+        }
+        None => input.affinity.iter().for_each(test_candidate),
+    }
+
+    last_chosen_cpu.set_anyway(selected);
+    selected
 }
