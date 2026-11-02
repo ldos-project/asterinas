@@ -162,10 +162,9 @@ fn wake_clear_ctid(thread_local: &ThreadLocal) {
 ///
 /// This corresponds to Linux's `exit_robust_list`. Errors are silently ignored.
 fn wake_robust_list(thread_local: &ThreadLocal, tid: Tid) {
-    let head_addr = thread_local.robust_list().replace(0);
-    if head_addr == 0 {
+    let Some(head_addr) = thread_local.robust_list().take() else {
         return;
-    }
+    };
     let Ok(list_head) = current_userspace!().read_val::<RobustListHead>(head_addr) else {
         return;
     };

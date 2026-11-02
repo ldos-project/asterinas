@@ -11,10 +11,30 @@ use crate::{
     thread::Tid,
 };
 
+/// A pointer to a lock entry as user space stores it in a robust list.
+///
+/// Linux uses bit 0 to mark the entry's futex as a PI futex, so the value must be [split] before
+/// it is used as an address.
+///
+/// [split]: Self::split
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct RobustListUserValue(Vaddr);
+
+impl RobustListUserValue {
+    /// Splits the value into the pointer to the lock entry and whether its futex is a PI futex.
+    ///
+    /// This corresponds to Linux's `fetch_robust_entry`.
+    fn split(self) -> (Vaddr, bool) {
+        // Lock entries are pointer-aligned, so bit 0 of a real pointer is always clear.
+        (self.0 & !1, self.0 & 1 != 0)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
 struct RobustList {
-    next: Vaddr, // *const Robust list
+    next: RobustListUserValue, // *const RobustList
 }
 
 #[repr(C)]
@@ -31,7 +51,7 @@ pub struct RobustListHead {
     futex_offset: isize,
     /// Contains transient copy of the address of the lock entry, during list
     /// insertion and removal.
-    list_op_pending: Vaddr, // *const RobustList
+    list_op_pending: RobustListUserValue, // *const RobustList
 }
 
 /// A robust futex found while walking a robust list.
@@ -43,16 +63,6 @@ pub struct RobustFutex {
     pub is_pi: bool,
     /// Whether the futex comes from `list_op_pending`.
     pub is_pending: bool,
-}
-
-/// Splits a lock entry pointer into the entry address and whether its futex is a PI futex.
-///
-/// This corresponds to Linux's `fetch_robust_entry`.
-fn split_entry_ptr(entry_ptr: Vaddr) -> (Vaddr, bool) {
-    // Linux uses the first bit of the address to indicate whether the futex is a PI futex or not.
-    // This is a little bit hacky, and it would be better to have a separate type, but it's hard to
-    // achieve without breaking the linux userspace API.
-    (entry_ptr & !1, entry_ptr & 1 != 0)
 }
 
 impl RobustListHead {
@@ -68,9 +78,9 @@ impl RobustListHead {
     }
 
     /// Get the futex address
-    fn futex_addr(&self, entry: Vaddr) -> Option<Vaddr> {
+    fn futex_addr(&self, entry_ptr: Vaddr) -> Option<Vaddr> {
         self.futex_offset
-            .checked_add(entry as isize)
+            .checked_add(entry_ptr as isize)
             .map(|result| result as Vaddr)
     }
 }
@@ -78,18 +88,18 @@ impl RobustListHead {
 pub struct FutexIter<'a> {
     robust_list: &'a RobustListHead,
     head_addr: Vaddr,
-    entry: Vaddr,
+    entry_ptr: Vaddr,
     is_pi: bool,
     count: isize,
 }
 
 impl<'a> FutexIter<'a> {
     pub fn new(robust_list: &'a RobustListHead, head_addr: Vaddr) -> Self {
-        let (entry, is_pi) = split_entry_ptr(robust_list.list.next);
+        let (entry_ptr, is_pi) = robust_list.list.next.split();
         Self {
             robust_list,
             head_addr,
-            entry,
+            entry_ptr,
             is_pi,
             count: 0,
         }
@@ -117,20 +127,20 @@ impl Iterator for FutexIter<'_> {
             return None;
         }
 
-        let (pending, pending_is_pi) = split_entry_ptr(self.robust_list.list_op_pending);
+        let (pending_ptr, pending_is_pi) = self.robust_list.list_op_pending.split();
         // The list is circular, ending where it points back to the head.
         // This is another convention inherited from linux userspace.
-        while self.entry != self.head_addr {
+        while self.entry_ptr != self.head_addr {
             if self.count == ROBUST_LIST_LIMIT {
                 break;
             }
-            if self.entry == 0 {
+            if self.entry_ptr == 0 {
                 return None;
             }
             // A pending lock might already be on the list, so don't process it twice.
-            let futex = if self.entry != pending {
+            let futex = if self.entry_ptr != pending_ptr {
                 self.robust_list
-                    .futex_addr(self.entry)
+                    .futex_addr(self.entry_ptr)
                     .map(|addr| RobustFutex {
                         addr,
                         is_pi: self.is_pi,
@@ -139,21 +149,22 @@ impl Iterator for FutexIter<'_> {
             } else {
                 None
             };
-            let Ok(robust_list) = current_userspace!().read_val::<RobustList>(self.entry) else {
+            let Ok(robust_list) = current_userspace!().read_val::<RobustList>(self.entry_ptr)
+            else {
                 return None;
             };
-            (self.entry, self.is_pi) = split_entry_ptr(robust_list.next);
+            (self.entry_ptr, self.is_pi) = robust_list.next.split();
             self.count += 1;
             if futex.is_some() {
                 return futex;
             }
         }
         self.set_end();
-        if pending == 0 {
+        if pending_ptr == 0 {
             return None;
         }
         self.robust_list
-            .futex_addr(pending)
+            .futex_addr(pending_ptr)
             .map(|addr| RobustFutex {
                 addr,
                 is_pi: pending_is_pi,

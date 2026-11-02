@@ -32,8 +32,8 @@ pub struct ThreadLocal {
 
     // Robust futexes.
     // https://man7.org/linux/man-pages/man2/get_robust_list.2.html
-    /// The user-space address of the robust list head, or zero if none is registered.
-    robust_list: Cell<Vaddr>,
+    /// The user-space address of the robust list head, if one is registered.
+    robust_list: Cell<Option<Vaddr>>,
 
     // Files.
     /// File table.
@@ -76,7 +76,7 @@ impl ThreadLocal {
             clear_child_tid: Cell::new(clear_child_tid),
             vmar: RefCell::new(Some(vmar)),
             page_fault_disabled: Cell::new(false),
-            robust_list: Cell::new(0),
+            robust_list: Cell::new(None),
             file_table: RefCell::new(Some(file_table)),
             fs: RefCell::new(fs),
             supp_user_context,
@@ -139,7 +139,7 @@ impl ThreadLocal {
         self.page_fault_disabled.get()
     }
 
-    pub fn robust_list(&self) -> &Cell<Vaddr> {
+    pub fn robust_list(&self) -> &Cell<Option<Vaddr>> {
         &self.robust_list
     }
 
