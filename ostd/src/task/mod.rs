@@ -40,6 +40,31 @@ static PRE_SCHEDULE_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
+type ThreadMain = Box<dyn FnOnce() + Send>;
+
+static SPAWN_THREAD: Once<fn(ThreadMain)> = Once::new();
+
+/// Spawns a thread using the kernel's thread implementation when available.
+pub fn spawn_thread(
+    body: impl FnOnce() -> Result<(), Box<dyn core::error::Error>> + Send + 'static,
+) {
+    let body: ThreadMain = Box::new(move || match crate::panic::catch_unwind(body) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::error!("Thread stopped: {error}"),
+        Err(_) => log::error!("Thread panicked"),
+    });
+    if let Some(spawn) = SPAWN_THREAD.get() {
+        spawn(body);
+    } else {
+        TaskOptions::new(body).spawn().unwrap();
+    }
+}
+
+/// Installs the kernel's thread spawning implementation.
+pub fn inject_spawn_thread(spawn: fn(Box<dyn FnOnce() + Send>)) {
+    SPAWN_THREAD.call_once(|| spawn);
+}
+
 /// Injects a handler to be executed before scheduling.
 pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
     PRE_SCHEDULE_HANDLER.call_once(|| handler);
@@ -410,6 +435,21 @@ mod test {
             assert_eq!(1, 1);
         };
         let _ = crate::task::TaskOptions::new(task).data(()).spawn();
+    }
+
+    #[ktest]
+    fn spawn_thread_runs_body() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        let ran = Arc::new(AtomicBool::new(false));
+        super::spawn_thread({
+            let ran = ran.clone();
+            move || {
+                ran.store(true, Ordering::Release);
+                Ok(())
+            }
+        });
+        crate::assert_eq_eventually!(ran.load(Ordering::Acquire), true);
     }
 
     #[ktest]

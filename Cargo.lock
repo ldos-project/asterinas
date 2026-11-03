@@ -369,7 +369,6 @@ version = "0.1.0"
 dependencies = [
  "aster-block",
  "aster-time",
- "aster-virtio",
  "device-id",
  "io-util",
  "log",

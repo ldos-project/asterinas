@@ -10,11 +10,9 @@ use core::{
 
 use aster_block::BlockDevice;
 use ostd::{
-    error, ignore_err, info, new_server,
+    error, ignore_err, info,
     orpc::{
-        framework::{notifier::Notifier as _, spawn_thread},
         oqueue::{Element, OQueueBase as _, ObservationQuery, registry::lookup_by_type},
-        orpc_server,
         path::Path,
     },
 };
@@ -23,13 +21,12 @@ use spin::Once;
 
 use crate::{prelude::*, util::timer::TimerServer};
 
-#[orpc_server]
 struct DataCaptureManager {}
 
 impl DataCaptureManager {
     pub(crate) fn spawn(period: Duration) -> Arc<Self> {
-        let server = new_server!(|_| Self {});
-        spawn_thread(server.clone(), {
+        let server = Arc::new(Self {});
+        ostd::task::spawn_thread({
             let server = server.clone();
             move || server.main(period)
         });
@@ -51,7 +48,7 @@ impl DataCaptureManager {
     }
 }
 
-static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<dyn mariposa_data_capture::DataCaptureDevice>>> =
+static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<mariposa_data_capture::DataCaptureDevice>>> =
     Mutex::new(None);
 
 pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>> =
@@ -90,10 +87,10 @@ fn init_capture_device_from_arg(init_device: impl FnOnce(Arc<dyn BlockDevice + '
 }
 
 pub(super) fn start_capture_devices() {
-    init_capture_device_from_arg(|server| {
+    init_capture_device_from_arg(|device| {
         DATA_CAPTURE_DEVICE
             .lock()
-            .replace(mariposa_data_capture::DataCaptureDeviceServer::new(server));
+            .replace(mariposa_data_capture::DataCaptureDevice::new(device));
     });
 
     // Start a server which syncs the data_capture devices every `ms` milliseconds based on the
@@ -108,7 +105,7 @@ pub(super) fn start_capture_devices() {
 /// Create a new data capture file for OQueues.
 pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
-) -> Option<Arc<dyn mariposa_data_capture::DataCaptureFile<T>>> {
+) -> Option<Arc<mariposa_data_capture::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE
         .lock()
         .as_ref()?

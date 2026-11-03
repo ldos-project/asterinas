@@ -18,21 +18,16 @@ use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
 use io_util::batch::IoBatch;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{OQueue as _, OQueueRef};
-#[cfg(not(baseline_asterinas))]
-use ostd::orpc::orpc_impl;
+use ostd::orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueRef};
 use ostd::{
     arch::trap::TrapFrame,
     debug, info,
     mm::{PAGE_SIZE, VmIo, dma::DmaStream},
-    orpc::orpc_server,
     sync::SpinLock,
 };
 use snafu::ResultExt;
 
 use super::{BlockFeatures, VirtioBlockConfig};
-#[cfg(not(baseline_asterinas))]
-use crate::device::block::{server_traits, server_traits::BlockIOObservable as _};
 use crate::{
     VIRTIO_BLOCK_MAJOR_ID,
     device::{
@@ -59,23 +54,35 @@ pub struct BlockDevice {
 }
 
 #[cfg(not(baseline_asterinas))]
-#[derive(Debug)]
-#[orpc_server(server_traits::BlockIOObservable)]
 pub struct BlockDevice {
     device: Arc<DeviceInner>,
     /// The software staging queue.
     queue: BioRequestSingleQueue,
     name: String,
     partition_manager: PartitionManager,
+    bio_completion_oqueue: OQueueRef<BlockDeviceCompletionStats>,
 }
 
 #[cfg(not(baseline_asterinas))]
-#[orpc_impl]
-impl server_traits::BlockIOObservable for BlockDevice {
-    fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats>;
+impl Debug for BlockDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BlockDevice")
+            .field("device", &self.device)
+            .field("queue", &self.queue)
+            .field("name", &self.name)
+            .field("partition_manager", &self.partition_manager)
+            .finish()
+    }
 }
 
 impl BlockDevice {
+    /// The OQueue containing every write request. This includes both sync and async writes and any
+    /// other write operations on other traits.
+    #[cfg(not(baseline_asterinas))]
+    pub fn bio_completion_oqueue(&self) -> OQueueRef<BlockDeviceCompletionStats> {
+        self.bio_completion_oqueue.clone()
+    }
+
     /// Returns the formatted device name.
     ///
     /// The device name starts at "vda". The 26th device is "vdz" and the 27th is "vdaa".
@@ -129,14 +136,17 @@ impl BlockDevice {
 
         #[cfg(not(baseline_asterinas))]
         {
-            let block_device_server = Self::new_with(|orpc_internal, _weak_self| BlockDevice {
+            let block_device_server = Arc::new(BlockDevice {
                 device,
                 queue: BioRequestSingleQueue::with_max_nr_segments_per_bio(
                     (DeviceInner::QUEUE_SIZE - 2) as usize,
                 ),
                 name,
                 partition_manager: PartitionManager::new(),
-                orpc_internal,
+                bio_completion_oqueue: GenericOQueueRef::new(
+                    4096,
+                    ostd::path!(io.block_io.bio_completion[unique]),
+                ),
             });
 
             aster_block::register(block_device_server).unwrap();

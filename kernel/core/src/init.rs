@@ -47,9 +47,9 @@ use crate::{
 pub(super) fn main() {
     // TODO(amp, BIG MERGE): Reconsider this initialization order, and placement of initialization code.
 
-    // CRITICAL: Initialize scheduler and ORPC BEFORE component initialization!
+    // CRITICAL: Initialize scheduler and thread spawning BEFORE component initialization!
     // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
-    // - ORPC spawn function must be injected, otherwise ORPC threads are created without
+    // - The thread spawn function must be injected, otherwise threads are created without
     //   Thread association and are ignored by the ClassScheduler
     thread::init();
     sched::init();

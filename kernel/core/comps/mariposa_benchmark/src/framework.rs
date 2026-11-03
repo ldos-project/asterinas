@@ -12,7 +12,7 @@ use aster_logger::println;
 // Capture to a block device is built on OQueues, so it does not exist in baseline mode.
 #[cfg(not(baseline_asterinas))]
 use mariposa_data_capture::DataCaptureFile;
-use ostd::{arch::tsc_freq, orpc::errors::RPCError, ostd_error};
+use ostd::{arch::tsc_freq, ostd_error};
 use serde::Serialize;
 use snafu::{ResultExt as _, Snafu};
 
@@ -26,19 +26,23 @@ pub enum Error {
     #[snafu(display("cannot reserve room for {iterations} samples ({context})"))]
     OutOfMemory { iterations: usize },
     #[snafu(display("could not write the samples: {source}"))]
-    CaptureWrite { source: RPCError },
+    CaptureWrite {
+        source: mariposa_data_capture::DataCaptureError,
+    },
     #[snafu(display("could not sync the samples: {source}"))]
-    CaptureSync { source: RPCError },
+    CaptureSync {
+        source: mariposa_data_capture::DataCaptureError,
+    },
 }
 
-/// Collects one sample per iteration for `iterations` iterations and write the results to a [`DataCaptureFile`]
+/// Collects one sample per iteration for `iterations` iterations and write the results to a capture file
 /// when the benchmarking is finished, returning how many were captured.
 ///
 /// `benchmark_fn` is given the iteration's sequence number and returns that iteration's sample.
 #[cfg(not(baseline_asterinas))]
 pub fn run<S, E>(
     iterations: u32,
-    capture_file: Arc<dyn DataCaptureFile<S>>,
+    capture_file: Arc<DataCaptureFile<S>>,
     mut benchmark_fn: impl FnMut(u64) -> Result<S, E>,
 ) -> Result<usize, E>
 where
@@ -64,7 +68,7 @@ where
     capture_file
         .write_values(Box::new(samples.into_iter()))
         .context(CaptureWriteSnafu)?;
-    // Stopping the capture file syncs it and only returns once the server thread is done, so the
+    // Stopping the capture file syncs it and waits for the worker to exit, so the
     // samples are on the device before this returns and the caller reports success.
     capture_file.stop().context(CaptureSyncSnafu)?;
 

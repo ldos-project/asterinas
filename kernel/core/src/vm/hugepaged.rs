@@ -4,36 +4,28 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::time::Duration;
 
 use ostd::orpc::{
-    framework::{notifier::Notifier, spawn_thread},
     oqueue::{OQueueBase as _, query::ObservationQuery},
-    orpc_server, orpc_trait,
     sync::select,
 };
-use snafu::Whatever;
 
 use super::{promote_hugepages, vmar::PageFaultOQueueMessage};
 use crate::{process::Process, util::timer::TimerServer, vm::vmar};
 
-#[orpc_trait]
-pub(crate) trait HugePageD {}
-
 /// HugePage daemon that periodically attempts to promote pages to huge pages
-#[orpc_server(HugePageD)]
 pub struct HugepagedServer {}
 
 impl HugepagedServer {
     /// Create and spawn a new HugepagedServer.
     pub fn spawn(initproc: Arc<Process>) -> Arc<Self> {
-        let hugepaged = Self::new().unwrap();
-        spawn_thread(hugepaged.clone(), {
+        let hugepaged = Self::new();
+        ostd::task::spawn_thread({
             let hugepaged = hugepaged.clone();
             move || hugepaged.main(initproc)
         });
         hugepaged
     }
-    pub fn new() -> Result<Arc<Self>, Whatever> {
-        let server = Self::new_with(|orpc_internal, _| Self { orpc_internal });
-        Ok(server)
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {})
     }
 
     pub fn main(&self, initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
