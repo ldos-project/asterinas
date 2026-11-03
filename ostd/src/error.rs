@@ -7,7 +7,7 @@ use snafu::Snafu;
 
 #[cfg(not(baseline_asterinas))]
 use crate::orpc::oqueue::OQueueError;
-use crate::{mm::page_table::PageTableError, orpc::errors::RPCError, stack_info::StackInfo};
+use crate::{mm::page_table::PageTableError, stack_info::StackInfo};
 
 /// The trait of all errors carrying OSTD metadata.
 ///
@@ -44,13 +44,6 @@ pub enum Error {
     /// Arithmetic Overflow occurred.
     #[snafu(display("Arithmetic overflow ({context})"))]
     Overflow,
-    /// A ORPC error
-    #[snafu(transparent)]
-    #[ostd(context(source))]
-    RPCError {
-        /// Source ORPC error
-        source: RPCError,
-    },
     /// An OQueue error
     #[snafu(transparent)]
     #[ostd(context(source))]

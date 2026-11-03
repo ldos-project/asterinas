@@ -53,8 +53,6 @@ pub(super) fn main() {
     //   Thread association and are ignored by the ClassScheduler
     thread::init();
     sched::init();
-    #[cfg(not(baseline_asterinas))]
-    crate::orpc_utils::init();
 
     // Initialize the global states for all CPUs.
     ostd::early_println!("OSTD initialized. Preparing components.");

@@ -12,7 +12,7 @@ mod utils;
 use core::{
     any::Any,
     borrow::Borrow,
-    cell::{Cell, RefCell, SyncUnsafeCell},
+    cell::{Cell, SyncUnsafeCell},
     num::NonZeroUsize,
     ops::Deref,
     ptr::NonNull,
@@ -28,8 +28,6 @@ pub use self::{
     preempt::{DisabledPreemptGuard, disable_preempt, halt_cpu},
     scheduler::info::{AtomicCpuId, TaskScheduleInfo},
 };
-#[cfg(not(baseline_asterinas))]
-use crate::orpc::framework::Server;
 use crate::{
     arch::task::TaskContext,
     irq::{DisabledLocalIrqGuard, InterruptLevel},
@@ -104,9 +102,6 @@ pub struct Task {
     id: NonZeroUsize,
 
     schedule_info: TaskScheduleInfo,
-
-    #[cfg(not(baseline_asterinas))]
-    server: ForceSync<RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>>>,
 }
 
 impl PartialEq for Task {
@@ -129,16 +124,6 @@ impl Task {
 
         // SAFETY: `current_task` is the current task.
         Some(unsafe { CurrentTask::new(current_task) })
-    }
-
-    /// Get a reference to the current server managing this task. This should not be called from
-    /// concurrent contexts to avoid races on setting the server for this task.
-    /// # SAFETY
-    ///
-    /// This is only safe if it is NOT done concurrently
-    #[cfg(not(baseline_asterinas))]
-    pub unsafe fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
-        unsafe { self.server.get() }
     }
 
     pub(super) fn ctx(&self) -> &SyncUnsafeCell<TaskContext> {
@@ -302,8 +287,6 @@ impl TaskOptions {
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
             },
-            #[cfg(not(baseline_asterinas))]
-            server: ForceSync::new(RefCell::new(None)),
         };
 
         Ok(new_task)
@@ -368,14 +351,6 @@ impl CurrentTask {
 
         // SAFETY: We've increased the reference count in the current `Arc<Task>` above.
         unsafe { Arc::from_raw(ptr) }
-    }
-
-    /// Get a reference to the current server managing this task.
-    #[cfg(not(baseline_asterinas))]
-    pub fn server(&self) -> &RefCell<Option<Arc<dyn Server + Send + Sync + 'static>>> {
-        // SAFETY: This is the current task, so we have safe access to mutate the server attached to
-        // the task. See [`CurrentTask::new`].
-        unsafe { self.as_ref().server() }
     }
 }
 

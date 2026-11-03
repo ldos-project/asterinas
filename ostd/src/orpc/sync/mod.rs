@@ -11,7 +11,6 @@ pub use orpc_macros::select;
 pub use timeout_blocker::TimeoutBlocker;
 
 use crate::{
-    orpc::framework::CurrentServer,
     prelude::Arc,
     sync::{Waiter, Waker, WakerKey},
     task::{CurrentTask, Task},
@@ -102,7 +101,6 @@ impl CurrentTask {
     /// Wait for multiple blockers, waking if any wake. This is equivalent to
     /// [`Blocker::block_until`] if there is only one blocker.
     pub fn block_on<const N: usize>(&self, blockers: &[&dyn Blocker; N]) {
-        CurrentServer::abort_point();
         let (waiter, waker) = Waiter::new_pair();
 
         // 1. Register for all blockers.
@@ -113,13 +111,7 @@ impl CurrentTask {
             // 3. Block if no blockers are ready. This will immediately wake if any blocker woke
             //    between `prepare_to_wait` and here. This prevents this thread from dropping a wake
             //    between `should_try` and `wait_cancellable`.
-            waiter.wait_cancellable(|| {
-                if CurrentServer::is_aborted() {
-                    Err(())
-                } else {
-                    Ok(())
-                }
-            });
+            waiter.wait();
         }
 
         // 4. Unregister with all the blockers. This avoids the blocker queues growing without
@@ -127,8 +119,6 @@ impl CurrentTask {
         for (blocker, key) in blockers.iter().zip(keys) {
             blocker.remove(key);
         }
-
-        CurrentServer::abort_point();
     }
 }
 
@@ -152,7 +142,6 @@ impl BlockOnMany {
     /// Wait for multiple blockers, waking if any wake. This clones `blockers` 3 times, so it is
     /// important that `clone()` be fast.
     pub fn block_on<'a>(&mut self, blockers: impl Iterator<Item = &'a dyn Blocker> + Clone) {
-        CurrentServer::abort_point();
         let (waiter, waker) = Waiter::new_pair();
 
         // 1. Register for all blockers.
@@ -164,13 +153,7 @@ impl BlockOnMany {
             // 3. Block if no blockers are ready. This will immediately wake if any blocker woke
             //    between `enqueue` and here. This prevents this thread from dropping a wake between
             //    `should_try` and `wait_cancellable`.
-            waiter.wait_cancellable(|| {
-                if CurrentServer::is_aborted() {
-                    Err(())
-                } else {
-                    Ok(())
-                }
-            });
+            waiter.wait();
         }
 
         // 4. Unregister with all the blockers. This avoids the blocker queues growing without
@@ -178,8 +161,6 @@ impl BlockOnMany {
         for (blocker, key) in blockers.zip(self.cached_keys.drain(..)) {
             blocker.remove(key);
         }
-
-        CurrentServer::abort_point();
     }
 }
 
