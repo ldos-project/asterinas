@@ -5,15 +5,15 @@ use core::time::Duration;
 
 use aster_time::Instant;
 use ostd::{
-    orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
-    path,
+    orpc::oqueue::{OQueueBase, ObservationQuery, Projectable},
+    trace_structured_data,
 };
 use serde::Serialize;
 
 use crate::util::timer::TimerServer;
 
 /// Data TLB Misses instance struct
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Projectable, Serialize)]
 struct DtlbMisses {
     timestamp: Instant,
     miss_l1_tlb: u64,
@@ -24,9 +24,7 @@ struct DtlbMisses {
 /// Icelake-Server
 // TODO(tewaro, after SOSP) actually support interesting option
 // TODO(tewaro, after SOSP) actually support multi-process
-pub(crate) struct PmuServer {
-    dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
-}
+pub(crate) struct PmuServer {}
 
 impl PmuServer {
     /// Create and spawn a new PmuServer.
@@ -40,9 +38,7 @@ impl PmuServer {
         pmud
     }
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            dtlb_miss_count_oqueue: GenericOQueueRef::new(32, path!(pmu.dtlb_miss_count)),
-        })
+        Arc::new(Self {})
     }
 
     /// Resets counter and automatically stops it from continuing.
@@ -61,8 +57,6 @@ impl PmuServer {
         // work with
         let notify_server = TimerServer::spawn(Duration::from_millis(100));
 
-        let dtlb_miss_count_producer = self.dtlb_miss_count_oqueue.attach_ref_producer()?;
-
         let notify_observer = notify_server
             .notification_oqueue()
             .attach_strong_observer(ObservationQuery::identity())?;
@@ -75,7 +69,7 @@ impl PmuServer {
                 miss_all_tlb,
             };
 
-            dtlb_miss_count_producer.produce_ref(&misses);
+            trace_structured_data!({ pmu.dtlb_miss_count }, misses, DtlbMisses, length = 32);
         }
     }
 }
