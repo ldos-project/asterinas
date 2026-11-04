@@ -2,7 +2,7 @@
 
 //! Queries for extracting information from an OQueue in the form needed by observers.
 
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use crate::orpc::oqueue::{ElementDescriptor, LifetimelessElementDescriptor};
 
@@ -16,7 +16,7 @@ type ExtractionFunction<D: ElementDescriptor, U> =
 /// for observers to extract the values they need from messages in an OQueue.
 pub struct ObservationQuery<D: ElementDescriptor, U> {
     /// The extractor function to call to extract the observed value from the message.
-    extractor: Box<ExtractionFunction<D, U>>,
+    extractor: Arc<ExtractionFunction<D, U>>,
     // TODO(arthurp): This could be optimized for non-capturing cases by storing `fn(&T) ->
     // Option<U>` instead of `dyn Fn(&T) -> Option<U>`. This would avoid a dereference and an
     // allocation.
@@ -26,6 +26,14 @@ pub struct ObservationQuery<D: ElementDescriptor, U> {
     // is already present in an OQueue.
 }
 
+impl<D: ElementDescriptor, U> Clone for ObservationQuery<D, U> {
+    fn clone(&self) -> Self {
+        Self {
+            extractor: self.extractor.clone(),
+        }
+    }
+}
+
 impl<D: ElementDescriptor, U> ObservationQuery<D, U> {
     /// Create a query which extracts a value from the message.
     ///
@@ -33,7 +41,7 @@ impl<D: ElementDescriptor, U> ObservationQuery<D, U> {
     /// for any OQueue it is used to observer.
     pub fn new(extractor: impl for<'a> Fn(&D::Element<'a>) -> U + Sync + Send + 'static) -> Self {
         Self {
-            extractor: Box::new(move |v| Some(extractor(v))),
+            extractor: Arc::new(move |v| Some(extractor(v))),
         }
     }
 
@@ -45,7 +53,7 @@ impl<D: ElementDescriptor, U> ObservationQuery<D, U> {
         extractor: impl for<'a> Fn(&D::Element<'a>) -> Option<U> + Sync + Send + 'static,
     ) -> Self {
         Self {
-            extractor: Box::new(extractor),
+            extractor: Arc::new(extractor),
         }
     }
 
@@ -61,7 +69,7 @@ impl<T: Copy + 'static> ObservationQuery<LifetimelessElementDescriptor<T>, T> {
     /// This is equivalent to `ObservationQuery::new(|x| *x)`, but may be optimized.
     pub fn identity() -> Self {
         Self {
-            extractor: Box::new(|x: &T| -> Option<T> { Some(*x) }),
+            extractor: Arc::new(|x: &T| -> Option<T> { Some(*x) }),
         }
     }
 }
