@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote};
+use quote::{format_ident, quote, quote_spanned};
+use syn::{
+    Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned as _,
+};
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -59,12 +61,15 @@ fn expand_struct(
         Fields::Named(fields) => {
             for field in &fields.named {
                 let ident = field.ident.as_ref().unwrap();
-                let (projected_ty, initializer) = project_field(
+                let Some((projected_ty, initializer)) = project_field(
                     field,
                     quote!(&self.#ident),
                     &mut projection_bounds,
                     &default_projection,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 projected_types.push(projected_ty.clone());
                 named_fields.push(quote!(#ident: #projected_ty));
                 named_initializers.push(quote!(#ident: #initializer));
@@ -73,12 +78,15 @@ fn expand_struct(
         Fields::Unnamed(fields) => {
             for (index, field) in fields.unnamed.iter().enumerate() {
                 let member = Index::from(index);
-                let (projected_ty, initializer) = project_field(
+                let Some((projected_ty, initializer)) = project_field(
                     field,
                     quote!(&self.#member),
                     &mut projection_bounds,
                     &default_projection,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 projected_types.push(projected_ty.clone());
                 tuple_fields.push(projected_ty);
                 tuple_initializers.push(initializer);
@@ -171,16 +179,20 @@ fn expand_enum(
 
                 for (index, field) in fields.unnamed.iter().enumerate() {
                     let binding = format_ident!("__field_{index}");
-                    let (projected_ty, initializer) = project_field(
+                    let projected = project_field(
                         field,
                         quote!(#binding),
                         &mut projection_bounds,
                         &default_projection,
                     )?;
-                    projected_types.push(projected_ty.clone());
-                    projected_field_types.push(projected_ty);
-                    bindings.push(binding);
-                    projected_field_values.push(initializer);
+                    if let Some((projected_ty, initializer)) = projected {
+                        projected_types.push(projected_ty.clone());
+                        projected_field_types.push(projected_ty);
+                        bindings.push(quote!(#binding));
+                        projected_field_values.push(initializer);
+                    } else {
+                        bindings.push(quote!(_));
+                    }
                 }
 
                 projection_variants.push(quote!(
@@ -200,16 +212,20 @@ fn expand_enum(
                 for field in fields.named {
                     let ident = field.ident.as_ref().unwrap();
                     let binding = format_ident!("__field_{}", ident);
-                    let (projected_ty, initializer) = project_field(
+                    let projected = project_field(
                         &field,
                         quote!(#binding),
                         &mut projection_bounds,
                         &default_projection,
                     )?;
-                    projected_types.push(projected_ty.clone());
-                    projected_fields.push(quote!(#ident: #projected_ty));
-                    bindings.push(quote!(#ident: #binding));
-                    initializers.push(quote!(#ident: #initializer));
+                    if let Some((projected_ty, initializer)) = projected {
+                        projected_types.push(projected_ty.clone());
+                        projected_fields.push(quote!(#ident: #projected_ty));
+                        bindings.push(quote!(#ident: #binding));
+                        initializers.push(quote!(#ident: #initializer));
+                    } else {
+                        bindings.push(quote!(#ident: _));
+                    }
                 }
 
                 projection_variants.push(quote! {
@@ -395,43 +411,107 @@ fn project_field(
     value: proc_macro2::TokenStream,
     generics: &mut syn::Generics,
     default_projection: &syn::Path,
-) -> syn::Result<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
+) -> syn::Result<Option<(proc_macro2::TokenStream, proc_macro2::TokenStream)>> {
     let mut projection_kind = None;
+    let mut has_projection_attribute = false;
+    let mut deref = false;
     for attr in field
         .attrs
         .iter()
         .filter(|attr| attr.path().is_ident("projection"))
     {
-        if projection_kind.is_some() {
+        if has_projection_attribute {
             return Err(syn::Error::new_spanned(
                 attr,
                 "only one `projection` attribute is allowed per field",
             ));
         }
-        let kind: syn::Ident = attr.parse_args()?;
-        if kind != "opaque" {
-            return Err(syn::Error::new_spanned(kind, "expected `opaque`"));
+        has_projection_attribute = true;
+        let options = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+        )?;
+        for option in options {
+            if option == "deref" && !deref {
+                deref = true;
+            } else if (option == "opaque" || option == "omit") && projection_kind.is_none() {
+                projection_kind = Some(option);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    option,
+                    "invalid or duplicate projection option",
+                ));
+            }
         }
-        projection_kind = Some(kind);
+    }
+
+    if projection_kind.as_ref().is_some_and(|kind| kind == "omit") {
+        if deref {
+            return Err(syn::Error::new_spanned(
+                field,
+                "`omit` cannot be combined with `deref`",
+            ));
+        }
+        return Ok(None);
     }
 
     let ty = &field.ty;
+    let projected_input = if deref {
+        if let syn::Type::Reference(reference) = ty {
+            let target = &reference.elem;
+            quote!(#target)
+        } else {
+            quote!(<#ty as ::core::ops::Deref>::Target)
+        }
+    } else {
+        quote!(#ty)
+    };
+    let projected_value = if deref { quote!(&**(#value)) } else { value };
     if projection_kind
         .as_ref()
         .is_some_and(|kind| kind == "opaque")
     {
-        Ok((
+        let use_opaque_id =
+            if let syn::Type::Reference(reference) = ty {
+                deref
+                    && match reference.elem.as_ref() {
+                        syn::Type::Reference(_) => true,
+                        syn::Type::Path(path) => path.path.segments.last().is_some_and(|segment| {
+                            segment.ident == "Arc" || segment.ident == "Box"
+                        }),
+                        _ => false,
+                    }
+            } else {
+                false
+            };
+        Ok(Some((
             quote!(::ostd::orpc::oqueue::default_projection::OID),
-            quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#value)),
-        ))
+            if use_opaque_id {
+                quote!(<#projected_input as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#projected_value))
+            } else if deref {
+                quote!(::ostd::orpc::oqueue::default_projection::OID::of_ref::<#projected_input>(#projected_value))
+            } else {
+                quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#projected_value))
+            },
+        )))
     } else {
+        let span = ty.span();
         generics
             .make_where_clause()
             .predicates
-            .push(parse_quote!(#ty: #default_projection));
-        Ok((
-            quote!(<#ty as #default_projection>::Projection),
-            quote!(<#ty as #default_projection>::default_projection(#value)),
-        ))
+            .push(syn::parse_quote_spanned!(span => #projected_input: #default_projection));
+        Ok(Some((
+            quote_spanned!(span => <#projected_input as #default_projection>::Projection),
+            quote_spanned!(span => <#projected_input as #default_projection>::default_projection(#projected_value)),
+        )))
     }
+}
+
+pub(crate) fn projectable_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    quote! {
+        impl #impl_generics ::ostd::orpc::oqueue::default_projection::Projectable for #name #ty_generics #where_clause {}
+    }
+    .into()
 }

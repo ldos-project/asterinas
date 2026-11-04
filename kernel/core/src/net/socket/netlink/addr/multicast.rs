@@ -2,10 +2,13 @@
 
 #![short_vis_path::add(netlink)]
 
+use ostd::Projectable;
+use serde::Serialize;
+
 use crate::prelude::*;
 
 /// A set of group IDs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Pod, Projectable)]
 pub(crate) struct GroupIdSet(u32);
 
 impl GroupIdSet {

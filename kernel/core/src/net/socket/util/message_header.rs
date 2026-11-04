@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use align_ext::AlignExt;
+use ostd::DefaultProjection;
 
 use super::{RecvFlags, SocketAddr};
 use crate::{net::socket::unix::UnixControlMessage, prelude::*, util::net::CSocketOptionLevel};
 
 /// Message header used for sendmsg/recvmsg.
-#[derive(Debug)]
+#[derive(Debug, DefaultProjection)]
 pub(crate) struct MessageHeader {
     pub(in crate::net) addr: Option<SocketAddr>,
+    #[projection(omit)]
     pub(in crate::net) control_messages: Vec<ControlMessage>,
 }
 
