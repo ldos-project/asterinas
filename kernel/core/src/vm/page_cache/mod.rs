@@ -183,6 +183,29 @@ impl PageCache {
         self.0.size()
     }
 
+    /// Starts asynchronously reading a page from the backend into the cache.
+    ///
+    /// `page_idx` is a zero-based page index. If the page is already cached or
+    /// being read, this method is a no-op. Anonymous page caches have no data
+    /// to prefetch and also return successfully without doing anything.
+    ///
+    /// A successful return means that any required backend read was submitted;
+    /// it does not wait for I/O completion or report a later completion error.
+    /// Demand reads synchronize with an in-flight prefetch through the normal
+    /// per-page initialization path.
+    #[cfg_attr(not(ktest), expect(dead_code))]
+    pub fn prefetch_page(&self, page_idx: usize) -> Result<()> {
+        if page_idx >= self.size().div_ceil(PAGE_SIZE) {
+            return_errno_with_message!(Errno::EINVAL, "the page index is outside the page cache");
+        }
+
+        let Some(vmo) = self.0.as_backed_vmo() else {
+            return Ok(());
+        };
+
+        vmo.prefetch_page(page_idx)
+    }
+
     /// Resizes the page-cache capacity to cover a new file size.
     ///
     /// `new_file_size` is the post-resize file size requested by the filesystem.
@@ -301,9 +324,11 @@ impl PageCache {
 
     /// Evicts clean pages within the specified range from the page cache.
     ///
-    /// Only pages in the `UpToDate` state are removed. Dirty and uninitialized
-    /// pages are left in place. This is useful for invalidating cached data that
-    /// is no longer needed and can be re-read from the backend if necessary
+    /// Pages in the `UpToDate` state are removed. If a page is still being
+    /// initialized, this operation waits for initialization and removes the
+    /// page if it becomes up to date. Dirty pages and pages whose initialization
+    /// failed are left in place. This is useful for invalidating cached data
+    /// that is no longer needed and can be re-read from the backend if necessary
     /// (e.g., before direct I/O operations).
     #[cfg_attr(not(ktest), expect(dead_code))]
     pub fn evict_range(&self, range: Range<usize>) -> Result<()> {

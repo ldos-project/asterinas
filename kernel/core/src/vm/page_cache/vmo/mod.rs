@@ -32,7 +32,9 @@ use xarray::{Cursor, LockedXArray, XArray};
 use crate::{
     prelude::*,
     vm::{
-        page_cache::{CachePage, CachePageExt, PageCacheBackend, cache_page::PageState},
+        page_cache::{
+            CachePage, CachePageExt, LockedCachePage, PageCacheBackend, cache_page::PageState,
+        },
         vmar::Rmap,
     },
 };
@@ -209,6 +211,14 @@ impl From<ostd::Error> for VmoCommitError {
 enum CommitMode {
     Read,
     Overwrite,
+}
+
+/// The result of looking up or inserting a cache page.
+enum PageLookup {
+    /// A page that was already present in the cache.
+    Cached(CachePage),
+    /// A newly inserted page, locked for initialization.
+    Inserted(LockedCachePage),
 }
 
 impl CommitMode {
@@ -859,12 +869,40 @@ impl PageSelection {
             // returning from `flush()`. But we don't know whether this page is being writing back
             // because `try_lock_guard()` fails. So let's be conservative and collect this page.
             PageSelection::Flush => true,
-            PageSelection::Evict => state.is_up_to_date(),
+            // An uninitialized page may have a prefetch in flight. Collect it
+            // so eviction waits for that read before deciding whether the page
+            // became clean and can be removed.
+            PageSelection::Evict => state.is_up_to_date() || state.is_uninit(),
         }
     }
 }
 
 impl<'a> BackedVmo<'a> {
+    /// Starts asynchronously reading the page at `page_idx` into the cache.
+    ///
+    /// If the page is already cached or being initialized, this is a no-op.
+    #[cfg_attr(not(ktest), expect(dead_code))]
+    pub(super) fn prefetch_page(&self, page_idx: usize) -> Result<()> {
+        // Avoid taking the `XArray` writer lock on the common cached-page path.
+        {
+            let guard = disable_preempt();
+            let mut cursor = self.pages.cursor(&guard, page_idx as u64);
+            if cursor.load().is_some() {
+                return Ok(());
+            }
+        }
+
+        let PageLookup::Inserted(locked_page) = self.get_or_insert_page(page_idx)? else {
+            return Ok(());
+        };
+
+        // The submitted request owns the completion callback and locked page.
+        // Dropping the batch only means that no caller will wait for its result.
+        let mut io_batch = IoBatch::with_capacity(1);
+        self.backend
+            .read_page_async(page_idx, locked_page, &mut io_batch)
+    }
+
     /// Writes back dirty pages in the specified byte range to the backend storage.
     pub(super) fn flush_dirty_pages(&self, range: &Range<usize>) -> Result<()> {
         if range.start >= self.size() {
@@ -1018,6 +1056,29 @@ impl<'a> BackedVmo<'a> {
 
     /// Commits a page at the given index for a VMO with a backend.
     fn commit_on_internal(&self, page_idx: usize, commit_mode: CommitMode) -> Result<CachePage> {
+        match self.get_or_insert_page(page_idx)? {
+            PageLookup::Cached(page) => {
+                if !commit_mode.skips_backend_read() {
+                    page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+                }
+
+                Ok(page)
+            }
+            PageLookup::Inserted(locked_page) => {
+                let page = locked_page.deref().clone();
+                if commit_mode.skips_backend_read() {
+                    locked_page.unlock();
+                } else {
+                    self.backend.read_page(page_idx, locked_page)?;
+                }
+
+                Ok(page)
+            }
+        }
+    }
+
+    /// Finds a cached page or inserts a newly allocated, locked page.
+    fn get_or_insert_page(&self, page_idx: usize) -> Result<PageLookup> {
         let mut locked_pages = self.pages.lock();
         if page_idx >= self.size().div_ceil(PAGE_SIZE) {
             return_errno_with_message!(Errno::EINVAL, "the offset is outside the VMO");
@@ -1026,30 +1087,18 @@ impl<'a> BackedVmo<'a> {
         let mut cursor = locked_pages.cursor_mut(page_idx as u64);
 
         if let Some(page) = cursor.load() {
-            let page = page.clone();
-            drop(locked_pages);
-
-            if !commit_mode.skips_backend_read() {
-                page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
-                return Ok(page);
-            }
-
-            return Ok(page);
+            return Ok(PageLookup::Cached(page.clone()));
         };
 
-        // The page is within the file bounds - need to allocate a cache page.
+        // Lock the page before publishing it so another reader cannot start a
+        // duplicate backend read between insertion and I/O submission.
         let uninit_page = CachePage::alloc_uninit()?;
-        cursor.store(uninit_page.clone());
-        drop(locked_pages);
-
-        if commit_mode.skips_backend_read() {
-            // The page will be completely overwritten, no need to read.
-            Ok(uninit_page)
-        } else {
-            // Read the page from the backend storage.
-            uninit_page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
-            Ok(uninit_page)
-        }
+        let locked_page = uninit_page
+            .clone()
+            .try_lock()
+            .expect("a newly allocated cache page must be unlocked");
+        cursor.store(uninit_page);
+        Ok(PageLookup::Inserted(locked_page))
     }
 
     /// Attempts to commit a page using a cursor, without blocking on I/O.
