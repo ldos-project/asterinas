@@ -3,8 +3,12 @@
 use alloc::{boxed::Box, format};
 
 use int_to_c_enum::TryFromInt;
+#[cfg(baseline_asterinas)]
+use ostd::DefaultProjection;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::OQueueError;
+#[cfg(not(baseline_asterinas))]
+use ostd::stack_info::StackInfoDefaultProjection;
 use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
 use snafu::Snafu;
 
@@ -300,12 +304,35 @@ pub enum Errno {
 ///
 /// This type is convertible to and from various other error types.
 #[ostd_error]
-#[derive(Snafu, Debug)]
+#[cfg_attr(baseline_asterinas, derive(DefaultProjection))]
+#[derive(Snafu, Debug, Clone)]
 #[snafu(visibility(pub))]
 #[snafu(display("{errno:?}{} ({context})", msg.map(|s| format!(": {s}")).unwrap_or_default()))]
 pub struct Error {
     errno: Errno,
     msg: Option<&'static str>,
+}
+
+/// The error number, message, and captured context.
+#[cfg(not(baseline_asterinas))]
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct ErrorDefaultProjection {
+    errno: i32,
+    msg: Option<&'static str>,
+    context: StackInfoDefaultProjection,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl ostd::orpc::oqueue::default_projection::DefaultProjection for Error {
+    type Projection = ErrorDefaultProjection;
+
+    fn default_projection(&self) -> Self::Projection {
+        ErrorDefaultProjection {
+            errno: self.errno as i32,
+            msg: self.msg,
+            context: self.context.as_ref().default_projection(),
+        }
+    }
 }
 
 /// An error select which should never be returned, because it's return is not reachable. This

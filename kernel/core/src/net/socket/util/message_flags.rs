@@ -2,11 +2,12 @@
 
 use aster_bigtcp::socket::ReceiveBehavior;
 use bitflags::bitflags;
+use ostd::Projectable;
 
 bitflags! {
     /// Flags passed to socket send operations.
     #[repr(C)]
-    #[derive(Pod)]
+    #[derive(Pod, Projectable, serde::Serialize)]
     pub(crate) struct SendFlags: i32 {
         const MSG_OOB       = 0x1;
         const MSG_DONTROUTE = 0x4;
@@ -36,7 +37,7 @@ impl SendFlags {
 bitflags! {
     /// Flags passed to or returned from socket receive operations.
     #[repr(C)]
-    #[derive(Pod)]
+    #[derive(Pod, Projectable, serde::Serialize)]
     pub(crate) struct RecvFlags: i32 {
         const MSG_OOB          = SendFlags::MSG_OOB.bits;
         const MSG_PEEK         = 0x2;
