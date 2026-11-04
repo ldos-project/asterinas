@@ -118,6 +118,7 @@ mod imp {
     pub fn produce(event: impl FnOnce() -> PiFutexEvent) {
         if let Some(producer) = PRODUCER.get() {
             // A slow observer must not block a thread holding a futex bucket lock.
+            // TODO(aneesh): use either revocable observers or only allow weak observers
             let _ = producer.try_produce_ref(&event());
         }
     }

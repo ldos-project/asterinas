@@ -265,6 +265,7 @@ mod decisions {
     pub fn produce(owner: Tid, from: SchedPolicy, to: SchedPolicy, contended_futexes: u32) {
         if let Some(producer) = PRODUCER.get() {
             // Drop the decision if an observer's ring is full; never block with `STATE` locked.
+            // TODO(aneesh): use either revocable observers or only allow weak observers
             let _ = producer.try_produce_ref(&LockPrioDecision {
                 time_ns: now_ns(),
                 owner,
