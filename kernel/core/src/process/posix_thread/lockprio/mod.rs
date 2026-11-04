@@ -225,7 +225,7 @@ pub(super) fn forget_thread(tid: Tid) {
 #[cfg(not(baseline_asterinas))]
 mod decisions {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, RefProducer},
+        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
         path,
     };
     use serde::Serialize;
@@ -253,9 +253,10 @@ mod decisions {
 
     pub fn init() {
         PRODUCER.call_once(|| {
-            // Only weak observers may attach, so producing a decision never blocks or drops it. As
-            // a result, the queue can only be observed in-kernel; it is not exported to userspace.
-            GenericOQueueRef::new_weak_observers_only(1024, path!(lockprio.decisions))
+            let path = path!(lockprio.decisions);
+            let oqueue = GenericOQueueRef::new(1024, path.clone());
+            registry::register(&path, &oqueue.as_any_oqueue());
+            oqueue
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")
         });
@@ -263,8 +264,8 @@ mod decisions {
 
     pub fn produce(owner: Tid, from: SchedPolicy, to: SchedPolicy, contended_futexes: u32) {
         if let Some(producer) = PRODUCER.get() {
-            // This never blocks, as the queue only has weak observers.
-            producer.produce_ref(&LockPrioDecision {
+            // Drop the decision if an observer's ring is full; never block with `STATE` locked.
+            let _ = producer.try_produce_ref(&LockPrioDecision {
                 time_ns: now_ns(),
                 owner,
                 from: from.into(),

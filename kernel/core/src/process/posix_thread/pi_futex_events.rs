@@ -8,9 +8,8 @@
 //! directly. `WaitEnd` and `Handoff` events then report how long the wait lasted and who the lock
 //! went to.
 //!
-//! Only weak observers may attach to the queue, so producing an event never blocks the locking
-//! thread or drops the event. As a result, the queue can only be observed in-kernel; it is not
-//! exported to userspace.
+//! Events are published without blocking the locking thread. If a strong observer's ring is
+//! full, the event is dropped. The queue is exported at `/oqueues/futex/pi/events`.
 
 use serde::Serialize;
 
@@ -96,7 +95,7 @@ pub fn policy_of(thread: &Thread) -> SchedPolicyView {
 #[cfg(not(baseline_asterinas))]
 mod imp {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, RefProducer},
+        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
         path,
     };
     use spin::Once;
@@ -107,7 +106,10 @@ mod imp {
 
     pub fn init() {
         PRODUCER.call_once(|| {
-            GenericOQueueRef::new_weak_observers_only(1024, path!(futex.pi.events))
+            let path = path!(futex.pi.events);
+            let oqueue = GenericOQueueRef::new(1024, path.clone());
+            registry::register(&path, &oqueue.as_any_oqueue());
+            oqueue
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")
         });
@@ -115,8 +117,8 @@ mod imp {
 
     pub fn produce(event: impl FnOnce() -> PiFutexEvent) {
         if let Some(producer) = PRODUCER.get() {
-            // This never blocks, as the queue only has weak observers.
-            producer.produce_ref(&event());
+            // A slow observer must not block a thread holding a futex bucket lock.
+            let _ = producer.try_produce_ref(&event());
         }
     }
 }

@@ -694,12 +694,6 @@ where
         // Publish scheduling events best-effort: never block the scheduler on an observer. A full
         // ring drops the event (and revokes a revocable observer), keeping the reschedule path
         // fast and non-blocking.
-        //
-        // TODO: Do not copy this best-effort pattern. Instead, make `scheduler.events` an OQueue
-        // that only allows weak observers (`GenericOQueueRef::new_weak_observers_only`), so that
-        // producing never blocks or drops events. That needs a way for userspace and the data
-        // capture in `kernel/core/src/init.rs` to observe it weakly, as both attach strong
-        // observers today.
         if let Some(t) = Task::current() {
             crate::ignore_err!(
                 producer
