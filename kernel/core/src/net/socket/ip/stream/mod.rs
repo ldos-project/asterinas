@@ -113,6 +113,7 @@ impl OptionSet {
 
 #[trace_methods]
 impl StreamSocket {
+    #[projection(opaque)]
     #[trace]
     pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
@@ -239,7 +240,10 @@ impl StreamSocket {
     // Returns `None` to block the task and wait for the connection to be established, and returns
     // `Some(_)` if blocking is not necessary or not allowed.
     #[trace]
-    fn start_connect(&self, remote_endpoint: &IpEndpoint) -> Option<Result<()>> {
+    fn start_connect(
+        &self,
+        #[projection(opaque)] remote_endpoint: &IpEndpoint,
+    ) -> Option<Result<()>> {
         let is_nonblocking = self.is_nonblocking();
 
         let mut state = self.write_updated_state();
@@ -654,7 +658,7 @@ impl Socket for StreamSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        #[trace(only = call)] flags: RecvFlags,
+        flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {

@@ -101,6 +101,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     }
 
     /// Accepts a connection on the socket.
+    #[projection(opaque)]
     #[trace]
     fn accept(&self, _is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "accept() is not supported");
@@ -131,7 +132,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
 
     /// Sets options on the socket.
     #[trace]
-    fn set_option(&self, _option: &dyn SocketOption) -> Result<()> {
+    fn set_option(&self, #[projection(opaque)] _option: &dyn SocketOption) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "setsockopt() is not supported");
     }
 
@@ -139,7 +140,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     #[trace]
     fn sendmsg(
         &self,
-        reader: &mut dyn MultiRead,
+        #[projection(opaque)] reader: &mut dyn MultiRead,
         #[trace(only = call)] message_header: MessageHeader,
         flags: SendFlags,
     ) -> Result<usize>;
@@ -151,8 +152,8 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     #[trace]
     fn recvmsg(
         &self,
-        writer: &mut dyn MultiWrite,
-        #[trace(only = call)] flags: RecvFlags,
+        #[projection(opaque)] writer: &mut dyn MultiWrite,
+        flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)>;
 
     /// Returns the common state for this socket.

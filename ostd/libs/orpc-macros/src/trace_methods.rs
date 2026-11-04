@@ -94,13 +94,16 @@ fn remove_trace_annotations(
     signature: &mut Signature,
 ) -> syn::Result<()> {
     has_trace_attrs(attrs)?;
+    take_projection(attrs)?;
     for argument in &mut signature.inputs {
         match argument {
             FnArg::Receiver(receiver) => {
                 take_include(&mut receiver.attrs)?;
+                take_projection(&mut receiver.attrs)?;
             }
             FnArg::Typed(argument) => {
                 take_include(&mut argument.attrs)?;
+                take_projection(&mut argument.attrs)?;
             }
         }
     }
@@ -187,6 +190,7 @@ struct EventField {
     value: TokenStream,
     /// Events containing this field.
     include: Include,
+    projection: Attribute,
 }
 
 /// The call and return event types for a traced method.
@@ -203,6 +207,7 @@ struct MethodSchema {
     output_type: Type,
     /// Source span of the return type.
     output_span: Span,
+    output_projection: Attribute,
 }
 
 /// The owner and event namespace of a traced impl.
@@ -336,10 +341,10 @@ pub fn trace_methods_impl(
             "`visibility` is not valid on a trait impl",
         ));
     }
-    let module_visibility = options.visibility.clone().unwrap_or(Visibility::Inherited);
-    let item_visibility = options
+    let module_visibility = options
         .visibility
-        .unwrap_or_else(|| syn::parse_quote!(pub(super)));
+        .clone()
+        .unwrap_or_else(|| syn::parse_quote!(pub));
     let context = ExpansionContext {
         event_module,
         trace_module_path,
@@ -358,9 +363,31 @@ pub fn trace_methods_impl(
             continue;
         }
 
-        let schema = instrument_method(&mut method.sig, &mut method.block, &context)?;
+        let output_projection = take_projection(&mut method.attrs)?;
+        let schema = instrument_method(
+            &mut method.sig,
+            &mut method.block,
+            &context,
+            output_projection,
+        )?;
         if generates_types {
-            event_types.push(generate_event_types(&schema, &item_visibility));
+            match method.vis {
+                Visibility::Inherited => {
+                    event_types.push(
+                        syn::Error::new_spanned(
+                            &method.sig,
+                            "tracing inherent private methods is not allowed",
+                        )
+                        .to_compile_error(),
+                    );
+                }
+                _ => {
+                    event_types.push(generate_event_types(
+                        &schema,
+                        &event_visibility(&method.vis),
+                    ));
+                }
+            }
         }
     }
 
@@ -403,10 +430,8 @@ pub fn trace_methods_trait(
     let module_name = module_name(&trait_name);
     let receiver_type: Type = syn::parse_quote!(dyn #trait_name);
     let receiver_helper = format_ident!("__{}TraceReceiver", trait_name);
-    let module_visibility = options.visibility.clone().unwrap_or(Visibility::Inherited);
-    let item_visibility = options
-        .visibility
-        .unwrap_or_else(|| syn::parse_quote!(pub(super)));
+    let module_visibility = options.visibility.clone().unwrap_or(trait_item.vis.clone());
+    let item_visibility = options.visibility.unwrap_or(trait_item.vis.clone());
     let context = ExpansionContext {
         event_module: quote!(#module_name),
         trace_module_path: TraceModulePath::current_module(),
@@ -426,13 +451,23 @@ pub fn trace_methods_trait(
             continue;
         }
 
+        let output_projection = take_projection(&mut method.attrs)?;
         let schema = if let Some(block) = &mut method.default {
             has_traced_default = true;
-            instrument_method(&mut method.sig, block, &context)?
+            instrument_method(&mut method.sig, block, &context, output_projection)?
         } else {
-            analyze_signature(&mut method.sig, &context.receiver_type, None, None)?
+            analyze_signature(
+                &mut method.sig,
+                &context.receiver_type,
+                None,
+                None,
+                output_projection,
+            )?
         };
-        event_types.push(generate_event_types(&schema, &item_visibility));
+        event_types.push(generate_event_types(
+            &schema,
+            &event_visibility(&item_visibility),
+        ));
     }
 
     let helper = has_traced_default.then(|| {
@@ -499,12 +534,14 @@ fn instrument_method(
     signature: &mut Signature,
     block: &mut Block,
     context: &ExpansionContext,
+    output_projection: Attribute,
 ) -> syn::Result<MethodSchema> {
     let schema = analyze_signature(
         signature,
         &context.receiver_type,
         context.data_self_type.as_ref(),
         context.receiver_helper.as_ref(),
+        output_projection,
     )?;
     let call_values = schema
         .fields
@@ -562,6 +599,7 @@ fn analyze_signature(
     receiver_type: &Type,
     data_self_type: Option<&Type>,
     receiver_helper: Option<&Ident>,
+    output_projection: Attribute,
 ) -> syn::Result<MethodSchema> {
     validate_method(signature)?;
 
@@ -595,7 +633,27 @@ fn analyze_signature(
         fields,
         output_type,
         output_span,
+        output_projection,
     })
+}
+
+/// Adjust a visibility restriction for the generated child module.
+fn event_visibility(visibility: &Visibility) -> Visibility {
+    let Visibility::Restricted(mut restricted) = visibility.clone() else {
+        return visibility.clone();
+    };
+
+    let first = restricted.path.segments.iter_mut().next().unwrap();
+    if first.ident == "crate" {
+        return Visibility::Restricted(restricted);
+    }
+    if first.ident == "self" {
+        first.ident = Ident::new("super", first.ident.span());
+    } else {
+        restricted.path.segments.insert(0, syn::parse_quote!(super));
+    }
+    restricted.in_token = Some(Default::default());
+    Visibility::Restricted(restricted)
 }
 
 /// Define a method's call and return event types.
@@ -614,7 +672,7 @@ fn generate_event_types(schema: &MethodSchema, visibility: &Visibility) -> Token
     let return_definition = event_definition(
         &schema.return_type,
         &return_fields,
-        Some(&schema.output_type),
+        Some((&schema.output_type, &schema.output_projection)),
         visibility,
     );
 
@@ -649,6 +707,16 @@ fn method_fields(
         match argument {
             FnArg::Receiver(receiver) => {
                 let include = take_include(&mut receiver.attrs)?;
+                let projection = if receiver
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path.is_ident("projection"))
+                {
+                    take_projection(&mut receiver.attrs)?
+                } else {
+                    // The receiver field already refers to the object whose identity we want.
+                    syn::parse_quote!(#[projection(opaque)])
+                };
                 let span = receiver.span();
                 let value = if let Some(helper) = receiver_helper {
                     if receiver.reference.is_some() {
@@ -667,6 +735,7 @@ fn method_fields(
                     ty: receiver_type.clone(),
                     value,
                     include,
+                    projection,
                 });
             }
             FnArg::Typed(argument) => {
@@ -679,6 +748,16 @@ fn method_fields(
                 let include = take_include(&mut argument.attrs)?;
                 let span = argument.span();
                 let is_self = pattern.ident == "self";
+                let has_projection_attribute = argument
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path.is_ident("projection"));
+                let projection = if is_self && !has_projection_attribute {
+                    // An explicitly typed `self` gains a borrow in the generated event field.
+                    syn::parse_quote!(#[projection(deref, opaque)])
+                } else {
+                    take_projection(&mut argument.attrs)?
+                };
                 let is_trait_receiver = is_self && matches!(receiver_type, Type::TraitObject(_));
                 let name = event_field_name(&pattern.ident);
                 let value = if is_self {
@@ -721,6 +800,7 @@ fn method_fields(
                     ty,
                     value,
                     include,
+                    projection,
                 });
             }
         }
@@ -761,6 +841,32 @@ fn take_include(attrs: &mut Vec<Attribute>) -> syn::Result<Include> {
     }
 }
 
+/// Remove an explicit field projection, using the borrowed event field's referent by default.
+fn take_projection(attrs: &mut Vec<Attribute>) -> syn::Result<Attribute> {
+    let (mut projection_attrs, other_attrs): (Vec<_>, _) = std::mem::take(attrs)
+        .into_iter()
+        .partition(|attr| attr.path.is_ident("projection"));
+    *attrs = other_attrs;
+    if projection_attrs.len() > 1 {
+        return Err(syn::Error::new_spanned(
+            projection_attrs.pop().unwrap(),
+            "duplicate `projection` attribute",
+        ));
+    }
+    let Some(attr) = projection_attrs.pop() else {
+        return Ok(syn::parse_quote!(#[projection(deref)]));
+    };
+    let options =
+        attr.parse_args_with(syn::punctuated::Punctuated::<Ident, Token![,]>::parse_terminated)?;
+    if let Some(deref) = options.iter().find(|option| *option == "deref") {
+        return Err(syn::Error::new_spanned(
+            deref,
+            "`deref` is added by `trace_methods`",
+        ));
+    }
+    Ok(syn::parse_quote!(#[projection(deref, #options)]))
+}
+
 /// Remove a method-level `trace` attribute, rejecting duplicates and arguments.
 fn has_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<bool> {
     let (mut trace_attrs, other_attrs) = std::mem::take(attrs)
@@ -790,12 +896,18 @@ fn has_trace_attrs(attrs: &mut Vec<Attribute>) -> syn::Result<bool> {
 fn event_definition(
     type_name: &Ident,
     fields: &[&EventField],
-    output_type: Option<&Type>,
+    output_type: Option<(&Type, &Attribute)>,
     visibility: &Visibility,
 ) -> TokenStream {
     let field_definitions = fields.iter().map(|field| {
-        let EventField { span, name, ty, .. } = field;
-        quote_spanned!(*span=> #visibility #name: &'__trace #ty,)
+        let EventField {
+            span,
+            name,
+            ty,
+            projection,
+            ..
+        } = field;
+        quote_spanned!(*span=> #projection #visibility #name: &'__trace #ty,)
     });
     let constructor_parameters = fields.iter().map(|field| {
         let EventField { span, name, ty, .. } = field;
@@ -804,8 +916,8 @@ fn event_definition(
     let constructor_fields = fields.iter().map(|field| &field.name);
 
     if fields.is_empty() && output_type.is_none() {
-        return quote! {
-            #[derive(::ostd::orpc::oqueue::Element)]
+        return quote_spanned! { type_name.span() =>
+            #[derive(::ostd::orpc::oqueue::Element, ::ostd::DefaultProjection, ::snafu::Serialize)]
             #visibility struct #type_name;
 
             impl #type_name {
@@ -816,14 +928,14 @@ fn event_definition(
         };
     }
 
-    let output_field =
-        output_type.map(|ty| quote_spanned!(ty.span()=> #visibility return_value: &'__trace #ty,));
+    let output_field = output_type.map(|(ty, projection)|
+        quote_spanned!(ty.span()=> #projection #visibility return_value: &'__trace #ty,));
     let output_parameter =
-        output_type.map(|ty| quote_spanned!(ty.span()=> return_value: &'__trace #ty,));
+        output_type.map(|(ty, _)| quote_spanned!(ty.span()=> return_value: &'__trace #ty,));
     let output_initializer = output_type.map(|_| quote!(return_value,));
 
-    quote! {
-        #[derive(::ostd::orpc::oqueue::Element)]
+    quote_spanned! { type_name.span() =>
+        #[derive(::ostd::orpc::oqueue::Element, ::ostd::DefaultProjection)]
         #visibility struct #type_name<'__trace> {
             #(#field_definitions)*
             #output_field
@@ -867,7 +979,7 @@ fn trace_expression(
         )
     };
 
-    quote! {
+    quote_spanned! { method_name.span() =>
         ::ostd::__trace_structured_data_at_path!(
             #path,
             #value,
@@ -985,9 +1097,6 @@ mod tests {
         expand_impl(parse_quote!(), item)
     }
 
-    // This does not test the placement of spans, because what is "correct" is unclear and not worth
-    // testing.
-
     #[test]
     fn baseline_impl_keeps_method_bodies_without_trace_annotations() {
         let item = parse_quote! {
@@ -1012,6 +1121,92 @@ mod tests {
             }
             .to_string()
         );
+    }
+
+    #[test]
+    fn forwards_projection_options_and_removes_them_in_baseline() {
+        let item: ItemImpl = parse_quote! {
+            impl Worker {
+                #[trace]
+                #[projection(opaque)]
+                pub fn create(#[projection(opaque)] source: &Source, value: bool) -> Arc<Self> {
+                    make(source, value)
+                }
+            }
+        };
+
+        let expanded = expand_impl(parse_quote!(), item.clone());
+        assert!(
+            expanded.contains(
+                "# [projection (deref , opaque)] pub source : & '__trace & '__trace Source"
+            ),
+            "{expanded}"
+        );
+        assert!(expanded.contains(
+            "# [projection (deref , opaque)] pub return_value : & '__trace Arc < Worker >"
+        ));
+
+        let baseline = baseline_trace_methods(Item::Impl(item))
+            .unwrap()
+            .to_string();
+        assert!(!baseline.contains("projection"));
+        assert!(!baseline.contains("# [trace]"));
+    }
+
+    #[test]
+    fn projects_self_opaquely_without_an_annotation() {
+        let inherent = expand_impl(
+            parse_quote!(),
+            parse_quote! {
+                impl Worker {
+                    #[trace]
+                    pub fn inspect(&self, value: bool) {}
+
+                    #[trace]
+                    pub fn consume(self: Arc<Self>) {}
+                }
+            },
+        );
+        assert!(inherent.contains("# [projection (opaque)] pub self_ : & '__trace Worker"));
+        assert!(
+            inherent
+                .contains("# [projection (deref , opaque)] pub self_ : & '__trace Arc < Worker >")
+        );
+
+        let trait_output = expand_trait(
+            parse_quote!(),
+            parse_quote! {
+                pub trait WorkerTrait {
+                    #[trace]
+                    fn inspect(&self);
+                }
+            },
+        );
+        assert!(
+            trait_output.contains("# [projection (opaque)] pub self_ : & '__trace dyn WorkerTrait")
+        );
+    }
+
+    #[test]
+    fn rejects_user_supplied_deref_projection() {
+        for item in [
+            parse_quote! {
+                impl Worker {
+                    #[trace]
+                    #[projection(deref)]
+                    fn create(value: bool) -> bool { value }
+                }
+            },
+            parse_quote! {
+                impl Worker {
+                    #[trace]
+                    fn create(#[projection(deref)] value: bool) -> bool { value }
+                }
+            },
+        ] {
+            let error = trace_methods_impl(parse_quote!(), item).unwrap_err();
+            assert_eq!(error.to_string(), "`deref` is added by `trace_methods`");
+        }
     }
 
     #[test]
@@ -1058,7 +1253,7 @@ mod tests {
         let impl_block = parse_quote! {
             impl Worker {
                 #[trace]
-                fn process(&mut self, input: Input) -> Result<()> {
+                pub(super) fn process(&mut self, input: Input) -> Result<()> {
                     run(input)
                 }
             }
@@ -1067,7 +1262,9 @@ mod tests {
         let output = expand_impl(parse_quote!(visibility = pub(crate)), impl_block);
 
         assert!(output.contains("pub (crate) mod worker"));
-        assert!(output.contains("pub (crate) struct ProcessCall"));
+        assert!(output.contains("pub (in super :: super) struct ProcessCall"));
+        assert!(output.contains("pub (in super :: super) self_ :"));
+        assert!(output.contains("pub (in super :: super) fn new"));
         assert!(output.contains("self_ : & '__trace Worker"));
         assert!(output.contains("input : & '__trace Input"));
         assert!(output.contains("traced_method_path (Some (module_path ! ())"));
@@ -1078,10 +1275,10 @@ mod tests {
         let impl_block = parse_quote! {
             impl Worker {
                 #[trace]
-                fn process(&self, _input: Input, __context: Context, _type: Type, __: Marker) {}
+                pub fn process(&self, _input: Input, __context: Context, _type: Type, __: Marker) {}
 
                 #[trace]
-                fn named_self(_self: Other) {}
+                pub fn named_self(_self: Other) {}
             }
         };
 
@@ -1123,17 +1320,54 @@ mod tests {
     }
 
     #[test]
-    fn defaults_generated_items_to_parent_visibility() {
+    fn defaults_generated_items_to_item_visibility() {
         let impl_block = parse_quote! {
             impl Worker {
                 #[trace]
-                fn poll(&self) {}
+                pub fn poll(&self) {}
             }
         };
 
         let output = expand_impl(parse_quote!(), impl_block);
 
-        assert!(output.contains("pub (super) struct PollCall"));
+        assert!(output.contains("pub struct PollCall"));
+    }
+
+    #[test]
+    fn adjusts_relative_method_visibility_for_event_module() {
+        for (method_visibility, event_visibility) in [
+            ("pub(self)", "pub (in super)"),
+            ("pub(super)", "pub (in super :: super)"),
+            ("pub(in super::super)", "pub (in super :: super :: super)"),
+            ("pub(in crate::api)", "pub (in crate :: api)"),
+        ] {
+            let impl_block = syn::parse_str(&format!(
+                "impl Worker {{ #[trace] {method_visibility} fn poll(&self) {{}} }}"
+            ))
+            .unwrap();
+            let output = expand_impl(parse_quote!(), impl_block);
+
+            assert!(
+                output.contains(&format!("{event_visibility} struct PollCall")),
+                "{method_visibility}: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn adjusts_trait_event_visibility_without_changing_module_visibility() {
+        let trait_item: ItemTrait = parse_quote! {
+            pub(super) trait WorkerTrait {
+                #[trace]
+                fn poll(&self);
+            }
+        };
+        for options in [parse_quote!(), parse_quote!(visibility = pub(super))] {
+            let output = expand_trait(options, trait_item.clone());
+
+            assert!(output.contains("pub (super) mod worker_trait"));
+            assert!(output.contains("pub (in super :: super) struct PollCall"));
+        }
     }
 
     #[test]
@@ -1276,7 +1510,7 @@ mod tests {
         let impl_block = parse_quote! {
             impl Worker {
                 #[trace]
-                fn create(peer: Arc<Self>) -> Option<Self::Output> {
+                pub fn create(peer: Arc<Self>) -> Option<Self::Output> {
                     todo!()
                 }
             }
