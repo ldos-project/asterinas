@@ -8,8 +8,9 @@ use crate::{
     context::current_userspace,
     prelude::*,
     process::posix_thread::futex::{
-        FutexFlags, FutexOp, FutexVisibility, futex_op_and_flags_from_u32, futex_requeue,
-        futex_wait, futex_wait_bitset, futex_wake, futex_wake_bitset, futex_wake_op,
+        FutexFlags, FutexOp, FutexVisibility, futex_lock_pi, futex_op_and_flags_from_u32,
+        futex_requeue, futex_trylock_pi, futex_unlock_pi, futex_wait, futex_wait_bitset,
+        futex_wake, futex_wake_bitset, futex_wake_op,
     },
     syscall::SyscallReturn,
     time::{
@@ -45,11 +46,13 @@ pub fn sys_futex(
             Duration::try_from(time_spec)?
         };
 
-        let is_real_time = futex_flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME);
-        if is_real_time && futex_op == FutexOp::FUTEX_WAIT {
+        let has_clock_flag = futex_flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME);
+        if has_clock_flag && futex_op == FutexOp::FUTEX_WAIT {
             // Ref: <https://github.com/torvalds/linux/commit/4fbf5d6837bf81fd7a27d771358f4ee6c4f243f8>
             return_errno_with_message!(Errno::ENOSYS, "FUTEX_WAIT cannot use CLOCK_REALTIME");
         }
+        // FUTEX_LOCK_PI always measures its absolute timeout against CLOCK_REALTIME.
+        let is_real_time = has_clock_flag || futex_op == FutexOp::FUTEX_LOCK_PI;
 
         let timeout = {
             // From man(2) futex:
@@ -132,6 +135,23 @@ pub fn sys_futex(
                 visibility,
             )
         }
+        FutexOp::FUTEX_LOCK_PI => {
+            if futex_flags.contains(FutexFlags::FUTEX_CLOCK_REALTIME) {
+                // Ref: <https://elixir.bootlin.com/linux/v7.0-rc7/source/kernel/futex/syscalls.c#L118>
+                return_errno_with_message!(Errno::ENOSYS, "FUTEX_LOCK_PI cannot take a clock flag");
+            }
+            let timeout = get_futex_timeout(utime_addr)?;
+            futex_lock_pi(futex_addr as _, timeout, ctx, visibility)
+                .map(|_| 0)
+                // glibc treats an EINTR from FUTEX_LOCK_PI as having taken the lock, so a signal
+                // must restart the call instead.
+                .map_err(|err| match err.error() {
+                    Errno::EINTR => Error::new(Errno::ERESTARTNOINTR),
+                    _ => err,
+                })
+        }
+        FutexOp::FUTEX_TRYLOCK_PI => futex_trylock_pi(futex_addr as _, ctx, visibility).map(|_| 0),
+        FutexOp::FUTEX_UNLOCK_PI => futex_unlock_pi(futex_addr as _, ctx, visibility).map(|_| 0),
         _ => {
             warn!("futex op = {:?}", futex_op);
             return_errno_with_message!(Errno::ENOSYS, "unsupported futex op");

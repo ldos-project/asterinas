@@ -51,6 +51,15 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
     // other pending unmasked signals until the next trap. Consider a looped scan.
     //
     // For details, see <https://github.com/asterinas/asterinas/pull/2984/#discussion_r3137275994>.
+    // `ERESTARTNOINTR` restarts the system call whether or not a handler runs and regardless of
+    // `SA_RESTART`. Rewinding before the signal frame is set up makes the handler return into the
+    // system call instruction, like Linux does.
+    if let Some(orig_syscall_ret) = ctx.thread_local.orig_syscall_ret()
+        && user_ctx.syscall_ret() == -(Errno::ERESTARTNOINTR as i32) as usize
+    {
+        restart_syscall(user_ctx, orig_syscall_ret);
+    }
+
     let syscall_restart = if let Some(orig_syscall_ret) = ctx.thread_local.orig_syscall_ret()
         && user_ctx.syscall_ret() == -(Errno::ERESTARTSYS as i32) as usize
     {
@@ -145,16 +154,7 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
             if let Some(orig_syscall_ret) = syscall_restart
                 && flags.contains(SigActionFlags::SA_RESTART)
             {
-                #[cfg(target_arch = "x86_64")]
-                const SYSCALL_INSTR_LEN: usize = 2; // syscall
-                #[cfg(target_arch = "riscv64")]
-                const SYSCALL_INSTR_LEN: usize = 4; // ecall
-                #[cfg(target_arch = "loongarch64")]
-                const SYSCALL_INSTR_LEN: usize = 4; // syscall
-
-                user_ctx.set_syscall_ret(orig_syscall_ret);
-                user_ctx
-                    .set_instruction_pointer(user_ctx.instruction_pointer() - SYSCALL_INSTR_LEN);
+                restart_syscall(user_ctx, orig_syscall_ret);
             }
 
             if let Err(e) = handle_user_signal(
@@ -203,6 +203,19 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
             }
         }
     }
+}
+
+/// Rewinds the user context so that the interrupted system call is executed again.
+fn restart_syscall(user_ctx: &mut UserContext, orig_syscall_ret: usize) {
+    #[cfg(target_arch = "x86_64")]
+    const SYSCALL_INSTR_LEN: usize = 2; // syscall
+    #[cfg(target_arch = "riscv64")]
+    const SYSCALL_INSTR_LEN: usize = 4; // ecall
+    #[cfg(target_arch = "loongarch64")]
+    const SYSCALL_INSTR_LEN: usize = 4; // syscall
+
+    user_ctx.set_syscall_ret(orig_syscall_ret);
+    user_ctx.set_instruction_pointer(user_ctx.instruction_pointer() - SYSCALL_INSTR_LEN);
 }
 
 /// A guard that restores the signal mask on drop.

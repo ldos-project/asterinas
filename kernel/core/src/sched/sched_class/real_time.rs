@@ -146,6 +146,22 @@ impl PrioArray {
         }
     }
 
+    fn remove_at_any_prio(&mut self, task: &Arc<Task>) -> bool {
+        let Some(prio) = self.map.iter_ones().find(|&prio| {
+            self.queue[prio]
+                .iter()
+                .any(|queued| Arc::ptr_eq(queued, task))
+        }) else {
+            return false;
+        };
+        let queue = &mut self.queue[prio];
+        queue.retain(|queued| !Arc::ptr_eq(queued, task));
+        if queue.is_empty() {
+            self.map.set(prio, false);
+        }
+        true
+    }
+
     /// Remove the task from this queue-set. This selects the queue to remove from using the
     /// priority of the task.
     fn remove(&mut self, task: &Arc<Task>) -> bool {
@@ -209,6 +225,24 @@ impl RealTimeClassRq {
 
     fn swap_arrays(&mut self) {
         self.index = !self.index;
+    }
+
+    /// Removes the task from the run queue whatever priority it was queued at, unlike
+    /// [`SchedClassRq::remove`]. Returns whether it was present.
+    ///
+    /// This scans every priority level, so prefer [`SchedClassRq::remove`] when the task is likely
+    /// queued at its current priority.
+    // TODO: Avoid the scan once the run queue moves to a data structure that can find a task
+    // directly (e.g., an intrusive list with the task recording its queue).
+    pub(super) fn remove_at_any_prio(&mut self, task: &Arc<Task>) -> bool {
+        let removed = self
+            .array
+            .iter_mut()
+            .any(|array| array.remove_at_any_prio(task));
+        if removed {
+            self.nr_running -= 1;
+        }
+        removed
     }
 
     /// Enqueues the task at the front of the active array.
