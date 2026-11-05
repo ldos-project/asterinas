@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use keyable_arc::KeyableArc;
-use ostd::DefaultProjection;
+use ostd::orpc::oqueue::DefaultProjection;
 
 use super::ns::{self, AbstractHandle};
 use crate::{
@@ -120,7 +120,7 @@ impl<T: Into<UnixSocketAddr>> From<T> for SocketAddr {
 
 #[cfg(all(ktest, not(baseline_asterinas)))]
 mod test {
-    use ostd::{orpc::oqueue::default_projection::DefaultProjection as _, prelude::ktest};
+    use ostd::prelude::ktest;
 
     use super::*;
 

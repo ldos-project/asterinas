@@ -917,7 +917,7 @@ fn event_definition(
 
     if fields.is_empty() && output_type.is_none() {
         return quote_spanned! { type_name.span() =>
-            #[derive(::ostd::orpc::oqueue::Element, ::ostd::DefaultProjection, ::snafu::Serialize)]
+            #[derive(::ostd::orpc::oqueue::Element, ::ostd::orpc::oqueue::DefaultProjection, ::snafu::Serialize)]
             #visibility struct #type_name;
 
             impl #type_name {
@@ -935,7 +935,7 @@ fn event_definition(
     let output_initializer = output_type.map(|_| quote!(return_value,));
 
     quote_spanned! { type_name.span() =>
-        #[derive(::ostd::orpc::oqueue::Element, ::ostd::DefaultProjection)]
+        #[derive(::ostd::orpc::oqueue::Element, ::ostd::orpc::oqueue::DefaultProjection)]
         #visibility struct #type_name<'__trace> {
             #(#field_definitions)*
             #output_field

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use align_ext::AlignExt;
-use ostd::DefaultProjection;
+use ostd::orpc::oqueue::DefaultProjection;
 
 use super::{RecvFlags, SocketAddr};
 use crate::{net::socket::unix::UnixControlMessage, prelude::*, util::net::CSocketOptionLevel};

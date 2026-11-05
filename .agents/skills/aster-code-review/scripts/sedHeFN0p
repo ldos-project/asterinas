@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+# SPDX-License-Identifier: MPL-2.0
+
+#
+# post_reviews_to_github.sh — post an aster-code-review review file to a GitHub PR.
+#
+# The review file is GitHub-agnostic (the skill never knows about a PR),
+# so the PR coordinates are arguments, not frontmatter:
+#
+#   post_reviews_to_github.sh --repo <owner/repo> --pr <N> --head-sha <sha> \
+#                             [--finalize] [--event comment|approve|request_changes] \
+#                             <review-file>
+#
+# What it does:
+#   1. Parses the review file
+#      — the `# Summary` (+ any consolidated-fix blockquotes) becomes the review body;
+#      each `### `path` line N` becomes an inline comment.
+#      An AI-provenance note (a `> [!NOTE]` callout) is prepended to the body,
+#      since everything this script posts is aster-code-review output.
+#   2. Splits comments into inline (on the RIGHT side of the PR diff) and off-diff.
+#      Off-diff comments cannot be inlined (GitHub silently discards those), so they
+#      are surfaced in the review body under "Findings not attachable to this PR's
+#      diff" — and logged — rather than lost.
+#   3. Creates a PENDING review (body only) and adds the comments
+#      via GraphQL addPullRequestReviewThread (reliable line/side positioning).
+#   4. With --finalize, submits the review as --event (default: comment).
+#      Without it, the review is left PENDING for a human to submit on GitHub.
+#
+# Needs the `gh` CLI, authenticated with `pull-requests: write`.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+REPO="" PR="" HEAD_SHA="" FINALIZE=0 EVENT="comment" REVIEW_FILE=""
+usage() { echo "usage: $0 --repo <owner/repo> --pr <N> --head-sha <sha> [--finalize] [--event comment|approve|request_changes] <review-file>" >&2; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --repo)      REPO="$2"; shift 2 ;;
+        --pr)        PR="$2"; shift 2 ;;
+        --head-sha)  HEAD_SHA="$2"; shift 2 ;;
+        --event)     EVENT="$2"; shift 2 ;;
+        --finalize)  FINALIZE=1; shift ;;
+        -h|--help)   usage; exit 0 ;;
+        -*)          echo "unknown option: $1" >&2; usage; exit 2 ;;
+        *)           [ -z "$REVIEW_FILE" ] || { echo "unexpected arg: $1" >&2; exit 2; }; REVIEW_FILE="$1"; shift ;;
+    esac
+done
+missing=""
+[ -n "$REPO" ]      || missing="$missing --repo"
+[ -n "$PR" ]        || missing="$missing --pr"
+[ -n "$HEAD_SHA" ]  || missing="$missing --head-sha"
+[ -n "$REVIEW_FILE" ] || missing="$missing <review-file>"
+[ -z "$missing" ] || { echo "missing required:$missing" >&2; usage; exit 2; }
+[ -f "$REVIEW_FILE" ] || { echo "error: review file not found: $REVIEW_FILE" >&2; exit 2; }
+case "$EVENT" in
+    comment) API_EVENT=COMMENT ;; approve) API_EVENT=APPROVE ;; request_changes) API_EVENT=REQUEST_CHANGES ;;
+    *) echo "error: --event must be comment|approve|request_changes" >&2; exit 2 ;;
+esac
+
+echo "PR #$PR  repo $REPO  head $HEAD_SHA  event $EVENT$([ "$FINALIZE" = 1 ] && echo ' (finalize)' || echo ' (pending)')"
+
+# --- staleness: the review must describe the PR's current head ---
+CURRENT_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid 2>/dev/null || echo "")
+if [ -z "$CURRENT_SHA" ]; then
+    echo "warning: could not fetch current PR head; proceeding."
+elif [ "$CURRENT_SHA" != "$HEAD_SHA" ]; then
+    echo "error: PR advanced since the review was generated (review $HEAD_SHA, current $CURRENT_SHA). Re-review." >&2
+    exit 1
+fi
+
+# --- parse the review file: summary body + inline comments, then drop out-of-diff comments ---
+# The PR diff goes to parse_review.py via a FILE, not an env var:
+# a large diff passed inline as DIFF=...
+# overflows the exec argument list ("Argument list too long").
+DIFF_TMP="$(mktemp)"; trap 'rm -f "$DIFF_TMP"' EXIT
+gh pr diff "$PR" --repo "$REPO" > "$DIFF_TMP" 2>/dev/null || true
+PARSED=$(REVIEW_FILE="$REVIEW_FILE" DIFF_FILE="$DIFF_TMP" python3 "$HERE/parse_review.py")
+
+SUMMARY=$(echo "$PARSED"  | python3 -c 'import sys,json;print(json.load(sys.stdin)["summary"])')
+N_KEEP=$(echo "$PARSED"   | python3 -c 'import sys,json;print(len(json.load(sys.

@@ -2,7 +2,7 @@
 
 #![short_vis_path::add(netlink)]
 
-use ostd::Projectable;
+use ostd::orpc::oqueue::Projectable;
 use serde::Serialize;
 
 use crate::prelude::*;

@@ -5,10 +5,9 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::any::type_name;
 
+pub use ostd_macros::{DefaultProjection, Projectable};
 use serde::Serialize;
 pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
-
-pub use crate::DefaultProjection;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
 ///

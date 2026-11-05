@@ -77,9 +77,8 @@ use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
 use crate::{
-    DefaultProjection,
     cpu::{CpuId, CpuSet, PinCurrentCpu},
-    orpc::oqueue::Element,
+    orpc::oqueue::{DefaultProjection, Element},
     prelude::*,
     task::disable_preempt,
     timer,

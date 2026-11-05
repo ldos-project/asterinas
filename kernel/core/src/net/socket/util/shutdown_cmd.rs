@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::Projectable;
+use ostd::orpc::oqueue::Projectable;
 
 use crate::prelude::*;
 

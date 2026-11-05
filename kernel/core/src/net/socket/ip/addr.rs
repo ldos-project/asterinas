@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address};
-use ostd::Projectable;
+use ostd::orpc::oqueue::Projectable;
 
 use crate::{net::socket::util::SocketAddr, prelude::*};
 
