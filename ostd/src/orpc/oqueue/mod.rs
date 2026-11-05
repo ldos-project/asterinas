@@ -123,6 +123,7 @@ pub mod reply;
 mod single_thread_ring_buffer;
 mod utils;
 
+pub use default_projection::{DefaultProjection, OID, OpaqueId, Projectable};
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
 pub use implementation::WakeHook;

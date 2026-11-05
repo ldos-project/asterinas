@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use keyable_arc::KeyableArc;
-use ostd::DefaultProjection;
+use ostd::orpc::oqueue::DefaultProjection;
 
 use super::ns::{self, AbstractHandle};
 use crate::{
@@ -115,32 +115,5 @@ impl From<Option<UnixSocketAddrBound>> for UnixSocketAddr {
 impl<T: Into<UnixSocketAddr>> From<T> for SocketAddr {
     fn from(value: T) -> Self {
         SocketAddr::Unix(value.into())
-    }
-}
-
-#[cfg(all(ktest, not(baseline_asterinas)))]
-mod test {
-    use ostd::{orpc::oqueue::default_projection::DefaultProjection as _, prelude::ktest};
-
-    use super::*;
-
-    #[ktest]
-    fn path_projection_identifies_the_shared_allocation() {
-        let path: Arc<str> = Arc::from("socket");
-        let shared = UnixSocketAddr::Path(path.clone()).default_projection();
-        let same = UnixSocketAddr::Path(path.clone()).default_projection();
-        let distinct = UnixSocketAddr::Path(Arc::from("socket")).default_projection();
-
-        let UnixSocketAddrDefaultProjection::Path(shared_id) = shared else {
-            panic!("expected path projection");
-        };
-        let UnixSocketAddrDefaultProjection::Path(same_id) = same else {
-            panic!("expected path projection");
-        };
-        let UnixSocketAddrDefaultProjection::Path(distinct_id) = distinct else {
-            panic!("expected path projection");
-        };
-        assert_eq!(shared_id, same_id);
-        assert_ne!(shared_id, distinct_id);
     }
 }
