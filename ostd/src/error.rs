@@ -3,14 +3,13 @@
 //! Errors for OSTD
 
 use ostd_macros::ostd_error;
-#[cfg(not(baseline_asterinas))]
 use serde::Serialize;
 use snafu::Snafu;
 
 #[cfg(not(baseline_asterinas))]
-use crate::orpc::oqueue::OQueueError;
+use crate::orpc::oqueue::DefaultProjection;
 #[cfg(not(baseline_asterinas))]
-use crate::orpc::oqueue::default_projection::DefaultProjection;
+use crate::orpc::oqueue::OQueueError;
 #[cfg(not(baseline_asterinas))]
 use crate::stack_info::StackInfoDefaultProjection;
 use crate::{mm::page_table::PageTableError, orpc::errors::RPCError, stack_info::StackInfo};

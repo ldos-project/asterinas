@@ -26,16 +26,15 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 fn expand_opaque(name: &syn::Ident, generics: &syn::Generics) -> proc_macro2::TokenStream {
-    let default_projection: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::default_projection::DefaultProjection);
+    let default_projection: syn::Path = parse_quote!(::ostd::orpc::oqueue::DefaultProjection);
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     quote! {
         impl #impl_generics #default_projection for #name #type_generics #where_clause {
-            type Projection = ::ostd::orpc::oqueue::default_projection::OID;
+            type Projection = ::ostd::orpc::oqueue::OID;
 
             fn default_projection(&self) -> Self::Projection {
-                ::ostd::orpc::oqueue::default_projection::OID::of_ref::<Self>(self)
+                ::ostd::orpc::oqueue::OID::of_ref::<Self>(self)
             }
         }
     }
@@ -47,8 +46,7 @@ fn expand_struct(
     fields: Fields,
     visibility: syn::Visibility,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let default_projection: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::default_projection::DefaultProjection);
+    let default_projection: syn::Path = parse_quote!(::ostd::orpc::oqueue::DefaultProjection);
     let projection_name = format_ident!("{}DefaultProjection", name);
     let mut projection_bounds = generics.clone();
 
@@ -155,8 +153,7 @@ fn expand_enum(
     variants: syn::punctuated::Punctuated<syn::Variant, syn::Token![,]>,
     visibility: syn::Visibility,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let default_projection: syn::Path =
-        parse_quote!(::ostd::orpc::oqueue::default_projection::DefaultProjection);
+    let default_projection: syn::Path = parse_quote!(::ostd::orpc::oqueue::DefaultProjection);
     let projection_name = format_ident!("{}DefaultProjection", name);
     let mut projection_bounds = generics.clone();
     let mut projection_variants = Vec::new();
@@ -484,13 +481,13 @@ fn project_field(
                 false
             };
         Ok(Some((
-            quote!(::ostd::orpc::oqueue::default_projection::OID),
+            quote!(::ostd::orpc::oqueue::OID),
             if use_opaque_id {
-                quote!(<#projected_input as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#projected_value))
+                quote!(<#projected_input as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
             } else if deref {
-                quote!(::ostd::orpc::oqueue::default_projection::OID::of_ref::<#projected_input>(#projected_value))
+                quote!(::ostd::orpc::oqueue::OID::of_ref::<#projected_input>(#projected_value))
             } else {
-                quote!(<#ty as ::ostd::orpc::oqueue::default_projection::OpaqueId>::opaque_id(#projected_value))
+                quote!(<#ty as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
             },
         )))
     } else {
@@ -511,7 +508,7 @@ pub fn projectable_derive(input: TokenStream) -> TokenStream {
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     quote! {
-        impl #impl_generics ::ostd::orpc::oqueue::default_projection::Projectable for #name #ty_generics #where_clause {}
+        impl #impl_generics ::ostd::orpc::oqueue::Projectable for #name #ty_generics #where_clause {}
     }
     .into()
 }

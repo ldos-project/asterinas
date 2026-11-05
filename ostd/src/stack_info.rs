@@ -8,13 +8,13 @@ use alloc::{
 };
 use core::{fmt::Display, num::NonZeroUsize};
 
-#[cfg(not(baseline_asterinas))]
 use serde::Serialize;
 use snafu::GenerateImplicitData;
 
-#[cfg(not(baseline_asterinas))]
-use crate::orpc::oqueue::default_projection::DefaultProjection;
-use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task, util::id_set::Id as _};
+use crate::{
+    cpu::CpuId, orpc::oqueue::DefaultProjection, stacktrace::CapturedStackTrace, task::Task,
+    util::id_set::Id as _,
+};
 
 /// A location in the code. Unlike, [`snafu::Location`] and [`core::panic::Location`], this can hold
 /// a dynamic string. However, if given a `&'static str`, it will not allocate memory (internally it

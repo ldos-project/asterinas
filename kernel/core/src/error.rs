@@ -3,10 +3,8 @@
 use alloc::{boxed::Box, format};
 
 use int_to_c_enum::TryFromInt;
-#[cfg(baseline_asterinas)]
-use ostd::DefaultProjection;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::OQueueError;
+use ostd::orpc::oqueue::{DefaultProjection, OQueueError};
 #[cfg(not(baseline_asterinas))]
 use ostd::stack_info::StackInfoDefaultProjection;
 use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
@@ -305,7 +303,6 @@ pub enum Errno {
 ///
 /// This type is convertible to and from various other error types.
 #[ostd_error]
-#[cfg_attr(baseline_asterinas, derive(DefaultProjection))]
 #[derive(Snafu, Debug, Clone)]
 #[snafu(visibility(pub))]
 #[snafu(display("{errno:?}{} ({context})", msg.map(|s| format!(": {s}")).unwrap_or_default()))]
@@ -324,7 +321,7 @@ pub struct ErrorDefaultProjection {
 }
 
 #[cfg(not(baseline_asterinas))]
-impl ostd::orpc::oqueue::default_projection::DefaultProjection for Error {
+impl DefaultProjection for Error {
     type Projection = ErrorDefaultProjection;
 
     fn default_projection(&self) -> Self::Projection {

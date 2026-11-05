@@ -239,11 +239,7 @@ impl StreamSocket {
 
     // Returns `None` to block the task and wait for the connection to be established, and returns
     // `Some(_)` if blocking is not necessary or not allowed.
-    #[trace]
-    fn start_connect(
-        &self,
-        #[projection(opaque)] remote_endpoint: &IpEndpoint,
-    ) -> Option<Result<()>> {
+    fn start_connect(&self, remote_endpoint: &IpEndpoint) -> Option<Result<()>> {
         let is_nonblocking = self.is_nonblocking();
 
         let mut state = self.write_updated_state();

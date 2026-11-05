@@ -2,7 +2,7 @@
 
 use aster_bigtcp::socket::ReceiveBehavior;
 use bitflags::bitflags;
-use ostd::Projectable;
+use ostd::orpc::oqueue::Projectable;
 
 bitflags! {
     /// Flags passed to socket send operations.
