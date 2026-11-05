@@ -3,6 +3,7 @@
 use core::fmt::Display;
 
 use options::SocketOption;
+use ostd::orpc::trace_methods;
 use util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr};
 
 use crate::{
@@ -24,6 +25,9 @@ pub mod options;
 pub mod unix;
 pub mod util;
 pub mod vsock;
+
+#[cfg(all(ktest, not(baseline_asterinas)))]
+mod test;
 
 mod private {
     use core::time::Duration;
@@ -76,28 +80,34 @@ mod private {
 }
 
 /// Operations defined on a socket.
+#[trace_methods]
 pub trait Socket: private::SocketPrivate + Send + Sync {
     /// Assigns the specified address to the socket.
-    fn bind(&self, _socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn bind(&self, #[trace(only = call)] _socket_addr: SocketAddr) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "bind() is not supported");
     }
 
     /// Builds a connection for the given address
-    fn connect(&self, _socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn connect(&self, #[trace(only = call)] _socket_addr: SocketAddr) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "connect() is not supported");
     }
 
     /// Listens for connections on the socket.
+    #[trace]
     fn listen(&self, _backlog: usize) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "listen() is not supported");
     }
 
     /// Accepts a connection on the socket.
+    #[trace]
     fn accept(&self, _is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "accept() is not supported");
     }
 
     /// Shuts down part of a full-duplex connection.
+    #[trace]
     fn shutdown(&self, _cmd: SockShutdownCmd) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "shutdown() is not supported");
     }
@@ -120,15 +130,17 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     }
 
     /// Sets options on the socket.
+    #[trace]
     fn set_option(&self, _option: &dyn SocketOption) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "setsockopt() is not supported");
     }
 
     /// Sends a message on the socket.
+    #[trace]
     fn sendmsg(
         &self,
         reader: &mut dyn MultiRead,
-        message_header: MessageHeader,
+        #[trace(only = call)] message_header: MessageHeader,
         flags: SendFlags,
     ) -> Result<usize>;
 
@@ -136,10 +148,11 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     ///
     /// If successful, the `writer` buffer will be filled with the received content.
     /// This method returns the length, flags, and header of the received message.
+    #[trace]
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: RecvFlags,
+        #[trace(only = call)] flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)>;
 
     /// Returns the common state for this socket.

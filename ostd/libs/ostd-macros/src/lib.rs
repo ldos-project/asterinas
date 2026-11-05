@@ -2,12 +2,20 @@
 
 #![feature(proc_macro_diagnostic)]
 
+mod default_projection;
 mod ostd_error_impl;
 
 use proc_macro::{Diagnostic, Level, Span, TokenStream};
 use quote::quote;
 use rand::{Rng, distr::Alphanumeric};
 use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
+
+/// Derives a projection that recursively projects fields using `DefaultProjection`.
+/// Fields that should be opaque identifiers can be marked with `#[projection(opaque)]`.
+#[proc_macro_derive(DefaultProjection, attributes(projection))]
+pub fn default_projection_derive(input: TokenStream) -> TokenStream {
+    default_projection::derive(input)
+}
 
 /// A macro attribute to mark the kernel entry point.
 ///

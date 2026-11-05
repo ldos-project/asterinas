@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use super::{
     ConsumableOQueueRef, OQueueBase as _,
+    default_projection::DefaultProjection,
     export::{
         OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
     },
@@ -132,9 +133,9 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
 /// `Serialize` implementation (the whole message is streamed).
 ///
 /// This is the common case for exportable queues: the message type just needs
-/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use [`register_with`]
-/// to stream a projected summary instead, or [`register_no_export`] for queues that must not be
-/// exported.
+/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use
+/// [`register_with_projection`] to provide a projection, [`register_with`] to use the message
+/// type's [`DefaultProjection`], or [`register_no_export`] for queues that must not be exported.
 pub fn register<T: Copy + Send + Serialize + 'static>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
@@ -143,13 +144,25 @@ pub fn register<T: Copy + Send + Serialize + 'static>(
     insert_export(path, make_export(oqueue));
 }
 
+/// Registers an OQueue at `path` and exports it to userspace using `T`'s default projection.
+///
+/// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
+/// [`register_with_projection`] to provide a different projection.
+pub fn register_with<T>(path: &Path, oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>)
+where
+    T: DefaultProjection + Send + 'static,
+    T::Projection: Copy + Send + Serialize + 'static,
+{
+    register_with_projection(path, oqueue, T::default_projection);
+}
+
 /// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection
 /// `project: Fn(&T) -> U`.
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
 /// extracted from it.
-pub fn register_with<T, U, F>(
+pub fn register_with_projection<T, U, F>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
     project: F,
@@ -167,8 +180,8 @@ pub fn register_with<T, U, F>(
 /// `produce` file) and send values of type `T` into the queue by writing their CBOR encoding, and
 /// a userspace reader can attach a consumer.
 ///
-/// Unlike [`register`]/[`register_with`], this is for produce and consume in userspace; only a
-/// [`ConsumableOQueueRef`] can be passed.
+/// Unlike [`register`], [`register_with`], and [`register_with_projection`], this is for produce and
+/// consume in userspace; only a [`ConsumableOQueueRef`] can be passed.
 ///
 /// # Panics
 ///
@@ -506,7 +519,7 @@ mod test {
         let path = path!(observe.proj[1]);
         let queue = ConsumableOQueueRef::<Sample>::new(16, path.clone());
         // Export only the inner value via a projection; `Sample` itself need not be `Serialize`.
-        register_with(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
+        register_with_projection(&path, &queue.as_any_oqueue(), |sample: &Sample| sample.0);
 
         let handle = lookup_export(&path).unwrap();
         let observer = handle.attach_strong_observer().unwrap();

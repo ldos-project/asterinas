@@ -14,7 +14,10 @@ use options::{
     Congestion, DeferAccept, Inq, KeepCnt, KeepIdle, KeepIntvl, MaxSegment, NoDelay, SynCnt,
     UserTimeout, WindowClamp,
 };
-use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
+use ostd::{
+    orpc::trace_methods,
+    sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard},
+};
 use takeable::Takeable;
 use util::{Retrans, TcpOptionSet};
 
@@ -108,7 +111,9 @@ impl OptionSet {
     }
 }
 
+#[trace_methods]
 impl StreamSocket {
+    #[trace]
     pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
         let status_flags = if is_nonblocking {
@@ -233,6 +238,7 @@ impl StreamSocket {
 
     // Returns `None` to block the task and wait for the connection to be established, and returns
     // `Some(_)` if blocking is not necessary or not allowed.
+    #[trace]
     fn start_connect(&self, remote_endpoint: &IpEndpoint) -> Option<Result<()>> {
         let is_nonblocking = self.is_nonblocking();
 
@@ -486,8 +492,10 @@ impl SocketPrivate for StreamSocket {
     }
 }
 
+#[trace_methods(trait_module = crate::net::socket)]
 impl Socket for StreamSocket {
-    fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn bind(&self, #[trace(only = call)] socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
 
         let mut state = self.write_updated_state();
@@ -499,7 +507,8 @@ impl Socket for StreamSocket {
         init_stream.bind(&endpoint, self.family, can_reuse)
     }
 
-    fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn connect(&self, #[trace(only = call)] socket_addr: SocketAddr) -> Result<()> {
         let remote_endpoint = socket_addr.try_into()?;
 
         if let Some(result) = self.start_connect(&remote_endpoint) {
@@ -516,6 +525,7 @@ impl Socket for StreamSocket {
         })
     }
 
+    #[trace]
     fn listen(&self, backlog: usize) -> Result<()> {
         let mut state = self.write_updated_state();
 
@@ -555,12 +565,14 @@ impl Socket for StreamSocket {
         })
     }
 
+    #[trace]
     fn accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
             self.try_accept(is_nonblocking)
         })
     }
 
+    #[trace]
     fn shutdown(&self, cmd: SockShutdownCmd) -> Result<()> {
         let state = self.read_updated_state();
 
@@ -606,10 +618,11 @@ impl Socket for StreamSocket {
         Ok(remote_endpoint.into())
     }
 
+    #[trace]
     fn sendmsg(
         &self,
         reader: &mut dyn MultiRead,
-        message_header: MessageHeader,
+        #[trace(only = call)] message_header: MessageHeader,
         flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
@@ -637,10 +650,11 @@ impl Socket for StreamSocket {
         // TODO: Trigger `SIGPIPE` if the error code is `EPIPE` and `MSG_NOSIGNAL` is not specified
     }
 
+    #[trace]
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: RecvFlags,
+        #[trace(only = call)] flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
@@ -757,6 +771,7 @@ impl Socket for StreamSocket {
         Ok(())
     }
 
+    #[trace]
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
         let mut state = self.write_updated_state();
         let mut options = self.options.write();

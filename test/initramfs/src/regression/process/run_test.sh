@@ -25,6 +25,7 @@ fi
 
 ./exit/exit_code
 ./exit/exit_procfs
+./exit/robust_list
 
 [ "$(uname -m)" = "x86_64" ] && ./fork/fork
 ./fork_c/fork
@@ -53,6 +54,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./sched/sched_attr_getset
+./sched/sched_inherit
 ./sched/sched_param_getset
 ./sched/sched_param_idle
 
