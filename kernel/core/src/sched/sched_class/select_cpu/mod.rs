@@ -2,25 +2,32 @@
 
 //! CPU-selection policies: decide which CPU's run queue a runnable task joins.
 //!
-//! [`ClassScheduler`](super::ClassScheduler) asks the active policy every time a task becomes
-//! runnable. The policy is chosen at boot with the `sched.select_cpu=<name>` kernel parameter (see
-//! [`init_select_cpu_policy`](super::init_select_cpu_policy)).
+//! The scheduler asks the active policy every time a task becomes runnable. The policy is chosen
+//! at boot with the `sched.select_cpu=<name>` kernel parameter, and can be replaced at run time
+//! with [`inject_select_cpu_policy`](super::inject_select_cpu_policy).
 
-use core::ops::Bound;
+use alloc::sync::Arc;
+use core::{ops::Bound, sync::atomic::Ordering};
 
 use ostd::{
     cpu::{CpuId, CpuSet},
-    task::{AtomicCpuId, scheduler::EnqueueFlags},
+    task::scheduler::EnqueueFlags,
 };
+
+use crate::thread::Thread;
 
 mod last_cpu;
 mod round_robin;
+#[cfg(not(baseline_asterinas))]
+mod userspace;
 
-pub(super) use self::{last_cpu::LastCpuPolicy, round_robin::RoundRobinPolicy};
+#[cfg(not(baseline_asterinas))]
+pub use self::userspace::UserspacePolicy;
+pub use self::{last_cpu::LastCpuPolicy, round_robin::RoundRobinPolicy};
 
 /// Why the scheduler is asking for a CPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SelectReason {
+pub enum SelectCpuReason {
     /// A new task runs for the first time.
     Spawn,
     /// A sleeping task was woken.
@@ -31,7 +38,7 @@ pub(super) enum SelectReason {
     Preempt,
 }
 
-impl From<EnqueueFlags> for SelectReason {
+impl From<EnqueueFlags> for SelectCpuReason {
     fn from(flags: EnqueueFlags) -> Self {
         match flags {
             EnqueueFlags::Spawn => Self::Spawn,
@@ -42,69 +49,54 @@ impl From<EnqueueFlags> for SelectReason {
 }
 
 /// Everything a policy is told about one placement decision.
-pub(super) struct SelectCpuInput<'a> {
-    pub(super) reason: SelectReason,
-    /// The CPU the task last ran on, or `None` before its first placement.
-    pub(super) last_cpu: Option<CpuId>,
-    /// The CPUs the task may run on.
-    pub(super) affinity: &'a CpuSet,
-    /// The CPU making the decision (the spawner's or the waker's).
-    pub(super) current_cpu: CpuId,
+pub struct SelectCpuInput<'a> {
+    pub reason: SelectCpuReason,
+    /// The thread being placed.
+    pub thread: &'a Arc<Thread>,
     /// Returns the number of tasks queued on a CPU. Takes that CPU's run-queue lock.
-    pub(super) queue_len: &'a dyn Fn(CpuId) -> u32,
+    pub queue_len: &'a dyn Fn(CpuId) -> u32,
 }
 
-/// Picks the CPU a runnable task is queued on.
-///
-/// Contract:
-/// - Called with local IRQs disabled, possibly in interrupt context, and with no run-queue lock
-///   held. It must not sleep, block or allocate.
-/// - Any state the policy uses lives inside the policy object.
-/// - The policy must return a CPU in `affinity`. ([`LastCpuPolicy`] keeps the historical
-///   behavior of ignoring a mask that changed after the first placement.)
-pub(super) trait SelectCpuPolicy: Send + Sync {
+impl SelectCpuInput<'_> {
+    /// Returns the CPU in the thread's affinity mask with the shortest queue.
+    ///
+    /// Among equally loaded CPUs, it returns the first one after `after` (wrapping around), or the
+    /// lowest-numbered one if `after` is `None`.
+    pub fn least_loaded_cpu(&self, after: Option<CpuId>) -> CpuId {
+        let affinity = self.thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+        let mut selected = None;
+        let mut minimum_load = u32::MAX;
+        let mut test_candidate = |candidate: CpuId| {
+            let load = (self.queue_len)(candidate);
+            if load < minimum_load {
+                minimum_load = load;
+                selected = Some(candidate);
+            }
+        };
+        match after {
+            Some(cpu) => cycle_after(cpu, &affinity).for_each(&mut test_candidate),
+            None => affinity.iter().for_each(&mut test_candidate),
+        }
+        // `sched_setaffinity` rejects an empty mask, so a CPU is always found.
+        selected.unwrap_or(CpuId::bsp())
+    }
+}
+
+/// A CPU-selection policy.
+pub trait SelectCpuPolicy: Send + Sync {
+    /// Returns the CPU whose run queue the thread in `input` joins.
+    ///
+    /// It is called with local IRQs disabled, possibly in interrupt context, and with no run-queue
+    /// lock held. It must not sleep, block or allocate. Any state the policy needs lives in the
+    /// policy object. The returned CPU should be in the thread's affinity mask.
     fn select_cpu(&self, input: &SelectCpuInput) -> CpuId;
 }
 
 /// Returns the CPUs in `cpu_set` in ascending order, starting *after* `cpu` and wrapping around.
 ///
 /// If `cpu` is in the set, it comes last.
-fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
+pub fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
     cpu_set
         .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
         .chain(cpu_set.iter_in(..=cpu))
-}
-
-/// Picks the CPU for a task that is placed for the first time: the allowed CPU with the shortest
-/// queue.
-///
-/// Policies call this when `input.last_cpu` is `None`, which happens only on spawn.
-fn least_loaded_cpu(input: &SelectCpuInput, last_chosen_cpu: &AtomicCpuId) -> CpuId {
-    debug_assert!(input.reason == SelectReason::Spawn);
-
-    let mut selected = input.current_cpu;
-    let mut minimum_load = u32::MAX;
-
-    // Set `selected` as `candidate` if the candidate's load is smaller.
-    let test_candidate = |candidate: CpuId| {
-        let load = (input.queue_len)(candidate);
-        if load < minimum_load {
-            minimum_load = load;
-            selected = candidate;
-        }
-    };
-
-    match last_chosen_cpu.get() {
-        Some(cpu) => {
-            // Perform a round-robin selection starting after the last chosen CPU.
-            //
-            // It still checks every CPU in the affinity set to find the one with the
-            // minimum load, but avoids selecting the same CPU again in case of a tie.
-            cycle_after(cpu, input.affinity).for_each(test_candidate)
-        }
-        None => input.affinity.iter().for_each(test_candidate),
-    }
-
-    last_chosen_cpu.set_anyway(selected);
-    selected
 }

@@ -5,14 +5,14 @@
 #![warn(unused)]
 
 use alloc::{boxed::Box, string::String, sync::Arc};
-use core::{fmt, sync::atomic::Ordering, time::Duration};
+use core::{fmt, time::Duration};
 
 use ostd::{
     arch::read_tsc as sched_clock,
     cpu::{CpuId, PinCurrentCpu, all_cpus},
     info,
     irq::disable_local,
-    sync::{LocalIrqDisabled, SpinLock},
+    sync::{LocalIrqDisabled, RcuOption, SpinLock},
     task::{
         AtomicCpuId, Task,
         scheduler::{
@@ -40,27 +40,26 @@ mod real_time;
 mod select_cpu;
 mod stop;
 
+use self::policy::{SchedPolicyKind, SchedPolicyState};
+#[cfg(not(baseline_asterinas))]
+pub use self::select_cpu::UserspacePolicy;
 pub use self::{
     policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
-};
-use self::{
-    policy::{SchedPolicyKind, SchedPolicyState},
-    select_cpu::{LastCpuPolicy, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy, SelectReason},
+    select_cpu::{
+        LastCpuPolicy, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy, SelectCpuReason,
+    },
 };
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
-
-/// The kernel command-line parameter naming the CPU-selection policy.
-const SELECT_CPU_PARAM: &str = "sched.select_cpu";
 
 /// The CPU-selection policy used when `sched.select_cpu` is not set.
 const DEFAULT_SELECT_CPU_POLICY: &str = "last_cpu";
 
 /// The CPU-selection policy name, populated from the `sched.select_cpu` kernel command-line
-/// argument (see [`SELECT_CPU_PARAM`]).
+/// argument.
 static SELECT_CPU_POLICY: Once<String> = Once::new();
-aster_cmdline::define_kv_param!(SELECT_CPU_PARAM, SELECT_CPU_POLICY);
+aster_cmdline::define_kv_param!("sched.select_cpu", SELECT_CPU_POLICY);
 
 /// The scheduler instance.
 static CLASS_SCHEDULER: Once<&'static ClassScheduler> = Once::new();
@@ -90,14 +89,20 @@ pub fn init_select_cpu_policy() {
     let (name, policy): (&str, Box<dyn SelectCpuPolicy>) = match requested {
         "last_cpu" => ("last_cpu", Box::new(LastCpuPolicy::new())),
         "round_robin" => ("round_robin", Box::new(RoundRobinPolicy::new())),
+        #[cfg(not(baseline_asterinas))]
+        "userspace" => ("userspace", Box::new(UserspacePolicy::new())),
         other => {
             warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
             ("last_cpu", Box::new(LastCpuPolicy::new()))
         }
     };
-    let scheduler = CLASS_SCHEDULER.get().unwrap();
-    scheduler.select_policy.call_once(|| policy);
+    inject_select_cpu_policy(policy);
     info!("sched: CPU-selection policy is '{name}'");
+}
+
+/// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
+pub fn inject_select_cpu_policy(policy: Box<dyn SelectCpuPolicy>) {
+    CLASS_SCHEDULER.get().unwrap().inject_select_policy(policy);
 }
 
 pub fn init_on_each_cpu() {
@@ -115,8 +120,8 @@ pub struct ClassScheduler {
     /// the runqueues may be accessed in both the task and interrupt context (L1 and L2).
     rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
 
-    /// The CPU-selection policy chosen by `sched.select_cpu`.
-    select_policy: Once<Box<dyn SelectCpuPolicy>>,
+    /// The CPU-selection policy, set by [`Self::inject_select_policy`].
+    select_policy: RcuOption<Box<Box<dyn SelectCpuPolicy>>>,
 }
 
 /// Represents the run queue for each CPU core. It stores a list of run queues for
@@ -128,6 +133,12 @@ struct PerCpuClassRqSet {
     fair: fair::FairClassRq,
     idle: idle::IdleClassRq,
     current: Option<(SchedEntity, CurrentRuntime)>,
+    /// The task just preempted on this CPU, while it waits to be queued again.
+    ///
+    /// A preempted task is still runnable, so the CPU-selection policy decides which run queue it
+    /// joins next. That queue may belong to another CPU, and its lock cannot be taken while this
+    /// one is held, so `try_pick_next` leaves the task here and
+    /// [`ClassScheduler::mut_local_rq_with`] queues it after releasing this lock.
     preempted: Option<SchedEntity>,
 }
 
@@ -400,13 +411,13 @@ impl ClassScheduler {
         };
         ClassScheduler {
             rqs: all_cpus().map(class_rq).collect(),
-            select_policy: Once::new(),
+            select_policy: RcuOption::new_none(),
         }
     }
 
     /// Queues a task that was preempted while still runnable on the CPU chosen by the policy.
     fn requeue_preempted(&self, (task, thread): SchedEntity) {
-        let cpu = self.select_cpu(&thread, SelectReason::Preempt);
+        let cpu = self.select_cpu(&thread, SelectCpuReason::Preempt);
         let mut rq = self.rqs[cpu.as_usize()].lock();
         // Move the run-queue marker straight to the new CPU. It must never pass through `None`,
         // which `PosixThread::sleeping_state` reads as "asleep".
@@ -417,21 +428,25 @@ impl ClassScheduler {
         rq.enqueue_entity((task, thread), None);
     }
 
+    /// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
+    pub fn inject_select_policy(&self, policy: Box<dyn SelectCpuPolicy>) {
+        self.select_policy.update(Some(Box::new(policy)));
+    }
+
     /// Asks the active CPU-selection policy where `thread` should be queued.
-    fn select_cpu(&self, thread: &Thread, reason: SelectReason) -> CpuId {
-        let guard = disable_local();
-        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+    fn select_cpu(&self, thread: &Arc<Thread>, reason: SelectCpuReason) -> CpuId {
+        // `SelectCpuPolicy::select_cpu` promises policies that local IRQs are disabled.
+        let _guard = disable_local();
         let queue_len = |cpu: CpuId| self.rqs[cpu.as_usize()].lock().load_stats().queue_len;
         let input = SelectCpuInput {
             reason,
-            last_cpu: thread.sched_attr().last_cpu(),
-            affinity: &affinity,
-            current_cpu: guard.current_cpu(),
+            thread,
             queue_len: &queue_len,
         };
         self.select_policy
+            .read()
             .get()
-            .expect("no task is placed before `init_select_cpu_policy`")
+            .expect("no CPU-selection policy is installed: a task was spawned or woken before `init_select_cpu_policy` ran")
             .select_cpu(&input)
     }
 }
