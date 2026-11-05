@@ -12,7 +12,7 @@ use ostd::{
     cpu::{CpuId, PinCurrentCpu, all_cpus},
     info,
     irq::disable_local,
-    sync::{LocalIrqDisabled, RcuOption, SpinLock},
+    sync::{LocalIrqDisabled, SpinLock},
     task::{
         AtomicCpuId, Task,
         scheduler::{
@@ -47,7 +47,8 @@ pub use self::{
     policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
     select_cpu::{
-        LastCpuPolicy, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy, SelectCpuReason,
+        LastCpuPolicy, PolicySlot, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy,
+        SelectCpuReason,
     },
 };
 
@@ -86,14 +87,14 @@ pub fn init_select_cpu_policy() {
         .get()
         .map(String::as_str)
         .unwrap_or(DEFAULT_SELECT_CPU_POLICY);
-    let (name, policy): (&str, Box<dyn SelectCpuPolicy>) = match requested {
-        "last_cpu" => ("last_cpu", Box::new(LastCpuPolicy::new())),
-        "round_robin" => ("round_robin", Box::new(RoundRobinPolicy::new())),
+    let (name, policy): (&str, Arc<dyn SelectCpuPolicy>) = match requested {
+        "last_cpu" => ("last_cpu", Arc::new(LastCpuPolicy::new())),
+        "round_robin" => ("round_robin", Arc::new(RoundRobinPolicy::new())),
         #[cfg(not(baseline_asterinas))]
-        "userspace" => ("userspace", Box::new(UserspacePolicy::new())),
+        "userspace" => ("userspace", Arc::new(UserspacePolicy::new())),
         other => {
             warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
-            ("last_cpu", Box::new(LastCpuPolicy::new()))
+            ("last_cpu", Arc::new(LastCpuPolicy::new()))
         }
     };
     inject_select_cpu_policy(policy);
@@ -101,7 +102,7 @@ pub fn init_select_cpu_policy() {
 }
 
 /// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
-pub fn inject_select_cpu_policy(policy: Box<dyn SelectCpuPolicy>) {
+pub fn inject_select_cpu_policy(policy: Arc<dyn SelectCpuPolicy>) {
     CLASS_SCHEDULER.get().unwrap().inject_select_policy(policy);
 }
 
@@ -121,7 +122,7 @@ pub struct ClassScheduler {
     rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
 
     /// The CPU-selection policy, set by [`Self::inject_select_policy`].
-    select_policy: RcuOption<Box<Box<dyn SelectCpuPolicy>>>,
+    select_policy: PolicySlot<dyn SelectCpuPolicy>,
 }
 
 /// Represents the run queue for each CPU core. It stores a list of run queues for
@@ -411,7 +412,7 @@ impl ClassScheduler {
         };
         ClassScheduler {
             rqs: all_cpus().map(class_rq).collect(),
-            select_policy: RcuOption::new_none(),
+            select_policy: PolicySlot::empty(),
         }
     }
 
@@ -429,8 +430,8 @@ impl ClassScheduler {
     }
 
     /// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
-    pub fn inject_select_policy(&self, policy: Box<dyn SelectCpuPolicy>) {
-        self.select_policy.update(Some(Box::new(policy)));
+    pub fn inject_select_policy(&self, policy: Arc<dyn SelectCpuPolicy>) {
+        self.select_policy.set(policy);
     }
 
     /// Asks the active CPU-selection policy where `thread` should be queued.
@@ -444,10 +445,8 @@ impl ClassScheduler {
             queue_len: &queue_len,
         };
         self.select_policy
-            .read()
-            .get()
+            .with(|policy| policy.select_cpu(&input))
             .expect("no CPU-selection policy is installed: a task was spawned or woken before `init_select_cpu_policy` ran")
-            .select_cpu(&input)
     }
 }
 

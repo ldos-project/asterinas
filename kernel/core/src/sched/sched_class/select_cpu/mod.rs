@@ -6,11 +6,12 @@
 //! at boot with the `sched.select_cpu=<name>` kernel parameter, and can be replaced at run time
 //! with [`inject_select_cpu_policy`](super::inject_select_cpu_policy).
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::{ops::Bound, sync::atomic::Ordering};
 
 use ostd::{
     cpu::{CpuId, CpuSet},
+    sync::RcuOption,
     task::scheduler::EnqueueFlags,
 };
 
@@ -99,4 +100,30 @@ pub fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> 
     cpu_set
         .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
         .chain(cpu_set.iter_in(..=cpu))
+}
+
+/// Holds a policy that can be replaced while other CPUs are using it.
+pub struct PolicySlot<P: ?Sized + Send + Sync + 'static> {
+    // RCU makes reading the policy nearly free, and frees a replaced policy only after every CPU
+    // has finished using it.
+    policy: RcuOption<Box<Arc<P>>>,
+}
+
+impl<P: ?Sized + Send + Sync + 'static> PolicySlot<P> {
+    /// Creates an empty slot.
+    pub const fn empty() -> Self {
+        Self {
+            policy: RcuOption::new_none(),
+        }
+    }
+
+    /// Replaces the policy. Callers already using the old policy finish with it.
+    pub fn set(&self, policy: Arc<P>) {
+        self.policy.update(Some(Box::new(policy)));
+    }
+
+    /// Calls `f` with the current policy, or returns `None` if the slot is empty.
+    pub fn with<R>(&self, f: impl FnOnce(&P) -> R) -> Option<R> {
+        self.policy.read().get().map(|policy| f(&**policy))
+    }
 }
