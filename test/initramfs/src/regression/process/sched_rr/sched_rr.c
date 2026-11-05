@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,7 +29,7 @@ static void *spin(void *arg)
 {
 	time_t end = time(NULL) + *(int *)arg;
 
-	printf("spin tid=%ld\n", syscall(SYS_gettid));
+	printf("spin tid=%d\n", gettid());
 	while (time(NULL) < end)
 		;
 	return NULL;
@@ -43,7 +42,7 @@ int main(int argc, char **argv)
 	if (argc == 3 && strcmp(argv[1], "sleep") == 0) {
 		int iters = atoi(argv[2]);
 
-		printf("sleep tid=%ld\n", syscall(SYS_gettid));
+		printf("sleep tid=%d\n", gettid());
 		// Every wake-up goes through `select_cpu`.
 		for (int i = 0; i < iters; i++)
 			usleep(5000);

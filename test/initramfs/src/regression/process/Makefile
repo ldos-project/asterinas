@@ -14,6 +14,7 @@ SUBDIRS := \
 	ptrace \
 	sched \
 	sched_rr \
+	sched_userspace \
 	signal \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)
