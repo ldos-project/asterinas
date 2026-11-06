@@ -19,7 +19,7 @@ use crate::{
 /// [split]: Self::split
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Pod)]
-pub struct RobustListUserValue(Vaddr);
+pub(crate) struct RobustListUserValue(Vaddr);
 
 impl RobustListUserValue {
     /// Splits the value into the pointer to the lock entry and whether its futex is a PI futex.
@@ -39,7 +39,7 @@ struct RobustList {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod)]
-pub struct RobustListHead {
+pub(crate) struct RobustListHead {
     /// Linked list of lock entries
     ///
     /// If it points to the head of the list, then it is the end of the list.
@@ -56,13 +56,13 @@ pub struct RobustListHead {
 
 /// A robust futex found while walking a robust list.
 #[derive(Clone, Copy, Debug)]
-pub struct RobustFutex {
-    pub addr: Vaddr,
+pub(crate) struct RobustFutex {
+    pub(crate) addr: Vaddr,
     /// Whether the futex is a PI futex, which user space marks by setting bit 0 of the pointer to
     /// its lock entry.
-    pub is_pi: bool,
+    pub(crate) is_pi: bool,
     /// Whether the futex comes from `list_op_pending`.
-    pub is_pending: bool,
+    pub(crate) is_pending: bool,
 }
 
 impl RobustListHead {
@@ -73,7 +73,7 @@ impl RobustListHead {
     ///
     /// The futex referred to by `list_op_pending`, if any, will be returned as
     /// the last item.
-    pub fn futexes(&self, head_addr: Vaddr) -> FutexIter<'_> {
+    pub(crate) fn futexes(&self, head_addr: Vaddr) -> FutexIter<'_> {
         FutexIter::new(self, head_addr)
     }
 
@@ -85,7 +85,7 @@ impl RobustListHead {
     }
 }
 
-pub struct FutexIter<'a> {
+pub(crate) struct FutexIter<'a> {
     robust_list: &'a RobustListHead,
     head_addr: Vaddr,
     entry_ptr: Vaddr,
@@ -94,7 +94,7 @@ pub struct FutexIter<'a> {
 }
 
 impl<'a> FutexIter<'a> {
-    pub fn new(robust_list: &'a RobustListHead, head_addr: Vaddr) -> Self {
+    pub(crate) fn new(robust_list: &'a RobustListHead, head_addr: Vaddr) -> Self {
         let (entry_ptr, is_pi) = robust_list.list.next.split();
         Self {
             robust_list,
@@ -184,7 +184,7 @@ const FUTEX_TID_MASK: u32 = 0x3FFF_FFFF;
 /// If the futex is owned by another thread, the operation is canceled.
 ///
 /// This corresponds to Linux's `handle_futex_death`.
-pub fn wake_robust_futex(futex: RobustFutex, tid: Tid) -> Result<()> {
+pub(crate) fn wake_robust_futex(futex: RobustFutex, tid: Tid) -> Result<()> {
     let futex_addr = futex.addr;
     if !futex_addr.is_multiple_of(align_of::<u32>()) {
         return_errno_with_message!(

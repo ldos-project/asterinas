@@ -1,4 +1,4 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub mod errors;
-pub mod new_server;
+pub(crate) mod new_server;

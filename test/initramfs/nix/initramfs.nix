@@ -1,6 +1,6 @@
 { lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
 , oqueue-reader, raid-policy-server, oqbench-server, benchmark, conformance
-, regression, dnsServer, authorized_keys, enablePython }:
+, regression, dnsServer, authorized_keys, enablePython, }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   init = builtins.path { path = ./../src/init; };
@@ -39,7 +39,7 @@ in stdenvNoCC.mkDerivation {
   name = "initramfs";
   buildCommand = ''
     mkdir -p $out/{dev,etc,root,usr,opt,tmp,var,proc,sys,host}
-    mkdir -p $out/{benchmark,test,ext2,exfat,oqueues,raid1}
+    mkdir -p $out/{benchmark,test,ext2,exfat,nvme,oqueues,raid1}
     mkdir -p $out/usr/{bin,sbin,lib,lib64,local}
     ln -sfn usr/bin $out/bin
     ln -sfn usr/sbin $out/sbin

@@ -37,7 +37,7 @@ aster_cmdline::define_flag_param!("kernel.abort_on_panic", ABORT_ON_PANIC);
 
 /// The kernel "oops" information.
 #[expect(unused)]
-pub struct OopsInfo {
+pub(crate) struct OopsInfo {
     /// The "oops" message.
     pub message: String,
     /// The thread where the "oops" happened.
@@ -52,7 +52,7 @@ pub struct OopsInfo {
 ///
 /// If the kernel is configured to panic on oops, this function will not return
 /// when a oops happens.
-pub fn catch_panics_as_oops<F, R>(f: F) -> Result<R, CaughtPanic>
+pub(crate) fn catch_panics_as_oops<F, R>(f: F) -> Result<R, CaughtPanic>
 where
     F: FnOnce() -> R,
 {

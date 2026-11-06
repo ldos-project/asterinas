@@ -4,7 +4,7 @@ use alloc::str;
 
 use ostd::task::Task;
 
-use super::{Mount, Path, mount::MountTopology};
+use super::{Mount, MountTopology, Path};
 use crate::{
     fs::{
         file::{
@@ -15,14 +15,17 @@ use crate::{
         vfs::{inode::SymbolicLink, path::MountNamespace},
     },
     prelude::*,
-    process::{pid_table::PidTable, posix_thread::AsPosixThread},
+    process::{
+        credentials::capabilities::CapSet, pid_table::PidTable, posix_thread::AsPosixThread,
+    },
+    security::lsm::hooks as lsm_hooks,
 };
 
 /// The file descriptor of the current working directory.
-pub const AT_FDCWD: RawFileDesc = -100;
+pub(crate) const AT_FDCWD: RawFileDesc = -100;
 
 /// The `AT_EMPTY_PATH` flag bit, as defined by Linux.
-pub const AT_EMPTY_PATH: u32 = 0x1000;
+pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
 
 /// Policy for how [`FsPath::from_fd_at`] treats an empty `path_str`.
 ///
@@ -79,7 +82,7 @@ pub const AT_EMPTY_PATH: u32 = 0x1000;
 /// - inode op that accepts `""` without a `flags` argument → [`Allow`](Self::Allow)
 ///   (rare; see the variant's docs)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EmptyPathStr {
+pub(crate) enum EmptyPathStr {
     /// Always reject an empty `path_str` with `ENOENT`; a name is mandatory.
     ///
     /// Use for syscalls whose target is a **directory entry** —
@@ -139,7 +142,7 @@ pub enum EmptyPathStr {
 /// All operations related to path resolution for a process should go through its associated
 /// `PathResolver`.
 #[derive(Clone, Debug)]
-pub struct PathResolver {
+pub(crate) struct PathResolver {
     root: Path,
     cwd: Path,
 }
@@ -151,22 +154,44 @@ impl PathResolver {
     }
 
     /// Gets the path of the root directory.
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
     /// Gets the path of the current working directory.
-    pub fn cwd(&self) -> &Path {
+    pub(crate) fn cwd(&self) -> &Path {
         &self.cwd
     }
 
+    /// Changes the current working directory to `path`.
+    pub(crate) fn chdir(&mut self, path: Path) -> Result<()> {
+        path.check_dir_search_permission()?;
+
+        self.set_cwd(path);
+        Ok(())
+    }
+
+    /// Changes the root directory to `path`.
+    pub(crate) fn chroot(&mut self, path: Path, ctx: &Context) -> Result<()> {
+        path.check_dir_search_permission()?;
+
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            ctx.thread_local.borrow_user_ns().as_ref(),
+            ctx.posix_thread,
+            CapSet::SYS_CHROOT,
+        ))?;
+
+        self.set_root(path);
+        Ok(())
+    }
+
     /// Sets the current working directory to the given `path`.
-    pub fn set_cwd(&mut self, path: Path) {
+    fn set_cwd(&mut self, path: Path) {
         self.cwd = path;
     }
 
     /// Sets the root directory to the given `path`.
-    pub fn set_root(&mut self, path: Path) {
+    fn set_root(&mut self, path: Path) {
         self.root = path;
     }
 
@@ -188,7 +213,7 @@ impl PathResolver {
     /// For pseudo paths, the returned string is simply the path's name. For other
     /// unreachable paths, the returned string starts with `/` but represents a partial
     /// path that could not reach the root.
-    pub fn make_abs_path(&self, path: &Path) -> AbsPathResult {
+    pub(crate) fn make_abs_path(&self, path: &Path) -> AbsPathResult {
         // Handle the root path.
         if path == &self.root {
             return AbsPathResult::Reachable("/".to_string());
@@ -267,14 +292,18 @@ impl PathResolver {
                 return current.name();
             }
 
-            let Some(parent) = current.mount_node().parent() else {
+            let Some(parent) = current
+                .mount_node()
+                .parent()
+                .and_then(|parent| parent.upgrade())
+            else {
                 return current.name();
             };
             let Some(mountpoint) = current.mount_node().mountpoint() else {
                 return current.name();
             };
 
-            owned = Path::new(parent.upgrade().unwrap(), mountpoint);
+            owned = Path::new(parent, mountpoint);
             current = &owned;
         }
     }
@@ -314,7 +343,7 @@ impl PathResolver {
             let parent = current.mount.parent()?;
             let mountpoint = current.mount.mountpoint()?;
 
-            owned = Path::new(parent.upgrade().unwrap(), mountpoint);
+            owned = Path::new(parent.upgrade()?, mountpoint);
             current = &owned;
         }
     }
@@ -329,7 +358,7 @@ impl PathResolver {
     //
     // FIXME: This cannot fail if we clone mount namespaces and update resolvers in an atomic way.
     // We currently leak this error to userspace, which is not a correct behavior.
-    pub fn switch_to_mnt_ns(&mut self, mnt_ns: &Arc<MountNamespace>) -> Result<()> {
+    pub(crate) fn switch_to_mnt_ns(&mut self, mnt_ns: &Arc<MountNamespace>) -> Result<()> {
         if mnt_ns.owns(self.root.mount_node()) && mnt_ns.owns(self.cwd.mount_node()) {
             return Ok(());
         }
@@ -361,13 +390,38 @@ impl PathResolver {
         Ok(())
     }
 
+    /// Switches the bootstrap resolver to `new_root` and detaches its old root mount.
+    ///
+    /// This combines the final topology effects of `pivot_root(".", ".")` followed by detaching
+    /// the old root. The two operations can be performed under one topology lock because no
+    /// userspace process can observe the intermediate mount tree.
+    ///
+    /// This method may only be used before the first userspace process is created, when this is the
+    /// only resolver that can reference the bootstrap root.
+    pub(in crate::fs) fn switch_root_for_boot(&mut self, new_root_mount: Arc<Mount>) {
+        let mut topology_guard = MountTopology::write_lock();
+        let parent_path = {
+            let parent_mount = self.root.mount.parent().unwrap().upgrade().unwrap();
+            let mountpoint = self.root.mount.mountpoint().unwrap();
+            Path::new(parent_mount, mountpoint)
+        };
+
+        self.root.mount.detach_from_parent(&mut topology_guard);
+        new_root_mount.graft_mount_tree(parent_path, &mut topology_guard);
+        drop(topology_guard);
+
+        let new_root = Path::new_root(new_root_mount);
+        self.root = new_root.clone();
+        self.cwd = new_root;
+    }
+
     /// Changes the root mount in the mount namespace of the calling thread.
     ///
     /// This function moves the original root mount of the calling thread to `put_old_path` and makes
     /// `new_root_path` the new root mount. For other threads in the current mount namespace, if their
     /// root directory and current working directory are the same as the current thread's root directory,
     /// they will also be changed to `new_root_path`.
-    pub fn pivot_root(
+    pub(crate) fn pivot_root(
         &mut self,
         new_root_path: FsPath,
         put_old_path: FsPath,
@@ -383,12 +437,6 @@ impl PathResolver {
                 "`new_root` or `put_old` is not a directory"
             );
         }
-
-        // TODO: Check the following once we support `MS_SHARED`:
-        // "The propagation type of the parent mount of `new_root` and the
-        // parent mount of the current root directory must not be
-        // `MS_SHARED`; similarly, if `put_old` is an existing mount point,
-        // its propagation type must not be `MS_SHARED`."
 
         let current_ns_proxy = ctx.thread_local.borrow_ns_proxy();
         let current_mnt_ns = current_ns_proxy.unwrap().mnt_ns();
@@ -413,13 +461,31 @@ impl PathResolver {
                 "`new_root` or the current root is not a mount point"
             );
         }
-        if new_root_path.mount.parent().is_none() || self.root.mount.parent().is_none() {
+
+        let mut topology_guard = MountTopology::write_lock();
+
+        let Some(new_root_parent) = new_root_path
+            .mount
+            .parent()
+            .and_then(|parent| parent.upgrade())
+        else {
+            return_errno_with_message!(Errno::EINVAL, "`new_root` is on the rootfs mount");
+        };
+        let Some(current_root_parent) =
+            self.root.mount.parent().and_then(|parent| parent.upgrade())
+        else {
+            return_errno_with_message!(Errno::EINVAL, "the current root is on the rootfs mount");
+        };
+
+        if new_root_parent.is_shared()
+            || current_root_parent.is_shared()
+            || put_old_path.mount.is_shared()
+        {
             return_errno_with_message!(
                 Errno::EINVAL,
-                "`new_root` or the current root is on the rootfs mount"
+                "`new_root` parent, current root parent, or `put_old` mount is shared"
             );
         }
-        let mut topology_guard = MountTopology::write_lock();
 
         if !put_old_path.is_reachable_from(&new_root_path, &topology_guard) {
             return_errno_with_message!(
@@ -435,17 +501,16 @@ impl PathResolver {
         }
 
         let parent_path = {
-            let parent_mount = self.root.mount.parent().unwrap().upgrade().unwrap();
             let mountpoint = self.root.mount.mountpoint().unwrap();
-            Path::new(parent_mount, mountpoint)
+            Path::new(current_root_parent, mountpoint)
         };
 
         self.root
             .mount
-            .graft_mount_tree(&put_old_path, &mut topology_guard);
+            .graft_mount_tree(put_old_path, &mut topology_guard);
         new_root_path
             .mount
-            .graft_mount_tree(&parent_path, &mut topology_guard);
+            .graft_mount_tree(parent_path, &mut topology_guard);
 
         // Release the mount topology lock before taking other threads' resolver locks.
         drop(topology_guard);
@@ -491,14 +556,14 @@ impl PathResolver {
 /// If the path can be traced back to the root of the resolver, it is `Reachable`.
 /// Otherwise, it is `Unreachable`.
 #[derive(Clone, Debug)]
-pub enum AbsPathResult {
+pub(crate) enum AbsPathResult {
     Reachable(String),
     Unreachable(String),
 }
 
 impl AbsPathResult {
     /// Converts the `AbsPathResult` into a `String`.
-    pub fn into_string(self) -> String {
+    pub(crate) fn into_string(self) -> String {
         match self {
             AbsPathResult::Reachable(s) => s,
             AbsPathResult::Unreachable(s) => s,
@@ -552,7 +617,7 @@ impl PathResolver {
 // Path lookup implementations
 impl PathResolver {
     /// Looks up a child entry with `name` within a directory `path`.
-    pub fn lookup_at_path(&self, path: &Path, name: &str) -> Result<Path> {
+    pub(crate) fn lookup_at_path(&self, path: &Path, name: &str) -> Result<Path> {
         let dir_dentry = path.dentry.as_dir_dentry_or_err()?;
 
         if path.inode().check_permission(Permission::MAY_EXEC).is_err() {
@@ -577,14 +642,14 @@ impl PathResolver {
     /// Lookups the target `Path` according to the `fs_path`.
     ///
     /// Symlinks are always followed.
-    pub fn lookup(&self, fs_path: &FsPath) -> Result<Path> {
+    pub(crate) fn lookup(&self, fs_path: &FsPath) -> Result<Path> {
         self.lookup_unresolved(fs_path)?.into_path()
     }
 
     /// Lookups the target `Path` according to the `fs_path`.
     ///
     /// If the last component is a symlink, it will not be followed.
-    pub fn lookup_no_follow(&self, fs_path: &FsPath) -> Result<Path> {
+    pub(crate) fn lookup_no_follow(&self, fs_path: &FsPath) -> Result<Path> {
         self.lookup_unresolved_no_follow(fs_path)?.into_path()
     }
 
@@ -596,7 +661,7 @@ impl PathResolver {
     /// but its parent does.
     ///
     /// Symlinks are always followed.
-    pub fn lookup_unresolved(&self, fs_path: &FsPath) -> Result<LookupResult> {
+    pub(crate) fn lookup_unresolved(&self, fs_path: &FsPath) -> Result<LookupResult> {
         self.lookup_inner(fs_path, true)
     }
 
@@ -608,7 +673,7 @@ impl PathResolver {
     /// but its parent does.
     ///
     /// If the last component is a symlink, it will not be followed.
-    pub fn lookup_unresolved_no_follow(&self, fs_path: &FsPath) -> Result<LookupResult> {
+    pub(crate) fn lookup_unresolved_no_follow(&self, fs_path: &FsPath) -> Result<LookupResult> {
         self.lookup_inner(fs_path, false)
     }
 
@@ -761,7 +826,7 @@ impl PathResolver {
 }
 
 // A result type for lookup operations.
-pub enum LookupResult {
+pub(crate) enum LookupResult {
     /// The entire path was resolved to a final `Path`.
     Resolved(Path),
     /// The path resolution stopped at a parent directory.
@@ -783,7 +848,7 @@ impl LookupResult {
     ///
     /// If the path was resolved or the unresolved name was expected to be a directory, an error
     /// will be returned.
-    pub fn into_parent_and_filename(self) -> Result<(Path, String)> {
+    pub(crate) fn into_parent_and_filename(self) -> Result<(Path, String)> {
         let LookupResult::AtParent(res) = self else {
             return_errno_with_message!(Errno::EEXIST, "the path already exists");
         };
@@ -793,7 +858,7 @@ impl LookupResult {
     /// Consumes the `LookupResult` and returns the parent path and the unresolved name.
     ///
     /// If the path was resolved, an error will be returned.
-    pub fn into_parent_and_basename(self) -> Result<(Path, String)> {
+    pub(crate) fn into_parent_and_basename(self) -> Result<(Path, String)> {
         let LookupResult::AtParent(res) = self else {
             return_errno_with_message!(Errno::EEXIST, "the path already exists");
         };
@@ -803,7 +868,7 @@ impl LookupResult {
 
 /// A result that contains information about a path lookup that stopped
 /// at a parent directory.
-pub struct LookupParentResult {
+pub(crate) struct LookupParentResult {
     /// The path of the parent directory where resolution stopped.
     parent: Path,
     /// The remaining unresolved component name.
@@ -822,14 +887,14 @@ impl LookupParentResult {
     }
 
     /// Returns true if the target was expected to be a directory.
-    pub fn target_is_dir(&self) -> bool {
+    pub(crate) fn target_is_dir(&self) -> bool {
         self.target_is_dir
     }
 
     /// Consumes the `LookupParentResult` and returns the parent path and the unresolved file name.
     ///
     /// If the unresolved name was expected to be a directory, an error will be returned.
-    pub fn into_parent_and_filename(self) -> Result<(Path, String)> {
+    pub(crate) fn into_parent_and_filename(self) -> Result<(Path, String)> {
         if self.target_is_dir {
             return_errno_with_message!(Errno::ENOENT, "the path is a directory");
         }
@@ -837,14 +902,14 @@ impl LookupParentResult {
     }
 
     /// Consumes the `LookupParentResult` and returns the parent path and the unresolved name.
-    pub fn into_parent_and_basename(self) -> (Path, String) {
+    pub(crate) fn into_parent_and_basename(self) -> (Path, String) {
         (self.parent, self.unresolved_name)
     }
 }
 
 /// A path in the file system.
 #[derive(Debug)]
-pub struct FsPath<'a> {
+pub(crate) struct FsPath<'a> {
     inner: FsPathInner<'a>,
 }
 
@@ -867,7 +932,7 @@ impl<'a> FsPath<'a> {
     ///
     /// If the FD is not valid (i.e., it's negative and it's not [`AT_FDCWD`]), an error will be
     /// returned.
-    pub fn from_fd(dirfd: RawFileDesc) -> Result<Self> {
+    pub(crate) fn from_fd(dirfd: RawFileDesc) -> Result<Self> {
         let fs_path_inner = if dirfd == AT_FDCWD {
             FsPathInner::Cwd
         } else {
@@ -892,7 +957,11 @@ impl<'a> FsPath<'a> {
     /// - `ENOENT` if `path` is empty and `policy` does not permit it.
     /// - `ENAMETOOLONG` if `path.len() > PATH_MAX`.
     /// - `EBADF` if `dirfd` is negative and is not [`AT_FDCWD`].
-    pub fn from_fd_at(dirfd: RawFileDesc, path: &'a str, policy: EmptyPathStr) -> Result<Self> {
+    pub(crate) fn from_fd_at(
+        dirfd: RawFileDesc,
+        path: &'a str,
+        policy: EmptyPathStr,
+    ) -> Result<Self> {
         if path.is_empty() {
             let allowed = match policy {
                 EmptyPathStr::Reject => false,
@@ -932,7 +1001,7 @@ impl<'a> TryFrom<&'a str> for FsPath<'a> {
 }
 
 /// Utilities to split a string into its path components.
-pub trait SplitPath {
+pub(crate) trait SplitPath {
     /// Splits a path into the parent directory name and the final component name.
     ///
     /// This behaves in a similar way to the POSIX C functions [`dirname()` and
@@ -974,7 +1043,7 @@ impl SplitPath for str {
 /// These errors intentionally describe only what the path string looks like.
 /// Callers are responsible for translating them into syscall- or subsystem-specific `Errno`s.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SplitPathError {
+pub(crate) enum SplitPathError {
     /// The path to be split is empty (``).
     Empty,
     /// The path to be split is root
@@ -984,7 +1053,7 @@ pub enum SplitPathError {
 
 impl SplitPathError {
     /// Converts the error into an [`Error`], rejecting a root path as [`Errno::EBUSY`].
-    pub fn reject_root_as_busy(self) -> Error {
+    pub(crate) fn reject_root_as_busy(self) -> Error {
         match self {
             Self::Empty => Error::with_message(Errno::ENOENT, "the path is empty"),
             Self::Root => {
@@ -994,7 +1063,7 @@ impl SplitPathError {
     }
 
     /// Converts the error into an [`Error`], rejecting a root path as [`Errno::EISDIR`].
-    pub fn reject_root_as_is_dir(self) -> Error {
+    pub(crate) fn reject_root_as_is_dir(self) -> Error {
         match self {
             Self::Empty => Error::with_message(Errno::ENOENT, "the path is empty"),
             Self::Root => {

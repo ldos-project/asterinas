@@ -52,13 +52,13 @@ use super::{
         meta::{AnyFrameMeta, MetaPageMeta, mapping},
     },
     page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
-    page_table::{PageTable, PageTableConfig},
+    page_table::{PageTable, PageTableConfig, largest_pages, max_page_level},
 };
 use crate::{
     arch::mm::{PageTableEntry, PagingConsts},
     boot::memory_region::MemoryRegionType,
     const_assert, info,
-    mm::{HasPaddr, PAGE_SIZE, PagingLevel, frame::FrameRef, page_table::largest_pages},
+    mm::{HasPaddr, PAGE_SIZE, PagingLevel, frame::FrameRef},
     task::disable_preempt,
 };
 
@@ -70,11 +70,11 @@ const ADDR_WIDTH_SHIFT: usize = PagingConsts::ADDRESS_WIDTH - 39;
 
 /// Start of the kernel address space.
 #[cfg(not(target_arch = "loongarch64"))]
-pub const KERNEL_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+pub(super) const KERNEL_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
 #[cfg(target_arch = "loongarch64")]
-pub const KERNEL_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
+pub(super) const KERNEL_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
 /// End of the kernel address space (non inclusive).
-pub const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000;
+pub(super) const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000;
 
 /// The maximum virtual address of user space (non inclusive).
 ///
@@ -98,35 +98,36 @@ pub const KERNEL_VADDR_RANGE: Range<Vaddr> = KERNEL_BASE_VADDR..KERNEL_END_VADDR
 /// FIXME: This offset should be randomly chosen by the loader or the
 /// boot compatibility layer. But we disabled it because OSTD
 /// doesn't support relocatable kernel yet.
-pub fn kernel_loaded_offset() -> usize {
+pub(crate) fn kernel_loaded_offset() -> usize {
     KERNEL_CODE_BASE_VADDR
 }
 
 #[cfg(target_arch = "x86_64")]
 const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_8000_0000;
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_0000_0000;
 #[cfg(target_arch = "loongarch64")]
 const KERNEL_CODE_BASE_VADDR: usize = 0x9000_0000_0000_0000;
 
 const FRAME_METADATA_CAP_VADDR: Vaddr = 0xffff_fff0_8000_0000 << ADDR_WIDTH_SHIFT;
 const FRAME_METADATA_BASE_VADDR: Vaddr = 0xffff_fff0_0000_0000 << ADDR_WIDTH_SHIFT;
-pub(in crate::mm) const FRAME_METADATA_RANGE: Range<Vaddr> =
+pub(super) const FRAME_METADATA_RANGE: Range<Vaddr> =
     FRAME_METADATA_BASE_VADDR..FRAME_METADATA_CAP_VADDR;
 
 const VMALLOC_BASE_VADDR: Vaddr = 0xffff_ffe0_0000_0000 << ADDR_WIDTH_SHIFT;
-pub const VMALLOC_VADDR_RANGE: Range<Vaddr> = VMALLOC_BASE_VADDR..FRAME_METADATA_BASE_VADDR;
+pub(super) const VMALLOC_VADDR_RANGE: Range<Vaddr> = VMALLOC_BASE_VADDR..FRAME_METADATA_BASE_VADDR;
 
 /// The base address of the linear mapping of all physical
 /// memory in the kernel address space.
 #[cfg(not(target_arch = "loongarch64"))]
-pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+pub(crate) const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
 #[cfg(target_arch = "loongarch64")]
-pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
-pub const LINEAR_MAPPING_VADDR_RANGE: Range<Vaddr> = LINEAR_MAPPING_BASE_VADDR..VMALLOC_BASE_VADDR;
+pub(crate) const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
+pub(crate) const LINEAR_MAPPING_VADDR_RANGE: Range<Vaddr> =
+    LINEAR_MAPPING_BASE_VADDR..VMALLOC_BASE_VADDR;
 
 /// Convert physical address to virtual address using offset, only available inside `ostd`
-pub fn paddr_to_vaddr(pa: Paddr) -> usize {
+pub(crate) fn paddr_to_vaddr(pa: Paddr) -> usize {
     debug_assert!(pa < VMALLOC_BASE_VADDR - LINEAR_MAPPING_BASE_VADDR);
     pa + LINEAR_MAPPING_BASE_VADDR
 }
@@ -227,7 +228,7 @@ pub(crate) enum MappedItemRef<'a> {
 ///
 /// This function should be called before:
 ///  - any initializer that modifies the kernel page table.
-pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
+pub(crate) fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
     info!("Initializing the kernel page table");
 
     // Start to initialize the kernel page table.
@@ -245,26 +246,31 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
+        let min_level = max_page_level::<KernelPtConfig>(from.len());
+        let mut cursor = kpt
+            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
+            .unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, 0, max_paddr) {
-            // SAFETY: we are doing the linear mapping for the kernel.
+            // SAFETY: We are doing the linear mapping for the kernel.
             unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
         }
     }
 
     // Map the metadata pages.
     {
-        let start_va = mapping::frame_to_meta(0);
+        let start_va = mapping::frame_to_meta(crate::mm::frame::min_paddr());
         let from = start_va..start_va + meta_pages.size();
         let prop = PageProperty {
             flags: PageFlags::RW,
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
+        let min_level = max_page_level::<KernelPtConfig>(from.len());
+        let mut cursor = kpt
+            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
+            .unwrap();
         // We use untracked mapping so that we can benefit from huge pages.
         // We won't unmap them anyway, so there's no leaking problem yet.
-        // TODO: support tracked huge page mapping.
         let pa_range = meta_pages.into_raw();
         for (pa, level) in
             largest_pages::<KernelPtConfig>(from.start, pa_range.start, pa_range.len())
@@ -291,9 +297,12 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
+        let min_level = max_page_level::<KernelPtConfig>(from.len());
+        let mut cursor = kpt
+            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
+            .unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, region.base(), from.len()) {
-            // SAFETY: we are doing the kernel code mapping.
+            // SAFETY: We are doing the kernel code mapping.
             unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
         }
     }
@@ -309,11 +318,11 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
 /// # Safety
 ///
 /// This function must only be called once per CPU.
-pub unsafe fn activate_kernel_page_table() {
+pub(crate) unsafe fn activate_kernel_page_table() {
     let kpt = KERNEL_PAGE_TABLE
         .get()
         .expect("The kernel page table is not initialized yet");
-    // SAFETY: the kernel page table is initialized properly.
+    // SAFETY: The kernel page table is initialized properly.
     unsafe {
         kpt.first_activate_unchecked();
         crate::arch::mm::tlb_flush_all_including_global();

@@ -2,9 +2,9 @@
 /// Ringbuffer based implementations of OQueue
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
-pub mod mpmc;
+pub(crate) mod mpmc;
 
-pub use mpmc::MPMCOQueue;
+pub(crate) use mpmc::MPMCOQueue;
 
 /// A single element (slot for storing a value) in a ring buffer.
 #[derive(Debug)]

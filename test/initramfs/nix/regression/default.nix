@@ -10,7 +10,6 @@ let
   commonBuild = dir: callPackage ./common.nix (commonArgs // { inherit dir; });
 
   subDirs = [
-    "device"
     "fs"
     "hello_world"
     "io"
@@ -25,6 +24,11 @@ let
   tdxAttest = callPackage ./tdx-attest.nix { };
 
   allPkgs = lib.genAttrs subDirs commonBuild // {
+    device = callPackage ./common.nix (commonArgs // {
+      dir = "device";
+      extraAttrs = { C_FLAGS = "-I${pkgs.libdrm.dev}/include/libdrm"; };
+      extraBuildInputs = [ pkgs.libdrm ];
+    });
     network = callPackage ./common.nix (commonArgs // {
       dir = "network";
       extraAttrs = { C_FLAGS = "-I${pkgs.libnl.dev}/include/libnl3"; };

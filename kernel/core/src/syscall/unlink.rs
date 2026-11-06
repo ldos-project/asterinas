@@ -10,7 +10,7 @@ use crate::{
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_unlinkat(
+pub(super) fn sys_unlinkat(
     dirfd: RawFileDesc,
     path_addr: Vaddr,
     flags: u32,
@@ -19,7 +19,7 @@ pub fn sys_unlinkat(
     let flags = UnlinkFlags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     if flags.contains(UnlinkFlags::AT_REMOVEDIR) {
-        return super::rmdir::sys_rmdirat(dirfd, path_addr, ctx);
+        return super::rmdir::do_rmdirat(dirfd, path_addr, ctx);
     }
 
     let path_name = ctx.user_space().read_cstring(path_addr, MAX_FILENAME_LEN)?;
@@ -58,7 +58,7 @@ pub fn sys_unlinkat(
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_unlink(path_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_unlink(path_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     sys_unlinkat(AT_FDCWD, path_addr, 0, ctx)
 }
 

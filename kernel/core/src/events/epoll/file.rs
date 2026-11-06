@@ -38,7 +38,7 @@ use crate::{
 /// on the files. To do so, the `EpollFile` registers itself as an `Observer` to
 /// the monotored files. Thus, we can add a file to the ready list when an interesting
 /// event happens on the file.
-pub struct EpollFile {
+pub(crate) struct EpollFile {
     // All interesting entries.
     interest: Mutex<BTreeSet<EntryHolder>>,
     // A set of ready entries.
@@ -52,18 +52,19 @@ pub struct EpollFile {
 
 impl EpollFile {
     /// Creates a new epoll file.
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[eventpoll]".to_string());
 
         Arc::new(Self {
             interest: Mutex::new(BTreeSet::new()),
             ready: Arc::new(ReadySet::new()),
-            common: FileCommon::new(pseudo_path, StatusFlags::empty()),
+            // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/eventpoll.c#L2191>.
+            common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, StatusFlags::empty()),
         })
     }
 
     /// Controls the interest list of the epoll file.
-    pub fn control(&self, thread_local: &ThreadLocal, cmd: &EpollCtl) -> Result<()> {
+    pub(crate) fn control(&self, thread_local: &ThreadLocal, cmd: &EpollCtl) -> Result<()> {
         let fd = match cmd {
             EpollCtl::Add(fd, ..) => *fd,
             EpollCtl::Del(fd) => *fd,
@@ -189,7 +190,11 @@ impl EpollFile {
     ///
     /// When `max_events` equals to zero, the method returns when the timeout
     /// expires or a signal arrives.
-    pub fn wait(&self, max_events: usize, timeout: Option<&Duration>) -> Result<Vec<EpollEvent>> {
+    pub(crate) fn wait(
+        &self,
+        max_events: usize,
+        timeout: Option<&Duration>,
+    ) -> Result<Vec<EpollEvent>> {
         let mut ep_events = Vec::new();
 
         self.wait_events(IoEvents::IN, timeout, || {
@@ -268,11 +273,6 @@ impl FileLike for EpollFile {
         return_errno_with_message!(Errno::ENOTTY, "epoll files do not support ioctl");
     }
 
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/eventpoll.c#L2191>.
-        AccessMode::O_RDWR
-    }
-
     fn common(&self) -> &FileCommon {
         &self.common
     }
@@ -285,8 +285,8 @@ impl FileLike for EpollFile {
 
         impl Display for FdInfo {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                let mut flags =
-                    self.inner.common.status_flags().bits() | self.inner.access_mode() as u32;
+                let mut flags = self.inner.common.status_flags().bits()
+                    | self.inner.common.access_mode() as u32;
                 if self.fd_flags.contains(FdFlags::CLOEXEC) {
                     flags |= CreationFlags::O_CLOEXEC.bits();
                 }

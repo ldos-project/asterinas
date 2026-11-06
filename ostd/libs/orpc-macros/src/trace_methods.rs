@@ -21,7 +21,7 @@ fn module_name(type_name: &Ident) -> Ident {
 
 /// The options of a `trace_methods` attribute on an impl.
 #[derive(Default)]
-pub struct ImplOptions {
+pub(crate) struct ImplOptions {
     /// Visibility of generated event types.
     visibility: Option<Visibility>,
     /// Module containing the implemented trait.
@@ -62,7 +62,7 @@ impl Parse for ImplOptions {
 }
 
 /// Removes tracing annotations from a trait or impl for baseline builds.
-pub fn baseline_trace_methods(mut item: Item) -> syn::Result<TokenStream> {
+pub(crate) fn baseline_trace_methods(mut item: Item) -> syn::Result<TokenStream> {
     match &mut item {
         Item::Impl(impl_block) => {
             for item in &mut impl_block.items {
@@ -284,7 +284,7 @@ impl TraceModulePath {
 }
 
 /// Expand a traced impl with call and return events.
-pub fn trace_methods_impl(
+pub(crate) fn trace_methods_impl(
     options: ImplOptions,
     mut impl_block: ItemImpl,
 ) -> syn::Result<TokenStream> {
@@ -382,7 +382,7 @@ pub fn trace_methods_impl(
 }
 
 /// Expand a traced trait with call and return event types.
-pub fn trace_methods_trait(
+pub(crate) fn trace_methods_trait(
     options: ImplOptions,
     mut trait_item: ItemTrait,
 ) -> syn::Result<TokenStream> {

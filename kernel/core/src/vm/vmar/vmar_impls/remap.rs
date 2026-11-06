@@ -9,7 +9,7 @@ use crate::{prelude::*, vm::vmar::is_userspace_vaddr_range};
 
 /// Controls how the old mapping is handled during a `remap` operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemapOldMappingAction {
+pub(crate) enum RemapOldMappingAction {
     /// Remove the old mapping after moving pages.
     Unmap,
     /// Keep the old address range mapped with its original properties.
@@ -38,7 +38,7 @@ impl Vmar {
     ///   method will return an `Err`.
     ///
     /// [`VmMapping`]: crate::vm::vmar::vm_mapping::VmMapping
-    pub fn resize_mapping(
+    pub(crate) fn resize_mapping(
         &self,
         map_addr: Vaddr,
         old_size: usize,
@@ -81,7 +81,7 @@ impl Vmar {
     /// This method panics if `new_addr` is `None` and `new_size <= old_size`
     /// (unless `action` is [`RemapOldMappingAction::Keep`]).
     /// Use `resize_mapping` instead in this case.
-    pub fn remap(
+    pub(crate) fn remap(
         &self,
         old_addr: Vaddr,
         old_size: usize,
@@ -109,6 +109,12 @@ impl Vmar {
                     "remap: device mappings cannot be expanded"
                 );
             }
+            if let Some(vmo) = old_mapping.vmo()
+                && let offset = vmo.offset() + (old_addr - old_mapping.map_to_addr())
+                && offset.checked_add(new_size).is_none()
+            {
+                return_errno_with_message!(Errno::EINVAL, "remap: the file offset overflows");
+            }
             inner.check_extra_size_fits_rlimit(new_size - old_size)?;
         }
 
@@ -122,7 +128,7 @@ impl Vmar {
                 old_addr + new_size,
                 old_size - new_size,
                 &mut rss_delta,
-            )?;
+            );
             (new_size, old_addr..old_addr + new_size)
         } else {
             (old_size, old_addr..old_addr + old_size)
@@ -143,7 +149,8 @@ impl Vmar {
                     "remap: the new range overlaps with the old one"
                 );
             }
-            inner.alloc_free_region_exact_truncate(self, new_addr, new_size, &mut rss_delta)?
+
+            inner.alloc_free_region_exact_truncate(self, new_addr, new_size, &mut rss_delta)
         } else {
             // Fast path: expand the old mapping in place to the new size.
             // Skip when `action` is `RemapOldMappingAction::Keep` since we must

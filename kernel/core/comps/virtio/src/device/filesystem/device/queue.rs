@@ -12,6 +12,7 @@ use core::mem;
 use aster_fuse::FuseError;
 use aster_softirq::Taskless;
 use aster_util::{mem_obj_slice::Slice, slot_vec::SlotVec};
+use dma_pool::DmaBuffer;
 use ostd::{
     mm::dma::{FromDevice, ToDevice},
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
@@ -20,14 +21,15 @@ use smallvec::SmallVec;
 use spin::Once;
 
 use super::request::FuseRequest;
-use crate::{device::filesystem::pool::FsDmaStorage, queue::VirtQueue};
+use crate::queue::VirtQueue;
 
 /// Maximum virtqueue descriptors used by one FUSE request.
 ///
-/// Current requests use at most two to-device buffers (request header/body and
-/// optional write payload) and two from-device buffers (reply header and
-/// optional read payload).
-pub(super) const MAX_DMA_BUFS_PER_REQUEST: usize = 4;
+/// A request may contain a request header, multiple read/write payload buffers,
+/// a reply header, and a write reply payload. Operation-specific limits reserve
+/// descriptors for these fixed parts and keep one request from exhausting a
+/// queue.
+pub(crate) const MAX_DMA_BUFS_PER_REQUEST: usize = 64;
 
 /// A virtio-fs request queue and its in-flight request state.
 pub(super) struct FsRequestQueue {
@@ -101,13 +103,13 @@ impl FsRequestQueue {
                     .request_bufs()
                     .iter()
                     .map(|buf| buf.as_dma_slice())
-                    .collect::<SmallVec<[&Slice<FsDmaStorage<ToDevice>>; 2]>>();
+                    .collect::<SmallVec<[&Slice<DmaBuffer<ToDevice>>; 2]>>();
                 let reply_bufs = request
                     .waiter()
                     .reply_bufs()
                     .iter()
                     .map(|buf| buf.as_dma_slice())
-                    .collect::<SmallVec<[&Slice<FsDmaStorage<FromDevice>>; 2]>>();
+                    .collect::<SmallVec<[&Slice<DmaBuffer<FromDevice>>; 2]>>();
 
                 inner
                     .queue

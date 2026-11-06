@@ -3,13 +3,13 @@
 mod copy_compact;
 pub mod ioctl;
 mod iovec;
-pub mod net;
-pub mod random;
+pub(crate) mod net;
+pub(crate) mod random;
 mod read_cstring;
-pub mod ring_buffer;
+pub(crate) mod ring_buffer;
 #[cfg(not(baseline_asterinas))]
-pub mod timer;
+pub(crate) mod timer;
 
-pub use copy_compact::CopyCompat;
-pub use iovec::{MultiRead, MultiWrite, VmReaderArray, VmWriterArray};
-pub use read_cstring::ReadCString;
+pub(crate) use copy_compact::CopyCompat;
+pub(crate) use iovec::{MultiRead, MultiWrite, VmReaderArray, VmWriterArray};
+pub(crate) use read_cstring::ReadCString;

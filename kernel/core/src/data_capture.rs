@@ -27,7 +27,7 @@ use crate::{prelude::*, util::timer::TimerServer};
 struct DataCaptureManager {}
 
 impl DataCaptureManager {
-    pub fn spawn(period: Duration) -> Arc<Self> {
+    pub(crate) fn spawn(period: Duration) -> Arc<Self> {
         let server = new_server!(|_| Self {});
         spawn_thread(server.clone(), {
             let server = server.clone();
@@ -36,7 +36,7 @@ impl DataCaptureManager {
         server
     }
 
-    pub fn main(&self, period: Duration) -> Result<(), Box<dyn core::error::Error>> {
+    pub(crate) fn main(&self, period: Duration) -> Result<(), Box<dyn core::error::Error>> {
         let notify_server = TimerServer::spawn(period);
 
         let notify_observer = notify_server
@@ -106,7 +106,7 @@ pub(super) fn start_capture_devices() {
 }
 
 /// Create a new data capture file for OQueues.
-pub fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
+pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
 ) -> Option<Arc<dyn mariposa_data_capture::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE
@@ -144,7 +144,7 @@ pub fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
 /// There is no way to put the path of the actual source OQueue into the output file via the query.
 /// This is because `Path` is not `Copy`, so it can't go in the event. (see
 /// https://github.com/ldos-project/asterinas/issues/232)
-pub fn new_data_capture_data_file_by_type<
+pub(crate) fn new_data_capture_data_file_by_type<
     T: Element,
     E: Copy + Sync + Send + Serialize + 'static,
 >(

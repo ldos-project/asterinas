@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote};
 
-pub fn derive(input: TokenStream) -> TokenStream {
+pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(input)
         .unwrap_or_else(syn::Error::into_compile_error)

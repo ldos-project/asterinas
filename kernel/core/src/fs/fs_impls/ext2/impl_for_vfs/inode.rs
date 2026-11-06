@@ -15,7 +15,7 @@ use device_id::DeviceId;
 use crate::{
     device,
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, SyncMode},
         fs_impls::ext2::{FilePerm, Inode as Ext2Inode},
         utils::DirentVisitor,
         vfs::{
@@ -24,6 +24,7 @@ use crate::{
                 Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
                 SymbolicLink,
             },
+            path::Dentry,
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
@@ -69,7 +70,7 @@ impl Inode for Ext2Inode {
         self.file_size()
     }
 
-    fn resize(&self, new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, new_size: usize) -> Result<()> {
         self.resize(new_size)
     }
 
@@ -89,7 +90,7 @@ impl Inode for Ext2Inode {
         Ok(self.mode())
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         self.set_mode(mode)
     }
 
@@ -97,7 +98,7 @@ impl Inode for Ext2Inode {
         Ok(Uid::new(self.uid()))
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         self.set_uid(uid.into())
     }
 
@@ -105,7 +106,7 @@ impl Inode for Ext2Inode {
         Ok(Gid::new(self.gid()))
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         self.set_gid(gid.into())
     }
 
@@ -113,7 +114,7 @@ impl Inode for Ext2Inode {
         self.atime()
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_atime(time)
     }
 
@@ -121,7 +122,7 @@ impl Inode for Ext2Inode {
         self.mtime()
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_mtime(time)
     }
 
@@ -129,7 +130,7 @@ impl Inode for Ext2Inode {
         self.ctime()
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_ctime(time)
     }
 
@@ -139,6 +140,7 @@ impl Inode for Ext2Inode {
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
@@ -171,11 +173,33 @@ impl Inode for Ext2Inode {
         }
     }
 
-    fn create(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Arc<dyn Inode>> {
+    fn create(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        type_: InodeType,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
         Ok(self.create(name, type_, mode.into())?)
     }
 
-    fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Arc<dyn Inode>> {
+    fn create_symlink(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        target: &str,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        Ok(self.create_symlink(name, target, mode.into())?)
+    }
+
+    fn mknod(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
         let (inode_type, device_id) = match type_ {
             MknodType::CharDevice(dev_id) => (InodeType::CharDevice, Some(dev_id)),
             MknodType::BlockDevice(dev_id) => (InodeType::BlockDevice, Some(dev_id)),
@@ -195,59 +219,58 @@ impl Inode for Ext2Inode {
         Ok(self.lookup(name)?)
     }
 
-    fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
-        let old = old
-            .downcast_ref::<Ext2Inode>()
-            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
+    fn link(&self, _self_dentry: &Dentry, old_dentry: &Dentry, name: &str) -> Result<()> {
+        let old = old_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
         self.link(old, name)
     }
 
-    fn unlink(&self, name: &str) -> Result<()> {
-        self.unlink(name)
+    fn unlink(&self, child_dentry: &Dentry) -> Result<()> {
+        let child = child_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
+        self.unlink(&child_dentry.name(), child)
     }
 
-    fn rmdir(&self, name: &str) -> Result<()> {
-        self.rmdir(name)
+    fn rmdir(&self, child_dentry: &Dentry) -> Result<()> {
+        let child = child_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
+        self.rmdir(&child_dentry.name(), child)
     }
 
     fn rename(
         &self,
-        old_name: &str,
-        target: &Arc<dyn Inode>,
+        old_child_dentry: &Dentry,
+        new_dir_dentry: &Dentry,
         new_name: &str,
+        replaced_inode: Option<&Arc<dyn Inode>>,
         mode: RenameMode,
     ) -> Result<()> {
         if mode == RenameMode::Exchange {
             return_errno_with_message!(Errno::EINVAL, "RENAME_EXCHANGE is not supported on ext2");
         }
 
-        let target = target
+        let new_dir_inode = new_dir_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
+        let old_inode = old_child_dentry
+            .inode()
             .downcast_ref::<Ext2Inode>()
-            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
-        self.rename(old_name, target, new_name)
+            .unwrap();
+        let replaced_inode = replaced_inode.map(|inode| inode.downcast_ref::<Ext2Inode>().unwrap());
+
+        self.rename(
+            &old_child_dentry.name(),
+            old_inode,
+            new_dir_inode,
+            new_name,
+            replaced_inode,
+        )
     }
 
     fn read_link(&self) -> Result<SymbolicLink> {
         self.read_link().map(SymbolicLink::Plain)
     }
 
-    fn write_link(&self, target: &str) -> Result<()> {
-        self.write_link(target)
-    }
-
-    fn sync_all(&self) -> Result<()> {
-        self.sync_all()?;
-        let fs = self.fs()?;
-        let block_group = fs.block_group(self.block_group_idx());
-        block_group.sync_inode_table()?;
-        if fs.block_device().sync()? != BioStatus::Complete {
-            return_errno_with_message!(Errno::EIO, "failed to flush block device");
+    fn sync(&self, mode: SyncMode) -> Result<()> {
+        match mode {
+            SyncMode::Data => self.sync_data()?,
+            SyncMode::Full => self.sync_all()?,
         }
-        Ok(())
-    }
-
-    fn sync_data(&self) -> Result<()> {
-        self.sync_data()?;
         let fs = self.fs()?;
         let block_group = fs.block_group(self.block_group_idx());
         block_group.sync_inode_table()?;
@@ -272,26 +295,23 @@ impl Inode for Ext2Inode {
 
     fn set_xattr(
         &self,
+        _self_dentry: &Dentry,
         name: XattrName,
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
     ) -> Result<()> {
-        self.check_permission(Permission::MAY_WRITE)?;
         self.set_xattr(name, value_reader, flags)
     }
 
     fn get_xattr(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize> {
-        self.check_permission(Permission::MAY_READ)?;
         self.get_xattr(name, value_writer)
     }
 
     fn list_xattr(&self, namespace: XattrNamespace, list_writer: &mut VmWriter) -> Result<usize> {
-        self.check_permission(Permission::MAY_ACCESS)?;
         self.list_xattr(namespace, list_writer)
     }
 
-    fn remove_xattr(&self, name: XattrName) -> Result<()> {
-        self.check_permission(Permission::MAY_WRITE)?;
+    fn remove_xattr(&self, _self_dentry: &Dentry, name: XattrName) -> Result<()> {
         self.remove_xattr(name)
     }
 }

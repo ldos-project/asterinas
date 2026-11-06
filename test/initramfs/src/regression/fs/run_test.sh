@@ -113,9 +113,16 @@ echo "Start mount bind file test......"
 test_mount_bind_file
 echo "All mount bind file test passed."
 
+TEST_TMPDIR=/tmp TEST_DIRECT=0 ./empty_write/empty_write
+TEST_TMPDIR=/exfat TEST_DIRECT=0 ./empty_write/empty_write
+TEST_TMPDIR=/exfat TEST_DIRECT=1 ./empty_write/empty_write
+TEST_TMPDIR=/ext2 TEST_DIRECT=0 ./empty_write/empty_write
+TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
+
 ./getcwd/getcwd
 
 ./inotify/inotify_align
+./inotify/inotify_close
 ./inotify/inotify_o_path
 ./inotify/inotify_poll
 ./inotify/inotify_unlink
@@ -126,9 +133,16 @@ echo "All mount bind file test passed."
 ./mount/listmount
 ./mount/mount_api
 ./mount/mount_move
+./mount/mount_propagation
 
+./overlayfs/lchown_lower_symlink
+./overlayfs/link_lower_file
+./overlayfs/mknod_whiteout_rejected
 ./overlayfs/ovl_test
 ./overlayfs/readdir_small_buffer
+./overlayfs/rmdir_lower_only_nonempty
+./overlayfs/sparse_copyup_consistency
+./overlayfs/xino_dino_identity
 
 ./procfs/dentry_cache
 ./procfs/fd

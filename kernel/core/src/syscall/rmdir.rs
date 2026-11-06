@@ -10,11 +10,11 @@ use crate::{
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_rmdir(path_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    sys_rmdirat(AT_FDCWD, path_addr, ctx)
+pub(super) fn sys_rmdir(path_addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+    do_rmdirat(AT_FDCWD, path_addr, ctx)
 }
 
-pub(super) fn sys_rmdirat(
+pub(super) fn do_rmdirat(
     dirfd: RawFileDesc,
     path_addr: Vaddr,
     ctx: &Context,

@@ -3,7 +3,7 @@ use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{Fields, ItemStruct, parse_macro_input, spanned::Spanned};
 
-pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
+pub(crate) fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemStruct);
 
     let fields = match &input.fields {

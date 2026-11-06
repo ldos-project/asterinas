@@ -4,8 +4,10 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,
     ops::{Deref, DerefMut},
+    pin::Pin,
 };
 
+use acpi::madt::{Madt, MadtEntry};
 use ioapic::IoApic;
 use spin::Once;
 
@@ -161,8 +163,6 @@ impl Drop for MappedIrqLine {
 pub static IRQ_CHIP: Once<IrqChip> = Once::new();
 
 pub(in crate::arch) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
-    use acpi::madt::{Madt, MadtEntry};
-
     // If there are no ACPI tables, or the ACPI tables do not provide us with information about
     // the I/O APIC, we may need to find another way to determine the I/O APIC address
     // correctly and reliably (e.g., by parsing the MultiProcessor Specification, which has
@@ -170,14 +170,9 @@ pub(in crate::arch) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
     let acpi_tables = get_acpi_tables().unwrap();
     let madt_table = acpi_tables.find_table::<Madt>().unwrap();
 
-    // "A one indicates that the system also has a PC-AT-compatible dual-8259 setup. The 8259
-    // vectors must be disabled (that is, masked) when enabling the ACPI APIC operation"
-    const PCAT_COMPAT: u32 = 1;
-    if madt_table.get().flags & PCAT_COMPAT != 0 {
-        pic::init_and_disable();
-    }
+    init_and_disable_pic_if_present(madt_table.get());
 
-    let mut io_apics = Vec::with_capacity(2);
+    let mut io_apics: Vec<IoApic> = Vec::with_capacity(2);
     let mut isa_overrides = Vec::new();
 
     const BUS_ISA: u8 = 0; // "0 Constant, meaning ISA".
@@ -185,15 +180,55 @@ pub(in crate::arch) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
     for madt_entry in madt_table.get().entries() {
         match madt_entry {
             MadtEntry::IoApic(madt_io_apic) => {
-                // SAFETY: We trust the ACPI tables (as well as the MADTs in them), from which the
-                // base address is obtained, so it is a valid I/O APIC base address.
-                let io_apic = unsafe {
+                let address = madt_io_apic.io_apic_address as usize;
+                let interrupt_base = madt_io_apic.global_system_interrupt_base;
+
+                // ACPI tables may contain buggy MADT entries. We perform checks similar to those in
+                // the Linux implementation to identify and skip these entries.
+                // Reference: <https://elixir.bootlin.com/linux/v7.2.2/source/arch/x86/kernel/apic/io_apic.c#L2672>
+
+                if address == 0 {
+                    crate::warn!("IOAPIC address is invalid (zero), skipping");
+                    continue;
+                }
+                if io_apics
+                    .iter()
+                    .any(|existing| existing.address() == address)
+                {
+                    crate::warn!(
+                        "IOAPIC address {:#x} duplicates an existing one, skipping",
+                        address
+                    );
+                    continue;
+                }
+
+                // SAFETY: The base address is non-zero and is obtained from the MADTs. Therefore,
+                // it is a valid I/O APIC base address for `IoApic::new`, which performs further
+                // checks and rejects entries whose registers return all ones.
+                let Some(io_apic) = (unsafe {
                     IoApic::new(
                         madt_io_apic.io_apic_address as usize,
                         madt_io_apic.global_system_interrupt_base,
                         io_mem_builder,
                     )
+                }) else {
+                    continue;
                 };
+
+                let interrupt_end = io_apic.interrupt_end();
+                if io_apics.iter().any(|existing| {
+                    interrupt_base <= existing.interrupt_end()
+                        && interrupt_end >= existing.interrupt_base()
+                }) {
+                    crate::warn!(
+                        "IOAPIC {:#x} GSI range [{}-{}] conflicts with an existing IOAPIC, skipping",
+                        address,
+                        interrupt_base,
+                        interrupt_end
+                    );
+                    continue;
+                }
+
                 io_apics.push(io_apic);
             }
             MadtEntry::InterruptSourceOverride(madt_isa_override)
@@ -239,4 +274,13 @@ pub(in crate::arch) fn init(io_mem_builder: &IoMemAllocatorBuilder) {
         overrides: isa_overrides.into_boxed_slice(),
     };
     IRQ_CHIP.call_once(|| irq_chip);
+}
+
+fn init_and_disable_pic_if_present(madt_table: Pin<&Madt>) {
+    // "A one indicates that the system also has a PC-AT-compatible dual-8259 setup. The 8259
+    // vectors must be disabled (that is, masked) when enabling the ACPI APIC operation."
+    const PCAT_COMPAT: u32 = 1;
+    if madt_table.flags & PCAT_COMPAT != 0 || pic::probe_legacy_pic() {
+        pic::init_and_disable();
+    }
 }

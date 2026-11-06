@@ -2,7 +2,7 @@
 
 //! Kernel initialization.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use aster_cmdline::INIT_PROC_ARGS;
 use aster_time::Instant;
@@ -31,7 +31,10 @@ use crate::data_capture::{self, new_data_capture_file};
 use crate::event::{EventContext, TaskId};
 use crate::{
     benchmarks,
-    fs::vfs::path::{MountNamespace, PathResolver},
+    fs::{
+        initramfs, rootfs,
+        vfs::path::{FsPath, MountNamespace, Path, PathResolver},
+    },
     prelude::*,
     process::{Process, spawn_init_process},
     sched,
@@ -71,7 +74,14 @@ pub(super) fn main() {
         .spawn();
 }
 
+pub(super) fn on_first_process_startup(ctx: &Context) {
+    component::init_all(InitStage::Process, component::parse_metadata!()).unwrap();
+    crate::device::init_in_first_process().unwrap();
+    crate::fs::init_in_first_process(ctx);
+}
+
 fn init() {
+    crate::power::init();
     crate::arch::init();
     crate::util::random::init();
     crate::driver::init();
@@ -90,7 +100,7 @@ fn init() {
 ///
 /// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/221): Something less ad-hoc.
 #[cfg(ktest)]
-pub fn init_for_ktest() {
+pub(crate) fn init_for_ktest() {
     static INITIALIZED: Once<()> = Once::new();
 
     INITIALIZED.call_once(|| {
@@ -193,6 +203,7 @@ fn first_kthread() {
     let init_mnt_ns = MountNamespace::get_init_singleton();
     let fs_resolver = init_mnt_ns.new_path_resolver();
     init_in_first_kthread(&fs_resolver);
+    let boot_init = prepare_boot_init(fs_resolver);
 
     print_banner();
 
@@ -204,9 +215,11 @@ fn first_kthread() {
 
     INIT_PROCESS.call_once(|| {
         let karg = INIT_PROC_ARGS.get().unwrap();
-        let init_path = INIT_PATH.get().map(|s| s.as_str());
-        spawn_init_process(init_path, karg.argv().to_vec(), karg.envp().to_vec())
-            .expect("Failed to run the init process")
+        let argv = karg.argv().to_vec();
+        let envp = karg.envp().to_vec();
+        boot_init
+            .spawn(argv, envp)
+            .expect("failed to run the init process")
     });
 
     #[cfg(not(baseline_asterinas))]
@@ -320,6 +333,107 @@ fn first_kthread() {
     }
 }
 
+struct BootInit {
+    path_resolver: PathResolver,
+    init_path: Option<(Path, &'static str)>,
+}
+
+#[repr(u8)]
+enum BootSource {
+    Initramfs = 0,
+    Rootfs = 1,
+}
+
+pub(crate) fn booted_from_rootfs() -> bool {
+    BOOT_SOURCE.load(Ordering::Relaxed) == BootSource::Rootfs as u8
+}
+
+impl BootInit {
+    fn spawn(self, argv: Vec<CString>, envp: Vec<CString>) -> Result<Arc<Process>> {
+        let Self {
+            path_resolver,
+            init_path,
+        } = self;
+
+        // Only rootfs boot may have no init path; initramfs boot always provides one.
+        let Some((init_path, init_name)) = init_path else {
+            return spawn_default_rootfs_init(path_resolver, argv, envp);
+        };
+
+        println!("[kernel] running {} as the init process", init_name);
+        spawn_init_process(
+            path_resolver,
+            init_path,
+            with_init_argv0(init_name, argv),
+            envp,
+        )
+    }
+}
+
+fn prepare_boot_init(mut path_resolver: PathResolver) -> BootInit {
+    if let Ok(init_path) = initramfs::find_init(&path_resolver) {
+        BOOT_SOURCE.store(BootSource::Initramfs as u8, Ordering::Relaxed);
+        return BootInit {
+            path_resolver,
+            init_path: Some(init_path),
+        };
+    }
+
+    rootfs::switch_to_rootfs(&mut path_resolver)
+        .expect("neither an initramfs init nor a usable root filesystem was available");
+    let init_path = rootfs::find_init(&path_resolver).expect("failed to resolve rootfs init path");
+    BOOT_SOURCE.store(BootSource::Rootfs as u8, Ordering::Relaxed);
+    BootInit {
+        path_resolver,
+        init_path,
+    }
+}
+
+fn spawn_default_rootfs_init(
+    path_resolver: PathResolver,
+    argv: Vec<CString>,
+    envp: Vec<CString>,
+) -> Result<Arc<Process>> {
+    // Linux probes the fallback init executables in this order:
+    // Reference: <https://elixir.bootlin.com/linux/v6.19/source/init/main.c#L1634>.
+    const DEFAULT_INIT_EXEC_PATHS: &[&str] = &["/sbin/init", "/etc/init", "/bin/init", "/bin/sh"];
+
+    let mut last_error = None;
+
+    for &init_name in DEFAULT_INIT_EXEC_PATHS {
+        // FIXME: Avoid cloning `argv` and `envp` for each fallback candidate.
+        let init_path = match path_resolver.lookup(&FsPath::try_from(init_name).unwrap()) {
+            Ok(path) => path,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+
+        match spawn_init_process(
+            path_resolver.clone(),
+            init_path,
+            with_init_argv0(init_name, argv.clone()),
+            envp.clone(),
+        ) {
+            Ok(process) => {
+                println!("[kernel] running {} as the rootfs init", init_name);
+                return Ok(process);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap())
+}
+
+fn with_init_argv0(init_name: &str, mut argv: Vec<CString>) -> Vec<CString> {
+    // Linux prepends the init executable path as `argv[0]`.
+    // Reference: <https://elixir.bootlin.com/linux/v6.19/source/init/main.c#L1491>.
+    argv.insert(0, CString::new(init_name).unwrap());
+    argv
+}
+
 static INIT_PROCESS: Once<Arc<Process>> = Once::new();
 
 pub(crate) fn get_init_process() -> Option<&'static Arc<Process>> {
@@ -328,9 +442,11 @@ pub(crate) fn get_init_process() -> Option<&'static Arc<Process>> {
 
 fn init_in_first_kthread(path_resolver: &PathResolver) {
     component::init_all(InitStage::Kthread, component::parse_metadata!()).unwrap();
-    // Work queue should be initialized before interrupt is enabled,
-    // in case any irq handler uses work queue as bottom half
-    thread::work_queue::init_in_first_kthread();
+    // Initializes the work queue and the other kernel threads' state. This must happen
+    // before interrupts are enabled, in case any IRQ handler uses the work queue as a
+    // bottom half.
+    thread::init_in_first_kthread();
+    crate::fs::init_in_first_kthread(path_resolver);
 
     #[cfg(not(baseline_asterinas))]
     {
@@ -339,8 +455,7 @@ fn init_in_first_kthread(path_resolver: &PathResolver) {
 
     crate::device::init_in_first_kthread();
     crate::net::init_in_first_kthread();
-    crate::fs::init_in_first_kthread(path_resolver);
-    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+    #[cfg(not(target_arch = "loongarch64"))]
     crate::vdso::init_in_first_kthread();
     vm::vmar::init_in_first_kthread();
     crate::syscall::init_in_first_kthread();
@@ -351,14 +466,7 @@ fn print_banner() {
     println!("{}", logo_ascii_art::get_gradient_color_version());
 }
 
-pub(super) fn on_first_process_startup(ctx: &Context) {
-    component::init_all(InitStage::Process, component::parse_metadata!()).unwrap();
-    crate::device::init_in_first_process(ctx).unwrap();
-    crate::fs::init_in_first_process(ctx);
-}
-
-static INIT_PATH: Once<String> = Once::new();
-aster_cmdline::define_kv_param!("init", INIT_PATH);
+static BOOT_SOURCE: AtomicU8 = AtomicU8::new(BootSource::Initramfs as u8);
 
 /// Run hugepaged.
 static VM_HUGEPAGED_ENABLED: AtomicBool = AtomicBool::new(false);

@@ -7,7 +7,6 @@ edition = "2024"
 
 [dependencies]
 component = { path = "../../../libs/comp-sys/component" }
-aster-logger = { path = "../logger" }
 aster-block = { path = "../block" }
 io-util.workspace = true
 ostd = { path = "../../../../ostd" }

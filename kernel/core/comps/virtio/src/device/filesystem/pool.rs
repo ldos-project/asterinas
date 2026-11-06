@@ -2,23 +2,24 @@
 
 //! Size-classed DMA buffer allocation.
 //!
-//! This module provides `SizeClassedDmaPool`, a size-class allocator backed by
-//! [`DmaPool`] segments for small buffers and [`DmaStream`] for large ones.
+//! This module provides `VirtiofsDmaPool`, a size-class allocator backed by
+//! [`DmaPool`] segments for small buffers and a shared DMA arena for large ones.
 
 use alloc::sync::Arc;
-use core::ops::Range;
 
-use aster_network::dma_pool::{DmaPool, DmaSegment};
 use aster_util::mem_obj_slice::Slice;
+use dma_pool::{DmaArenaPool, DmaBuffer, DmaPool};
 use ostd::{
     Result,
     error::InvalidArgsSnafu,
     mm::{
-        HasDaddr, HasSize, Infallible, PAGE_SIZE, USegment, VmReader, VmWriter,
+        HasSize, Infallible, PAGE_SIZE, USegment, VmReader, VmWriter,
         dma::{DmaDirection, DmaStream, FromDevice, ToDevice},
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
 };
+use smallvec::SmallVec;
+use spin::Once;
 
 use crate::dma_buf::DmaBuf;
 
@@ -43,66 +44,98 @@ const POOL_INIT_SIZE: usize = 8;
 /// Retains enough free segments for request bursts.
 const POOL_HIGH_WATERMARK: usize = 64;
 
-/// A size-classed DMA buffer allocator.
-#[derive(Debug)]
-pub(super) struct SizeClassedDmaPool<D: DmaDirection> {
-    classes: [Arc<DmaPool<D>>; N_CLASSES],
+/// Preserves the previous worst-case budget of eight cached 1-MiB streams.
+const DMA_ARENA_SIZE_PAGES: usize = 8 * 1024 * 1024 / PAGE_SIZE;
+
+/// A pool of DMA arenas for buffers received from the device.
+static VIRTIOFS_DMA_ARENA_RPOOL: Once<Arc<DmaArenaPool<FromDevice>>> = Once::new();
+/// A pool of DMA arenas for buffers sent to the device.
+static VIRTIOFS_DMA_ARENA_WPOOL: Once<Arc<DmaArenaPool<ToDevice>>> = Once::new();
+
+/// Returns the shared virtio-fs DMA arena pools, initializing them on first use.
+pub(super) fn dma_arena_pools_singleton() -> (
+    &'static Arc<DmaArenaPool<ToDevice>>,
+    &'static Arc<DmaArenaPool<FromDevice>>,
+) {
+    VIRTIOFS_DMA_ARENA_RPOOL.call_once(|| DmaArenaPool::new(DMA_ARENA_SIZE_PAGES).unwrap());
+    VIRTIOFS_DMA_ARENA_WPOOL.call_once(|| DmaArenaPool::new(DMA_ARENA_SIZE_PAGES).unwrap());
+
+    (
+        VIRTIOFS_DMA_ARENA_WPOOL.get().unwrap(),
+        VIRTIOFS_DMA_ARENA_RPOOL.get().unwrap(),
+    )
 }
 
-impl<D: DmaDirection> SizeClassedDmaPool<D> {
+/// A virtio-fs DMA buffer allocator for pooled segments and large arenas.
+#[derive(Debug)]
+pub(super) struct VirtiofsDmaPool<D: DmaDirection> {
+    classes: [Arc<DmaPool<D>>; N_CLASSES],
+    arena_pool: &'static Arc<DmaArenaPool<D>>,
+}
+
+impl<D: DmaDirection> VirtiofsDmaPool<D> {
     /// Creates a DMA buffer pool with predefined size classes.
-    pub(super) fn new() -> Arc<Self> {
+    pub(super) fn new(arena_pool: &'static Arc<DmaArenaPool<D>>) -> Self {
         let classes = core::array::from_fn(|i| {
             let segment_size = 1 << (MIN_SHIFT + i);
             DmaPool::<D>::new(segment_size, POOL_INIT_SIZE, POOL_HIGH_WATERMARK, false)
         });
-        Arc::new(Self { classes })
+
+        Self {
+            classes,
+            arena_pool,
+        }
     }
 
     /// Allocates a DMA buffer whose visible length is `len`.
-    fn alloc_buf(&self, len: usize) -> Result<Arc<Slice<FsDmaStorage<D>>>> {
+    fn alloc_buf(&self, len: usize) -> Result<Arc<Slice<DmaBuffer<D>>>> {
         if len == 0 {
             return InvalidArgsSnafu.fail();
         }
 
         let storage = if len <= MAX_CLASS_SIZE {
             let shift = MIN_SHIFT.max(len.next_power_of_two().trailing_zeros() as usize);
-            let segment = self.classes[shift - MIN_SHIFT].alloc_segment()?;
-            FsDmaStorage::Segment(segment)
+            DmaBuffer::Pooled(self.classes[shift - MIN_SHIFT].alloc_segment()?)
         } else {
-            let stream = DmaStream::alloc_uninit(len.div_ceil(PAGE_SIZE), false)?;
-            FsDmaStorage::Stream(stream)
+            let pages = len.div_ceil(PAGE_SIZE);
+            match self.arena_pool.alloc(pages) {
+                Some(arena) => DmaBuffer::Arena(arena),
+                None => DmaBuffer::Direct(DmaStream::alloc_uninit(pages, false)?),
+            }
         };
 
         Ok(Arc::new(Slice::new(storage, 0..len)))
     }
 }
 
-impl SizeClassedDmaPool<FromDevice> {
+impl VirtiofsDmaPool<FromDevice> {
     /// Allocates a DMA buffer for FUSE reply payloads.
     pub(super) fn alloc_reply_buf(&self, len: usize) -> Result<FuseReplyBuf> {
         self.alloc_buf(len).map(FuseReplyBuf)
     }
 }
 
-impl SizeClassedDmaPool<ToDevice> {
+impl VirtiofsDmaPool<ToDevice> {
     /// Allocates a DMA buffer for FUSE requests.
     pub(super) fn alloc_request_buf(&self, len: usize) -> Result<FuseRequestBuf> {
         self.alloc_buf(len).map(FuseRequestBuf)
     }
 }
 
-/// A data payload buffer used by FUSE I/O operations.
+/// Data payload buffers used by FUSE I/O operations.
 pub(super) enum FuseDataBuf {
     /// Data filled by the device for read FUSE operations.
-    Read(FuseReplyBuf),
+    Read(FuseReplyBufs),
     /// Data sent to the device for write FUSE operations.
-    Write(FuseRequestBuf),
+    Write(FuseRequestBufs),
 }
 
 /// A DMA buffer used by FUSE requests.
 #[derive(Clone, Debug)]
-pub struct FuseRequestBuf(Arc<Slice<FsDmaStorage<ToDevice>>>);
+pub struct FuseRequestBuf(Arc<Slice<DmaBuffer<ToDevice>>>);
+
+/// Request buffers used by a FUSE write operation.
+pub type FuseRequestBufs = SmallVec<[FuseRequestBuf; 1]>;
 
 impl FuseRequestBuf {
     /// Returns the length of the DMA buffer.
@@ -111,7 +144,7 @@ impl FuseRequestBuf {
     }
 
     /// Returns the DMA slice used by virtqueue descriptors.
-    pub(crate) fn as_dma_slice(&self) -> &Slice<FsDmaStorage<ToDevice>> {
+    pub(crate) fn as_dma_slice(&self) -> &Slice<DmaBuffer<ToDevice>> {
         self.0.as_ref()
     }
 
@@ -135,7 +168,10 @@ impl HasVmReaderWriter for FuseRequestBuf {
 
 /// A DMA buffer used by FUSE replies.
 #[derive(Clone, Debug)]
-pub struct FuseReplyBuf(Arc<Slice<FsDmaStorage<FromDevice>>>);
+pub struct FuseReplyBuf(Arc<Slice<DmaBuffer<FromDevice>>>);
+
+/// Reply buffers used by a FUSE read operation.
+pub type FuseReplyBufs = SmallVec<[FuseReplyBuf; 1]>;
 
 impl FuseReplyBuf {
     /// Maps `segment` as a DMA buffer for FUSE reply payloads.
@@ -144,7 +180,7 @@ impl FuseReplyBuf {
         let stream = DmaStream::map(segment, false)?;
 
         Ok(FuseReplyBuf(Arc::new(Slice::new(
-            FsDmaStorage::Stream(stream),
+            DmaBuffer::Direct(stream),
             0..len,
         ))))
     }
@@ -155,7 +191,7 @@ impl FuseReplyBuf {
     }
 
     /// Returns the DMA slice used by virtqueue descriptors.
-    pub(crate) fn as_dma_slice(&self) -> &Slice<FsDmaStorage<FromDevice>> {
+    pub(crate) fn as_dma_slice(&self) -> &Slice<DmaBuffer<FromDevice>> {
         self.0.as_ref()
     }
 
@@ -174,74 +210,5 @@ impl HasVmReaderWriter for FuseReplyBuf {
 
     fn writer(&self) -> Result<VmWriter<'_, Infallible>> {
         self.0.writer()
-    }
-}
-
-/// The backing storage for a virtio-fs DMA buffer.
-#[derive(Debug)]
-pub(crate) enum FsDmaStorage<D: DmaDirection> {
-    /// A contiguous DMA stream for large buffers.
-    Stream(DmaStream<D>),
-    /// A pooled DMA segment for small buffers.
-    Segment(DmaSegment<D>),
-}
-
-impl<D: DmaDirection> FsDmaStorage<D> {
-    /// Synchronizes `byte_range` from the device into memory.
-    pub(super) fn sync_from_device(&self, byte_range: Range<usize>) -> Result<()> {
-        match self {
-            Self::Stream(stream) => stream.sync_from_device(byte_range),
-            Self::Segment(segment) => segment.sync_from_device(byte_range),
-        }
-    }
-
-    /// Synchronizes `byte_range` from memory to the device.
-    pub(super) fn sync_to_device(&self, byte_range: Range<usize>) -> Result<()> {
-        match self {
-            Self::Stream(stream) => stream.sync_to_device(byte_range),
-            Self::Segment(segment) => segment.sync_to_device(byte_range),
-        }
-    }
-}
-
-impl<D: DmaDirection> HasSize for FsDmaStorage<D> {
-    fn size(&self) -> usize {
-        match self {
-            Self::Stream(stream) => stream.size(),
-            Self::Segment(segment) => segment.size(),
-        }
-    }
-}
-
-impl<D: DmaDirection> HasDaddr for FsDmaStorage<D> {
-    fn daddr(&self) -> ostd::mm::Daddr {
-        match self {
-            Self::Stream(stream) => stream.daddr(),
-            Self::Segment(segment) => segment.daddr(),
-        }
-    }
-}
-
-impl<D: DmaDirection> HasVmReaderWriter for FsDmaStorage<D> {
-    type Types = VmReaderWriterResult;
-
-    fn reader(&self) -> Result<VmReader<'_, Infallible>> {
-        match self {
-            Self::Stream(stream) => stream.reader(),
-            Self::Segment(segment) => segment.reader(),
-        }
-    }
-
-    fn writer(&self) -> Result<VmWriter<'_, Infallible>> {
-        match self {
-            Self::Stream(stream) => stream.writer(),
-            Self::Segment(segment) => segment.writer(),
-        }
-    }
-}
-
-impl<D: DmaDirection> DmaBuf for Slice<FsDmaStorage<D>> {
-    fn len(&self) -> usize {
-        self.size()
     }
 }

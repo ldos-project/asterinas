@@ -22,6 +22,7 @@ fi
 ./execve/execve_err
 ./execve/execve_memfd
 ./execve/execve_mt_parent
+./execve/execveat
 
 ./exit/exit_code
 ./exit/exit_procfs
@@ -61,6 +62,7 @@ fi
 ./signal/kill
 ./signal/parent_death_signal
 ./signal/pidfd_send_signal
+./signal/rt_sigpending
 ./signal/signal_fd
 ./signal/signal_test2
 

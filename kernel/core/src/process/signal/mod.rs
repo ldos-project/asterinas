@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-pub mod c_types;
-pub mod constants;
+pub(crate) mod c_types;
+pub(crate) mod constants;
 mod pause;
 mod pending;
 mod poll;
-pub mod sig_action;
-pub mod sig_disposition;
-pub mod sig_mask;
-pub mod sig_num;
-pub mod sig_queues;
+pub(crate) mod sig_action;
+pub(crate) mod sig_disposition;
+pub(crate) mod sig_mask;
+pub(crate) mod sig_num;
+pub(crate) mod sig_queues;
 mod sig_stack;
-pub mod signals;
+pub(crate) mod signals;
 
 use align_ext::AlignExt;
 use c_types::{siginfo_t, ucontext_t};
@@ -21,13 +21,14 @@ use ostd::{
     mm::VmIo,
     user::UserContextApi,
 };
-pub use pause::{Pause, PauseReason, with_sigmask_changed};
-pub use pending::{DequeuedSignal, HandlePendingSignal};
-pub use poll::{PollAdaptor, PollHandle, Pollable, Pollee, Poller};
+pub(crate) use pause::{Pause, PauseReason, with_sigmask_changed};
+pub(crate) use pending::{DequeuedSignal, HandlePendingSignal};
+pub(crate) use poll::{PollAdaptor, Pollee, Poller};
+pub use poll::{PollHandle, Pollable};
 use sig_action::{SigAction, SigActionFlags, SigDefaultAction};
 use sig_mask::SigMask;
 use sig_num::SigNum;
-pub use sig_stack::{SigStack, SigStackFlags, SigStackStatus};
+pub(crate) use sig_stack::{SigStack, SigStackFlags, SigStackStatus};
 
 use super::posix_thread::ThreadLocal;
 use crate::{
@@ -40,13 +41,13 @@ use crate::{
     },
 };
 
-pub trait SignalContext {
+pub(crate) trait SignalContext {
     /// Sets signal handler arguments.
     fn set_arguments(&mut self, sig_num: SigNum, siginfo_addr: usize, ucontext_addr: usize);
 }
 
 /// Handles a pending signal for the current process.
-pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
+pub(crate) fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
     // FIXME: This function may handle or suppress only one signal per trap, delaying
     // other pending unmasked signals until the next trap. Consider a looped scan.
     //
@@ -151,6 +152,8 @@ pub fn handle_pending_signal(user_ctx: &mut UserContext, ctx: &Context) {
                 const SYSCALL_INSTR_LEN: usize = 4; // ecall
                 #[cfg(target_arch = "loongarch64")]
                 const SYSCALL_INSTR_LEN: usize = 4; // syscall
+                #[cfg(target_arch = "aarch64")]
+                const SYSCALL_INSTR_LEN: usize = 4; // svc
 
                 user_ctx.set_syscall_ret(orig_syscall_ret);
                 user_ctx
@@ -279,7 +282,7 @@ fn get_sig_action(ctx: &Context, sig_num: SigNum) -> SigAction {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub fn handle_user_signal(
+pub(crate) fn handle_user_signal(
     ctx: &Context,
     sig_num: SigNum,
     handler_addr: Vaddr,
@@ -398,16 +401,16 @@ pub fn handle_user_signal(
             );
             let fpu_context_addr = (ucontext_addr as usize) + size_of::<ucontext_t>();
         }
-        target_arch = "loongarch64" => {
-            // FIXME: It seems that we need to allocate an `sctx_info` structure.
-            // Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L848>
+        any(target_arch = "loongarch64", target_arch = "aarch64") => {
+            // FIXME: Allocate the FPU context.
+            // Example: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L848>
             let ucontext_addr = alloc_aligned_in_user_stack(
                 stack_pointer,
                 size_of::<ucontext_t>() + fpu_context_bytes.len(),
                 align_of::<ucontext_t>(),
             );
-            // TODO: Set the flags in the context structure.
-            // Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L805>
+            // FIXME: Set the FPU flags
+            // Example: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L805>
             let fpu_context_addr = (ucontext_addr as usize) + size_of::<ucontext_t>();
         }
         _ => {
@@ -427,7 +430,7 @@ pub fn handle_user_signal(
         restorer_addr
     } else {
         cfg_select! {
-            target_arch = "riscv64" => {
+            any(target_arch = "riscv64", target_arch = "aarch64") => {
                 ctx.user_space().vmar().process_vm().vdso_base()
                     + crate::vdso::__VDSO_RT_SIGRETURN_OFFSET
             }
@@ -446,6 +449,9 @@ pub fn handle_user_signal(
         }
         any(target_arch = "riscv64", target_arch = "loongarch64") => {
             user_ctx.set_ra(retaddr);
+        }
+        target_arch = "aarch64" => {
+            user_ctx.set_x30(retaddr);
         }
         _ => {
             compile_error!("unsupported target");
@@ -471,7 +477,7 @@ pub fn handle_user_signal(
         target_arch = "x86_64" => {
             // Clear the DF flag. This is to conform to x86-64 calling conventions.
             const X86_RFLAGS_DF: usize = 1 << 10; // Bit 10 is the DF flag.
-            user_ctx.general_regs_mut().rflags &= !X86_RFLAGS_DF;
+            user_ctx.set_rflags(user_ctx.rflags() & !X86_RFLAGS_DF);
         }
         _ => {},
     }
