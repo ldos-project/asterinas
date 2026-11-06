@@ -8,9 +8,13 @@ use alloc::{
 };
 use core::{fmt::Display, num::NonZeroUsize};
 
+use serde::Serialize;
 use snafu::GenerateImplicitData;
 
-use crate::{cpu::CpuId, stacktrace::CapturedStackTrace, task::Task, util::id_set::Id as _};
+use crate::{
+    cpu::CpuId, orpc::oqueue::DefaultProjection, stacktrace::CapturedStackTrace, task::Task,
+    util::id_set::Id as _,
+};
 
 /// A location in the code. Unlike, [`snafu::Location`] and [`core::panic::Location`], this can hold
 /// a dynamic string. However, if given a `&'static str`, it will not allocate memory (internally it
@@ -25,6 +29,31 @@ pub struct Location {
     pub line: u32,
     /// The column where the error was reported
     pub column: u32,
+}
+
+/// The source location, with a filename when it has static storage.
+#[cfg(not(baseline_asterinas))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct LocationDefaultProjection {
+    file: Option<&'static str>,
+    line: u32,
+    column: u32,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl DefaultProjection for Location {
+    type Projection = LocationDefaultProjection;
+
+    fn default_projection(&self) -> Self::Projection {
+        LocationDefaultProjection {
+            file: match &self.file {
+                Cow::Borrowed(file) => Some(*file),
+                Cow::Owned(_) => None,
+            },
+            line: self.line,
+            column: self.column,
+        }
+    }
 }
 
 impl Display for Location {
@@ -98,6 +127,28 @@ pub struct StackInfo {
     pub server_id: Option<NonZeroUsize>,
     /// The source location.
     pub location: Option<Location>,
+}
+
+/// The task, CPU, and source location captured with an error.
+#[cfg(not(baseline_asterinas))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct StackInfoDefaultProjection {
+    task_id: Option<NonZeroUsize>,
+    cpu_id: u32,
+    location: Option<LocationDefaultProjection>,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl DefaultProjection for StackInfo {
+    type Projection = StackInfoDefaultProjection;
+
+    fn default_projection(&self) -> Self::Projection {
+        StackInfoDefaultProjection {
+            task_id: self.task_id,
+            cpu_id: self.cpu_id.into(),
+            location: self.location.default_projection(),
+        }
+    }
 }
 
 impl StackInfo {

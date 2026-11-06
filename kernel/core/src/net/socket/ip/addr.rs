@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address};
+use ostd::orpc::oqueue::Projectable;
 
 use crate::{net::socket::util::SocketAddr, prelude::*};
 
@@ -42,7 +43,7 @@ pub(super) const UNSPECIFIED_LOCAL_ENDPOINT_V6: IpEndpoint =
     IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0);
 
 /// Address family for IP sockets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Projectable, serde::Serialize)]
 pub enum IpAddressFamily {
     IPv4,
     IPv6,

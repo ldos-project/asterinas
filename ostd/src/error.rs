@@ -3,10 +3,15 @@
 //! Errors for OSTD
 
 use ostd_macros::ostd_error;
+use serde::Serialize;
 use snafu::Snafu;
 
 #[cfg(not(baseline_asterinas))]
+use crate::orpc::oqueue::DefaultProjection;
+#[cfg(not(baseline_asterinas))]
 use crate::orpc::oqueue::OQueueError;
+#[cfg(not(baseline_asterinas))]
+use crate::stack_info::StackInfoDefaultProjection;
 use crate::{mm::page_table::PageTableError, orpc::errors::RPCError, stack_info::StackInfo};
 
 /// The trait of all errors carrying OSTD metadata.
@@ -59,6 +64,39 @@ pub enum Error {
         /// Source OQueue error
         source: OQueueError,
     },
+}
+
+/// The error kind and captured context.
+#[cfg(not(baseline_asterinas))]
+#[derive(Clone, Copy, Serialize)]
+pub struct ErrorDefaultProjection {
+    kind: &'static str,
+    context: Option<StackInfoDefaultProjection>,
+}
+
+#[cfg(not(baseline_asterinas))]
+impl DefaultProjection for Error {
+    type Projection = ErrorDefaultProjection;
+
+    fn default_projection(&self) -> Self::Projection {
+        let kind = match self {
+            Self::InvalidArgs { .. } => "InvalidArgs",
+            Self::NoMemory { .. } => "NoMemory",
+            Self::PageFault { .. } => "PageFault",
+            Self::AccessDenied { .. } => "AccessDenied",
+            Self::IoError { .. } => "IoError",
+            Self::NotEnoughResources { .. } => "NotEnoughResources",
+            Self::Overflow { .. } => "Overflow",
+            Self::RPCError { .. } => "RPCError",
+            #[cfg(not(baseline_asterinas))]
+            Self::OQueueError { .. } => "OQueueError",
+        };
+
+        ErrorDefaultProjection {
+            kind,
+            context: self.stack_info().map(DefaultProjection::default_projection),
+        }
+    }
 }
 
 impl From<PageTableError> for Error {

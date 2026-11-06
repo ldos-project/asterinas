@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::orpc::oqueue::Projectable;
+
 use super::RecvFlags;
 
 /// Output of a successful socket receive operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Projectable, serde::Serialize)]
 pub struct RecvOutput {
     len: usize,
     flags: RecvFlags,
