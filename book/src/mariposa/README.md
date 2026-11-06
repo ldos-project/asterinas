@@ -1,7 +1,8 @@
 # Mariposa
 
-*(This document assumes you have a basic understanding of Rust and kernel development. For
-Mariposa specific or otherwise important terms, there is a [glossary](glossary.md).)*
+*(This document assumes you have a basic understanding of Rust and kernel development.)*
+
+*(There is a [glossary](glossary.md) with definitions of some important terms.)*
 
 Mariposa is a variant of Asterinas and is the "clean-slate" kernel of the [LDOS project]. It is
 designed as a platform for exploring and deploying new operating system policies using machine
@@ -9,7 +10,7 @@ learning and LLMs. We specifically target data-rich bespoke policies (designed b
 
 Mariposa has three main design goals:
 
-1. **Observability:** The kernel should expose a wide range of events and state for use by
+1. <span id="observability"></span>**Observability:** The kernel should expose a wide range of events and state for use by
    policies.
 2. **Reconfigurability:** The kernel should allow mechanisms and policies to be replaced and
    reconfigured easily.

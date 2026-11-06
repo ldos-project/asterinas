@@ -9,11 +9,9 @@ However, we often want to express that we can accept any object which supports a
 In Rust, we use `trait`s which allow us to say that we accept any type which supports a specific set
 of methods. This serves the same purpose as interfaces in Java or concepts in modern C++. Traits in
 Rust are not types, they are a constraint on a type parameter. The code will say "I accept any type
-A which implements trait T"; in Rust this is written `A: T`. Traits do not imply dynamic dispatch,
-so they can be used without performance overhead in many cases. In these ways, traits are much the
-same as concepts in C++. However, traits do *support* dynamic dispatch because Rust's `dyn` types
-can hold any value that implements a given trait without needing to statically know its concrete
-type.
+A which implements trait T"; in Rust this is written `A: T`. Traits do not *require* dynamic dispatch,
+so they can be used without performance overhead. However, traits do *support* dynamic dispatch
+because Rust's `dyn` types can hold any value that implements a given trait.
 
 > NOTE: There are many other ideas that are often associated with objects, such as inheritance and
 > subtyping. However, they are not fundamental to what makes an object and Mariposa does not use
@@ -23,25 +21,30 @@ These ideas may seem "high-level" for a kernel, but they are actually present to
 Linux. Most values in Linux have a struct (or other type) and an associated set of functions; these
 are the data and methods of an object. 
 
-Linux uses tables of functions to dynamically select behavior (e.g., the VFS layer which supports
-multiple filesystems); this is dynamic dispatch. Linux lacks static dispatch (because it does not
-have type parameters).
-
 Asterinas, and by extension Mariposa, is a generally object-oriented system. Information and
 behavior is combined into objects. Static and dynamic dispatch are handled via traits, to provide
 modularity and abstraction. This provides separation of concerns which makes it easier to modify and
 reconfigure.
 
-One of the things we are likely to modify in Asterinas is to inject new traits and abstractions to
-allow changing components that were not configurable in the upstream code. For example, if upstream
-introduced a fixed LRU cache eviction policy to a page cache, we may need to add a new abstraction
-(via a trait) which allows replacing the LRU policy with some other policy. This is the
-motivating example for [slots].
+For example, the scheduler's CPU-selection policy can be represented as an object implementing this
+trait: (This is not the exact definition in the real system.)
+```rust
+trait SelectCpuPolicy {
+    fn select_cpu(&self, task: &Arc<Task>, input: &SelectCpuInput) -> CpuId;
+}
+```
+Then, an implementation of this can be passed to the scheduler using a policy injection function:
+```rust
+fn inject_select_cpu_policy(policy: Arc<dyn SelectCpuPolicy>);
+```
+In most cases, the injection will be via a method on an object instead of a global function. One of
+the things we are likely to modify in Asterinas is to add these traits and injection points. For
+more discussion of this pattern see, [slots].
 
-> NOTE: Historically, Mariposa had the concept of "Observable RPC" ("ORPC") as part of the
-> micro-kernel style design. An ORPC object was a "server" that isolated faults and could have an
-> associated thread. With the move away from a micro-kernel design, "RPC" became a misnomer, so we
-> moved to just calling them objects.
+> NOTE: Historically, Mariposa had the concept of ["Observable RPC" ("ORPC")](history.md#observable-rpc-orpc) 
+> as part of the micro-kernel style design. With the move away from a micro-kernel design, "RPC"
+> became a misnomer, so we moved to just calling them objects. However, `orpc` still appears in some
+> parts of the API.
 
 ## Mariposa objects
 
@@ -53,16 +56,11 @@ motivating example for [slots].
 Mariposa objects are objects with three additional properties:
 
 * It has "identity," meaning that you can get a unique ID for the object to identify it within the
-  system. "Objects" like a number or a lock which carry information and have methods, but do not
-  have persistent identity. *Currently: In at least some cases the pointer to an object is used as
-  it's ID.*
+  system. *Currently: In at least some cases the pointer to an object is used as it's ID.*
 * Its methods are observable via OQueues. Meaning that each call and return is exposed as an event
   on an OQueue. See [OQueues for Object Methods](oqueues.md#oqueues-for-object-methods) for details.
 * If an object depends on another object it uses [slots] to allow other code to inject or change
   that object. All policies should be injected this way.
-
-Mariposa objects serve an important role: They are the thing that "act" or is "acted on" in the
-system. This means that most events will have one or more object IDs in them.
 
 ### Identity and metadata
 
@@ -74,7 +72,6 @@ For example, the block device read OQueue is a mix of reads from many devices. T
 separating and filtering reads as well as correlating reads with writes to the same device.
 
 The proposed interface is shown here as `OObject`:
-
 ```rust
 pub trait OObject: Any + 'static {
     /// Return the global ID of `self`. This value will be unique among all objects in the system.
@@ -85,23 +82,13 @@ pub trait OObject: Any + 'static {
 }
 ```
 
-`ObjectId` is a `Copy` identifier which can be assigned from a global allocator (`ObjectId::new()`),
-or derived from component information (`ObjectId::new_tagged(tag)`, for example, an inode number).
-The `Metadata` trait provides introspection: the object's `type_name()` and `TypeId`.
-
-References to Mariposa objects are projected as their ID: `Arc<T: OObject>` implements
-`DefaultProjection` with `type Projected = ObjectId`. This provides enough information to
-reconstruct a range of useful information about the object by joining information from multiple
-OQueues. See [Projections](oqueues.md#projections) on the OQueues page.
+`ObjectId` is an identifier. The `Metadata` trait provides the object's `type_name()` and `TypeId`.
 
 ### Observing object methods
 
-*Currently: Object methods are treated like any function and need to be manually marked as
-observable*
-
 A call OQueue and a return OQueue are created for each trait method. This makes interactions between
 objects observable. Other code can use these OQueues to observe interactions between components via
-this method. The OQueues are per static method, not per object; as such, they contain information to
+this method. The OQueues are per method, not per object; as such, they contain information to
 identify the callee object. See [OQueues for Object Methods](oqueues.md#oqueues-for-object-methods)
 on the OQueues page for details and an example.
 
@@ -112,19 +99,28 @@ information to really understand how traits and objects should be implemented an
 English documentation to augment the Rust code with that information.
 
 Mariposa will expose this documentation as part of the system reflection interface. This will allow
-people and agents which are reconfiguring the system to understand what specific traits and
-implementing objects do. This enables selecting and injecting implementations, or implementing
-traits correctly.
+people and agents which are reconfiguring the system to understand what specific traits do. This
+enables selecting and injecting implementations, or implementing traits correctly.
 
-Traits should have documentation explaining what they represent and any invariants an implementation
-is required to follow. Method documentation should specify that the method does abstractly, in the
-terms of the trait, not any specific implementation. Together the documentation should describe the
-contract between the user and the implementation of the trait. This is a standard object oriented
-software engineering practice.
+Traits should have documentation explaining what they represent and any requirements for an
+implementation to follow. Method documentation should specify that the method does abstractly, in
+the terms of the trait, not any specific implementation. Together the documentation should describe
+the contract between the user and the implementation of the trait.
+
+For example, `SelectCpuPolicy::select_cpu` specifies what is expected of the implementation:
+```rust
+/// A CPU selection policy for use by the scheduler.
+trait SelectCpuPolicy {
+    /// It is called with local IRQs disabled, possibly in interrupt context, and with no run-queue
+    /// lock held. It must not sleep, block or allocate. Any state the policy needs lives in the
+    /// policy object. The returned CPU should be in the thread's affinity mask.
+    fn select_cpu(&self, task: &Arc<Task>, input: &SelectCpuInput) -> CpuId;
+}
+```
 
 Types which implement traits (usually `struct`s) should be documented to describe how they will
-behave. This will be a refinement of the trait behavior because of the requirements of
-substitutability (see below).
+behave. This will be used when selecting the appropriate implementation while configuring the
+system.
 
 ### Object-oriented design
 
