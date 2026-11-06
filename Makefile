@@ -232,9 +232,9 @@ CARGO_OSDK_COMMON_ARGS += --release
 	# FIXME: Unwinding in RISC-V seems to cost more stack space, so we increase
 	# the stack size for it. This may need further investigation.
 	# See https://github.com/asterinas/asterinas/pull/2383#discussion_r2307673156
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 16
 	else
-	OSTD_TASK_STACK_SIZE_IN_PAGES = 64
+	OSTD_TASK_STACK_SIZE_IN_PAGES = 16
 	endif
 endif
 
