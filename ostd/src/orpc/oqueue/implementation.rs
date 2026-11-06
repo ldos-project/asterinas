@@ -577,12 +577,6 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
                 }
             } else if let Some(consumer) = &inner.inline_consumer {
                 consumer(v);
-            } else {
-                // No consumer attached, so `v` has nowhere to land; warn instead of dropping it
-                // silently.
-                warn!(
-                    "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
-                );
             }
             self.num_full_buffers
                 .fetch_add(newly_full, Ordering::Relaxed);
