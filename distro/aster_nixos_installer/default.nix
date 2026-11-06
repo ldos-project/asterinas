@@ -1,14 +1,7 @@
-{
-  disable-systemd ? "false",
-  stage-2-hook ? "/bin/sh -l",
-  log-level ? "error",
-  console ? "hvc0",
-  extra-substituters ? "",
-  extra-trusted-public-keys ? "",
-  config-file-name ? "configuration.nix",
-  target_platform ? "x86_64-linux",
-  pkgs ? import ../nixpkgs.nix { },
-}:
+{ disable-systemd ? "false", stage-2-hook ? "/bin/sh -l", log-level ? "error"
+, console ? "hvc0", extra-substituters ? "", extra-trusted-public-keys ? ""
+, config-file-name ? "configuration.nix", target_platform ? "x86_64-linux"
+, pkgs ? import ../nixpkgs.nix { }, }:
 let
   asterinas = builtins.path {
     name = "asterinas-osdk-bin";
@@ -42,8 +35,7 @@ let
     isExecutable = true;
   };
 
-in
-pkgs.stdenv.mkDerivation {
+in pkgs.stdenv.mkDerivation {
   name = "aster_nixos_installer";
   buildCommand = ''
     mkdir -p $out/{bin,etc_nixos}

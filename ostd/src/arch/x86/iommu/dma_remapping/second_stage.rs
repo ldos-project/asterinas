@@ -56,7 +56,7 @@ pub(crate) type PtItemRef<'a> = PhantomData<&'a ()>;
 
 /// Paging Constants for x86 iommu
 #[derive(Clone, Debug, Default)]
-pub struct PagingConsts {}
+pub(crate) struct PagingConsts {}
 
 impl PagingConstsTrait for PagingConsts {
     const BASE_PAGE_SIZE: usize = 4096;

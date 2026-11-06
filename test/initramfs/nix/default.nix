@@ -1,38 +1,25 @@
-{
-  target ? "x86_64",
-  enableBenchmarkTest ? false,
-  enableConformanceTest ? false,
-  enableRegressionTest ? false,
-  conformanceTestSuite ? "ltp",
-  conformanceTestWorkDir ? "/tmp",
-  conformanceTestSelector ? "",
-  regressionTestPlatform ? "asterinas",
-  dnsServer ? "none",
-  smp ? 1,
-  initramfsCompressed ? true,
-  authorized_keys ? "",
-  enablePython ? false,
-  benchmarkName ? "none",
-  system ? builtins.currentSystem,
-}:
+{ target ? "x86_64", enableBenchmarkTest ? false, enableConformanceTest ? false
+, enableRegressionTest ? false, conformanceTestSuite ? "ltp"
+, conformanceTestWorkDir ? "/tmp", conformanceTestSelector ? ""
+, regressionTestPlatform ? "asterinas", dnsServer ? "none", smp ? 1
+, initramfsCompressed ? true, authorized_keys ? "", enablePython ? false
+, benchmarkName ? "none", system ? builtins.currentSystem, }:
 let
-  crossSystem.config =
-    if target == "x86_64" then
-      "x86_64-unknown-linux-gnu"
-    else if target == "riscv64" then
-      "riscv64-unknown-linux-gnu"
-    else if target == "aarch64" then
-      "aarch64-unknown-linux-gnu"
-    else
-      throw "Target arch ${target} not yet supported.";
+  crossSystem.config = if target == "x86_64" then
+    "x86_64-unknown-linux-gnu"
+  else if target == "riscv64" then
+    "riscv64-unknown-linux-gnu"
+  else if target == "aarch64" then
+    "aarch64-unknown-linux-gnu"
+  else
+    throw "Target arch ${target} not yet supported.";
 
   pkgs = import ../../../distro/nixpkgs.nix {
     config = { };
     overlays = [ ];
     inherit system crossSystem;
   };
-in
-rec {
+in rec {
   # Packages needed by initramfs
   busybox = pkgs.busybox;
   benchmark = pkgs.callPackage ./benchmark { inherit benchmarkName; };
@@ -42,7 +29,8 @@ rec {
     workDir = conformanceTestWorkDir;
     testSelector = conformanceTestSelector;
   };
-  regression = pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
+  regression =
+    pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
   # The OQueue filesystem CBOR reader, always included so `/oqueues` can be inspected in-guest.
   oqueue-reader = pkgs.callPackage ./oqueue-reader.nix { };
   # The userspace RAID-1 selection policy server, always included (like `oqueue-reader`); it is
@@ -52,12 +40,7 @@ rec {
   oqbench-server = pkgs.callPackage ./oqbench-server.nix { };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
-    inherit
-      busybox
-      oqueue-reader
-      raid-policy-server
-      oqbench-server
-      ;
+    inherit busybox oqueue-reader raid-policy-server oqbench-server;
     benchmark = if enableBenchmarkTest then benchmark else null;
     conformance = if enableConformanceTest then conformance else null;
     regression = if enableRegressionTest then regression else null;
@@ -80,14 +63,12 @@ rec {
     CPPFLAGS = "-fcommon -fpermissive";
   });
   lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
-  redis =
-    (pkgs.redis.overrideAttrs (old: {
-      doCheck = false;
-      makeFlags = (old.makeFlags or [ ]) ++ [
-        "CC=${pkgs.stdenv.cc.targetPrefix}cc"
-        "LD=${pkgs.stdenv.cc.targetPrefix}cc"
-      ];
-    })).override
-      { withSystemd = false; };
+  redis = (pkgs.redis.overrideAttrs (old: {
+    doCheck = false;
+    makeFlags = (old.makeFlags or [ ]) ++ [
+      "CC=${pkgs.stdenv.cc.targetPrefix}cc"
+      "LD=${pkgs.stdenv.cc.targetPrefix}cc"
+    ];
+  })).override { withSystemd = false; };
   ycsb = pkgs.callPackage ./ycsb.nix { };
 }

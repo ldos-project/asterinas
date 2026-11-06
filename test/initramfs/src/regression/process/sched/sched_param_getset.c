@@ -2,7 +2,9 @@
 
 #define _GNU_SOURCE
 
+#include <linux/sched/types.h>
 #include <sched.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "../../common/test.h"
@@ -68,5 +70,36 @@ FN_TEST(sched_prio_limit)
 	TEST_RES(sched_get_priority_max(SCHED_IDLE), _ret == 0);
 	TEST_RES(sched_get_priority_min(SCHED_IDLE), _ret == 0);
 #endif
+}
+END_TEST()
+
+static int attr_priority(void)
+{
+	struct sched_attr attr;
+
+	if (syscall(SYS_sched_getattr, 0, &attr, sizeof(attr), 0) != 0)
+		return -1;
+	return attr.sched_priority;
+}
+
+FN_TEST(sched_param_matches_sched_attr)
+{
+	struct sched_param param = { .sched_priority = 20 };
+
+	// `sched_getparam` reports the priority set by `sched_setscheduler`, ...
+	TEST_SUCC(sched_setscheduler(0, SCHED_FIFO, &param));
+	TEST_RES(sched_getparam(0, &param),
+		 _ret == 0 && param.sched_priority == 20);
+	TEST_RES(attr_priority(), _ret == 20);
+
+	// ... and `sched_setparam` sets the one reported by `sched_getattr`.
+	param.sched_priority = 30;
+	TEST_SUCC(sched_setparam(0, &param));
+	TEST_RES(attr_priority(), _ret == 30);
+	TEST_RES(sched_getparam(0, &param),
+		 _ret == 0 && param.sched_priority == 30);
+
+	param.sched_priority = 0;
+	TEST_SUCC(sched_setscheduler(0, SCHED_OTHER, &param));
 }
 END_TEST()

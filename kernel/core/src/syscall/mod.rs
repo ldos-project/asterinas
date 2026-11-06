@@ -428,7 +428,7 @@ macro_rules! log_syscall_entry {
 }
 
 #[cfg(not(baseline_asterinas))]
-pub mod oqueue {
+pub(crate) mod oqueue {
     use core::time::Duration;
 
     use ostd::{
@@ -441,7 +441,7 @@ pub mod oqueue {
     use crate::fs::file::file_table::FileDesc;
 
     #[derive(Clone, Copy, Serialize)]
-    pub struct SocketOQueueMessage {
+    pub(crate) struct SocketOQueueMessage {
         pub fd: FileDesc,
         pub is_close: u8,
         pub timestamp: Duration,
@@ -449,11 +449,11 @@ pub mod oqueue {
 
     static SOCKET_OQUEUE: Once<OQueueRef<SocketOQueueMessage>> = Once::new();
 
-    pub fn init_in_first_kthread() {
+    pub(crate) fn init_in_first_kthread() {
         SOCKET_OQUEUE.call_once(|| GenericOQueueRef::new(1024, path!(syscall.socket_oqueue)));
     }
 
-    pub fn get_socket_oqueue() -> OQueueRef<SocketOQueueMessage> {
+    pub(crate) fn get_socket_oqueue() -> OQueueRef<SocketOQueueMessage> {
         SOCKET_OQUEUE.wait().clone()
     }
 }

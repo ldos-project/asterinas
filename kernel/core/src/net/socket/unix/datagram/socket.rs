@@ -6,6 +6,7 @@ use core::{
 };
 
 use aster_rights::ReadDupOp;
+use ostd::orpc::trace_methods;
 
 use super::message::{MessageQueue, MessageReceiver};
 use crate::{
@@ -168,13 +169,16 @@ impl SocketPrivate for UnixDatagramSocket {
     }
 }
 
+#[trace_methods(trait_module = crate::net::socket)]
 impl Socket for UnixDatagramSocket {
-    fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn bind(&self, #[trace(only = call)] socket_addr: SocketAddr) -> Result<()> {
         let addr = UnixSocketAddr::try_from(socket_addr)?;
         self.local_receiver.bind(addr)
     }
 
-    fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
+    #[trace]
+    fn connect(&self, #[trace(only = call)] socket_addr: SocketAddr) -> Result<()> {
         let remote_addr = UnixSocketAddr::try_from(socket_addr)?;
 
         let connected_addr = remote_addr.connect()?;
@@ -186,6 +190,7 @@ impl Socket for UnixDatagramSocket {
         Ok(())
     }
 
+    #[trace]
     fn shutdown(&self, cmd: SockShutdownCmd) -> Result<()> {
         let mut io_events = IoEvents::empty();
 
@@ -249,6 +254,7 @@ impl Socket for UnixDatagramSocket {
         return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to get is unknown")
     }
 
+    #[trace]
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
         let mut options = self.options.write();
 
@@ -268,10 +274,11 @@ impl Socket for UnixDatagramSocket {
         }
     }
 
+    #[trace]
     fn sendmsg(
         &self,
         reader: &mut dyn MultiRead,
-        message_header: MessageHeader,
+        #[trace(only = call)] message_header: MessageHeader,
         flags: SendFlags,
     ) -> Result<usize> {
         // TODO: Deal with flags
@@ -300,10 +307,11 @@ impl Socket for UnixDatagramSocket {
         )
     }
 
+    #[trace]
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        flags: RecvFlags,
+        #[trace(only = call)] flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {

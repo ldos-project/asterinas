@@ -127,12 +127,13 @@ jobs:
       max-parallel: 1
     timeout-minutes: 60
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20260831
+      image: ldosproject/asterinas:0.18.0-ldos-20261023
       options: -v /dev:/dev --privileged
 
     steps:
       - uses: actions/checkout@v4
       - name: Run benchmarks
+        if: ${{ env.SKIP_BENCHMARKS != '1' }}
         uses: ./.github/actions/benchmark
         with:
           task: benchmark
@@ -142,12 +143,11 @@ jobs:
   Results:
     runs-on: ubuntu-latest
     needs: Benchmarks
-    # TODO: Enable storing benchmark results
-    if: false
 
     steps:
       - uses: actions/checkout@v4
       - name: Store benchmark results
+        if: ${{ env.UPLOAD_RESULTS == '1' }}
         uses: ./.github/actions/benchmark
         with:
           task: result

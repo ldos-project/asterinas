@@ -102,7 +102,7 @@ impl Vmar {
         self.rss_counters[rss_type as usize].sum_all_cpus()
     }
 
-    pub fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
+    pub(crate) fn get_rss_hwm_counter(&self, rss_type: RssType) -> usize {
         let mut total: isize = 0;
         for cpu in all_cpus() {
             total = total.wrapping_add(

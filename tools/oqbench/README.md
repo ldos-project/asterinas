@@ -28,7 +28,7 @@ tools/oqbench/run.py --scheduler --busy-procs 5 --release
 ## Output
 
 Files are named `<PREFIX><base>` where `<PREFIX>` is `--output-prefix` (default `result_`, which is
-what `howdone` copies into its run directories).
+what `howdone` moves into its run directories).
 
 - `<PREFIX>oqbench.jsonl`: one JSON object per round trip, with a `timestamp` and the four
   TSC-cycle fields `roundtrip`, `kernel_to_user`, `compute` and `user_to_kernel`. Divide the

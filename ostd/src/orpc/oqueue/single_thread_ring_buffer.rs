@@ -272,12 +272,12 @@ impl RingBuffer {
     }
 
     /// Get the cursor for the most recent value in `self`.
-    pub fn newest_cursor(&self) -> Cursor {
+    pub(super) fn newest_cursor(&self) -> Cursor {
         Cursor(self.tail_index.saturating_sub(1))
     }
 
     /// Get the cursor for the oldest value still available in `self`.
-    pub fn oldest_cursor(&self) -> Cursor {
+    pub(super) fn oldest_cursor(&self) -> Cursor {
         let Cursor(i) = self.newest_cursor();
         // Return the (most recent() - (the buffer size) or zero if the buffer isn't full yet.
         if i < self.buffer.len() {

@@ -2,7 +2,8 @@
 
 let
   DCAP_VERSION = "DCAP_1.23";
-  DCAP_URL_PREFIX = "https://github.com/intel/SGXDataCenterAttestationPrimitives/raw/${DCAP_VERSION}/QuoteGeneration/quote_wrapper";
+  DCAP_URL_PREFIX =
+    "https://github.com/intel/SGXDataCenterAttestationPrimitives/raw/${DCAP_VERSION}/QuoteGeneration/quote_wrapper";
 
   files = {
     tdx_attest_c = fetchurl {
@@ -26,8 +27,7 @@ let
       sha256 = "092dvr5qbrwk707s0jwgqz79cw0dimp1n2qqkl9v6dik8l9fgfa6";
     };
   };
-in
-stdenv.mkDerivation {
+in stdenv.mkDerivation {
   pname = "dcap-quote-generation";
   version = DCAP_VERSION;
 

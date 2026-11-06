@@ -304,7 +304,9 @@ riscv = { version = "0.15.0", features = ["s-mode"] }
 snafu = { version = "0.8", default-features = false, features = ["alloc", "rust_1_81"] }
 spin = "0.9.4"
 tdx-guest = "0.4.0"
-unwinding = { version = "0.2.10", default-features = false, features = ["hide-trace", "panic", "personality", "unwinder"] }
+# Pinned: 0.2.11+ calls `core::intrinsics::abort_immediate`, which our nightly lacks.
+# Projects created by `cargo osdk new` have no lockfile, so an unpinned spec would pull it in.
+unwinding = { version = "=0.2.10", default-features = false, features = ["hide-trace", "panic", "personality", "unwinder"] }
 x86_64 = "0.15.5"
 xmas-elf = "0.10.0"
 # Note: when updating the zerocopy version,

@@ -17,4 +17,14 @@ commands:
   env.txt: env
   qemu.log: cat qemu.log
   qemu-enhanced.log: cargo osdk enhance-log -b target/osdk/aster-kernel/aster-kernel-osdk-bin qemu.log
-  results: mv result_*.json* $OUTPUT_DIR 2> /dev/null && (echo "Results are in"; ls -lh $OUTPUT_DIR/result_*.json*) || echo "No results files."
+  results: >
+    mv result_*.json $OUTPUT_DIR 2> /dev/null &&
+    (echo "Results are in"; ls -lh $OUTPUT_DIR/result_*.json*) || echo "No results files.";
+    mv *_output_*.txt $OUTPUT_DIR 2> /dev/null &&
+    (echo "Output files are in"; ls -lh $OUTPUT_DIR/*_output_*.txt) || echo "No output files.";
+    mv *_guest_*.log $OUTPUT_DIR 2> /dev/null &&
+    (echo "Guest log files are in"; ls -lh $OUTPUT_DIR/*_guest_*.log) || echo "No guest log files.";
+  # Nightly benchmark context (may be empty)
+  act-version.txt: act --version
+  docker-version.txt: docker version
+  image-version.txt: cat DOCKER_IMAGE_VERSION

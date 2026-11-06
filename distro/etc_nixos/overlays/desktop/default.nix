@@ -1,8 +1,7 @@
 final: prev: {
   xorg-server = prev.xorg-server.overrideAttrs (oldAttrs: {
-    patches = (oldAttrs.patches or [ ]) ++ [
-      ./patches/xorgServer/0001-Skip-checking-graphics-under-sys.patch
-    ];
+    patches = (oldAttrs.patches or [ ])
+      ++ [ ./patches/xorgServer/0001-Skip-checking-graphics-under-sys.patch ];
     buildInputs = (oldAttrs.buildInputs or [ ]) ++ [ final.libudev-zero ];
     mesonFlags = (oldAttrs.mesonFlags or [ ]) ++ [
       "-Dglamor=true"
@@ -12,7 +11,9 @@ final: prev: {
     ];
     postInstall = (oldAttrs.postInstall or "") + ''
       mkdir -p $out/share/X11/xorg.conf.d
-      cp ${./patches/xorgServer/10-fbdev.conf} $out/share/X11/xorg.conf.d/10-fbdev.conf
+      cp ${
+        ./patches/xorgServer/10-fbdev.conf
+      } $out/share/X11/xorg.conf.d/10-fbdev.conf
     '';
   });
 

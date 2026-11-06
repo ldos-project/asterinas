@@ -131,7 +131,7 @@ fn allocate_page_aligned_array<T>(len: usize) -> Box<[Slot<T>]> {
     }
 }
 
-pub struct Rigtorp<T> {
+pub(super) struct Rigtorp<T> {
     this: Weak<Self>,
     capacity: NonZero<usize>,
     slots: Box<[Slot<T>]>,
@@ -143,7 +143,7 @@ unsafe impl<T> Sync for Rigtorp<T> {}
 unsafe impl<T> Send for Rigtorp<T> {}
 
 impl<T> Rigtorp<T> {
-    pub fn new(size: usize) -> Arc<Self> {
+    pub(super) fn new(size: usize) -> Arc<Self> {
         assert!(size.is_power_of_two());
         assert!(size > 0);
 
@@ -156,7 +156,7 @@ impl<T> Rigtorp<T> {
         })
     }
 
-    pub fn capacity(&self) -> usize {
+    pub(super) fn capacity(&self) -> usize {
         self.capacity.into()
     }
 
@@ -175,7 +175,7 @@ impl<T> Rigtorp<T> {
         index % self.capacity
     }
 
-    pub fn produce(&self, data: T)
+    pub(super) fn produce(&self, data: T)
     where
         T: Send,
     {
@@ -192,7 +192,7 @@ impl<T> Rigtorp<T> {
     }
 
     #[expect(unused)]
-    pub fn try_produce(&self, data: T) -> Option<T>
+    pub(super) fn try_produce(&self, data: T) -> Option<T>
     where
         T: Send,
     {
@@ -228,7 +228,7 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    pub fn consume(&self) -> T {
+    pub(super) fn consume(&self) -> T {
         let tail = self.tail.fetch_add(1, Ordering::Acquire);
         let slot = unsafe { &self.slots.get_unchecked(self.idx(tail)) };
         while (self.turn(tail) * 2 + 1) != slot.turn.load(Ordering::Acquire) {}
@@ -238,7 +238,7 @@ impl<T> Rigtorp<T> {
     }
 
     #[expect(unused)]
-    pub fn try_consume(&self) -> Option<T> {
+    pub(super) fn try_consume(&self) -> Option<T> {
         // Get the current tail position
         let mut tail = self.tail.load(Ordering::Acquire);
         loop {
@@ -286,23 +286,23 @@ impl<T> Rigtorp<T> {
         }
     }
 
-    pub fn size(&self) -> usize {
+    pub(super) fn size(&self) -> usize {
         self.head.load(Ordering::Relaxed) - self.tail.load(Ordering::Relaxed)
     }
 
     #[expect(unused)]
-    pub fn empty(&self) -> bool {
+    pub(super) fn empty(&self) -> bool {
         self.size() == 0
     }
 
     /// Get a reference to this OQueue
-    pub fn get_this(&self) -> Arc<Self> {
+    pub(super) fn get_this(&self) -> Arc<Self> {
         self.this.upgrade().unwrap()
     }
 }
 
 /// The producer handle for [`Rigtorp`].
-pub struct RigtorpProducer<T> {
+pub(super) struct RigtorpProducer<T> {
     oqueue: Arc<Rigtorp<T>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
@@ -333,7 +333,7 @@ impl<T: Copy + Send + 'static> Producer<T> for RigtorpProducer<T> {
 }
 
 /// The consumer handle for [`Rigtorp`].
-pub struct RigtorpConsumer<T> {
+pub(super) struct RigtorpConsumer<T> {
     oqueue: Arc<Rigtorp<T>>,
     // Make this Send, but not Sync
     _phantom: PhantomData<Cell<()>>,
@@ -393,7 +393,7 @@ impl<T: Copy + Send + 'static> OQueue<T> for Rigtorp<T> {
     }
 }
 
-pub const N_MESSAGES_PER_THREAD: usize = 2 << 15;
+pub(super) const N_MESSAGES_PER_THREAD: usize = 2 << 15;
 
 struct OQueueLegacyBenchmarkInput {
     pub n_threads: usize,
@@ -1365,7 +1365,7 @@ impl Benchmark for OQueueBenchmark {
     }
 }
 
-pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
+pub(super) fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(OQueueLegacyBenchmark::new(
         &produce_bench_legacy,
         "oqueue::produce_bench_legacy",

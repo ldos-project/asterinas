@@ -91,7 +91,7 @@ impl Benchmark for DynFnCallOverheadBenchmark {
     }
 }
 
-pub fn register_benchmarks(bc: &mut BenchmarkHarness) {
+pub(super) fn register_benchmarks(bc: &mut BenchmarkHarness) {
     bc.register_benchmark(Box::new(FnCallOverheadBenchmark {}));
     bc.register_benchmark(Box::new(DynFnCallOverheadBenchmark {}));
 }

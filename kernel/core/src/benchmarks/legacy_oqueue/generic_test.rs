@@ -143,7 +143,7 @@ pub(crate) fn test_produce_weak_observe<T: OQueue<TestMessage>>(oqueue: Arc<T>) 
     assert_eq!(consumer.consume(), test_message_3);
 }
 
-pub fn sleep(d: Duration) {
+pub(crate) fn sleep(d: Duration) {
     let now = Jiffies::elapsed().as_duration();
     let target = now + d;
     while Jiffies::elapsed().as_duration() < target {

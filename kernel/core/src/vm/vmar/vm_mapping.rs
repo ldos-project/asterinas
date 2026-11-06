@@ -485,9 +485,10 @@ impl VmMapping {
                 // Attempt to get a cursor for the level requested, falling back to level 1 on
                 // failure.
                 let page_size_lvl = page_size::<PagingConsts>(level);
-                match vm_space.cursor_mut(
+                match vm_space.cursor_mut_with_min_level(
                     &preempt_guard,
                     &(page_aligned_addr..page_aligned_addr + page_size_lvl),
+                    level,
                 ) {
                     Ok(mut cursor) => {
                         // Check that nothing is mapped in this region already.

@@ -36,6 +36,13 @@ extract_result() {
         "$file" | tr -d '\r' | sed 's/[^0-9.]*//g' | sed -n "${nth}p"
 }
 
+# `raid_io` keeps its virtio-fs work directory across runs: the host puts the traces in, and the
+# guests leave their results in, its `shared` subdirectory, which tools/run_virtiofsd.sh exports.
+RAID_IO_WORK_DIR="${RAID_IO_WORK_DIR:-${BENCHMARK_ROOT}/../../build/raid_io_virtiofs}"
+RAID_IO_SHARE="${RAID_IO_WORK_DIR}/shared"
+# `raid_io` uses the first RAID_IO_RANGE GiB of each RAID member.
+RAID_IO_RANGE="${RAID_IO_RANGE:-16}"
+
 # Parse benchmark results
 parse_raw_results() {
     local search_pattern="$1"
@@ -97,6 +104,7 @@ extract_result_file() {
 
 # Start virtiofsd for the Linux VM and wait for its socket to appear.
 start_linux_virtiofsd() {
+    rm -f "$BENCH_LINUX_VIRTIOFS_SOCKET"
     "${BENCHMARK_ROOT}/../../../../tools/run_virtiofsd.sh" \
         --cache-mode "$BENCH_VIRTIOFS_CACHE" \
         --work-dir "$BENCH_LINUX_VIRTIOFS_WORK_DIR" \
@@ -119,7 +127,51 @@ cleanup_linux_virtiofs() {
         kill "$BENCH_LINUX_VIRTIOFSD_PID" 2>/dev/null || true
         wait "$BENCH_LINUX_VIRTIOFSD_PID" 2>/dev/null || true
     fi
-    rm -rf "$BENCH_LINUX_VIRTIOFS_WORK_DIR"
+    # `raid_io`'s work directory holds its results, so keep it.
+    [[ "$BENCH_LINUX_VIRTIOFS_WORK_DIR" == "$RAID_IO_WORK_DIR" ]] || rm -rf "$BENCH_LINUX_VIRTIOFS_WORK_DIR"
+}
+
+# Without `RAID_DEVICES`, `raid_io` runs on image files rather than the three SSDs; say so loudly.
+warn_raid_images() {
+    [[ -n "${RAID_DEVICES:-}" ]] && return 0
+    echo >&2 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo >&2 "!!! WARNING: RAID_DEVICES is not set, so raid_io ran on image files, not the three SSDs.    !!!"
+    echo >&2 "!!! The run only checks that the benchmark works; its latencies say nothing about RAID.     !!!"
+    echo >&2 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+}
+
+# Prepare the RAID members for one boot.
+prepare_raid_members() {
+    local member disk md
+    for member in "$@"; do
+        echo "Preparing ${member}: ${RAID_IO_RANGE} GiB of zeros..." >&2
+        if [[ -b "$member" ]]; then
+            # Stop any md array a previous run left assembled from this member.
+            for md in /sys/class/block/"$(basename "$member")"/holders/md*; do
+                [[ -e "$md" ]] && mdadm --stop "/dev/$(basename "$md")"
+            done
+            disk=/dev/$(lsblk -no PKNAME "$member")
+            wipefs -q -a "$member" "$disk"
+            parted -s "$disk" mklabel gpt mkpart primary 1MiB "$((RAID_IO_RANGE * 1024 + 1))MiB"
+            partprobe "$disk"
+            until [[ -b "$member" ]]; do sleep 0.1; done
+        fi
+        dd if=/dev/zero of="$member" bs=1M count=$((RAID_IO_RANGE * 1024)) oflag=direct status=none
+    done
+}
+
+# Regenerate the job's trace on the share, spanning 95% of the range, from the `gen.py` arguments in the
+# job's `trace_params`: the read fraction, seconds, read and write sizes, mean inter-arrival time, seed.
+generate_raid_trace() {
+    local job_dir="$1" params span
+    read -r -a params < "${job_dir}/trace_params"
+    span=$((RAID_IO_RANGE * 95 / 100))  # `gen.py` takes whole GiB, so round 95% down
+    # tools/run_virtiofsd.sh insists on mode 700 for the work and shared directories.
+    install -d -m 700 "$RAID_IO_WORK_DIR" "$RAID_IO_SHARE"
+    mkdir -p "${RAID_IO_SHARE}/traces"
+    echo "Generating the $(basename "$job_dir") trace over ${span} GiB..." >&2
+    nix-shell -p python3Packages.numpy --run "python3 ${BENCHMARK_ROOT}/../../../../tools/raid_io_bench/traces/gen.py \
+        ${RAID_IO_SHARE}/traces/$(basename "$job_dir").trace ${params[*]:0:5} ${span} ${params[5]}" >/dev/null
 }
 
 # Run the specified benchmark with runtime configurations.
@@ -136,6 +188,11 @@ run_benchmark() {
     local mem_val="8G"
     local aster_scheme_cmd_part="SCHEME=iommu" # Default scheme
     local virtiofs="off"
+
+    # iommu will break VirtIOFS. Turn iommu off for RAID benchmark.
+    [[ "$benchmark" == raid_io/* ]] && aster_scheme_cmd_part=""
+    # `raid_io` reads its trace from, and writes its results to, the virtio-fs share.
+    [[ "$benchmark" == raid_io/* ]] && virtiofs="on"
 
     # Process runtime_configs_str to override defaults and gather extra args
     while IFS='=' read -r key value; do
@@ -188,7 +245,12 @@ run_benchmark() {
                 exit 1
                 ;;
         esac
-        BENCH_LINUX_VIRTIOFS_WORK_DIR=$(mktemp -d -p /tmp asterinas-bench-linux-virtiofs-XXXXXX)
+        if [[ "$benchmark" == raid_io/* ]]; then
+            BENCH_LINUX_VIRTIOFS_WORK_DIR="$RAID_IO_WORK_DIR"
+            asterinas_cmd_arr+=("VIRTIOFS_WORK_DIR=${RAID_IO_WORK_DIR}")
+        else
+            BENCH_LINUX_VIRTIOFS_WORK_DIR=$(mktemp -d -p /tmp asterinas-bench-linux-virtiofs-XXXXXX)
+        fi
         # run_virtiofsd.sh uses vfs.sock under its work directory.
         BENCH_LINUX_VIRTIOFS_SOCKET="${BENCH_LINUX_VIRTIOFS_WORK_DIR}/vfs.sock"
         trap cleanup_linux_virtiofs EXIT
@@ -231,6 +293,23 @@ run_benchmark() {
         )
     fi
 
+    # Add flags for block devices used in the raid benchmark.
+    if [[ "$benchmark" == raid_io/* ]]; then
+        local raid_members virtio_blk_features="disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off"
+        IFS=, read -r -a raid_members <<< "${RAID_DEVICES:-}"
+        if [[ ${#raid_members[@]} -eq 0 ]]; then
+            raid_members=("${BENCHMARK_ROOT}"/../../build/raid{0,1,2}.img)
+        fi
+        generate_raid_trace "${BENCHMARK_ROOT}/${benchmark}"
+        warn_raid_images
+        for i in 0 1 2; do
+            linux_cmd_arr+=(
+                -drive "if=none,format=raw,id=r${i},file=${raid_members[i]},cache=none"
+                -device "virtio-blk-pci,bus=pcie.0,addr=$((9 + i)),drive=r${i},serial=raid${i},${virtio_blk_features}"
+            )
+        done
+    fi
+
     if [[ "$virtiofs" == "on" ]]; then
         # The Linux VM uses the same mount tag as Asterinas.
         linux_cmd_arr+=(
@@ -244,10 +323,16 @@ run_benchmark() {
     # Run the benchmark depending on the mode
     case "${run_mode}" in
         "guest_only")
+            if [[ "$benchmark" == raid_io/* ]]; then
+                prepare_raid_members "${raid_members[@]}"
+            fi
             echo "Running benchmark ${benchmark} on Asterinas..."
             # Execute directly from array, redirect stderr to stdout, then tee
             "${asterinas_cmd_arr[@]}" 2>&1 | tee "${ASTER_OUTPUT}"
             prepare_fs "$benchmark"
+            if [[ "$benchmark" == raid_io/* ]]; then
+                prepare_raid_members "${raid_members[@]}"
+            fi
             if [[ "$virtiofs" == "on" ]]; then
                 start_linux_virtiofsd
             fi
@@ -281,6 +366,8 @@ run_benchmark() {
             exit 1
             ;;
     esac
+    [[ "$benchmark" == raid_io/* ]] && warn_raid_images
+    return 0
 }
 
 # Parse the benchmark configuration
@@ -299,8 +386,26 @@ parse_results() {
 
 # Clean up temporary files
 cleanup() {
+    local benchmark="$1"
+    local run_mode="$2"
+
     echo "Cleaning up..."
-    rm -f "${LINUX_OUTPUT}" "${ASTER_OUTPUT}" "${RESULT_TEMPLATE}"
+    if [[ -n "${SAVE_LOGS}" ]]; then
+        local suffix="${benchmark//\//-}"
+        mv "${ASTER_OUTPUT}" "aster_output_${suffix}.txt"
+        mv "${LINUX_OUTPUT}" "linux_output_${suffix}.txt"
+        echo "Raw outputs saved to aster_output_${suffix}.txt and linux_output_${suffix}.txt"
+        # Only host-guest benchmarks produce guest console logs
+        if [[ "$run_mode" == "host_guest" ]]; then
+            mv "${ASTER_GUEST_LOG}" "aster_guest_${suffix}.log"
+            mv "${LINUX_GUEST_LOG}" "linux_guest_${suffix}.log"
+            echo "Guest consoles saved to aster_guest_${suffix}.log and linux_guest_${suffix}.log"
+        fi
+    else
+        rm -f "${LINUX_OUTPUT}" "${ASTER_OUTPUT}"
+        rm -f "${LINUX_GUEST_LOG}" "${ASTER_GUEST_LOG}"
+    fi
+    rm -f "${RESULT_TEMPLATE}"
 }
 
 # Main function to coordinate the benchmark run
@@ -353,7 +458,7 @@ main() {
     fi
 
     # Cleanup temporary files
-    cleanup
+    cleanup "$benchmark" "$run_mode"
     echo "Benchmark completed successfully."
 }
 

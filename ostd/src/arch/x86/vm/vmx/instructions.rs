@@ -30,7 +30,7 @@ pub(super) unsafe fn vmxon(vmxon_region: Paddr, _irq_guard: &DisabledLocalIrqGua
     }
 
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }
@@ -55,7 +55,7 @@ pub(super) unsafe fn vmxoff(_irq_guard: &DisabledLocalIrqGuard) -> Result<()> {
     }
 
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }
@@ -103,7 +103,7 @@ pub(super) unsafe fn vmclear(vmcs_region: Paddr, _irq_guard: &DisabledLocalIrqGu
         );
     }
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }
@@ -128,7 +128,7 @@ pub(super) unsafe fn vmptrld(vmcs_region: Paddr, _irq_guard: &DisabledLocalIrqGu
         );
     }
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }
@@ -153,7 +153,7 @@ pub(super) unsafe fn vmread(field: u32, _irq_guard: &DisabledLocalIrqGuard) -> R
         );
     }
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(value)
 }
@@ -183,7 +183,7 @@ pub(super) unsafe fn vmwrite(
         );
     }
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }
@@ -218,7 +218,7 @@ pub(super) unsafe fn invept_all_contexts(_irq_guard: &DisabledLocalIrqGuard) -> 
         );
     }
     if failed != 0 {
-        return crate::error::InvalidArgsSnafu.fail();
+        return error::InvalidArgsSnafu.fail();
     }
     Ok(())
 }

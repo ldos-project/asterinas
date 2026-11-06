@@ -148,6 +148,7 @@ mod tests {
     };
 
     fn new_process_vm() -> ProcessVm {
+        crate::init_for_ktest();
         crate::time::clocks::init_for_ktest();
         crate::util::random::init();
         ProcessVm::new(SockFs::new_path())

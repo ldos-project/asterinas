@@ -21,6 +21,6 @@ fn spawn_thread(server: Arc<dyn Server + Send + Sync + 'static>, body: threads::
         .spawn();
 }
 
-pub fn init() {
+pub(crate) fn init() {
     threads::inject_spawn_thread(spawn_thread);
 }

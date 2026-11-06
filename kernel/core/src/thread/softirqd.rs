@@ -33,7 +33,7 @@ mod test {
 
     #[ktest]
     fn softirq_and_softirqd() {
-        aster_softirq::init_for_ktest();
+        crate::init_for_ktest();
         super::init_in_first_kthread();
 
         let (waiter, waker) = Waiter::new_pair();

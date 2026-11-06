@@ -825,12 +825,12 @@ impl Process {
 
 /// On construction, PauseProcGuard will stop the process it holds a reference to, and when dropped
 /// will resume the process. It is safe to resume the process before the drop.
-pub struct PauseProcGuard {
+pub(crate) struct PauseProcGuard {
     proc: Arc<Process>,
 }
 
 impl PauseProcGuard {
-    pub fn new(proc: Arc<Process>) -> Self {
+    pub(crate) fn new(proc: Arc<Process>) -> Self {
         // TODO(aneesh): Can this be done at the scheduler level instead?
         proc.stop(SIGSTOP);
         PauseProcGuard { proc }

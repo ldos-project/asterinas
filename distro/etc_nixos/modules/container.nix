@@ -1,10 +1,4 @@
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
-{
+{ config, lib, pkgs, ... }: {
   virtualisation.containers.storage.settings = {
     storage = {
       driver = "vfs";
@@ -14,7 +8,7 @@
   };
 
   virtualisation.containers.policy = {
-    default = [ { type = "insecureAcceptAnything"; } ];
+    default = [{ type = "insecureAcceptAnything"; }];
   };
 
   virtualisation.containers.containersConf.settings = {

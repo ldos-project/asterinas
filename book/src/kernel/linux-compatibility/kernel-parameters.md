@@ -2,6 +2,52 @@
 
 This section documents kernel command-line parameters supported by Asterinas.
 
+## Setting parameters with a config file
+
+`make kernel`, `make run_kernel`, and the other targets that boot the kernel
+read kernel parameters from a TOML file,
+`kcmd_configs/default.toml` by default.
+Select another file with `KCMD_CONFIG`:
+
+```bash
+make run_kernel KCMD_CONFIG=kcmd_configs/my_experiment.toml
+```
+
+Each key becomes one parameter.
+A key inside a `[table]` is prefixed with the table name,
+and a list is joined with commas:
+
+```toml
+loglevel = "warn"         # loglevel=warn
+
+[data_capture]
+device = "vdg"            # data_capture.device=vdg
+sync_period = 1000        # data_capture.sync_period=1000
+
+[raid]
+members = ["vdd", "vde"]  # raid.members=vdd,vde
+```
+
+By convention, every kernel policy,
+such as the RAID read-selection and admission policies or huge-page mapping,
+should be selected through a kernel command-line parameter,
+so the policies an experiment uses can be chosen at boot time from a config file.
+For example:
+
+```toml
+[raid]
+members = ["vdd", "vde", "vdf"]
+selection = "userspace"
+```
+
+A parameter the file does not specify keeps its Makefile or kernel default.
+Values in the file override the Makefile's own options, such as `LOG_LEVEL`.
+To override a value from the file for a single run, pass it in `KCMDARGS`:
+
+```bash
+make run_kernel KCMDARGS="raid.selection=linnos"
+```
+
 ## Inherited from Linux
 
 ### `rdinit`

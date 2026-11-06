@@ -1,50 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
-{
-  stdenv,
-  mkShell,
-  asterinas-rust-toolchain,
-  asterinas-vdso,
-  # Tools osdk/tools/docker/Dockerfile installs with `cargo install`; nixpkgs
-  # provides them here, so versions may lag the Docker pins.
-  cargo-binutils,
-  cargo-expand,
-  cargo-udeps,
-  lychee,
-  mdbook,
-  mdbook-mermaid,
-  typos,
-  clang,
-  clang-tools,
-  git,
-  python3,
-  yq,
-  jq,
-  gnumake,
-  pkg-config,
-  file,
-  nixfmt,
-  asterinas-qemu,
-  asterinas-grub,
-  asterinas-ovmf,
-  gdb,
-  mtools,
-  xorriso,
-  cpio,
-  dosfstools,
-  exfatprogs,
-  e2fsprogs,
-  util-linux,
-  parted,
-  socat,
-  strace,
-  virtiofsd,
-  iptables,
-  iproute2,
-  nix,
-  nixos-install-tools,
-  wget,
-  cachix,
-}:
+{ stdenv, mkShell, asterinas-rust-toolchain, asterinas-vdso,
+# Tools osdk/tools/docker/Dockerfile installs with `cargo install`; nixpkgs
+# provides them here, so versions may lag the Docker pins.
+cargo-binutils, cargo-expand, cargo-udeps, lychee, mdbook, mdbook-mermaid, typos
+, clang, clang-tools, git, python3, yq, jq, gnumake, pkg-config, file, nixfmt
+, asterinas-qemu, asterinas-grub, asterinas-ovmf, gdb, mtools, xorriso, cpio
+, dosfstools, exfatprogs, e2fsprogs, util-linux, parted, socat, strace
+, virtiofsd, iptables, iproute2, nix, nixos-install-tools, wget, cachix, }:
 
 let
   cargoTools = [
@@ -99,29 +61,21 @@ let
   ];
   # Host-side clients of the network benchmarks, from the definitions the
   # prebuilt-nix-packages image installs with `make install_host_pkgs`.
-  benchmarkHostClients =
-    let
-      initramfsPkgs = import ../../../test/initramfs/nix {
-        target = stdenv.hostPlatform.parsed.cpu.name;
-        system = stdenv.hostPlatform.system;
-      };
-    in
-    [
-      initramfsPkgs.apacheHttpd
-      initramfsPkgs.iperf3
-      initramfsPkgs.libmemcached
-      initramfsPkgs.lmbench
-      initramfsPkgs.redis
-    ];
-in
-mkShell {
-  packages = [
-    asterinas-rust-toolchain
-  ]
-  ++ cargoTools
-  ++ hostCommon
-  ++ bootAndHostTools
-  ++ benchmarkHostClients;
+  benchmarkHostClients = let
+    initramfsPkgs = import ../../../test/initramfs/nix {
+      target = stdenv.hostPlatform.parsed.cpu.name;
+      system = stdenv.hostPlatform.system;
+    };
+  in [
+    initramfsPkgs.apacheHttpd
+    initramfsPkgs.iperf3
+    initramfsPkgs.libmemcached
+    initramfsPkgs.lmbench
+    initramfsPkgs.redis
+  ];
+in mkShell {
+  packages = [ asterinas-rust-toolchain ] ++ cargoTools ++ hostCommon
+    ++ bootAndHostTools ++ benchmarkHostClients;
 
   shellHook = ''
     # Change Cargo PATH order so Nix tools precede rustup shims.

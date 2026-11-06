@@ -6,18 +6,10 @@
 # provides the userland tools. On other hosts the cross-built tools cannot
 # run locally, so they come from a native build of the same fork instead and
 # grub-mkrescue is pointed at the x86_64-efi modules explicitly.
-{
-  stdenv,
-  grub2,
-  grub2-host,
-  fetchFromGitHub,
-  runCommand,
-  makeWrapper,
-}:
+{ stdenv, grub2, grub2-host, fetchFromGitHub, runCommand, makeWrapper, }:
 
 let
-  fork =
-    pkg:
+  fork = pkg:
     pkg.overrideAttrs (old: {
       version = "asterinas-2.12-0633bc8";
 
@@ -34,10 +26,8 @@ let
       # commits would stop building.
       patches = [ ];
 
-      configureFlags = (old.configureFlags or [ ]) ++ [
-        "--enable-grub-mkfont"
-        "--disable-werror"
-      ];
+      configureFlags = (old.configureFlags or [ ])
+        ++ [ "--enable-grub-mkfont" "--disable-werror" ];
 
       postPatch = (old.postPatch or "") + ''
         # Bake in the modules Asterinas boot images expect.
@@ -46,28 +36,23 @@ let
     });
 
   x86_64-efi = fork grub2;
-in
-if stdenv.hostPlatform.isx86_64 then
+in if stdenv.hostPlatform.isx86_64 then
   x86_64-efi
 else
-  let
-    tools = fork grub2-host;
-  in
-  runCommand "grub-${x86_64-efi.version}"
-    {
-      nativeBuildInputs = [ makeWrapper ];
-    }
-    ''
-      mkdir -p $out/bin $out/lib/grub
-      ln -s ${tools}/bin/* $out/bin/
-      # OSDK invokes grub-mkrescue without --directory, so the default module
-      # path baked into the native tools would be the host platform's. Point
-      # it at the x86_64-efi modules the boot ISO needs. grub-mkrescue is the
-      # only GRUB tool the repo invokes; the other tools keep their native
-      # default module directory.
-      rm $out/bin/grub-mkrescue
-      makeWrapper ${tools}/bin/grub-mkrescue $out/bin/grub-mkrescue \
-        --add-flags "--directory=${x86_64-efi}/lib/grub/x86_64-efi"
-      ln -s ${x86_64-efi}/lib/grub/x86_64-efi $out/lib/grub/
-      ln -s ${tools}/share $out/share
-    ''
+  let tools = fork grub2-host;
+  in runCommand "grub-${x86_64-efi.version}" {
+    nativeBuildInputs = [ makeWrapper ];
+  } ''
+    mkdir -p $out/bin $out/lib/grub
+    ln -s ${tools}/bin/* $out/bin/
+    # OSDK invokes grub-mkrescue without --directory, so the default module
+    # path baked into the native tools would be the host platform's. Point
+    # it at the x86_64-efi modules the boot ISO needs. grub-mkrescue is the
+    # only GRUB tool the repo invokes; the other tools keep their native
+    # default module directory.
+    rm $out/bin/grub-mkrescue
+    makeWrapper ${tools}/bin/grub-mkrescue $out/bin/grub-mkrescue \
+      --add-flags "--directory=${x86_64-efi}/lib/grub/x86_64-efi"
+    ln -s ${x86_64-efi}/lib/grub/x86_64-efi $out/lib/grub/
+    ln -s ${tools}/share $out/share
+  ''

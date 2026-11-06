@@ -1,14 +1,5 @@
-{
-  lib,
-  stdenvNoCC,
-  callPackage,
-  hostPlatform,
-  testSuite ? "ltp",
-  workDir ? "/tmp",
-  testSelector ? "",
-  smp ? 1,
-}:
-rec {
+{ lib, stdenvNoCC, callPackage, hostPlatform, testSuite ? "ltp"
+, workDir ? "/tmp", testSelector ? "", smp ? 1, }: rec {
   inherit testSuite;
   ltp = callPackage ./ltp.nix { };
   # FIXME: Build gvisor syscall test with nix.
@@ -37,10 +28,14 @@ rec {
       export CONFORMANCE_TEST_SELECTOR=${testSelector}
       export SMP=${toString smp}
       export HOST_PLATFORM=${hostPlatform.system}
-      ${lib.optionalString (testSuite == "ltp") "export LTP_PREBUILT_DIR=${ltp}"}
-      ${lib.optionalString (testSuite == "gvisor") "export GVISOR_PREBUILT_DIR=${gvisor}"}
-      ${lib.optionalString (testSuite == "kselftest") "export KSELFTEST_PREBUILT_DIR=${kselftest}"}
-      ${lib.optionalString (testSuite == "xfstests") "export XFSTESTS_PREBUILT_DIR=${xfstests}"}
+      ${lib.optionalString (testSuite == "ltp")
+      "export LTP_PREBUILT_DIR=${ltp}"}
+      ${lib.optionalString (testSuite == "gvisor")
+      "export GVISOR_PREBUILT_DIR=${gvisor}"}
+      ${lib.optionalString (testSuite == "kselftest")
+      "export KSELFTEST_PREBUILT_DIR=${kselftest}"}
+      ${lib.optionalString (testSuite == "xfstests")
+      "export XFSTESTS_PREBUILT_DIR=${xfstests}"}
       make
     '';
   };

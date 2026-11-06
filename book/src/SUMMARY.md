@@ -57,6 +57,7 @@
 * [An Overview of OSTD](ostd/README.md)
 * [Example: Writing a Kernel in 100 Lines of Safe Rust](ostd/a-100-line-kernel.md)
 * [Example: Writing a Driver in 100 Lines of Safe Rust]()
+* [Debugging Tools in OSTD](ostd/debugging.md)
 * [Soundness Analysis](ostd/soundness/README.md)
     * [What Soundness Means](ostd/soundness/what-soundness-means.md)
     * [The Sensitivity Classification](ostd/soundness/sensitivity-classification.md)

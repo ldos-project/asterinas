@@ -37,10 +37,10 @@ update_dep_version() {
 # Update Docker image versions in file $1
 update_image_versions() {
     echo "Updating file $1"
-    # Update the version of OSDK development container
-    sed -i "s/asterinas\/osdk-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/osdk-dev:${new_version}/g" $1
-    # Update the version of kernel development container
-    sed -i "s/asterinas\/kernel-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/kernel-dev:${new_version}/g" $1
+    # # Update the version of OSDK development container
+    # sed -i "s/asterinas\/osdk-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/osdk-dev:${new_version}/g" $1
+    # # Update the version of kernel development container
+    # sed -i "s/asterinas\/kernel-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/kernel-dev:${new_version}/g" $1
     # Update the version of the Asterinas development container
     sed -i "s/ldosproject\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+-ldos\(-[[:digit:]]\+\)\?/ldosproject\/asterinas:${new_version}/g" $1
     # Update the version of ldosproject/osdk container

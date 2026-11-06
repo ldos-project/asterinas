@@ -182,8 +182,25 @@ impl VmSpace {
         guard: &'a G,
         va: &Range<Vaddr>,
     ) -> Result<CursorMut<'a>> {
+        self.cursor_mut_with_min_level(guard, va, 1)
+    }
+
+    /// Gets a mutable cursor in the virtual address range that locks at `min_level` or higher.
+    ///
+    /// Use this instead of [`Self::cursor_mut`] to map pages above level 1 (i.e., huge pages),
+    /// passing the highest page level to be mapped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `min_level` is outside `1..=NR_LEVELS`.
+    pub fn cursor_mut_with_min_level<'a, G: AsAtomicModeGuard>(
+        &'a self,
+        guard: &'a G,
+        va: &Range<Vaddr>,
+        min_level: PagingLevel,
+    ) -> Result<CursorMut<'a>> {
         Ok(CursorMut {
-            pt_cursor: self.pt.cursor_mut(guard, va)?,
+            pt_cursor: self.pt.cursor_mut_with_min_level(guard, va, min_level)?,
             flusher: TlbFlusher::new(&self.cpus, disable_preempt()),
             vmspace: self,
         })

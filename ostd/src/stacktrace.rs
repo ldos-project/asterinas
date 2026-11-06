@@ -97,8 +97,8 @@ impl CapturedStackTrace {
             }
 
             let mut data = CallbackData {
-                skip: skip + 1,
                 count: 0,
+                skip: skip + 1,
                 res: Default::default(),
             };
             _Unwind_Backtrace(callback, &mut data as *mut _ as _);

@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// The implementation of the `orpc_trait` attr macro.
-pub fn orpc_trait_macro_impl(
+pub(crate) fn orpc_trait_macro_impl(
     _attr: proc_macro::TokenStream,
     input: ItemTrait,
 ) -> proc_macro2::TokenStream {
