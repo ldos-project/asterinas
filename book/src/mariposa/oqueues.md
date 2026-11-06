@@ -8,22 +8,22 @@ components when a command queue or channel is needed.
 OQueues provide 4 operations, each of which requires the producer, consumer, or observer to
 explicitly attach (i.e., register).
 
-**Strong observers** receive every value in the OQueue exactly once as they are produced. This
+<span id="strong_observers"></span>**Strong observers** receive every value in the OQueue exactly once as they are produced. This
 provides a way to process the exact event stream. All strong observers receive all values, so strong
 observation has "broadcast" semantics. This is useful for tracking precise information, for example,
 maintaining a list of all in flight I/O requests. To allow this, strong observers are notified
 whenever a new value is available.
 
-**Weak observers** can observe a history of values in the OQueue on a best effort basis. The length
+<span id="weak_observers"></span>**Weak observers** can observe a history of values in the OQueue on a best effort basis. The length
 of the history must be specified when the observer registers, but is not guaranteed. This is useful
 for accessing approximate recent information, for example, the last 5 I/O requests. Weak observers
 are also notified when new information is available, but are not guaranteed to be notified of every
 new value and the value may have been discarded before the observer runs.
 
-**Producers** push values into the OQueue. This is the same as a producer on a typical queue. Once a
+<span id="producers"></span>**Producers** push values into the OQueue. This is the same as a producer on a typical queue. Once a
 value is produced, it will be received by one consumer (if one exists) and all strong observers.
 
-**Consumers** receive values from the OQueue as they are produced, with every message going to a
+<span id="consumers"></span>**Consumers** receive values from the OQueue as they are produced, with every message going to a
 single consumer. This is the same semantics as receivers on typical multi-consumer queues. This is
 similar to network "anycast". This is used when messages are requests and there are multiple clients
 that can handle requests.
@@ -109,8 +109,8 @@ the buffer length may need to be increased.
 
 ## Other OQueue Operations
 
-OQueues provide several other operations and variants of the produce, consume, and observe
-operations.
+OQueues provide several other operations and variants of the [produce](#producers),
+[consume](#consumers), and [observe](#strong_observers) operations.
 
 For each main operation there are:
 
@@ -172,10 +172,10 @@ pub trait DefaultProjection {
 }
 ```
 
-If the value will be exported to userspace, it
-should also implement serde `Serialize` (the CBOR export uses it). The default projection is used
-in cases where no other projection is selected. It is how the OQueue filesystem exposes data in an
-OQueue, so all userspace accessible OQueues are required to have one.
+If the value will be exported to userspace, it should also implement serde `Serialize` (the CBOR
+export uses it). The default projection is used in cases where no other projection is selected. It
+is how the OQueue filesystem exposes data in an OQueue, so all userspace accessible OQueues are
+required to have one.
 
 Some references to [Mariposa objects](objects.md) are projected as their ID. In particular,
 `Arc<T: OObject>` implements `DefaultProjection` with `type Projected = ObjectId`. This widens
@@ -235,10 +235,10 @@ internally.
 
 ## OQueues for Object Methods
 
-Mariposa objects and their traits have public APIs and, as such, should be observable. This means
-that a call OQueue and a return OQueue are created for each trait method. There is an OQueue for
-each method, and the elements include the object ID. There is *not* an OQueue for each method on
-each object.
+[Mariposa objects](objects.md#mariposa-objects) and their traits have public APIs and, as such,
+should be observable. This means that a call OQueue and a return OQueue are created for each trait
+method. There is an OQueue for each method, and the elements include the object ID. There is *not*
+an OQueue for each method on each object.
 
 > **Note:** You can view the OQueue here like a table in a relational database. Instead of having a
 > separate table for each object, you have one table, and an ID column which connects each row to
@@ -375,10 +375,10 @@ Then, you can compute whatever statistics you want from the faults  including th
 
 ## Inline Observers and Consumers
 
-You can attach observers and consumers as functions which are called *during* the produce call (at
-the same time projections are run). This has significant limitations and risks, because of when the
-function is called. The function is limited to doing non-blocking operations. Notably, this prevents
-publishing into another OQueue.
+You can attach [observers](#strong_observers) and [consumers](#consumers) as functions which are
+called *during* the produce call (at the same time projections are run). This has significant
+limitations and risks, because of when the function is called. The function is limited to doing
+non-blocking operations. Notably, this prevents publishing into another OQueue.
 
 *Future work:* We plan to lift the limitation on publishing within an inline observer in the future.
 
