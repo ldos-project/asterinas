@@ -14,10 +14,5 @@ cbor2>=5.4
 # path from the directory it runs in, so install from this directory.
 -e ../../mariposa-cli
 
-# `run_python` runs the agent's code in this same environment, and its tool description points the
-# agent at this file: every package listed here is one the agent can import. Searches 2 and 3
-# ask the agent to train a model, so its code imports these; search 1 does not need them. Install
-# a CPU build of torch (pip's default pulls the CUDA one) if the host has no GPU.
-pandas>=2.0
-scikit-learn>=1.3
-torch>=2.0
+# The packages the agent can import in `run_python`, which runs in this same environment.
+-r requirements-agent.txt

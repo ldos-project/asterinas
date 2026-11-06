@@ -12,7 +12,7 @@ turn's full record) and submitting a policy, you have these tools.
 
 `run_python` runs arbitrary Python code in this turn's scratch workspace, in the harness's own
 Python environment: the packages it can import (e.g. pandas/numpy/scikit-learn/pytorch) are the
-ones listed in the harness's `requirements.txt`, whose path the tool's description gives. It can
+ones listed in the harness's `requirements-agent.txt`, whose path the tool's description gives. It can
 also read this search's own policy database (every
 past turn's description, code, performance data, every benchmark's and collection's files, and its
 workspace). Use it to analyze data, train models, and save intermediate artifacts. Check earlier

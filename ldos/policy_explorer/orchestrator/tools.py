@@ -25,8 +25,8 @@ from orchestrator.stats import means
 from orchestrator.subsystem import OQueue, Subsystem
 
 BUILD_LOG_TAIL = 4000
-# The packages installed in the environment `run_python` runs in (the harness's own).
-REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements.txt"
+# The packages the agent can import in `run_python` (installed in the harness's own environment).
+REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements-agent.txt"
 
 
 class ToolError(Exception):
