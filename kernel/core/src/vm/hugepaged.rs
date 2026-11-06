@@ -11,8 +11,12 @@ use ostd::orpc::{
 };
 use snafu::Whatever;
 
-use super::{promote_hugepages, vmar::PageFaultOQueueMessage};
-use crate::{process::Process, util::timer::TimerServer, vm::vmar};
+use super::{promote_hugepages, vmar::PageFaultMessage};
+use crate::{
+    process::Process,
+    util::timer::TimerServer,
+    vm::{PageFaultRecord, vmar},
+};
 
 #[orpc_trait]
 pub(crate) trait HugePageD {}
@@ -40,17 +44,21 @@ impl HugepagedServer {
         let notify_server = TimerServer::spawn(Duration::from_secs(1));
 
         let pagefault_oq = vmar::oqueues::get_page_fault_oqueue();
-        let pagefault_observer =
-            pagefault_oq.attach_strong_observer(ObservationQuery::identity())?;
+        let pagefault_observer = pagefault_oq.attach_strong_observer(ObservationQuery::new(
+            |e: &PageFaultMessage| PageFaultRecord {
+                vm_space_id: e.vm_space.id(),
+                fault_info: e.fault_info,
+            },
+        ))?;
         let notify_observer = notify_server
             .notification_oqueue()
             .attach_strong_observer(ObservationQuery::identity())?;
         loop {
-            let mut value: Option<PageFaultOQueueMessage> = None;
+            let mut value: Option<PageFaultRecord> = None;
             loop {
                 select!(
                     if let msg = pagefault_observer.try_strong_observe() {
-                        value = Some(msg.event);
+                        value = Some(msg);
                         break;
                     },
                     if let _ = notify_observer.try_strong_observe() {
