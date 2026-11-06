@@ -138,6 +138,9 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
+    /// Whether only weak observers may attach. Weak observers never hold back a producer, so
+    /// producing into such an OQueue never blocks or fails.
+    weak_observers_only: bool,
     path: Option<Path>,
     /// Wait queue for observers. Awoken when there are elements to observe.
     observe_wait_queue: WaitQueue,
@@ -180,6 +183,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }),
             len,
             supports_consume,
+            weak_observers_only: false,
             path,
             observe_wait_queue: WaitQueue::new(),
             consume_wait_queue: WaitQueue::new(),
@@ -188,6 +192,13 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             wake_hooks: SpinLock::new(WakeHooks::default()),
             num_full_buffers: AtomicUsize::new(0),
         }
+    }
+
+    /// Only allow weak observers to attach to this OQueue. Attaching any kind of strong observer
+    /// will then fail with [`OQueueError::Unsupported`].
+    pub(crate) fn with_weak_observers_only(mut self) -> Self {
+        self.weak_observers_only = true;
+        self
     }
 
     /// Return the path associated with this OQueue, or `None` for anonymous queues.
@@ -277,6 +288,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     where
         U: Copy + Send + 'static,
     {
+        if self.weak_observers_only {
+            return super::UnsupportedSnafu.fail();
+        }
         let observer_key = self.new_observation_ring_buffer(query, self.len, true, revocable)?;
         let oqueue: Arc<dyn UntypedOQueueImplementation> = self.clone();
         Ok(super::StrongObserver {
@@ -296,6 +310,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         self: &Arc<Self>,
         f: impl for<'a> Fn(&'a D::Element<'a>) + Send + 'static,
     ) -> Result<InlineStrongObserver, OQueueError> {
+        if self.weak_observers_only {
+            return super::UnsupportedSnafu.fail();
+        }
         let mut inner = self.inner.lock();
         let key = inner.inline_strong_observers.insert(Box::new(f));
         Ok(InlineStrongObserver {
