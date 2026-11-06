@@ -4,8 +4,8 @@
 
 The policy is one whole source file behind an interface the engineer wrote. Its committed content
 is the fallback: the agent's starting point, what the baseline runs with, and what the file holds
-outside a build. While the agent's code is in the file, a backup of the fallback exists; a run
-killed before putting the fallback back leaves the backup, and the next start restores it.
+outside a build. A run killed while the agent's code is in the file leaves it there; the next start
+puts the fallback back.
 """
 
 import json
@@ -34,6 +34,8 @@ class PolicyFile:
         The fallback is restored however the block ends (exception, Ctrl-C, SIGTERM via
         run_experiment's handler).
         """
+        # The backup of the fallback exists while the agent's code is in the file, so a run killed
+        # before the `finally` leaves it for the next start (`__init__`) to restore.
         self.backup.parent.mkdir(parents=True, exist_ok=True)
         self.backup.write_text(json.dumps({"path": self.path, "fallback": self.fallback}))
         (self.repo_root / self.path).write_text(code)

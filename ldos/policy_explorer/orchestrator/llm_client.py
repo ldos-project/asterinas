@@ -2,8 +2,7 @@
 
 """A thin wrapper around an OpenAI-compatible chat-completions client, converting the SDK's
 response objects into plain dicts/dataclasses so the rest of the orchestrator never depends on the
-SDK's own types, and reading the per-call token usage the API already reports instead of tracking
-it separately."""
+SDK's own types."""
 
 from dataclasses import dataclass
 
@@ -48,6 +47,7 @@ class LLMClient:
         # `arguments` as the JSON string the model sent. Other fields (refusal, provider extras) and
         # an absent `tool_calls` are left out.
         message = response.choices[0].message.model_dump(include={"role", "content", "tool_calls"}, exclude_none=True)
+        # The per-call token usage the API already reports, instead of tracking it separately.
         usage = Usage(
             prompt_tokens=response.usage.prompt_tokens,
             completion_tokens=response.usage.completion_tokens,

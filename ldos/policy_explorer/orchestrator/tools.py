@@ -319,11 +319,9 @@ class Toolbox:
     # --- OQueue tools --------------------------------------------------------------------------
 
     def _exports(self, boot: bool) -> list[dict] | None:
-        """The OQueues the kernel exports, from the newest run's listing; with `boot`, boot once to list them.
-
-        Any run's listing counts, but not a file the agent wrote into a workspace.
-        """
+        """The OQueues the kernel exports, from the newest run's listing; with `boot`, boot once to list them."""
         root = self.database.root
+        # Any run's listing counts, but not a file the agent wrote into a workspace.
         listings = sorted(
             (p for p in root.glob(f"**/{mariposa.EXPORTS_FILE}") if "workspace" not in p.relative_to(root).parts),
             key=lambda p: p.stat().st_mtime,

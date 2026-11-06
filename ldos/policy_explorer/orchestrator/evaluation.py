@@ -2,8 +2,7 @@
 
 """Build and benchmark one policy, or the baseline, through the subsystem.
 
-Shared by the end-of-turn scoring and the build_policy/run_benchmark/collect_data tools. The
-agent's code is in the policy file only inside `PolicyFile.containing`: for its build and its runs.
+Shared by the end-of-turn scoring and the build_policy/run_benchmark/collect_data tools.
 """
 
 import shutil
@@ -49,9 +48,9 @@ class Runner:
     def _run_with_retry(self, out_dir: Path, **kwargs) -> None:
         """Run the benchmark once, retrying a failed run once.
 
-        A guest occasionally hangs or dies without reporting completion. Each failed attempt's files
-        are kept as `<run>_failed<attempt>` for diagnosis.
+        Each failed attempt's files are kept as `<run>_failed<attempt>` for diagnosis.
         """
+        # A guest occasionally hangs or dies without reporting completion.
         for attempt in range(1, RUN_ATTEMPTS + 1):
             try:
                 self.subsystem.benchmark(out_dir, **kwargs)

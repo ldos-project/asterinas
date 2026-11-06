@@ -11,10 +11,8 @@ from orchestrator.database import Database
 
 
 def render_context(text: str, fallback: str) -> str:
-    """Fill the context document's `{{policy_file}}` placeholder with the policy file's starting code.
-
-    This keeps the document's example identical to the file in the tree.
-    """
+    """Fill the context document's `{{policy_file}}` placeholder with the policy file's starting code."""
+    # Filled from the file itself, so the document's example stays identical to the file in the tree.
     return text.replace("{{policy_file}}", fallback.rstrip("\n"))
 
 
