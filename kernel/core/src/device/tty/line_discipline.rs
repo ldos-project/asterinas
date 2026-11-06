@@ -7,7 +7,7 @@ use crate::{
     device::tty::termio::{CInputFlags, CLocalFlags},
     prelude::*,
     process::signal::{
-        constants::{SIGINT, SIGQUIT},
+        constants::{SIGINT, SIGQUIT, SIGTSTP},
         sig_num::SigNum,
     },
     util::ring_buffer::RingBuffer,
@@ -24,7 +24,7 @@ const BUFFER_CAPACITY: usize = 8192;
 // be accepted.
 const_assert!(LINE_CAPACITY < BUFFER_CAPACITY);
 
-pub struct LineDiscipline {
+pub(crate) struct LineDiscipline {
     /// Current line
     current_line: CurrentLine,
     /// Read buffer
@@ -83,7 +83,7 @@ impl CurrentLine {
 
 impl LineDiscipline {
     /// Creates a new line discipline.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             current_line: CurrentLine::default(),
             read_buffer: RingBuffer::new(BUFFER_CAPACITY),
@@ -93,7 +93,7 @@ impl LineDiscipline {
     }
 
     /// Pushes a character to the line discipline.
-    pub fn push_char<F1: FnMut(SigNum), F2: FnMut(&[u8])>(
+    pub(crate) fn push_char<F1: FnMut(SigNum), F2: FnMut(&[u8])>(
         &mut self,
         ch: u8,
         mut signal_callback: F1,
@@ -107,7 +107,22 @@ impl LineDiscipline {
 
         if let Some(signum) = char_to_signal(ch, &self.termios) {
             signal_callback(signum);
-            // CBREAK mode may require the character to be echoed, so just go ahead.
+
+            // Unless `NOFLSH` is set, pending input is discarded.
+            //
+            // TODO: Linux discards pending output here as well. The driver's output buffer is
+            // locked by the echo callback for the whole duration of the caller's character loop,
+            // so draining it needs an operation on the callback itself.
+            if !self.termios.local_flags().contains(CLocalFlags::NOFLSH) {
+                self.drain_input();
+            }
+
+            if self.termios.local_flags().contains(CLocalFlags::ECHO) {
+                self.output_char(ch, echo_callback);
+            }
+
+            // The signal character itself is consumed, not delivered to readers.
+            return Ok(());
         }
 
         // Typically, a TTY in raw mode does not echo. But the TTY can also be in a CBREAK mode,
@@ -180,7 +195,7 @@ impl LineDiscipline {
     ///
     /// If no bytes are available or the available bytes are fewer than `min(dst.len(), vmin)`,
     /// this method returns [`Errno::EAGAIN`].
-    pub fn try_read(&mut self, dst: &mut [u8]) -> Result<usize> {
+    pub(crate) fn try_read(&mut self, dst: &mut [u8]) -> Result<usize> {
         let vmin = self.termios.special_char(CCtrlCharId::VMIN);
         let vtime = self.termios.special_char(CCtrlCharId::VTIME);
 
@@ -219,24 +234,24 @@ impl LineDiscipline {
         Ok(dst.len())
     }
 
-    pub fn drain_input(&mut self) {
+    pub(crate) fn drain_input(&mut self) {
         self.current_line.drain();
         self.read_buffer.clear();
     }
 
-    pub fn buffer_len(&self) -> usize {
+    pub(crate) fn buffer_len(&self) -> usize {
         self.read_buffer.len()
     }
 
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.read_buffer.len() + self.current_line.len() >= self.read_buffer.capacity()
     }
 
-    pub fn termios(&self) -> &CTermios2 {
+    pub(crate) fn termios(&self) -> &CTermios2 {
         &self.termios
     }
 
-    pub fn set_termios(&mut self, termios: CTermios) {
+    pub(crate) fn set_termios(&mut self, termios: CTermios) {
         let termios2 = CTermios2::new(
             termios,
             CTermiosSpeeds::from_termios(&termios, *self.termios.speeds()),
@@ -244,7 +259,7 @@ impl LineDiscipline {
         self.set_termios2(termios2);
     }
 
-    pub fn set_termios2(&mut self, termios2: CTermios2) {
+    pub(crate) fn set_termios2(&mut self, termios2: CTermios2) {
         self.termios = termios2;
 
         // When switching to raw mode, any pending input bytes should become immediately available.
@@ -261,11 +276,11 @@ impl LineDiscipline {
         self.read_buffer.push_slice(bytes)
     }
 
-    pub fn window_size(&self) -> CWinSize {
+    pub(crate) fn window_size(&self) -> CWinSize {
         self.winsize
     }
 
-    pub fn set_window_size(&mut self, winsize: CWinSize) {
+    pub(crate) fn set_window_size(&mut self, winsize: CWinSize) {
         self.winsize = winsize;
     }
 }
@@ -304,13 +319,18 @@ fn is_ctrl_char(ch: u8) -> bool {
 }
 
 fn char_to_signal(ch: u8, termios: &CTermios) -> Option<SigNum> {
-    if !termios.is_canonical_mode() || !termios.local_flags().contains(CLocalFlags::ISIG) {
+    // A special character whose value is `_POSIX_VDISABLE` is disabled, so NUL input must not
+    // match one.
+    //
+    // Reference: <https://elixir.bootlin.com/linux/v7.1/source/drivers/tty/n_tty.c#L1831>
+    if ch == b'\0' || !termios.local_flags().contains(CLocalFlags::ISIG) {
         return None;
     }
 
     match ch {
         ch if ch == termios.special_char(CCtrlCharId::VINTR) => Some(SIGINT),
         ch if ch == termios.special_char(CCtrlCharId::VQUIT) => Some(SIGQUIT),
+        ch if ch == termios.special_char(CCtrlCharId::VSUSP) => Some(SIGTSTP),
         _ => None,
     }
 }

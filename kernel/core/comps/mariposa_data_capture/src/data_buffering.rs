@@ -3,6 +3,7 @@
 use alloc::{
     string::{String, ToString as _},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 
@@ -131,7 +132,7 @@ impl ChunkingWriteWrapper {
         }
         self.block_device.write_blocks_async(
             self.current_bid,
-            bio_segment,
+            vec![bio_segment],
             None,
             &mut IoBatch::new(),
         )?;
@@ -169,8 +170,6 @@ impl ChunkingWriteWrapper {
 
 #[cfg(ktest)]
 mod test {
-    use alloc::vec;
-
     use aster_block::test_utils::MemoryDisk;
     use ostd::{path, prelude::*};
 

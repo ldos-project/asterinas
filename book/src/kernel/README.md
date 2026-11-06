@@ -45,6 +45,7 @@ that Asterinas can run on as an OS kernel.
 | ------------------- | ------ |
 | x86-64              | Tier 1 |
 | x86-64 (Intel TDX)  | Tier 2 |
+| ARM 64              | Tier 2 |
 | RISC-V 64           | Tier 2 |
 | LoongArch 64        | Tier 3 |
 
@@ -86,6 +87,8 @@ since `distro/README.md` references them -->
     Alternatively, if you use VS Code with the
     [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
     extension, open the cloned folder and select "Reopen in Container".
+    If you prefer Nix to Docker, enter the Nix development shell instead,
+    as described in [Using Nix for Development](nix-development.md).
 
 3. Inside the container, go to the project folder to build and run Asterinas.
 

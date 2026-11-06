@@ -50,19 +50,28 @@ pub mod test_utils;
 
 pub use ::device_id::DeviceId;
 use component::{ComponentInitError, init_component};
-pub use device_id::{EXTENDED_DEVICE_ID_ALLOCATOR, MajorIdOwner, acquire_major, allocate_major};
 use io_util::batch::IoBatch;
 use ostd::sync::Mutex;
-pub use partition::{PartitionInfo, PartitionNode};
 
 use self::{
     bio::{BioEnqueueError, SubmittedBio},
     prelude::*,
 };
+pub use self::{
+    device_id::{MAX_MAJOR, MajorIdOwner, acquire_major, allocate_major},
+    partition::PartitionManager,
+};
 use crate::bio::Bio;
 
 pub const BLOCK_SIZE: usize = ostd::mm::PAGE_SIZE;
 pub const SECTOR_SIZE: usize = 512;
+
+/// The number of minor device numbers allocated for each whole-disk device,
+/// including the whole disk and its partitions.
+///
+/// If a disk has more than 16 partitions, we will allocate device IDs for
+/// remaining partitions via `EXTENDED_DEVICE_ID_ALLOCATOR`.
+pub const DEVICE_MINORS: u32 = 16;
 
 pub trait BlockDevice: Send + Sync + Any + Debug {
     /// Enqueues a new `SubmittedBio` to the block device.
@@ -82,11 +91,12 @@ pub trait BlockDevice: Send + Sync + Any + Debug {
         false
     }
 
-    /// Sets the partitions of the block device.
-    fn set_partitions(&self, _infos: Vec<Option<PartitionInfo>>) {}
-
-    /// Returns the partitions of the block device.
-    fn partitions(&self) -> Option<Vec<Arc<dyn BlockDevice>>> {
+    /// Returns the partition manager of the block device.
+    ///
+    /// Whole-disk devices return their manager, which owns the device's
+    /// partitions. Partition devices and devices without partition support
+    /// return `None`.
+    fn partition_manager(&self) -> Option<&PartitionManager> {
         None
     }
 
@@ -148,9 +158,9 @@ pub enum Error {
     NotFound,
     /// Invalid arguments
     InvalidArgs,
-    /// Id Acquired
+    /// ID acquired
     IdAcquired,
-    /// Id Exhausted
+    /// ID exhausted
     IdExhausted,
 }
 
@@ -192,25 +202,40 @@ pub fn lookup(id: DeviceId) -> Option<Arc<dyn BlockDevice>> {
     DEVICE_REGISTRY.lock().get(&id.to_raw()).cloned()
 }
 
+/// Looks up a block device by its kernel device name.
+pub fn lookup_by_name(name: &str) -> Option<Arc<dyn BlockDevice>> {
+    DEVICE_REGISTRY
+        .lock()
+        .values()
+        .find(|device| device.name() == name)
+        .cloned()
+}
+
+/// Scans registered whole-disk devices and updates their partitions.
+pub fn scan_partitions() {
+    let devices = collect_all();
+    for device in devices {
+        if device.is_partition() {
+            continue;
+        }
+
+        let Some(partition_manager) = device.partition_manager() else {
+            continue;
+        };
+
+        let Some(partition_infos) = partition::parse(&device) else {
+            continue;
+        };
+
+        partition_manager.update(&device, partition_infos);
+    }
+}
+
 static DEVICE_REGISTRY: Mutex<BTreeMap<u32, Arc<dyn BlockDevice>>> = Mutex::new(BTreeMap::new());
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {
     device_id::init();
-
-    Ok(())
-}
-
-#[init_component(process)]
-fn init_in_first_process() -> Result<(), ComponentInitError> {
-    let devices = collect_all();
-    for device in devices {
-        let Some(partition_info) = partition::parse(&device) else {
-            continue;
-        };
-
-        device.set_partitions(partition_info);
-    }
 
     Ok(())
 }

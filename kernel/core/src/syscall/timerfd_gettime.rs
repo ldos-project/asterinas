@@ -9,15 +9,11 @@ use crate::{
     time::{itimerspec_t, timerfd::TimerfdFile, timespec_t},
 };
 
-pub fn sys_timerfd_gettime(
+pub(super) fn sys_timerfd_gettime(
     raw_fd: RawFileDesc,
     itimerspec_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    if itimerspec_addr == 0 {
-        return_errno_with_message!(Errno::EINVAL, "invalid pointer to return value");
-    }
-
     let file_table = ctx.thread_local.borrow_file_table();
     let file_table_locked = file_table.unwrap().read();
     let timerfd_file = file_table_locked.get_file(raw_fd.try_into()?)?;

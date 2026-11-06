@@ -19,18 +19,17 @@ use super::{memfd::MemfdInode, xattr::RamXattr, *};
 use crate::{
     device::{self, DeviceType},
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags, mkmod},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         pipe::Pipe,
         pseudofs::AnonDeviceId,
-        tmpfs::{self, TMPFS_MAGIC},
         utils::{CStr256, DirentVisitor},
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::{
                 Extension, FallocMode, FileOps, HardLinkability, Inode, Metadata, MknodType,
-                RenameMode, SymbolicLink,
+                RenameMode, RevalidationPolicy, SymbolicLink,
             },
-            path::{is_dot, is_dot_or_dotdot, is_dotdot},
+            path::{Dentry, is_dot, is_dot_or_dotdot, is_dotdot},
             registry::{FsCreationCtx, FsProperties, FsType},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
@@ -43,9 +42,10 @@ use crate::{
 };
 
 /// A volatile file system whose data and metadata exists only in memory.
-pub struct RamFs {
+pub(crate) struct RamFs {
     name: &'static str,
     _anon_device_id: AnonDeviceId,
+    revalidation_policy: RevalidationPolicy,
     /// The super block
     sb: SuperBlock,
     /// Root inode
@@ -57,7 +57,7 @@ pub struct RamFs {
 }
 
 impl RamFs {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Self::new_internal("ramfs")
     }
 
@@ -65,40 +65,17 @@ impl RamFs {
         Self::new_internal("rootfs")
     }
 
-    // TODO: Remove this tmpfs-specific constructor once `TmpFs` no longer
-    // aliases `RamFs`.
-    pub fn new_tmpfs() -> Arc<Self> {
-        let anon_device_id = AnonDeviceId::acquire().expect("no device ID is available for tmpfs");
-        let sb = {
-            let mut super_block =
-                SuperBlock::new(TMPFS_MAGIC, BLOCK_SIZE, NAME_MAX, anon_device_id.id());
-            let max_blocks = tmpfs::default_max_blocks();
-            let max_inodes = tmpfs::default_max_inodes();
-            super_block.blocks = max_blocks;
-            super_block.bfree = max_blocks;
-            super_block.bavail = max_blocks;
-            super_block.files = max_inodes;
-            super_block.ffree = max_inodes;
-            super_block
-        };
-        Self::new_internal_with_sb("tmpfs", anon_device_id, sb)
-    }
-
-    fn new_internal(name: &'static str) -> Arc<Self> {
-        let anon_device_id = AnonDeviceId::acquire().expect("no device ID is available for ramfs");
-        let sb = SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX, anon_device_id.id());
-        Self::new_internal_with_sb(name, anon_device_id, sb)
-    }
-
-    fn new_internal_with_sb(
+    pub(in crate::fs) fn new_with_sb(
         name: &'static str,
         anon_device_id: AnonDeviceId,
         sb: SuperBlock,
+        revalidation_policy: RevalidationPolicy,
     ) -> Arc<Self> {
         let root_dev_id = anon_device_id.id();
         Arc::new_cyclic(move |weak_fs| Self {
             name,
             _anon_device_id: anon_device_id,
+            revalidation_policy,
             sb,
             root: Arc::new_cyclic(|weak_root| RamInode {
                 inner: Inner::new_dir(weak_root.clone(), weak_root.clone()),
@@ -109,16 +86,24 @@ impl RamFs {
                 )),
                 ino: ROOT_INO,
                 typ: InodeType::Dir,
+                dir_revalidation_policy: revalidation_policy,
                 this: weak_root.clone(),
                 fs: weak_fs.clone(),
                 container_dev_id: root_dev_id,
                 hard_linkability: HardLinkability::Linkable,
                 extension: Extension::new(),
+                to_be_revalidated: false,
                 xattr: RamXattr::new(),
             }),
             inode_allocator: AtomicU64::new(ROOT_INO + 1),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
         })
+    }
+
+    fn new_internal(name: &'static str) -> Arc<Self> {
+        let anon_device_id = AnonDeviceId::acquire().expect("no device ID is available for ramfs");
+        let sb = SuperBlock::new(RAMFS_MAGIC, BLOCK_SIZE, NAME_MAX, anon_device_id.id());
+        Self::new_with_sb(name, anon_device_id, sb, RevalidationPolicy::empty())
     }
 
     fn alloc_id(&self) -> u64 {
@@ -150,7 +135,7 @@ impl FileSystem for RamFs {
 }
 
 /// An inode of `RamFs`.
-pub(super) struct RamInode {
+pub(in crate::fs::fs_impls) struct RamInode {
     /// Inode inner specifics
     inner: Inner,
     /// Inode metadata
@@ -159,20 +144,30 @@ pub(super) struct RamInode {
     ino: u64,
     /// Type of the inode
     typ: InodeType,
+    /// Directory-entry revalidation policy inherited from the filesystem.
+    dir_revalidation_policy: RevalidationPolicy,
     /// Reference to self
     this: Weak<RamInode>,
     /// Reference to fs
     fs: Weak<RamFs>,
     /// Device ID.
+    ///
     /// Detached inodes such as `memfd` store it directly
     /// because they do not have a valid fs reference.
     container_dev_id: DeviceId,
     /// Hard linkability.
+    ///
     /// All inodes except temporary files are set to linkable
     /// Linkability of temporary files is specified via [`RamInode::create_tmpfile`]
     hard_linkability: HardLinkability,
     /// Extensions
     extension: Extension,
+    /// Whether this inode should be revalidated during VFS path lookup.
+    ///
+    /// Such inodes may be created or removed without updating VFS dentry
+    /// caches. Filesystems that enable directory-entry revalidation use this
+    /// marker to avoid trusting cached positive dentries for these inodes.
+    to_be_revalidated: bool,
     /// Extended attributes
     xattr: RamXattr,
 }
@@ -188,6 +183,17 @@ enum Inner {
     NamedPipe(Pipe),
 }
 
+pub(super) enum ToBeRevalidated {
+    No,
+    Yes,
+}
+
+impl ToBeRevalidated {
+    fn as_bool(&self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
 impl Inner {
     pub(self) fn new_dir(this: Weak<RamInode>, parent: Weak<RamInode>) -> Self {
         Self::Dir(RwLock::new(DirEntry::new(this, parent)))
@@ -197,8 +203,8 @@ impl Inner {
         Self::File(Mutex::new(PageCache::new_anon(0).unwrap()))
     }
 
-    pub(self) fn new_symlink() -> Self {
-        Self::SymLink(SpinLock::new(String::from("")))
+    pub(self) fn new_symlink(target: &str) -> Self {
+        Self::SymLink(SpinLock::new(String::from(target)))
     }
 
     pub(self) fn new_block_device(dev_id: u64) -> Self {
@@ -302,7 +308,7 @@ struct InodeMeta {
 }
 
 impl InodeMeta {
-    pub fn new(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
+    pub(crate) fn new(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
         let now = now();
         Self {
             size: 0,
@@ -317,7 +323,7 @@ impl InodeMeta {
         }
     }
 
-    pub fn new_dir(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
+    pub(crate) fn new_dir(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
         let now = now();
         Self {
             size: NUM_SPECIAL_ENTRIES,
@@ -332,51 +338,51 @@ impl InodeMeta {
         }
     }
 
-    pub fn new_tmpfile(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
+    pub(crate) fn new_tmpfile(mode: InodeMode, uid: Uid, gid: Gid) -> Self {
         let mut meta = Self::new(mode, uid, gid);
         meta.nlinks = 0;
         meta
     }
 
-    pub fn resize(&mut self, new_size: usize) {
+    pub(crate) fn resize(&mut self, new_size: usize) {
         self.size = new_size;
         self.blocks = new_size.align_up(BLOCK_SIZE) / BLOCK_SIZE;
     }
 
-    pub fn inc_size(&mut self) {
+    pub(crate) fn inc_size(&mut self) {
         self.size += 1;
         self.blocks = self.size.align_up(BLOCK_SIZE) / BLOCK_SIZE;
     }
 
-    pub fn dec_size(&mut self) {
+    pub(crate) fn dec_size(&mut self) {
         debug_assert!(self.size > 0);
         self.size -= 1;
         self.blocks = self.size.align_up(BLOCK_SIZE) / BLOCK_SIZE;
     }
 
-    pub fn nr_sectors_allocated(&self) -> usize {
+    pub(crate) fn nr_sectors_allocated(&self) -> usize {
         self.blocks
             .checked_mul(BLOCK_SIZE / SECTOR_SIZE)
             .expect("ramfs allocated sector count overflow")
     }
 
-    pub fn set_atime(&mut self, time: Duration) {
+    pub(crate) fn set_atime(&mut self, time: Duration) {
         self.atime = time;
     }
 
-    pub fn set_mtime(&mut self, time: Duration) {
+    pub(crate) fn set_mtime(&mut self, time: Duration) {
         self.mtime = time;
     }
 
-    pub fn set_ctime(&mut self, time: Duration) {
+    pub(crate) fn set_ctime(&mut self, time: Duration) {
         self.ctime = time;
     }
 
-    pub fn inc_nlinks(&mut self) {
+    pub(crate) fn inc_nlinks(&mut self) {
         self.nlinks += 1;
     }
 
-    pub fn dec_nlinks(&mut self) {
+    pub(crate) fn dec_nlinks(&mut self) {
         debug_assert!(self.nlinks > 0);
         self.nlinks -= 1;
     }
@@ -522,32 +528,43 @@ impl RamInode {
         uid: Uid,
         gid: Gid,
         parent: &Weak<RamInode>,
+        to_be_revalidated: ToBeRevalidated,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_dir(weak_self.clone(), parent.clone()),
             metadata: SpinLock::new(InodeMeta::new_dir(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: InodeType::Dir,
+            dir_revalidation_policy: fs.revalidation_policy,
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
 
-    fn new_file(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+    fn new_file(
+        fs: &Arc<RamFs>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_file(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: InodeType::File,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
@@ -558,17 +575,20 @@ impl RamInode {
         uid: Uid,
         gid: Gid,
         hard_linkability: HardLinkability,
+        to_be_revalidated: ToBeRevalidated,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_file(),
             metadata: SpinLock::new(InodeMeta::new_tmpfile(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: InodeType::File,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
@@ -586,26 +606,41 @@ impl RamInode {
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: weak_self.as_ptr() as u64,
             typ: InodeType::File,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: Weak::new(),
             fs: Weak::new(),
             container_dev_id: dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: false,
             xattr: RamXattr::new(),
         }
     }
 
-    fn new_symlink(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+    fn new_symlink(
+        fs: &Arc<RamFs>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        target: &str,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
-            inner: Inner::new_symlink(),
-            metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
+            inner: Inner::new_symlink(target),
+            metadata: SpinLock::new({
+                let mut metadata = InodeMeta::new(mode, uid, gid);
+                metadata.size = target.len();
+                metadata
+            }),
             ino: fs.alloc_id(),
             typ: InodeType::SymLink,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
@@ -617,6 +652,7 @@ impl RamInode {
         gid: Gid,
         dev_type: DeviceType,
         dev_id: u64,
+        to_be_revalidated: ToBeRevalidated,
     ) -> Arc<Self> {
         let inner = match dev_type {
             DeviceType::Block => Inner::new_block_device(dev_id),
@@ -628,41 +664,59 @@ impl RamInode {
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: dev_type.into(),
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
 
-    fn new_socket(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+    fn new_socket(
+        fs: &Arc<RamFs>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_socket(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: InodeType::Socket,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
 
-    fn new_named_pipe(fs: &Arc<RamFs>, mode: InodeMode, uid: Uid, gid: Gid) -> Arc<Self> {
+    fn new_named_pipe(
+        fs: &Arc<RamFs>,
+        mode: InodeMode,
+        uid: Uid,
+        gid: Gid,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| RamInode {
             inner: Inner::new_named_pipe(),
             metadata: SpinLock::new(InodeMeta::new(mode, uid, gid)),
             ino: fs.alloc_id(),
             typ: InodeType::NamedPipe,
+            dir_revalidation_policy: RevalidationPolicy::empty(),
             this: weak_self.clone(),
             fs: Arc::downgrade(fs),
             container_dev_id: fs.sb.container_dev_id,
             hard_linkability: HardLinkability::Linkable,
             extension: Extension::new(),
+            to_be_revalidated: to_be_revalidated.as_bool(),
             xattr: RamXattr::new(),
         })
     }
@@ -691,6 +745,285 @@ impl RamInode {
     }
 }
 
+impl RamInode {
+    pub(in crate::fs::fs_impls) fn to_be_revalidated(&self) -> bool {
+        self.to_be_revalidated
+    }
+
+    /// Creates a directory whose dentries must be revalidated.
+    pub(in crate::fs::fs_impls) fn mkdir_with_revalidation(
+        &self,
+        name: &str,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        self.create_impl(name, InodeType::Dir, mode, None, ToBeRevalidated::Yes)
+    }
+
+    /// Creates a device inode whose dentry must be revalidated.
+    pub(in crate::fs::fs_impls) fn mknod_with_revalidation(
+        &self,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
+        self.mknod_impl(name, mode, type_, ToBeRevalidated::Yes)
+    }
+
+    /// Unlinks entry `name` if `predicate` returns true for the target inode.
+    ///
+    /// The predicate is called while the parent directory is locked.
+    /// The result distinguishes the following outcomes:
+    ///
+    /// - `Ok(true)` if the entry is unlinked;
+    /// - `Ok(false)` if the predicate returns false;
+    /// - `Err(error)` if the unlink operation fails.
+    pub(in crate::fs::fs_impls) fn unlink_if<F>(&self, name: &str, predicate: F) -> Result<bool>
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        if is_dot_or_dotdot(name) {
+            return_errno_with_message!(Errno::EISDIR, "unlink . or ..");
+        }
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        self.unlink_impl(name, predicate)
+    }
+
+    fn unlink_impl<F>(&self, name: &str, predicate: F) -> Result<bool>
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        // When we got the lock, the directory may have been modified by another thread.
+        let mut self_dir = self.inner.as_direntry().unwrap().write();
+        let (idx, target) = self_dir.get_entry(name).ok_or(Error::new(Errno::ENOENT))?;
+        if target.typ == InodeType::Dir {
+            return_errno_with_message!(Errno::EISDIR, "unlink on dir");
+        }
+        if !predicate(&target) {
+            return Ok(false);
+        }
+        self_dir.remove_entry(idx);
+        drop(self_dir);
+
+        let now = now();
+        let mut self_meta = self.metadata.lock();
+        self_meta.dec_size();
+        self_meta.set_mtime(now);
+        self_meta.set_ctime(now);
+        drop(self_meta);
+        let mut target_meta = target.metadata.lock();
+        target_meta.dec_nlinks();
+        target_meta.set_ctime(now);
+
+        Ok(true)
+    }
+
+    /// Removes directory entry `name` if `predicate` returns true for the target inode.
+    ///
+    /// The predicate is called while the parent and target directories are locked.
+    /// The result distinguishes the following outcomes:
+    ///
+    /// - `Ok(true)` if the directory is removed;
+    /// - `Ok(false)` if the predicate returns false;
+    /// - `Err(error)` if the removal operation fails.
+    pub(in crate::fs::fs_impls) fn rmdir_if<F>(&self, name: &str, predicate: F) -> Result<bool>
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        if is_dot(name) {
+            return_errno_with_message!(Errno::EINVAL, "rmdir on .");
+        }
+        if is_dotdot(name) {
+            return_errno_with_message!(Errno::ENOTEMPTY, "rmdir on ..");
+        }
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        let target = self.find(name)?;
+        self.rmdir_impl(name, &target, predicate)
+    }
+
+    fn rmdir_impl<F>(&self, name: &str, target: &Self, predicate: F) -> Result<bool>
+    where
+        F: FnOnce(&Self) -> bool,
+    {
+        if target.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "rmdir on not dir");
+        }
+
+        // When we got the lock, the directory may have been modified by another thread.
+        let (mut self_dir, target_dir) = write_lock_two_direntries_by_ino(
+            (self.ino, self.inner.as_direntry().unwrap()),
+            (target.ino, target.inner.as_direntry().unwrap()),
+        );
+        if !target_dir.is_empty_children() {
+            return_errno_with_message!(Errno::ENOTEMPTY, "dir not empty");
+        }
+        let Some((idx, current)) = self_dir.get_entry(name) else {
+            return_errno!(Errno::ENOENT);
+        };
+        if !core::ptr::eq(&*current, target) {
+            return_errno!(Errno::ENOENT);
+        }
+        if !predicate(target) {
+            return Ok(false);
+        }
+        self_dir.remove_entry(idx);
+        drop(self_dir);
+        drop(target_dir);
+
+        let now = now();
+        let mut self_meta = self.metadata.lock();
+        self_meta.dec_size();
+        self_meta.dec_nlinks();
+        self_meta.set_mtime(now);
+        self_meta.set_ctime(now);
+        drop(self_meta);
+        let mut target_meta = target.metadata.lock();
+        target_meta.dec_nlinks();
+        target_meta.dec_nlinks();
+
+        Ok(true)
+    }
+
+    fn create_impl(
+        &self,
+        name: &str,
+        type_: InodeType,
+        mode: InodeMode,
+        symlink_target: Option<&str>,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Result<Arc<dyn Inode>> {
+        if name.len() > NAME_MAX {
+            return_errno!(Errno::ENAMETOOLONG);
+        }
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        let self_dir = self.inner.as_direntry().unwrap().upread();
+        if self_dir.contains_entry(name) {
+            return_errno_with_message!(Errno::EEXIST, "entry exists");
+        }
+
+        let fs = self.fs.upgrade().unwrap();
+        let (uid, gid) = current_fs_ids();
+        let new_inode = match type_ {
+            InodeType::File => RamInode::new_file(&fs, mode, uid, gid, to_be_revalidated),
+            InodeType::Socket => RamInode::new_socket(&fs, mode, uid, gid, to_be_revalidated),
+            InodeType::Dir => RamInode::new_dir(&fs, mode, uid, gid, &self.this, to_be_revalidated),
+            InodeType::SymLink => RamInode::new_symlink(
+                &fs,
+                mode,
+                uid,
+                gid,
+                symlink_target.expect("a symlink target must be provided"),
+                to_be_revalidated,
+            ),
+            _ => panic!("unsupported inode type"),
+        };
+
+        let mut self_dir = self_dir.upgrade();
+        self_dir.append_entry(name, new_inode.clone());
+        drop(self_dir);
+
+        let now = now();
+        let mut inode_meta = self.metadata.lock();
+        inode_meta.set_mtime(now);
+        inode_meta.set_ctime(now);
+        inode_meta.inc_size();
+        if type_ == InodeType::Dir {
+            inode_meta.inc_nlinks();
+        }
+
+        Ok(new_inode)
+    }
+
+    fn mknod_impl(
+        &self,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Result<Arc<dyn Inode>> {
+        if name.len() > NAME_MAX {
+            return_errno!(Errno::ENAMETOOLONG);
+        }
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        let self_dir = self.inner.as_direntry().unwrap().upread();
+        if self_dir.contains_entry(name) {
+            return_errno_with_message!(Errno::EEXIST, "entry exists");
+        }
+
+        let (uid, gid) = current_fs_ids();
+        let new_inode = match type_ {
+            MknodType::CharDevice(dev_id) | MknodType::BlockDevice(dev_id) => {
+                let dev_type = type_.device_type().unwrap();
+                RamInode::new_device(
+                    &self.fs.upgrade().unwrap(),
+                    mode,
+                    uid,
+                    gid,
+                    dev_type,
+                    dev_id,
+                    to_be_revalidated,
+                )
+            }
+            MknodType::NamedPipe => RamInode::new_named_pipe(
+                &self.fs.upgrade().unwrap(),
+                mode,
+                uid,
+                gid,
+                to_be_revalidated,
+            ),
+        };
+
+        let mut self_dir = self_dir.upgrade();
+        self_dir.append_entry(name, new_inode.clone());
+        drop(self_dir);
+
+        self.metadata.lock().inc_size();
+        Ok(new_inode)
+    }
+
+    fn resize_impl(&self, new_size: usize) -> Result<()> {
+        if self.typ == InodeType::Dir {
+            return_errno_with_message!(Errno::EISDIR, "the inode is a directory");
+        }
+        if self.typ != InodeType::File {
+            return_errno_with_message!(Errno::EINVAL, "the inode is not a regular file");
+        }
+
+        let mut page_cache = self.inner.as_file().unwrap().lock();
+        let mut inode_meta = self.metadata.lock();
+        let file_size = inode_meta.size;
+        if file_size == new_size {
+            return Ok(());
+        }
+        let now = now();
+        inode_meta.set_mtime(now);
+        inode_meta.set_ctime(now);
+
+        if new_size > file_size {
+            inode_meta.resize(new_size);
+            drop(inode_meta);
+            page_cache.resize(new_size, file_size)?;
+        } else {
+            drop(inode_meta);
+            page_cache.resize(new_size, file_size)?;
+            self.metadata.lock().resize(new_size);
+        }
+
+        Ok(())
+    }
+}
+
 impl FileOps for RamInode {
     fn read_at(
         &self,
@@ -713,7 +1046,7 @@ impl FileOps for RamInode {
         };
 
         if self.typ == InodeType::File {
-            self.set_atime(now());
+            self.metadata.lock().set_atime(now());
         }
         Ok(read_len)
     }
@@ -726,13 +1059,18 @@ impl FileOps for RamInode {
     ) -> Result<usize> {
         let written_len = match self.typ {
             InodeType::File => {
+                let write_len = reader.remain();
+                // An empty write must leave file data and metadata unchanged.
+                if write_len == 0 {
+                    return Ok(0);
+                }
+
                 let now = now();
 
                 let mut page_cache = self.inner.as_file().unwrap().lock();
 
                 let mut inode_meta = self.metadata.lock();
                 let file_size = inode_meta.size;
-                let write_len = reader.remain();
                 let new_size = offset + write_len;
                 let should_expand_size = new_size > file_size;
                 let new_size_aligned = new_size.align_up(BLOCK_SIZE);
@@ -768,7 +1106,7 @@ impl FileOps for RamInode {
             .read()
             .visit_entry(offset, visitor)?;
 
-        self.set_atime(now());
+        self.metadata.lock().set_atime(now());
 
         Ok(cnt)
     }
@@ -785,42 +1123,15 @@ impl Inode for RamInode {
         self.metadata.lock().size
     }
 
-    fn resize(&self, new_size: usize) -> Result<()> {
-        if self.typ == InodeType::Dir {
-            return_errno_with_message!(Errno::EISDIR, "the inode is a directory");
-        }
-        if self.typ != InodeType::File {
-            return_errno_with_message!(Errno::EINVAL, "the inode is not a regular file");
-        }
-
-        let mut page_cache = self.inner.as_file().unwrap().lock();
-        let mut inode_meta = self.metadata.lock();
-        let file_size = inode_meta.size;
-        if file_size == new_size {
-            return Ok(());
-        }
-        let now = now();
-        inode_meta.set_mtime(now);
-        inode_meta.set_ctime(now);
-
-        if new_size > file_size {
-            inode_meta.resize(new_size);
-            drop(inode_meta);
-            page_cache.resize(new_size, file_size)?;
-        } else {
-            drop(inode_meta);
-            page_cache.resize(new_size, file_size)?;
-            self.metadata.lock().resize(new_size);
-        }
-
-        Ok(())
+    fn resize(&self, _self_dentry: &Dentry, new_size: usize) -> Result<()> {
+        self.resize_impl(new_size)
     }
 
     fn atime(&self) -> Duration {
         self.metadata.lock().atime
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().set_atime(time);
     }
 
@@ -828,7 +1139,7 @@ impl Inode for RamInode {
         self.metadata.lock().mtime
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().set_mtime(time);
     }
 
@@ -836,7 +1147,7 @@ impl Inode for RamInode {
         self.metadata.lock().ctime
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.lock().set_ctime(time);
     }
 
@@ -852,7 +1163,7 @@ impl Inode for RamInode {
         Ok(self.metadata.lock().mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         let mut inode_meta = self.metadata.lock();
         inode_meta.mode = mode;
         inode_meta.set_ctime(now());
@@ -863,7 +1174,7 @@ impl Inode for RamInode {
         Ok(self.metadata.lock().uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         let mut inode_meta = self.metadata.lock();
         inode_meta.uid = uid;
         inode_meta.set_ctime(now());
@@ -874,103 +1185,61 @@ impl Inode for RamInode {
         Ok(self.metadata.lock().gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         let mut inode_meta = self.metadata.lock();
         inode_meta.gid = gid;
         inode_meta.set_ctime(now());
         Ok(())
     }
 
-    fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Arc<dyn Inode>> {
-        if name.len() > NAME_MAX {
-            return_errno!(Errno::ENAMETOOLONG);
-        }
-        if self.typ != InodeType::Dir {
-            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
-        }
-
-        let self_dir = self.inner.as_direntry().unwrap().upread();
-        if self_dir.contains_entry(name) {
-            return_errno_with_message!(Errno::EEXIST, "entry exists");
-        }
-
-        let (uid, gid) = current_fs_ids();
-        let new_inode = match type_ {
-            MknodType::CharDevice(dev_id) | MknodType::BlockDevice(dev_id) => {
-                let dev_type = type_.device_type().unwrap();
-                RamInode::new_device(
-                    &self.fs.upgrade().unwrap(),
-                    mode,
-                    uid,
-                    gid,
-                    dev_type,
-                    dev_id,
-                )
-            }
-            MknodType::NamedPipe => {
-                RamInode::new_named_pipe(&self.fs.upgrade().unwrap(), mode, uid, gid)
-            }
-        };
-
-        let mut self_dir = self_dir.upgrade();
-        self_dir.append_entry(name, new_inode.clone());
-        drop(self_dir);
-
-        self.metadata.lock().inc_size();
-        Ok(new_inode)
+    fn mknod(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
+        self.mknod_impl(name, mode, type_, ToBeRevalidated::No)
     }
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
         self.inner.open(access_mode, status_flags)
     }
 
-    fn create(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Arc<dyn Inode>> {
-        if name.len() > NAME_MAX {
-            return_errno!(Errno::ENAMETOOLONG);
-        }
-        if self.typ != InodeType::Dir {
-            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
-        }
+    fn create(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        type_: InodeType,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        self.create_impl(name, type_, mode, None, ToBeRevalidated::No)
+    }
 
-        let self_dir = self.inner.as_direntry().unwrap().upread();
-        if self_dir.contains_entry(name) {
-            return_errno_with_message!(Errno::EEXIST, "entry exists");
-        }
-
-        let fs = self.fs.upgrade().unwrap();
-        let (uid, gid) = current_fs_ids();
-        let new_inode = match type_ {
-            InodeType::File => RamInode::new_file(&fs, mode, uid, gid),
-            InodeType::SymLink => RamInode::new_symlink(&fs, mode, uid, gid),
-            InodeType::Socket => RamInode::new_socket(&fs, mode, uid, gid),
-            InodeType::Dir => RamInode::new_dir(&fs, mode, uid, gid, &self.this),
-            _ => {
-                panic!("unsupported inode type");
-            }
-        };
-
-        let mut self_dir = self_dir.upgrade();
-        self_dir.append_entry(name, new_inode.clone());
-        drop(self_dir);
-
-        let now = now();
-        let mut inode_meta = self.metadata.lock();
-        inode_meta.set_mtime(now);
-        inode_meta.set_ctime(now);
-        inode_meta.inc_size();
-        if type_ == InodeType::Dir {
-            inode_meta.inc_nlinks();
-        }
-
-        Ok(new_inode)
+    fn create_symlink(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        target: &str,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        self.create_impl(
+            name,
+            InodeType::SymLink,
+            mode,
+            Some(target),
+            ToBeRevalidated::No,
+        )
     }
 
     fn create_tmpfile(
         &self,
+        _self_dentry: &Dentry,
         mode: InodeMode,
         hard_linkability: HardLinkability,
     ) -> Result<Arc<dyn Inode>> {
@@ -980,20 +1249,22 @@ impl Inode for RamInode {
 
         let fs = self.fs.upgrade().unwrap();
         let (uid, gid) = current_fs_ids();
-        Ok(RamInode::new_tmpfile(&fs, mode, uid, gid, hard_linkability))
+        Ok(RamInode::new_tmpfile(
+            &fs,
+            mode,
+            uid,
+            gid,
+            hard_linkability,
+            ToBeRevalidated::No,
+        ))
     }
 
-    fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
-        if !Arc::ptr_eq(&self.fs(), &old.fs()) {
-            return_errno_with_message!(Errno::EXDEV, "not same fs");
-        }
+    fn link(&self, _self_dentry: &Dentry, old_dentry: &Dentry, name: &str) -> Result<()> {
         if self.typ != InodeType::Dir {
             return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
         }
 
-        let old = old
-            .downcast_ref::<RamInode>()
-            .ok_or(Error::new(Errno::EXDEV))?;
+        let old = old_dentry.inode().downcast_ref::<RamInode>().unwrap();
         if old.typ == InodeType::Dir {
             return_errno_with_message!(Errno::EPERM, "old is a dir");
         }
@@ -1024,78 +1295,19 @@ impl Inode for RamInode {
         Ok(())
     }
 
-    fn unlink(&self, name: &str) -> Result<()> {
-        if is_dot_or_dotdot(name) {
-            return_errno_with_message!(Errno::EISDIR, "unlink . or ..");
-        }
-
-        let target = self.find(name)?;
-        if target.typ == InodeType::Dir {
-            return_errno_with_message!(Errno::EISDIR, "unlink on dir");
-        }
-
-        // When we got the lock, the dir may have been modified by another thread
-        let mut self_dir = self.inner.as_direntry().unwrap().write();
-        let (idx, new_target) = self_dir.get_entry(name).ok_or(Error::new(Errno::ENOENT))?;
-        if !Arc::ptr_eq(&new_target, &target) {
+    fn unlink(&self, child_dentry: &Dentry) -> Result<()> {
+        let target = child_dentry.inode().downcast_ref::<RamInode>().unwrap();
+        let name = child_dentry.name();
+        if !self.unlink_impl(&name, |entry| entry.ino == target.ino)? {
             return_errno!(Errno::ENOENT);
         }
-        self_dir.remove_entry(idx);
-        drop(self_dir);
-
-        let now = now();
-        let mut self_meta = self.metadata.lock();
-        self_meta.dec_size();
-        self_meta.set_mtime(now);
-        self_meta.set_ctime(now);
-        drop(self_meta);
-        let mut target_meta = target.metadata.lock();
-        target_meta.dec_nlinks();
-        target_meta.set_ctime(now);
-
         Ok(())
     }
 
-    fn rmdir(&self, name: &str) -> Result<()> {
-        if is_dot(name) {
-            return_errno_with_message!(Errno::EINVAL, "rmdir on .");
-        }
-        if is_dotdot(name) {
-            return_errno_with_message!(Errno::ENOTEMPTY, "rmdir on ..");
-        }
-
-        let target = self.find(name)?;
-        if target.typ != InodeType::Dir {
-            return_errno_with_message!(Errno::ENOTDIR, "rmdir on not dir");
-        }
-
-        // When we got the lock, the dir may have been modified by another thread
-        let (mut self_dir, target_dir) = write_lock_two_direntries_by_ino(
-            (self.ino, self.inner.as_direntry().unwrap()),
-            (target.ino, target.inner.as_direntry().unwrap()),
-        );
-        if !target_dir.is_empty_children() {
-            return_errno_with_message!(Errno::ENOTEMPTY, "dir not empty");
-        }
-        let (idx, new_target) = self_dir.get_entry(name).ok_or(Error::new(Errno::ENOENT))?;
-        if !Arc::ptr_eq(&new_target, &target) {
-            return_errno!(Errno::ENOENT);
-        }
-        self_dir.remove_entry(idx);
-        drop(self_dir);
-        drop(target_dir);
-
-        let now = now();
-        let mut self_meta = self.metadata.lock();
-        self_meta.dec_size();
-        self_meta.dec_nlinks();
-        self_meta.set_mtime(now);
-        self_meta.set_ctime(now);
-        drop(self_meta);
-        let mut target_meta = target.metadata.lock();
-        target_meta.dec_nlinks();
-        target_meta.dec_nlinks();
-
+    fn rmdir(&self, child_dentry: &Dentry) -> Result<()> {
+        let target = child_dentry.inode().downcast_ref::<RamInode>().unwrap();
+        let name = child_dentry.name();
+        self.rmdir_impl(&name, target, |_| true)?;
         Ok(())
     }
 
@@ -1106,11 +1318,13 @@ impl Inode for RamInode {
 
     fn rename(
         &self,
-        old_name: &str,
-        target: &Arc<dyn Inode>,
+        old_child_dentry: &Dentry,
+        new_dir_dentry: &Dentry,
         new_name: &str,
+        _replaced_inode: Option<&Arc<dyn Inode>>,
         mode: RenameMode,
     ) -> Result<()> {
+        let old_name = old_child_dentry.name();
         // Perform necessary checks to ensure that `dst_inode` can be replaced by `src_inode`.
         let check_replace_inode =
             |src_inode: &Arc<RamInode>, dst_inode: &Arc<RamInode>| -> Result<()> {
@@ -1141,13 +1355,13 @@ impl Inode for RamInode {
                 Ok(())
             };
 
-        let target = target.downcast_ref::<RamInode>().unwrap();
+        let new_dir_inode = new_dir_dentry.inode().downcast_ref::<RamInode>().unwrap();
 
         // Rename in the same directory
-        if self.ino == target.ino {
+        if self.ino == new_dir_inode.ino {
             let mut self_dir = self.inner.as_direntry().unwrap().write();
             // The source is guaranteed to exist (checked by VFS layer).
-            let (src_idx, src_inode) = self_dir.get_entry(old_name).unwrap();
+            let (src_idx, src_inode) = self_dir.get_entry(&old_name).unwrap();
 
             if mode == RenameMode::Exchange {
                 // The destination is guaranteed to exist for `RenameMode::Exchange` (checked by VFS layer).
@@ -1157,8 +1371,8 @@ impl Inode for RamInode {
 
                 let now = now();
                 DirChange::touch().apply(self, now);
-                src_inode.set_ctime(now);
-                dst_inode.set_ctime(now);
+                src_inode.metadata.lock().set_ctime(now);
+                dst_inode.metadata.lock().set_ctime(now);
             } else if let Some((dst_idx, dst_inode)) = self_dir.get_entry(new_name) {
                 check_replace_inode(&src_inode, &dst_inode)?;
                 self_dir.remove_entry(dst_idx);
@@ -1170,8 +1384,8 @@ impl Inode for RamInode {
 
                 let now = now();
                 DirChange::del(&src_inode).apply(self, now);
-                src_inode.set_ctime(now);
-                dst_inode.set_ctime(now);
+                src_inode.metadata.lock().set_ctime(now);
+                dst_inode.metadata.lock().set_ctime(now);
             } else {
                 self_dir.substitute_entry(
                     src_idx,
@@ -1181,18 +1395,21 @@ impl Inode for RamInode {
 
                 let now = now();
                 DirChange::touch().apply(self, now);
-                src_inode.set_ctime(now);
+                src_inode.metadata.lock().set_ctime(now);
             }
         }
         // Or rename across different directories
         else {
             let (mut self_dir, mut target_dir) = write_lock_two_direntries_by_ino(
                 (self.ino, self.inner.as_direntry().unwrap()),
-                (target.ino, target.inner.as_direntry().unwrap()),
+                (
+                    new_dir_inode.ino,
+                    new_dir_inode.inner.as_direntry().unwrap(),
+                ),
             );
             let self_inode_arc = self.this.upgrade().unwrap();
             // The source is guaranteed to exist (checked by VFS layer).
-            let (src_idx, src_inode) = self_dir.get_entry(old_name).unwrap();
+            let (src_idx, src_inode) = self_dir.get_entry(&old_name).unwrap();
 
             if mode == RenameMode::Exchange {
                 // The destination is guaranteed to exist for `RenameMode::Exchange` (checked by VFS layer).
@@ -1200,16 +1417,16 @@ impl Inode for RamInode {
 
                 self_dir.remove_entry(src_idx);
                 target_dir.remove_entry(dst_idx);
-                self_dir.append_entry(old_name, dst_inode.clone());
+                self_dir.append_entry(&old_name, dst_inode.clone());
                 target_dir.append_entry(new_name, src_inode.clone());
                 drop(self_dir);
                 drop(target_dir);
 
                 let now = now();
                 DirChange::exchange(&src_inode, &dst_inode).apply(self, now);
-                DirChange::exchange(&dst_inode, &src_inode).apply(target, now);
-                src_inode.set_ctime(now);
-                dst_inode.set_ctime(now);
+                DirChange::exchange(&dst_inode, &src_inode).apply(new_dir_inode, now);
+                src_inode.metadata.lock().set_ctime(now);
+                dst_inode.metadata.lock().set_ctime(now);
 
                 dst_inode.set_parent_if_dir(self.this.clone());
             } else if let Some((dst_idx, dst_inode)) = target_dir.get_entry(new_name) {
@@ -1226,9 +1443,9 @@ impl Inode for RamInode {
 
                 let now = now();
                 DirChange::del(&src_inode).apply(self, now);
-                DirChange::exchange(&dst_inode, &src_inode).apply(target, now);
-                dst_inode.set_ctime(now);
-                src_inode.set_ctime(now);
+                DirChange::exchange(&dst_inode, &src_inode).apply(new_dir_inode, now);
+                dst_inode.metadata.lock().set_ctime(now);
+                src_inode.metadata.lock().set_ctime(now);
             } else {
                 self_dir.remove_entry(src_idx);
                 target_dir.append_entry(new_name, src_inode.clone());
@@ -1237,11 +1454,11 @@ impl Inode for RamInode {
 
                 let now = now();
                 DirChange::del(&src_inode).apply(self, now);
-                DirChange::add(&src_inode).apply(target, now);
-                src_inode.set_ctime(now);
+                DirChange::add(&src_inode).apply(new_dir_inode, now);
+                src_inode.metadata.lock().set_ctime(now);
             }
 
-            src_inode.set_parent_if_dir(target.this.clone());
+            src_inode.set_parent_if_dir(new_dir_inode.this.clone());
         }
         Ok(())
     }
@@ -1253,20 +1470,6 @@ impl Inode for RamInode {
 
         let link = self.inner.as_symlink().unwrap().lock();
         Ok(SymbolicLink::Plain(link.clone()))
-    }
-
-    fn write_link(&self, target: &str) -> Result<()> {
-        if self.typ != InodeType::SymLink {
-            return_errno_with_message!(Errno::EINVAL, "self is not symlink");
-        }
-
-        let mut link = self.inner.as_symlink().unwrap().lock();
-        *link = String::from(target);
-        drop(link);
-
-        // Symlink's metadata.blocks should be 0, so just set the size.
-        self.metadata.lock().size = target.len();
-        Ok(())
     }
 
     fn metadata(&self) -> Result<Metadata> {
@@ -1299,13 +1502,26 @@ impl Inode for RamInode {
         Weak::upgrade(&self.fs).unwrap()
     }
 
+    fn revalidation_policy(&self) -> RevalidationPolicy {
+        self.dir_revalidation_policy
+    }
+
+    fn revalidate_exists(&self, _name: &str, child: &dyn Inode) -> bool {
+        let child = child.downcast_ref::<Self>().unwrap();
+        !child.to_be_revalidated()
+    }
+
+    fn revalidate_absent(&self, _name: &str) -> bool {
+        false
+    }
+
     fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
         // The support for flags is consistent with Linux
         match mode {
             FallocMode::Allocate => {
                 let new_size = offset + len;
                 if new_size > self.size() {
-                    self.resize(new_size)?;
+                    self.resize_impl(new_size)?;
                 }
                 Ok(())
             }
@@ -1337,19 +1553,18 @@ impl Inode for RamInode {
 
     fn set_xattr(
         &self,
+        _self_dentry: &Dentry,
         name: XattrName,
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
     ) -> Result<()> {
         RamXattr::check_file_type_for_xattr(self.typ)?;
-        self.check_permission(Permission::MAY_WRITE)?;
         self.xattr.set(name, value_reader, flags)
     }
 
     fn get_xattr(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize> {
         RamXattr::check_file_type_for_xattr(self.typ)
             .map_err(|_| Error::with_message(Errno::ENODATA, "no available xattrs"))?;
-        self.check_permission(Permission::MAY_READ)?;
         self.xattr.get(name, value_writer)
     }
 
@@ -1357,15 +1572,11 @@ impl Inode for RamInode {
         if RamXattr::check_file_type_for_xattr(self.typ).is_err() {
             return Ok(0);
         }
-        if self.check_permission(Permission::MAY_ACCESS).is_err() {
-            return Ok(0);
-        }
         self.xattr.list(namespace, list_writer)
     }
 
-    fn remove_xattr(&self, name: XattrName) -> Result<()> {
+    fn remove_xattr(&self, _self_dentry: &Dentry, name: XattrName) -> Result<()> {
         RamXattr::check_file_type_for_xattr(self.typ)?;
-        self.check_permission(Permission::MAY_WRITE)?;
         self.xattr.remove(name)
     }
 }

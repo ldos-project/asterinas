@@ -14,6 +14,7 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             inode::{Extension, FileOps, Inode, Metadata, SymbolicLink},
+            path::Dentry,
         },
     },
     prelude::*,
@@ -73,17 +74,17 @@ impl<S: ProcSymOps + 'static> Inode for ProcSym<S> {
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn mode(&self) -> Result<InodeMode>;
-    fn set_mode(&self, mode: InodeMode) -> Result<()>;
+    fn set_mode(&self, self_dentry: &Dentry, mode: InodeMode) -> Result<()>;
     fn owner(&self) -> Result<Uid>;
-    fn set_owner(&self, uid: Uid) -> Result<()>;
+    fn set_owner(&self, self_dentry: &Dentry, uid: Uid) -> Result<()>;
     fn group(&self) -> Result<Gid>;
-    fn set_group(&self, gid: Gid) -> Result<()>;
+    fn set_group(&self, self_dentry: &Dentry, gid: Gid) -> Result<()>;
     fn atime(&self) -> Duration;
-    fn set_atime(&self, time: Duration);
+    fn set_atime(&self, self_dentry: &Dentry, time: Duration);
     fn mtime(&self) -> Duration;
-    fn set_mtime(&self, time: Duration);
+    fn set_mtime(&self, self_dentry: &Dentry, time: Duration);
     fn ctime(&self) -> Duration;
-    fn set_ctime(&self, time: Duration);
+    fn set_ctime(&self, self_dentry: &Dentry, time: Duration);
     fn fs(&self) -> Arc<dyn FileSystem>;
 
     fn metadata(&self) -> Result<Metadata> {
@@ -91,7 +92,7 @@ impl<S: ProcSymOps + 'static> Inode for ProcSym<S> {
         Ok(self.common.metadata_with_owner(owner_thread))
     }
 
-    fn resize(&self, _new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, _new_size: usize) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
@@ -99,16 +100,22 @@ impl<S: ProcSymOps + 'static> Inode for ProcSym<S> {
         InodeType::SymLink
     }
 
+    fn create_symlink(
+        &self,
+        _self_dentry: &Dentry,
+        _name: &str,
+        _target: &str,
+        _mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        Err(Error::new(Errno::EINVAL))
+    }
+
     fn read_link(&self) -> Result<SymbolicLink> {
         self.inner.read_link()
     }
-
-    fn write_link(&self, _target: &str) -> Result<()> {
-        Err(Error::new(Errno::EPERM))
-    }
 }
 
-pub trait ProcSymOps: Sync + Send {
+pub(crate) trait ProcSymOps: Sync + Send {
     /// Returns the thread whose credentials own this procfs inode.
     fn owner_thread(&self) -> Option<Arc<Thread>> {
         None

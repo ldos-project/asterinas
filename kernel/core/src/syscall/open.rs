@@ -18,7 +18,7 @@ use crate::{
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_openat(
+pub(super) fn sys_openat(
     dirfd: RawFileDesc,
     path_addr: Vaddr,
     flags: u32,
@@ -62,16 +62,20 @@ pub fn sys_openat(
             };
         file_table_locked.insert(file_handle.clone(), fd_flags)
     };
-    let file_like: Arc<dyn FileLike> = file_handle;
-    fs::vfs::notify::on_open(&file_like);
+    fs::vfs::notify::on_open(file_handle.common());
     Ok(SyscallReturn::Return(fd.into()))
 }
 
-pub fn sys_open(path_addr: Vaddr, flags: u32, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_open(
+    path_addr: Vaddr,
+    flags: u32,
+    mode: u16,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
 }
 
-pub fn sys_creat(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_creat(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
     let flags =
         AccessMode::O_WRONLY as u32 | CreationFlags::O_CREAT.bits() | CreationFlags::O_TRUNC.bits();
     sys_openat(AT_FDCWD, path_addr, flags, mode, ctx)
@@ -111,8 +115,7 @@ fn do_open(
             }
 
             let (parent, tail_name) = result.into_parent_and_basename();
-            let new_path =
-                parent.new_fs_child(&tail_name, InodeType::File, open_args.inode_mode)?;
+            let new_path = parent.new_child(&tail_name, InodeType::File, open_args.inode_mode)?;
             fs::vfs::notify::on_create(&parent, || tail_name.clone());
 
             // Don't check access mode for newly created file.

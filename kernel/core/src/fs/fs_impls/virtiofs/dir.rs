@@ -2,15 +2,15 @@
 
 //! Open directory handles for `virtiofs`.
 
-use aster_fuse::FuseOpenFlags;
+use aster_fuse::{FsyncFlags, FuseOpenFlags};
 
 use super::{inode::VirtioFsInode, open_handle::VirtioFsOpenHandle};
 use crate::{
     events::IoEvents,
     fs::{
-        file::{PerOpenFileOps, StatusFlags},
+        file::{PerOpenFileOps, StatusFlags, SyncMode},
         utils::DirentVisitor,
-        vfs::inode::FileOps,
+        vfs::inode::{FileOps, Inode},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
@@ -84,5 +84,22 @@ impl PerOpenFileOps for VirtioFsDir {
 
     fn is_offset_aware(&self) -> bool {
         true
+    }
+
+    fn sync(&self, mode: SyncMode) -> Result<()> {
+        self.inode.sync(mode)?;
+
+        let fsync_flags = match mode {
+            SyncMode::Data => FsyncFlags::FDATASYNC,
+            SyncMode::Full => FsyncFlags::empty(),
+        };
+
+        self.inode.fs_ref().session().fsyncdir(
+            self.inode.nodeid(),
+            self.open_handle.fh(),
+            fsync_flags,
+        )?;
+
+        Ok(())
     }
 }

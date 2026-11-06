@@ -8,7 +8,7 @@ use util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, Soc
 use crate::{
     fs::{
         file::{
-            AccessMode, CreationFlags, FileCommon, FileLike, SettableStatusFlags,
+            AccessMode, CreationFlags, FileCommon, FileLike, SettableStatusFlags, StatusFlags,
             file_table::FdFlags,
         },
         pseudofs::SockFs,
@@ -18,12 +18,12 @@ use crate::{
     util::{MultiRead, MultiWrite, ioctl::RawIoctl},
 };
 
-pub mod ip;
-pub mod netlink;
-pub mod options;
-pub mod unix;
-pub mod util;
-pub mod vsock;
+pub(crate) mod ip;
+pub(crate) mod netlink;
+pub(crate) mod options;
+pub(crate) mod unix;
+pub(crate) mod util;
+pub(crate) mod vsock;
 
 mod private {
     use core::time::Duration;
@@ -34,7 +34,7 @@ mod private {
     ///
     /// These are implementation details of sockets, so shouldn't be accessed outside the network
     /// module. Therefore, the whole trait is sealed.
-    pub trait SocketPrivate: Pollable {
+    pub(crate) trait SocketPrivate: Pollable {
         /// Returns whether the socket is in non-blocking mode.
         fn is_nonblocking(&self) -> bool;
 
@@ -76,7 +76,7 @@ mod private {
 }
 
 /// Operations defined on a socket.
-pub trait Socket: private::SocketPrivate + Send + Sync {
+pub(crate) trait Socket: private::SocketPrivate + Send + Sync {
     /// Assigns the specified address to the socket.
     fn bind(&self, _socket_addr: SocketAddr) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "bind() is not supported");
@@ -175,11 +175,6 @@ impl<T: Socket + 'static> FileLike for T {
         SettableStatusFlags::minimal().with_o_async()
     }
 
-    fn access_mode(&self) -> AccessMode {
-        // Reference: <https://elixir.bootlin.com/linux/v7.0/source/net/socket.c#L483>.
-        AccessMode::O_RDWR
-    }
-
     fn as_socket(&self) -> Option<&dyn Socket> {
         Some(self)
     }
@@ -203,7 +198,7 @@ impl<T: Socket + 'static> FileLike for T {
             }
         }
 
-        let mut flags = self.common().status_flags().bits() | self.access_mode() as u32;
+        let mut flags = self.common().status_flags().bits() | self.common().access_mode() as u32;
         if fd_flags.contains(FdFlags::CLOEXEC) {
             flags |= CreationFlags::O_CLOEXEC.bits();
         }
@@ -213,4 +208,15 @@ impl<T: Socket + 'static> FileLike for T {
             ino: self.common().path().inode().ino(),
         })
     }
+}
+
+/// Create the `FileCommon` for the socket files.
+fn new_socket_common(is_nonblocking: bool) -> FileCommon {
+    let status_flags = if is_nonblocking {
+        StatusFlags::O_NONBLOCK
+    } else {
+        StatusFlags::empty()
+    };
+    // Reference: <https://elixir.bootlin.com/linux/v7.0/source/net/socket.c#L483>.
+    FileCommon::new(SockFs::new_path(), AccessMode::O_RDWR, status_flags)
 }

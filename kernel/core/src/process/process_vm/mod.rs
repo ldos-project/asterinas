@@ -13,12 +13,12 @@ mod heap;
 mod init_stack;
 
 use core::ops::Range;
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ostd::task::disable_preempt;
 
-pub use self::{
+pub(crate) use self::{
     heap::{Heap, LockedHeap},
     init_stack::{
         INIT_STACK_SIZE, InitStack, InitStackReader, MAX_LEN_STRING_ARG, MAX_NR_STRING_ARGS,
@@ -66,7 +66,7 @@ use crate::{
  */
 
 /// The process user space virtual memory
-pub struct ProcessVm {
+pub(crate) struct ProcessVm {
     /// The initial portion of the main stack of a process.
     init_stack: InitStack,
     /// The user heap
@@ -75,10 +75,10 @@ pub struct ProcessVm {
     code_range: SpinLock<Range<Vaddr>>,
     /// The data range from the executable file.
     data_range: SpinLock<Range<Vaddr>>,
-    /// The executable file.
-    executable_file: Path,
+    /// The path of the executable file.
+    executable_path: Path,
     /// The base address for vDSO segment
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     vdso_base: AtomicUsize,
 }
 
@@ -93,54 +93,54 @@ impl ProcessVm {
     }
 
     /// Creates a new `ProcessVm` without mapping anything.
-    pub(super) fn new(executable_file: Path) -> Self {
+    pub(crate) fn new(executable_path: Path) -> Self {
         Self {
             init_stack: InitStack::new(),
             heap: Heap::new_uninitialized(),
             code_range: SpinLock::new(0..0),
             data_range: SpinLock::new(0..0),
-            executable_file,
-            #[cfg(target_arch = "riscv64")]
+            executable_path,
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             vdso_base: AtomicUsize::new(0),
         }
     }
 
     /// Creates a new `ProcessVm` with identical contents of an existing one.
-    pub fn fork_from(process_vm: &Self, heap_guard: &LockedHeap) -> Self {
+    pub(crate) fn fork_from(process_vm: &Self, heap_guard: &LockedHeap) -> Self {
         Self {
             init_stack: process_vm.init_stack.clone(),
             heap: Heap::fork_from(heap_guard),
             code_range: SpinLock::new(process_vm.code_range.lock().clone()),
             data_range: SpinLock::new(process_vm.data_range.lock().clone()),
-            executable_file: process_vm.executable_file.clone(),
-            #[cfg(target_arch = "riscv64")]
+            executable_path: process_vm.executable_path.clone(),
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             vdso_base: AtomicUsize::new(process_vm.vdso_base.load(Ordering::Relaxed)),
         }
     }
 
     /// Returns the initial portion of the main stack of a process.
-    pub fn init_stack(&self) -> &InitStack {
+    pub(crate) fn init_stack(&self) -> &InitStack {
         &self.init_stack
     }
 
     /// Returns the user heap.
-    pub fn heap(&self) -> &Heap {
+    pub(crate) fn heap(&self) -> &Heap {
         &self.heap
     }
 
     /// Returns the code range from the executable file.
-    pub fn code_range(&self) -> Range<Vaddr> {
+    pub(crate) fn code_range(&self) -> Range<Vaddr> {
         self.code_range.lock().clone()
     }
 
     /// Returns the data range from the executable file.
-    pub fn data_range(&self) -> Range<Vaddr> {
+    pub(crate) fn data_range(&self) -> Range<Vaddr> {
         self.data_range.lock().clone()
     }
 
     /// Returns a reference to the executable `Path`.
-    pub fn executable_file(&self) -> &Path {
-        &self.executable_file
+    pub(crate) fn executable_path(&self) -> &Path {
+        &self.executable_path
     }
 
     /// Maps and writes the initial portion of the main stack of a process.
@@ -176,13 +176,13 @@ impl ProcessVm {
     }
 
     /// Returns the base address for vDSO segment.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     pub(super) fn vdso_base(&self) -> Vaddr {
         self.vdso_base.load(Ordering::Relaxed)
     }
 
     /// Sets the base address for vDSO segment.
-    #[cfg(target_arch = "riscv64")]
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     pub(super) fn set_vdso_base(&self, addr: Vaddr) {
         self.vdso_base.store(addr, Ordering::Relaxed);
     }
@@ -195,7 +195,7 @@ impl ProcessVm {
 ///
 /// [`Process`]: super::process::Process
 /// [`Process::lock_vmar`]: super::process::Process::lock_vmar
-pub struct ProcessVmarGuard<'a> {
+pub(crate) struct ProcessVmarGuard<'a> {
     inner: MutexGuard<'a, Option<Arc<Vmar>>>,
 }
 
@@ -203,16 +203,16 @@ pub struct ProcessVmarGuard<'a> {
 ///
 /// This type is used only for identity comparison.
 #[derive(Clone, Debug)]
-pub struct VmarSnapshot(Weak<Vmar>);
+pub(crate) struct VmarSnapshot(Weak<Vmar>);
 
 impl VmarSnapshot {
     /// Returns the raw identity pointer of the captured `Vmar`.
-    pub fn as_ptr(&self) -> *const Vmar {
+    pub(crate) fn as_ptr(&self) -> *const Vmar {
         Weak::as_ptr(&self.0)
     }
 
     /// Returns whether two snapshots refer to the same `Vmar`.
-    pub fn ptr_eq(&self, other: &Self) -> bool {
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Weak::ptr_eq(&self.0, &other.0)
     }
 }
@@ -238,24 +238,24 @@ impl<'a> ProcessVmarGuard<'a> {
     /// # Panics
     ///
     /// This method will panic if the process has exited and its VMAR has been dropped.
-    pub fn unwrap(&self) -> &Vmar {
+    pub(crate) fn unwrap(&self) -> &Vmar {
         self.inner.as_ref().unwrap()
     }
 
     /// Returns a reference to the process VMAR if it exists.
     ///
     /// Returns `None` if the process has exited and its VMAR has been dropped.
-    pub fn as_ref(&self) -> Option<&Vmar> {
+    pub(crate) fn as_ref(&self) -> Option<&Vmar> {
         self.inner.as_ref().map(|v| &**v)
     }
 
     /// Takes a snapshot of the current VMAR identity.
-    pub fn snapshot(&self) -> VmarSnapshot {
+    pub(crate) fn snapshot(&self) -> VmarSnapshot {
         VmarSnapshot(self.inner.as_ref().map(Arc::downgrade).unwrap_or_default())
     }
 
     /// Returns whether the current VMAR has the same identity as the `snapshot`.
-    pub fn is_same_as(&self, snapshot: &VmarSnapshot) -> bool {
+    pub(crate) fn is_same_as(&self, snapshot: &VmarSnapshot) -> bool {
         self.inner
             .as_ref()
             .is_some_and(|vmar| core::ptr::eq(Arc::as_ptr(vmar), Weak::as_ptr(&snapshot.0)))
@@ -275,7 +275,7 @@ impl<'a> ProcessVmarGuard<'a> {
     /// the initial portion of the main stack of a process.
     ///
     /// Returns `None` if the process has exited and its VMAR has been dropped.
-    pub fn init_stack_reader(&self) -> Option<InitStackReader<'_>> {
+    pub(crate) fn init_stack_reader(&self) -> Option<InitStackReader<'_>> {
         self.as_ref()
             .map(|vmar| vmar.process_vm().init_stack.reader(vmar))
     }

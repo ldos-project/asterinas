@@ -3,7 +3,11 @@
 //! Statically-allocated CPU-local objects.
 
 #![cfg_attr(
-    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    any(
+        target_arch = "riscv64",
+        target_arch = "loongarch64",
+        target_arch = "aarch64"
+    ),
     expect(dead_code)
 )]
 
@@ -126,12 +130,6 @@ unsafe impl<T: 'static> AnyStorage<T> for StaticStorage<T> {
 
         let offset = self.get_offset();
         (base + offset) as *const T
-    }
-
-    fn get_mut_ptr_on_target(&mut self, _: CpuId) -> *mut T {
-        // `StaticStorage<T>` does not support `get_mut_ptr_on_target`, because
-        // statically-allocated CPU-local objects do not require per-CPU initialization.
-        panic!("Can't get the mutable pointer of StaticStorage<T> on a target CPU.");
     }
 }
 

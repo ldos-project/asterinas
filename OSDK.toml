@@ -20,12 +20,10 @@ kcmd_args = [
     "HOME=/",
     "USER=root",
     "PATH=/bin:/benchmark",
-    "init=/init",
     "raid.members=vdd,vde,vdf",
-    "data_capture.device=vdg"
+    "data_capture.device=vdg",
 ]
 init_args = ["sh", "-l"]
-initramfs = "test/initramfs/build/initramfs.cpio.gz"
 
 # Special options for testing
 [test.qemu]
@@ -34,7 +32,7 @@ args = "$(./tools/qemu_args.sh test)"
 # Other Schemes
 
 [scheme."microvm"]
-boot.method = "qemu-direct"
+boot.method = "vmm-direct"
 build.strip_elf = true
 qemu.args = "$(./tools/qemu_args.sh microvm)"
 
@@ -51,14 +49,14 @@ qemu.args = "$(./tools/qemu_args.sh tdx)"
 
 [scheme."riscv"]
 supported_archs = ["riscv64"]
-boot.method = "qemu-direct"
+boot.method = "vmm-direct"
 build.strip_elf = false
 qemu.args = "$(./tools/qemu_args.sh riscv)"
 
 [scheme."sifive_u"]
 supported_archs = ["riscv64"]
 build.features = ["riscv_sv39_mode"]
-boot.method = "qemu-direct"
+boot.method = "vmm-direct"
 build.strip_elf = false
 qemu.with_monitor = true
 
@@ -75,7 +73,7 @@ qemu.args = """\
 """
 
 [scheme."loongarch"]
-boot.method = "qemu-direct"
+boot.method = "vmm-direct"
 build.strip_elf = false
 
 qemu.args = """\
@@ -93,3 +91,9 @@ qemu.args = """\
     -device virtconsole,chardev=mux \
     -rtc base=utc
 """
+
+[scheme."aarch64"]
+supported_archs = ["aarch64"]
+boot.method = "vmm-direct"
+build.strip_elf = false
+qemu.args = "$(./tools/qemu_args.sh aarch64)"

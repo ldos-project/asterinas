@@ -11,7 +11,7 @@ use crate::{
     syscall::constants::MAX_FILENAME_LEN,
 };
 
-pub fn sys_mkdirat(
+pub(super) fn sys_mkdirat(
     dirfd: RawFileDesc,
     path_addr: Vaddr,
     mode: u16,
@@ -35,11 +35,11 @@ pub fn sys_mkdirat(
         let mask_mode = mode & !fs_ref.umask().get();
         InodeMode::from_bits_truncate(mask_mode)
     };
-    dir_path.new_fs_child(&name, InodeType::Dir, inode_mode)?;
+    dir_path.new_child(&name, InodeType::Dir, inode_mode)?;
     fs::vfs::notify::on_mkdir(&dir_path, || name);
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_mkdir(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_mkdir(path_addr: Vaddr, mode: u16, ctx: &Context) -> Result<SyscallReturn> {
     sys_mkdirat(AT_FDCWD, path_addr, mode, ctx)
 }

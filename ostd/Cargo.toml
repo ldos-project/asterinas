@@ -17,7 +17,6 @@ targets = ["x86_64-unknown-none"]
 
 [dependencies]
 align_ext.workspace = true
-bit_field.workspace = true
 bitflags.workspace = true
 bitvec.workspace = true
 crossbeam-utils.workspace = true
@@ -31,8 +30,8 @@ minicov = { workspace = true, optional = true }
 num-traits.workspace = true
 orpc-macros.workspace = true
 ostd-macros.workspace = true
-ostd-test.workspace = true
 ostd-pod.workspace = true
+ostd-test.workspace = true
 serde.workspace = true
 snafu.workspace = true
 spin.workspace = true
@@ -55,6 +54,7 @@ static_assertions.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 acpi.workspace = true
+bit_field.workspace = true
 int-to-c-enum.workspace = true
 linux-boot-params.workspace = true
 multiboot2.workspace = true
@@ -65,6 +65,7 @@ x86.workspace = true
 x86_64.workspace = true
 
 [target.riscv64imac-unknown-none-elf.dependencies]
+bit_field.workspace = true
 fdt.workspace = true
 riscv.workspace = true
 sbi-rt.workspace = true
@@ -73,6 +74,11 @@ unwinding = { workspace = true, features = ["fde-static"] }
 [target.loongarch64-unknown-none-softfloat.dependencies]
 fdt.workspace = true
 loongArch64.workspace = true
+unwinding = { workspace = true, features = ["fde-gnu-eh-frame-hdr"] }
+
+[target.aarch64-unknown-none-softfloat.dependencies]
+fdt.workspace = true
+unwinding = { workspace = true, features = ["fde-static"] }
 
 [features]
 default = ["cvm_guest"]
@@ -82,6 +88,7 @@ capture_scheduling = []
 # The guest OS support for Confidential VMs (CVMs), e.g., Intel TDX
 cvm_guest = ["dep:tdx-guest"]
 coverage = ["minicov"]
+pvh_boot = []
 riscv_sv39_mode = []
 
 [lints]

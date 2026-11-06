@@ -8,6 +8,7 @@ use core::{
 use ostd::sync::WaitQueue;
 
 use crate::{
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
         file::{AccessMode, PerOpenFileOps, SettableStatusFlags, StatusFlags},
@@ -24,7 +25,7 @@ use crate::{
         },
     },
     util::{
-        ioctl::{RawIoctl, dispatch_ioctl},
+        ioctl::RawIoctl,
         ring_buffer::{ConsumerU8Ext, ProducerU8Ext, RbConsumer, RbProducer, RingBuffer},
     },
 };
@@ -180,7 +181,7 @@ pub(in crate::fs) struct Pipe {
 
 impl Pipe {
     /// Creates a new pipe.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             pipe: Mutex::new(PipeInner::default()),
             wait_queue: WaitQueue::new(),
@@ -198,7 +199,7 @@ impl Pipe {
     ///
     /// If no handle of this named pipe has existed, the method will create a new pipe object.
     /// Otherwise, it will return a handle that works on the existing pipe object.
-    pub fn open_named(
+    pub(crate) fn open_named(
         &self,
         access_mode: AccessMode,
         status_flags: StatusFlags,

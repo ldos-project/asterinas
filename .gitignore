@@ -40,6 +40,13 @@ asterinas-profile-*.svg
 # distro results
 distro/result
 
+# nix build results
+/result
+/result-*
+
+# direnv cache; nix-direnv also keeps its GC roots here
+/.direnv/
+
 # cachix package list
 cachix.list
 
@@ -61,3 +68,5 @@ aster-kernel-profile-*.svg
 # Local configuration files
 .claude/settings.local.json
 CLAUDE.local.md
+# RustRover
+.idea

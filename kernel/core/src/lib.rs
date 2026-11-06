@@ -6,6 +6,7 @@
 
 #![no_std]
 #![deny(unsafe_code)]
+#![feature(alloc_io)]
 #![feature(array_try_from_fn)]
 #![feature(associated_type_defaults)]
 #![feature(btree_cursors)]
@@ -37,38 +38,40 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86/mod.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv/mod.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/arm/mod.rs")]
 mod arch;
 
 mod benchmarks;
-mod context;
+pub mod context;
 mod cpu;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
-mod device;
+pub mod device;
 mod driver;
-mod error;
+pub mod error;
 #[cfg(not(baseline_asterinas))]
 mod event;
-mod events;
-mod fs;
+pub mod events;
+pub mod fs;
 mod init;
 mod ipc;
 mod log;
 mod net;
 #[cfg(not(baseline_asterinas))]
 mod orpc_utils;
-mod prelude;
-mod process;
+pub mod power;
+pub mod prelude;
+pub mod process;
 mod sched;
-mod security;
+pub mod security;
 mod syscall;
 mod thread;
 mod time;
-mod util;
-// TODO: Add vDSO support for other architectures.
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+pub mod util;
+// TODO: Add vDSO support for LoongArch.
+#[cfg(not(target_arch = "loongarch64"))]
 mod vdso;
-mod vm;
+pub mod vm;
 
 /// Boots the Asterinas core kernel.
 pub fn boot() {

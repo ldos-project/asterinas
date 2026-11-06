@@ -33,7 +33,7 @@ use crate::{
 #[cfg(not(baseline_asterinas))]
 pub mod hugepaged;
 pub mod page_cache;
-pub mod perms;
+pub(crate) mod perms;
 pub mod vmar;
 
 #[ostd::global_frame_allocator]
@@ -48,7 +48,7 @@ const fn slot_type_from_layout(layout: core::alloc::Layout) -> Option<ostd::mm::
 }
 
 /// Total physical memory in the entire system in bytes.
-pub fn mem_total() -> usize {
+pub(crate) fn mem_total() -> usize {
     use ostd::boot::{boot_info, memory_region::MemoryRegionType};
 
     let regions = &boot_info().memory_regions;
@@ -61,7 +61,7 @@ pub fn mem_total() -> usize {
 
 static PROMOTED_PAGE_SIZE: usize = page_size::<PagingConsts>(2);
 
-pub fn num_anon_hugepages() -> i32 {
+pub(crate) fn num_anon_hugepages() -> i32 {
     let mut count = 0;
     let mut procs: Vec<Arc<Process>> = Vec::new();
     let Some(initproc) = get_init_process() else {
@@ -295,4 +295,11 @@ fn promote_hugepages(
         }
     }
     Ok(())
+}
+
+/// Total memory (in bytes) committed to the kernel slab caches.
+///
+/// This corresponds to the `Slab` field in `/proc/meminfo`.
+pub(crate) fn mem_slab() -> usize {
+    osdk_heap_allocator::load_total_slab_size()
 }

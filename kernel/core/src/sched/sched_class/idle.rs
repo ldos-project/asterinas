@@ -21,7 +21,7 @@ pub(super) struct IdleClassRq {
 }
 
 impl IdleClassRq {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entity: None,
             idle_time: Duration::from_nanos(0),
@@ -29,7 +29,7 @@ impl IdleClassRq {
         }
     }
 
-    pub fn get_idle_time(&self) -> Duration {
+    pub(crate) fn get_idle_time(&self) -> Duration {
         self.idle_time
     }
 }

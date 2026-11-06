@@ -6,7 +6,10 @@ use core::{arch::x86_64::CpuidResult, ffi::CStr, fmt, str};
 use ostd::{
     arch::{
         cpu::{
-            context::{CpuException, PageFaultErrorCode, RawPageFaultInfo, UserContext},
+            context::{
+                CpuException, PageFaultErrorCode, RawPageFaultInfo, USER_MODIFIABLE_RFLAGS,
+                UserContext,
+            },
             cpuid::cpuid,
         },
         tsc_freq,
@@ -16,11 +19,18 @@ use ostd::{
     sync::SpinLock,
     task::DisabledPreemptGuard,
 };
+use x86_64::registers::rflags::RFlags;
 
 use crate::{
     cpu::LinuxAbi,
     vm::{perms::VmPerms, vmar::PageFaultInfo},
 };
+
+// RFLAGS bits that Linux restores from a user signal frame.
+//
+// Reference: <https://elixir.bootlin.com/linux/v7.1/source/arch/x86/include/asm/sighandling.h#L11-L14>.
+const SIGRETURN_RFLAGS_MASK: usize =
+    USER_MODIFIABLE_RFLAGS & !(RFlags::NESTED_TASK.bits() as usize);
 
 impl LinuxAbi for UserContext {
     fn syscall_num(&self) -> usize {
@@ -55,7 +65,7 @@ impl LinuxAbi for UserContext {
 /// Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/x86/include/uapi/asm/sigcontext.h#L325>
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
-pub struct SigContext {
+pub(crate) struct SigContext {
     r8: usize,
     r9: usize,
     r10: usize,
@@ -106,28 +116,31 @@ macro_rules! copy_gp_regs {
         $dst.r14 = $src.r14;
         $dst.r15 = $src.r15;
         $dst.rip = $src.rip;
-        $dst.rflags = $src.rflags;
     };
 }
 
 impl SigContext {
-    pub fn copy_user_regs_to(&self, dst: &mut UserContext) {
+    pub(crate) fn copy_user_regs_to(&self, dst: &mut UserContext) {
         let gp_regs = dst.general_regs_mut();
         copy_gp_regs!(self, gp_regs);
+        dst.set_rflags(
+            (dst.rflags() & !SIGRETURN_RFLAGS_MASK) | (self.rflags & SIGRETURN_RFLAGS_MASK),
+        );
     }
 
-    pub fn copy_user_regs_from(&mut self, src: &UserContext) {
+    pub(crate) fn copy_user_regs_from(&mut self, src: &UserContext) {
         let gp_regs = src.general_regs();
         copy_gp_regs!(gp_regs, self);
+        self.rflags = src.rflags();
 
         // TODO: Fill exception information in `SigContext`.
     }
 
-    pub fn fpu_context_addr(&self) -> Vaddr {
+    pub(crate) fn fpu_context_addr(&self) -> Vaddr {
         self.fpu_context_addr
     }
 
-    pub fn set_fpu_context_addr(&mut self, addr: Vaddr) {
+    pub(crate) fn set_fpu_context_addr(&mut self, addr: Vaddr) {
         self.fpu_context_addr = addr;
     }
 }
@@ -211,7 +224,7 @@ static CPU_CORES: SpinLock<BTreeSet<u32>> = SpinLock::new(BTreeSet::new());
 // Implementation notes: For each field in this structure that is conditionally shown in Linux, it
 // should be wrapped in an `Option`. Please conduct the Linux implementation when adding a new
 // field, see <https://elixir.bootlin.com/linux/v6.16/source/arch/x86/kernel/cpu/proc.c#L63>.
-pub struct CpuInformation {
+pub(crate) struct CpuInformation {
     processor: u32,
     vendor_id: String,
     cpu_family: u8,
@@ -232,7 +245,7 @@ pub struct CpuInformation {
 
 impl CpuInformation {
     /// Constructs the information for the current CPU.
-    pub fn new(guard: &DisabledPreemptGuard) -> Self {
+    pub(crate) fn new(guard: &DisabledPreemptGuard) -> Self {
         let mut result = Self {
             processor: guard.current_cpu().into(),
             vendor_id: "unknown".to_owned(),

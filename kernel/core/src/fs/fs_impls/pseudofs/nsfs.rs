@@ -8,6 +8,7 @@ use ostd::task::Task;
 use spin::Once;
 
 use crate::{
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
         file::{
@@ -27,7 +28,7 @@ use crate::{
         CloneFlags, Gid, Uid, UserNamespace,
         signal::{PollHandle, Pollable},
     },
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 pub(super) fn init() {
@@ -104,26 +105,27 @@ impl<T: NsCommonOps> NsInode<T> {
 #[inherit_methods(from = "self.common")]
 impl<T: NsCommonOps> Inode for NsInode<T> {
     fn size(&self) -> usize;
-    fn resize(&self, _new_size: usize) -> Result<()>;
+    fn resize(&self, self_dentry: &Dentry, _new_size: usize) -> Result<()>;
     fn metadata(&self) -> Result<Metadata>;
     fn extension(&self) -> &Extension;
     fn ino(&self) -> u64;
     fn type_(&self) -> InodeType;
     fn mode(&self) -> Result<InodeMode>;
     fn owner(&self) -> Result<Uid>;
-    fn set_owner(&self, uid: Uid) -> Result<()>;
+    fn set_owner(&self, self_dentry: &Dentry, uid: Uid) -> Result<()>;
     fn group(&self) -> Result<Gid>;
-    fn set_group(&self, gid: Gid) -> Result<()>;
+    fn set_group(&self, self_dentry: &Dentry, gid: Gid) -> Result<()>;
     fn atime(&self) -> Duration;
-    fn set_atime(&self, time: Duration);
+    fn set_atime(&self, self_dentry: &Dentry, time: Duration);
     fn mtime(&self) -> Duration;
-    fn set_mtime(&self, time: Duration);
+    fn set_mtime(&self, self_dentry: &Dentry, time: Duration);
     fn ctime(&self) -> Duration;
-    fn set_ctime(&self, time: Duration);
+    fn set_ctime(&self, self_dentry: &Dentry, time: Duration);
     fn fs(&self) -> Arc<dyn FileSystem>;
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         access_mode: AccessMode,
         _status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
@@ -144,7 +146,7 @@ impl<T: NsCommonOps> Inode for NsInode<T> {
         Some(Ok(Box::new(ns_file) as Box<dyn PerOpenFileOps>))
     }
 
-    fn set_mode(&self, _mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, _mode: InodeMode) -> Result<()> {
         return_errno_with_message!(Errno::EPERM, "the mode of ns inodes cannot be changed");
     }
 }
@@ -166,13 +168,13 @@ impl<T: NsCommonOps> FileOps for NsInode<T> {
 }
 
 /// A file handle referencing a live namespace.
-pub struct NsFile<T: NsCommonOps> {
+pub(crate) struct NsFile<T: NsCommonOps> {
     ns: Arc<T>,
 }
 
 impl<T: NsCommonOps> NsFile<T> {
     /// Returns a reference to the underlying namespace.
-    pub fn ns(&self) -> &Arc<T> {
+    pub(crate) fn ns(&self) -> &Arc<T> {
         &self.ns
     }
 }
@@ -291,7 +293,7 @@ fn open_ns_as_file<T: NsCommonOps>(ns: &Arc<T>) -> Result<FileDesc> {
 /// Implementors represent a specific kind of namespace (e.g., UTS, mount, user)
 /// and must provide the associated metadata and traversal methods required by
 /// [`NsFs`] and [`NsFile`].
-pub trait NsCommonOps: Any + Send + Sync + 'static + Sized {
+pub(crate) trait NsCommonOps: Any + Send + Sync + 'static + Sized {
     /// The human-readable name of this namespace kind (derived from [`Self::TYPE`]).
     const NAME: &str = Self::TYPE.as_str();
 
@@ -333,7 +335,7 @@ pub trait NsCommonOps: Any + Send + Sync + 'static + Sized {
 /// [`Dentry`] is allocated and stored here as a [`Weak`] reference.
 /// Subsequent requests reuse the cached dentry if it is still alive;
 /// otherwise a fresh one is created and the cache is updated.
-pub struct StashedDentry {
+pub(crate) struct StashedDentry {
     ino: u64,
     dentry: Mutex<Weak<Dentry>>,
 }
@@ -360,7 +362,7 @@ impl Ord for StashedDentry {
 
 impl StashedDentry {
     /// Creates a new, empty cache (no dentry allocated yet).
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let ino = NsFs::singleton().alloc_id();
         Self {
             ino,
@@ -384,7 +386,7 @@ impl StashedDentry {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum NsType {
+pub(crate) enum NsType {
     Cgroup,
     Ipc,
     Mnt,
@@ -432,38 +434,41 @@ impl From<NsType> for CloneFlags {
 const NSFS_MAGIC: u64 = 0x6e736673;
 
 mod ioctl_defs {
-    use crate::util::ioctl::{InData, NoData, OutData, ioc};
+    use crate::{
+        ioc,
+        util::ioctl::{InData, NoData, OutData},
+    };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/linux/nsfs.h#L10>
 
     // Legacy encoding ioctl commands
 
     /// Returns a file descriptor of the owner user namespace.
-    pub type GetUserNs       = ioc!(NS_GET_USERNS,     0xb701, NoData);
+    pub(crate) type GetUserNs       = ioc!(NS_GET_USERNS,     0xb701, NoData);
     /// Returns a file descriptor of the parent namespace.
-    pub type GetParent       = ioc!(NS_GET_PARENT,     0xb702, NoData);
+    pub(crate) type GetParent       = ioc!(NS_GET_PARENT,     0xb702, NoData);
     /// Gets the type of the namespace (e.g., user, pid, mnt, etc.).
-    pub type GetType         = ioc!(NS_GET_NSTYPE,     0xb703, NoData);
+    pub(crate) type GetType         = ioc!(NS_GET_NSTYPE,     0xb703, NoData);
     /// Gets the user ID of the namespace owner.
     ///
     /// Only user namespaces support this operation.
-    pub type GetOwnerUid     = ioc!(NS_GET_OWNER_UID,  0xb704, OutData<u32>);
+    pub(crate) type GetOwnerUid     = ioc!(NS_GET_OWNER_UID,  0xb704, OutData<u32>);
 
     // Modern encoding ioctl commands
 
     /// Gets the ID of the mount namespace.
     #[expect(unused)]
-    pub type GetMntNsId      = ioc!(NS_GET_MNTNS_ID,        0xb7, 0x5, OutData<u64>);
+    pub(crate) type GetMntNsId      = ioc!(NS_GET_MNTNS_ID,        0xb7, 0x5, OutData<u64>);
     /// Translates a thread ID from the target PID namespace into the caller's PID namespace.
     #[expect(unused)]
-    pub type GetTidFromPidNs = ioc!(NS_GET_PID_FROM_PIDNS,  0xb7, 0x6, InData<i32>);
+    pub(crate) type GetTidFromPidNs = ioc!(NS_GET_PID_FROM_PIDNS,  0xb7, 0x6, InData<i32>);
     /// Translates a process ID from the target PID namespace into the caller's PID namespace.
     #[expect(unused)]
-    pub type GetPidFromPidNs = ioc!(NS_GET_TGID_FROM_PIDNS, 0xb7, 0x7, InData<i32>);
+    pub(crate) type GetPidFromPidNs = ioc!(NS_GET_TGID_FROM_PIDNS, 0xb7, 0x7, InData<i32>);
     /// Translates a thread ID from the caller's PID namespace into the target PID namespace.
     #[expect(unused)]
-    pub type GetTidInPidNs   = ioc!(NS_GET_PID_IN_PIDNS,    0xb7, 0x8, InData<i32>);
+    pub(crate) type GetTidInPidNs   = ioc!(NS_GET_PID_IN_PIDNS,    0xb7, 0x8, InData<i32>);
     /// Translates a process ID from the caller's PID namespace into the target PID namespace.
     #[expect(unused)]
-    pub type GetPidInPidNs   = ioc!(NS_GET_TGID_IN_PIDNS,   0xb7, 0x9, InData<i32>);
+    pub(crate) type GetPidInPidNs   = ioc!(NS_GET_TGID_IN_PIDNS,   0xb7, 0x9, InData<i32>);
 }

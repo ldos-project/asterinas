@@ -24,6 +24,7 @@ use aster_fuse::{
         release::ReleaseOptions,
         rename::{RenameOperation, RenameReq},
         rmdir::RmdirOperation,
+        symlink::SymlinkOperation,
         unlink::UnlinkOperation,
     },
 };
@@ -39,13 +40,14 @@ use super::{
 };
 use crate::{
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, SyncMode},
         utils::DirentVisitor,
         vfs::{
             file_system::FileSystem,
             inode::{
                 Extension, FileOps, Inode, Metadata, RenameMode, RevalidationPolicy, SymbolicLink,
             },
+            path::Dentry,
         },
     },
     prelude::*,
@@ -147,7 +149,7 @@ impl VirtioFsInode {
         })
     }
 
-    fn fs_ref(&self) -> Arc<VirtioFs> {
+    pub(super) fn fs_ref(&self) -> Arc<VirtioFs> {
         self.fs.upgrade().unwrap()
     }
 
@@ -182,16 +184,6 @@ impl VirtioFsInode {
         *self.entry_valid_until.lock() =
             valid_until(entry_reply.entry_valid(), entry_reply.entry_valid_nsec());
         Ok(())
-    }
-
-    fn lookup_child_inode(&self, name: &str) -> Result<Arc<VirtioFsInode>> {
-        let fs = self.fs_ref();
-        let request_attr_version = fs.session().snapshot_attr_version();
-        let lookup_reply = fs
-            .session()
-            .do_fuse_op(self.nodeid(), LookupOperation::new(name))?;
-
-        fs.lookup_inode_from_cache(lookup_reply, request_attr_version)
     }
 
     fn type_(&self) -> InodeType {
@@ -264,7 +256,7 @@ impl Inode for VirtioFsInode {
         self.size()
     }
 
-    fn resize(&self, new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, new_size: usize) -> Result<()> {
         if self.type_() != InodeType::File {
             return_errno_with_message!(Errno::EISDIR, "resize on non-regular file");
         }
@@ -293,7 +285,7 @@ impl Inode for VirtioFsInode {
         Ok(self.metadata()?.mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         let mode_bits = self.type_() as u32 | u32::from(mode.bits());
         let setattr_req = SetattrReq::new(SetattrValid::FATTR_MODE).set_mode(mode_bits);
         self.setattr(setattr_req)
@@ -303,7 +295,7 @@ impl Inode for VirtioFsInode {
         Ok(self.metadata()?.uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         let setattr_req = SetattrReq::new(SetattrValid::FATTR_UID).set_uid(uid.into());
         self.setattr(setattr_req)
     }
@@ -312,7 +304,7 @@ impl Inode for VirtioFsInode {
         Ok(self.metadata()?.gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         let setattr_req = SetattrReq::new(SetattrValid::FATTR_GID).set_gid(gid.into());
         self.setattr(setattr_req)
     }
@@ -321,7 +313,7 @@ impl Inode for VirtioFsInode {
         self.inner.read().metadata.last_access_at
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_time(TimeField::Access, time);
     }
 
@@ -329,7 +321,7 @@ impl Inode for VirtioFsInode {
         self.inner.read().metadata.last_modify_at
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_time(TimeField::Modify, time);
     }
 
@@ -337,7 +329,7 @@ impl Inode for VirtioFsInode {
         self.inner.read().metadata.last_meta_change_at
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.set_time(TimeField::Change, time);
     }
 
@@ -352,6 +344,7 @@ impl Inode for VirtioFsInode {
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
@@ -377,7 +370,13 @@ impl Inode for VirtioFsInode {
         Ok(fs.lookup_inode_from_cache(lookup_reply, request_attr_version)?)
     }
 
-    fn create(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Arc<dyn Inode>> {
+    fn create(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        type_: InodeType,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
         let fs = self.fs_ref();
         let parent_nodeid = self.nodeid();
         let create_reply = match type_ {
@@ -416,10 +415,27 @@ impl Inode for VirtioFsInode {
         Ok(child)
     }
 
-    fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
-        let old = old
-            .downcast_ref::<VirtioFsInode>()
-            .ok_or_else(|| Error::with_message(Errno::EXDEV, "not same fs"))?;
+    fn create_symlink(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        target: &str,
+        _mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        let fs = self.fs_ref();
+        let child = {
+            let entry_reply = fs
+                .session()
+                .do_fuse_op(self.nodeid(), SymlinkOperation::new(name, target))?;
+            VirtioFsInode::new_from_entry_reply(entry_reply, &fs)
+        };
+        fs.insert_inode_to_cache(&child);
+
+        Ok(child)
+    }
+
+    fn link(&self, _self_dentry: &Dentry, old_dentry: &Dentry, name: &str) -> Result<()> {
+        let old = old_dentry.inode().downcast_ref::<VirtioFsInode>().unwrap();
 
         let fs = self.fs_ref();
         let request_attr_version = fs.session().snapshot_attr_version();
@@ -436,12 +452,16 @@ impl Inode for VirtioFsInode {
         Ok(())
     }
 
-    fn unlink(&self, name: &str) -> Result<()> {
+    fn unlink(&self, child_dentry: &Dentry) -> Result<()> {
         let fs = self.fs_ref();
-        let child = self.lookup_child_inode(name)?;
+        let name = child_dentry.name();
+        let child = child_dentry
+            .inode()
+            .downcast_ref::<VirtioFsInode>()
+            .unwrap();
 
         fs.session()
-            .do_fuse_op(self.nodeid(), UnlinkOperation::new(name))?;
+            .do_fuse_op(self.nodeid(), UnlinkOperation::new(&name))?;
 
         self.expire_attr_cache();
         child.expire_attr_cache();
@@ -449,12 +469,16 @@ impl Inode for VirtioFsInode {
         Ok(())
     }
 
-    fn rmdir(&self, name: &str) -> Result<()> {
+    fn rmdir(&self, child_dentry: &Dentry) -> Result<()> {
         let fs = self.fs_ref();
-        let child = self.lookup_child_inode(name)?;
+        let name = child_dentry.name();
+        let child = child_dentry
+            .inode()
+            .downcast_ref::<VirtioFsInode>()
+            .unwrap();
 
         fs.session()
-            .do_fuse_op(self.nodeid(), RmdirOperation::new(name))?;
+            .do_fuse_op(self.nodeid(), RmdirOperation::new(&name))?;
 
         self.expire_attr_cache();
         child.expire_attr_cache();
@@ -464,9 +488,10 @@ impl Inode for VirtioFsInode {
 
     fn rename(
         &self,
-        old_name: &str,
-        target: &Arc<dyn Inode>,
+        old_child_dentry: &Dentry,
+        new_dir_dentry: &Dentry,
         new_name: &str,
+        replaced_inode: Option<&Arc<dyn Inode>>,
         mode: RenameMode,
     ) -> Result<()> {
         if mode == RenameMode::Exchange {
@@ -476,7 +501,17 @@ impl Inode for VirtioFsInode {
             );
         }
 
-        let target = target.downcast_ref::<VirtioFsInode>().unwrap();
+        let new_dir_inode = new_dir_dentry
+            .inode()
+            .downcast_ref::<VirtioFsInode>()
+            .unwrap();
+        let old_inode = old_child_dentry
+            .inode()
+            .downcast_ref::<VirtioFsInode>()
+            .unwrap();
+        let replaced_inode =
+            replaced_inode.map(|inode| inode.downcast_ref::<VirtioFsInode>().unwrap());
+        let old_name = old_child_dentry.name();
 
         let fs = self.fs_ref();
 
@@ -485,18 +520,22 @@ impl Inode for VirtioFsInode {
         // pass the cached old dentry down.
         fs.session().do_fuse_op(
             self.nodeid(),
-            RenameOperation::new(RenameReq::new(target.nodeid()), old_name, new_name),
+            RenameOperation::new(RenameReq::new(new_dir_inode.nodeid()), &old_name, new_name),
         )?;
 
         self.expire_attr_cache();
-        if self.nodeid() != target.nodeid() {
-            target.expire_attr_cache();
+        if self.nodeid() != new_dir_inode.nodeid() {
+            new_dir_inode.expire_attr_cache();
+        }
+        old_inode.expire_attr_cache();
+        if let Some(replaced_inode) = replaced_inode {
+            replaced_inode.expire_attr_cache();
         }
 
         Ok(())
     }
 
-    fn sync_data(&self) -> Result<()> {
+    fn sync(&self, _mode: SyncMode) -> Result<()> {
         let inner = self.inner.write();
         let Some(page_cache) = &inner.page_cache else {
             return Ok(());
