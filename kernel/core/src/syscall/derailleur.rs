@@ -34,7 +34,9 @@ pub fn sys_derailleur_restore(
     Ok(SyscallReturn::NoReturn)
 }
 
-/// Ends the session (the restore already released VM1 in this stage).
+/// Ends the session once the process exited: VM1 unpins the pages it lent
+/// when none is referenced here any more.
 pub fn sys_derailleur_done(_ctx: &Context) -> Result<SyscallReturn> {
+    restore::done()?;
     Ok(SyscallReturn::Return(0))
 }

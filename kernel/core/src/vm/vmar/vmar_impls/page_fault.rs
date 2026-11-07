@@ -10,6 +10,17 @@ use crate::vm::vmar::{PageFaultOQueueMessage, oqueues};
 use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
+    /// derailleur: maps `frame` (a page another VM lends in place) at `addr`,
+    /// inside an existing private mapping, as its page there.
+    pub fn derailleur_install_frame(&self, addr: Vaddr, frame: ostd::mm::UFrame) -> Result<()> {
+        let inner = self.inner.read();
+        let Some(vm_mapping) = inner.vm_mappings.find_one(&addr) else {
+            return_errno_with_message!(Errno::EFAULT, "no mapping at the address");
+        };
+        let mut rss_delta = RssDelta::new(self);
+        vm_mapping.derailleur_install(&self.vm_space, addr, frame, &mut rss_delta)
+    }
+
     pub fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
         let inner = self.inner.read();
 
@@ -80,4 +91,5 @@ impl PageFaultInfo {
         self.is_forced = true;
         self
     }
+
 }

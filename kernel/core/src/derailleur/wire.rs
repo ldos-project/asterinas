@@ -55,6 +55,8 @@ pub mod slot {
 
     pub const GPA_NONE: u64 = !0;
     pub const GPA_ZERO: u64 = 1 << 58;
+    /// Exclusively the process's on VM1: may be mapped here in place.
+    pub const GPA_MOVABLE: u64 = 1 << 62;
     pub const GPA_FLAGS: u64 = (1 << 62) | (1 << 61) | (1 << 60) | (1 << 59) | (1 << 58) | (1 << 57);
 }
 

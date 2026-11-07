@@ -424,6 +424,31 @@ impl VmMapping {
         )
     }
 
+    /// derailleur: installs `frame` as this private mapping's page at `addr`
+    /// (a page another VM lends in place), mapped as if this process had
+    /// faulted it in and written it.  Fails if a page is mapped there.
+    pub(super) fn derailleur_install(
+        &self,
+        vm_space: &VmSpace,
+        addr: Vaddr,
+        frame: UFrame,
+        rss_delta: &mut RssDelta,
+    ) -> Result<()> {
+        if self.is_shared {
+            return_errno_with_message!(Errno::EINVAL, "only private mappings take lent pages");
+        }
+        let preempt_guard = disable_preempt();
+        let mut cursor = vm_space.cursor_mut(&preempt_guard, &(addr..addr + PAGE_SIZE))?;
+        if let (_, Some(_)) = cursor.query().unwrap() {
+            return_errno_with_message!(Errno::EEXIST, "a page is mapped there already");
+        }
+        let mut page_flags: PageFlags = self.perms.into();
+        page_flags |= PageFlags::ACCESSED | PageFlags::DIRTY;
+        cursor.map(frame, PageProperty::new_user(page_flags, CachePolicy::Writeback));
+        rss_delta.add(self.rss_type(), 1);
+        Ok(())
+    }
+
     fn check_perms_for_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
         debug!(
             "self.perms {:?}, page_fault_info.required_perms {:?}, self.range {:?}",

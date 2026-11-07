@@ -43,6 +43,12 @@ pub struct Shared {
 
 static MAILBOX: Once<IoMem> = Once::new();
 static PEER: Once<IoMem> = Once::new();
+static PEER_MEM: Once<ostd::mm::frame::peer::PeerMemory> = Once::new();
+
+/// The peer's RAM as lendable frames (when it could be registered).
+pub fn peer_memory() -> Option<&'static ostd::mm::frame::peer::PeerMemory> {
+    PEER_MEM.get()
+}
 
 /// The mailbox and the peer's RAM, once both devices were found.
 pub fn shared() -> Result<Shared> {
@@ -96,6 +102,13 @@ impl PciDriver for IvshmemDriver {
         if size == MAILBOX_SIZE {
             MAILBOX.call_once(|| io_mem);
         } else {
+            // Its frames can then be mapped in place (lent, not copied).
+            match ostd::mm::frame::peer::PeerMemory::register(io_mem.clone()) {
+                Ok(pm) => {
+                    PEER_MEM.call_once(|| pm);
+                }
+                Err(e) => ostd::early_println!("derailleur: peer RAM not lendable: {:?}", e),
+            }
             PEER.call_once(|| io_mem);
         }
         ostd::early_println!(

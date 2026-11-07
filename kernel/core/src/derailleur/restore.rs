@@ -267,7 +267,9 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         return_errno_with_message!(Errno::EPROTO, "short layout record");
     }
     let mut buf = vec![0u8; sl::PAGES * PAGE_SIZE];
-    let (mut pages, mut zero) = (0usize, 0usize);
+    let (mut pages, mut zero, mut lent) = (0usize, 0usize, 0usize);
+    // derailleur.copy on the command line: copy everything (the old way).
+    let lend = super::device::peer_memory().filter(|_| !super::NO_LEND.load(core::sync::atomic::Ordering::Relaxed));
     for i in 0..nr {
         let v = &layout[ly::VMAS + i * ly::VMA_SIZE..];
         let (start, end) = (u64_at(v, ly::V_START) as usize, u64_at(v, ly::V_END) as usize);
@@ -283,17 +285,29 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         while addr < end {
             let n = ((end - addr) / PAGE_SIZE).min(sl::PAGES);
             let gpas = sh.resolve(0, addr as u64, n)?;
-            // Runs of present pages: gather, then one write each.
+            // Pages only the process had on VM1: map VM1's frame here (lent).
+            // The rest: runs of present pages, gathered and copied.
+            let lendable = |g: u64| {
+                lend.is_some() && !shared_map && g != sl::GPA_NONE && g & sl::GPA_MOVABLE != 0
+            };
+            let copyable = |g: u64| g != sl::GPA_NONE && g & sl::GPA_ZERO == 0 && !lendable(g);
             let mut k = 0;
             while k < n {
                 let g = gpas[k];
-                if g == sl::GPA_NONE || g & sl::GPA_ZERO != 0 {
+                if lendable(g) {
+                    let frame = lend.unwrap().frame((g & !sl::GPA_FLAGS) as usize)?;
+                    new_vmar.derailleur_install_frame(addr + k * PAGE_SIZE, frame)?;
+                    lent += 1;
+                    k += 1;
+                    continue;
+                }
+                if !copyable(g) {
                     zero += 1;
                     k += 1;
                     continue; // nothing there: zero on first touch
                 }
                 let run = k;
-                while k < n && gpas[k] != sl::GPA_NONE && gpas[k] & sl::GPA_ZERO == 0 {
+                while k < n && copyable(gpas[k]) {
                     let paddr = (gpas[k] & !sl::GPA_FLAGS) as usize;
                     let at = (k - run) * PAGE_SIZE;
                     sh.peer.read_bytes(paddr, &mut buf[at..at + PAGE_SIZE])?;
@@ -319,8 +333,13 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         }
     }
 
-    // VM1 may forget the process now: everything was copied.
-    let _ = sh.call(&[act("release")]);
+    // Copied only: VM1 may forget the process now.  Lent: it keeps the pages
+    // pinned until `done` (the process exited and every lent frame is gone).
+    if lent == 0 {
+        let _ = sh.call(&[act("release")]);
+    } else {
+        *super::LENT.lock() = true;
+    }
 
     // Process-wide state: signal dispositions, umask, cwd.
     {
@@ -423,12 +442,13 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
     let t_end = read_monotonic_time();
     let us = |d: Duration| d.as_micros();
     ostd::early_println!(
-        "derailleur: restored pid {} (VM1 pid {}): {} threads, {} vmas, {} pages copied, {} empty; \
-         state {} us, memory+threads {} us",
+        "derailleur: restored pid {} (VM1 pid {}): {} threads, {} vmas, {} pages lent, {} copied, \
+         {} empty; state {} us, memory+threads {} us",
         ctx.process.pid(),
         lead.tid as i32,
         states.len(),
         nr,
+        lent,
         pages,
         zero,
         us(t_state - t0),
@@ -485,5 +505,27 @@ fn map_vdso_stubs(vmar: &Vmar, rec_vdso: &[u8]) -> Result<()> {
     let mut reader = VmReader::from(&page[..]).to_fallible();
     vmar.write_alien(text, &mut reader).map_err(|(e, _)| e)?;
     ostd::early_println!("derailleur: vDSO at {:#x}: {} syscall stubs", text, stubs);
+    Ok(())
+}
+
+/// The session's end (syscall 1002, after the process exited): once no lent
+/// frame is referenced here any more, VM1 may unpin them.
+pub fn done() -> Result<()> {
+    if !core::mem::take(&mut *super::LENT.lock()) {
+        return Ok(());
+    }
+    let sh = shared()?;
+    let t0 = read_monotonic_time();
+    while ostd::mm::frame::peer::PeerMemory::live_frames() != 0 {
+        if read_monotonic_time() - t0 > Duration::from_secs(10) {
+            ostd::early_println!(
+                "derailleur: {} lent frames still referenced; not releasing VM1",
+                ostd::mm::frame::peer::PeerMemory::live_frames()
+            );
+            return_errno!(Errno::EBUSY);
+        }
+        ostd::task::Task::yield_now();
+    }
+    let _ = sh.call(&[act("release")]);
     Ok(())
 }
