@@ -69,8 +69,6 @@ int main(void)
 
 	int failures = 0;
 	for (int round = 0; round < ROUNDS; round++) {
-		// Go from the highest CPU down, so that every request after the
-		// first one asks the thread to move.
 		for (int cpu = nr_cpus - 1; cpu >= 0; cpu--) {
 			if (request_cpu(fd, cpu) != 0) {
 				perror("cannot write to " PRODUCE_PATH);
