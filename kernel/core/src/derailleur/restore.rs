@@ -11,10 +11,9 @@
 //!    retire VM1's copy, build the address space, recreate the threads, and
 //!    return to user mode as the process.
 //!
-//! Prototype limits: pages are copied out of VM1's RAM (seen through the peer
-//! BAR) into ordinary memory here, and VM1 is released right after; lending
-//! frames in place needs frame metadata for the BAR (an OSTD change).  No
-//! premap.  Established connections are not moved (recreated unconnected).
+//! Exclusive anonymous pages are lent through the peer BAR; other pages are
+//! copied. VM1 keeps lent pages pinned until `done` observes their last drop.
+//! No premap. Established connections are not moved (recreated unconnected).
 
 use alloc::vec;
 use core::{ops::Range, time::Duration};
@@ -62,10 +61,16 @@ pub fn offered_pid(ctx: &Context) -> Result<i32> {
 }
 
 fn act(key: &str) -> Req<'_> {
-    Req { op: wire::CAS_ACT, key }
+    Req {
+        op: wire::CAS_ACT,
+        key,
+    }
 }
 fn get(key: &str) -> Req<'_> {
-    Req { op: wire::CAS_GET, key }
+    Req {
+        op: wire::CAS_GET,
+        key,
+    }
 }
 
 /// A record of `typ` (version 1), at least `min` bytes.
@@ -150,7 +155,9 @@ fn thread_state(e: &[u8]) -> ThreadState {
     let mut fpu = FpuContext::new();
     {
         let area = fpu.as_bytes_mut();
-        let n = xsize.min(area.len()).min(e.len().saturating_sub(th::XSTATE));
+        let n = xsize
+            .min(area.len())
+            .min(e.len().saturating_sub(th::XSTATE));
         area[..n].copy_from_slice(&e[th::XSTATE..th::XSTATE + n]);
         if n >= 528 {
             // XSTATE_BV: only x87, SSE, AVX and AVX-512 (what Asterinas enables);
@@ -256,10 +263,14 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         return_errno_with_message!(Errno::EPROTO, "no threads");
     }
 
-    // The address space: VM1's mappings at the same addresses, contents copied.
+    // The address space: VM1's mappings at the same addresses, lent or copied.
     let exe = {
         let vmar = ctx.thread_local.vmar().borrow();
-        vmar.as_ref().unwrap().process_vm().executable_file().clone()
+        vmar.as_ref()
+            .unwrap()
+            .process_vm()
+            .executable_file()
+            .clone()
     };
     let new_vmar = derailleur_new_vmar(exe);
     let nr = u32_at(layout, ly::NR) as usize;
@@ -269,18 +280,39 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
     let mut buf = vec![0u8; sl::PAGES * PAGE_SIZE];
     let (mut pages, mut zero, mut lent) = (0usize, 0usize, 0usize);
     // derailleur.copy on the command line: copy everything (the old way).
-    let lend = super::device::peer_memory().filter(|_| !super::NO_LEND.load(core::sync::atomic::Ordering::Relaxed));
+    let lend = super::device::peer_memory()
+        .filter(|_| !super::NO_LEND.load(core::sync::atomic::Ordering::Relaxed));
+    let mut previous_end = crate::vm::vmar::VMAR_LOWEST_ADDR;
     for i in 0..nr {
         let v = &layout[ly::VMAS + i * ly::VMA_SIZE..];
-        let (start, end) = (u64_at(v, ly::V_START) as usize, u64_at(v, ly::V_END) as usize);
+        let (start, end) = (
+            u64_at(v, ly::V_START) as usize,
+            u64_at(v, ly::V_END) as usize,
+        );
         let prot = u32_at(v, ly::V_PROT);
         let shared_map = u32_at(v, ly::V_KIND) == ly::KIND_SHARED;
+        // Linux grows stack VMAs on demand; Asterinas reserves their virtual
+        // range up front. Leave existing mappings and a guard page untouched.
+        let map_start = if u64_at(v, ly::V_LINUX_FLAGS) & ly::VM_GROWSDOWN != 0 {
+            let limit = u64_at(task, tk::RLIM + tk::RLIMIT_STACK * 16);
+            let limit = if limit == u64::MAX {
+                crate::process::INIT_STACK_SIZE
+            } else {
+                limit as usize / PAGE_SIZE * PAGE_SIZE
+            };
+            end.saturating_sub(limit)
+                .max(previous_end.saturating_add(PAGE_SIZE))
+                .min(start)
+        } else {
+            start
+        };
         new_vmar
-            .new_map(end - start, perms_of(prot))?
+            .new_map(end - map_start, perms_of(prot))?
             .may_perms(VmPerms::ALL_MAY_PERMS)
             .is_shared(shared_map)
-            .offset(VmarMapOffset::FixedReplace(start))
+            .offset(VmarMapOffset::FixedReplace(map_start))
             .build()?;
+        previous_end = end;
         let mut addr = start;
         while addr < end {
             let n = ((end - addr) / PAGE_SIZE).min(sl::PAGES);
@@ -295,7 +327,8 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
             while k < n {
                 let g = gpas[k];
                 if lendable(g) {
-                    let frame = lend.unwrap().frame((g & !sl::GPA_FLAGS) as usize)?;
+                    let peer = lend.unwrap();
+                    let frame = peer.frame(peer.range().start + (g & !sl::GPA_FLAGS) as usize)?;
                     new_vmar.derailleur_install_frame(addr + k * PAGE_SIZE, frame)?;
                     lent += 1;
                     k += 1;
@@ -386,7 +419,11 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         new_vmar,
         range(tk::START_CODE, tk::END_CODE),
         range(tk::START_DATA, tk::END_DATA),
-        start_brk..brk.max(start_brk).next_multiple_of(PAGE_SIZE).max(start_brk + PAGE_SIZE),
+        start_brk
+            ..brk
+                .max(start_brk)
+                .next_multiple_of(PAGE_SIZE)
+                .max(start_brk + PAGE_SIZE),
         (
             u64_at(task, tk::START_STACK) as usize,
             range(tk::ARG_START, tk::ARG_END),
@@ -420,11 +457,13 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
     supp.gs_base().set(GsBase::new(lead.regs[19]));
     supp.fpu().set(lead.fpu.clone());
     ctx.set_sig_mask(SigMask::from(lead.blocked));
-    ctx.thread_local.robust_list().set(if lead.robust_list != 0 {
-        Some(lead.robust_list)
-    } else {
-        None
-    });
+    ctx.thread_local
+        .robust_list()
+        .set(if lead.robust_list != 0 {
+            Some(lead.robust_list)
+        } else {
+            None
+        });
     ctx.thread_local.clear_child_tid().set(lead.clear_child_tid);
     if lead.ss.1 != 0 {
         *ctx.thread_local.sig_stack().borrow_mut() = SigStack::new(
@@ -479,7 +518,9 @@ fn map_vdso_stubs(vmar: &Vmar, rec_vdso: &[u8]) -> Result<()> {
         && let Ok(SectionData::DynSymbolTable64(syms)) = sh.get_data(&elf)
     {
         for sym in syms {
-            let Ok(name) = sym.get_name(&elf) else { continue };
+            let Ok(name) = sym.get_name(&elf) else {
+                continue;
+            };
             let nr: u32 = match name.trim_start_matches("__vdso_") {
                 "clock_gettime" => 228,
                 "gettimeofday" => 96,
@@ -511,7 +552,8 @@ fn map_vdso_stubs(vmar: &Vmar, rec_vdso: &[u8]) -> Result<()> {
 /// The session's end (syscall 1002, after the process exited): once no lent
 /// frame is referenced here any more, VM1 may unpin them.
 pub fn done() -> Result<()> {
-    if !core::mem::take(&mut *super::LENT.lock()) {
+    let mut lent = super::LENT.lock();
+    if !*lent {
         return Ok(());
     }
     let sh = shared()?;
@@ -526,6 +568,10 @@ pub fn done() -> Result<()> {
         }
         ostd::task::Task::yield_now();
     }
-    let _ = sh.call(&[act("release")]);
+    let reply = sh.call(&[act("release")])?;
+    if reply[0].status < 0 {
+        return_errno_with_message!(Errno::EIO, "release failed on the server");
+    }
+    *lent = false;
     Ok(())
 }

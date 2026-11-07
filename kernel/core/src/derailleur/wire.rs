@@ -57,7 +57,8 @@ pub mod slot {
     pub const GPA_ZERO: u64 = 1 << 58;
     /// Exclusively the process's on VM1: may be mapped here in place.
     pub const GPA_MOVABLE: u64 = 1 << 62;
-    pub const GPA_FLAGS: u64 = (1 << 62) | (1 << 61) | (1 << 60) | (1 << 59) | (1 << 58) | (1 << 57);
+    pub const GPA_FLAGS: u64 =
+        (1 << 62) | (1 << 61) | (1 << 60) | (1 << 59) | (1 << 58) | (1 << 57);
 }
 
 /// Record types (`enum cas_rec_type`) and the record header (`struct cas_rec`).
@@ -82,6 +83,9 @@ pub mod layout {
     pub const V_END: usize = 8;
     pub const V_PROT: usize = 28;
     pub const V_KIND: usize = 32;
+    pub const V_LINUX_FLAGS: usize = 40;
+
+    pub const VM_GROWSDOWN: u64 = 0x100;
 
     pub const PROT_READ: u32 = 1;
     pub const PROT_WRITE: u32 = 2;
@@ -116,6 +120,7 @@ pub mod task {
     pub const SIGACT: usize = 128;
     pub const SIGACT_SIZE: usize = 32;
     pub const RLIM: usize = 128 + 64 * 32;
+    pub const RLIMIT_STACK: usize = 3;
     pub const CWD: usize = 128 + 64 * 32 + 16 * 16;
     pub const SIZE: usize = CWD + 256;
 }
