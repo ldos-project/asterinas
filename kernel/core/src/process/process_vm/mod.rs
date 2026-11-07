@@ -298,8 +298,10 @@ pub(crate) fn derailleur_activate_vmar(
     code: Range<Vaddr>,
     data: Range<Vaddr>,
     heap: Range<Vaddr>,
+    stack: (Vaddr, Range<Vaddr>, Range<Vaddr>),
 ) {
     let pvm = new_vmar.process_vm();
+    pvm.init_stack().derailleur_set(stack.0, stack.1, stack.2);
     pvm.set_code_range(code);
     pvm.set_data_range(data);
     pvm.heap().derailleur_set_range(heap);

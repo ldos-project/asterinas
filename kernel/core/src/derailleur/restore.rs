@@ -3,11 +3,18 @@
 //! The cassette client: the calling (single-threaded) process becomes the
 //! process VM1 offered.
 //!
-//! Prototype stage 1: the process's pages are copied out of VM1's RAM (seen
-//! through the peer BAR) into ordinary anonymous memory here, during the
-//! switch, and VM1 is released right after.  Lending VM1's frames in place
-//! needs frame metadata for the BAR (an OSTD change); that is the next stage.
-//! One thread; no files handed over (the stub's stdio stays); no premap.
+//! The `derailleur restore` tool drives it in two steps:
+//! 1. `take` (syscall 1003): open the session, stop the process on VM1, and
+//!    return its open files as neutral records (`fds`).  The tool recreates
+//!    them at the same numbers with ordinary syscalls.
+//! 2. `restore` (syscall 1001): take the rest (task, threads, layout, vDSO),
+//!    retire VM1's copy, build the address space, recreate the threads, and
+//!    return to user mode as the process.
+//!
+//! Prototype limits: pages are copied out of VM1's RAM (seen through the peer
+//! BAR) into ordinary memory here, and VM1 is released right after; lending
+//! frames in place needs frame metadata for the BAR (an OSTD change).  No
+//! premap.  Established connections are not moved (recreated unconnected).
 
 use alloc::vec;
 use core::{ops::Range, time::Duration};
@@ -16,21 +23,39 @@ use aster_time::read_monotonic_time;
 use ostd::{
     arch::cpu::context::{FpuContext, FsBase, GsBase, UserContext},
     mm::VmIo,
+    sync::Mutex,
 };
 
 use super::{
     device::{Req, Resp, Shared, shared},
-    wire::{self, layout as ly, rec, slot as sl, task as tk, thread as th, u32_at, u64_at, vdso as vd},
+    wire::{
+        self, layout as ly, rec, slot as sl, task as tk, thread as th, u32_at, u64_at, vdso as vd,
+    },
 };
 use crate::{
+    fs::vfs::path::FsPath,
     prelude::*,
     process::{
-        derailleur_activate_vmar, derailleur_new_vmar,
-        posix_thread::ContextPthreadAdminApi,
-        signal::sig_mask::SigMask,
+        derailleur_activate_vmar, derailleur_new_vmar, derailleur_spawn_thread,
+        posix_thread::{ContextPthreadAdminApi, ThreadName},
+        signal::{
+            SigStack, SigStackFlags,
+            c_types::sigaction_t,
+            constants::{SIGKILL, SIGSTOP},
+            sig_action::SigAction,
+            sig_mask::SigMask,
+            sig_num::SigNum,
+        },
     },
-    vm::{perms::VmPerms, vmar::VmarMapOffset},
+    thread::AsThread,
+    vm::{
+        perms::VmPerms,
+        vmar::{Vmar, VmarMapOffset},
+    },
 };
+
+/// The session's progress: `take` stopped the process.
+static STOPPED: Mutex<bool> = Mutex::new(false);
 
 /// The stub waits here until VM1 offers a process; returns its pid.
 pub fn offered_pid(ctx: &Context) -> Result<i32> {
@@ -60,6 +85,34 @@ fn record(r: &Resp, typ: u32, min: usize) -> Result<&[u8]> {
 
 fn abort(sh: &Shared) {
     let _ = sh.call(&[act("resume")]);
+    *STOPPED.lock() = false;
+}
+
+/// Step 1: stop the process on VM1; copy its `fds` record to `buf`.
+/// Returns the record's length (the tool's buffer must hold it).
+pub fn take(ctx: &Context, buf: Vaddr, buf_len: usize) -> Result<usize> {
+    let sh = shared()?;
+    sh.open()?;
+    let r = sh.call(&[get("proc"), act("prepare")])?;
+    record(&r[0], rec::T_PROC, 32)?;
+    if r[1].status < 0 {
+        abort(&sh);
+        return_errno_with_message!(Errno::EIO, "prepare failed on the server");
+    }
+    // The downtime starts here.
+    let r = sh.call(&[act("net.hold"), act("stop"), act("net.cut"), get("fds")])?;
+    if r[1].status < 0 || r[3].status < 0 {
+        abort(&sh);
+        return_errno_with_message!(Errno::EIO, "the server could not stop the process");
+    }
+    *STOPPED.lock() = true;
+    let fds = &r[3].value;
+    if fds.len() > buf_len {
+        abort(&sh);
+        return_errno_with_message!(Errno::ENOSPC, "fds record larger than the buffer");
+    }
+    ctx.user_space().write_bytes(buf, fds)?;
+    Ok(fds.len())
 }
 
 fn perms_of(prot: u32) -> VmPerms {
@@ -76,46 +129,133 @@ fn perms_of(prot: u32) -> VmPerms {
     p
 }
 
-/// Restores the offered process into the caller.  On success the caller
-/// returns to user mode as that process (`user_ctx` is replaced).
+/// One thread's state from its `cas_thread` entry.
+struct ThreadState {
+    tid: u32,
+    regs: [usize; 20],
+    fpu: FpuContext,
+    blocked: u64,
+    clear_child_tid: usize,
+    robust_list: usize,
+    rseq: usize,
+    ss: (usize, usize, u32),
+    comm: [u8; 16],
+}
+
+fn thread_state(e: &[u8]) -> ThreadState {
+    let mut regs = [0usize; 20];
+    for (i, r) in regs.iter_mut().enumerate() {
+        *r = u64_at(e, th::REGS + i * 8) as usize;
+    }
+    let xsize = u32_at(e, th::XSTATE_SIZE) as usize;
+    let mut fpu = FpuContext::new();
+    {
+        let area = fpu.as_bytes_mut();
+        let n = xsize.min(area.len()).min(e.len().saturating_sub(th::XSTATE));
+        area[..n].copy_from_slice(&e[th::XSTATE..th::XSTATE + n]);
+        if n >= 528 {
+            // XSTATE_BV: only x87, SSE, AVX and AVX-512 (what Asterinas enables);
+            // XCOMP_BV: standard format.
+            let bv = u64::from_le_bytes(area[512..520].try_into().unwrap()) & 0xe7;
+            area[512..520].copy_from_slice(&bv.to_le_bytes());
+            area[520..528].fill(0);
+        }
+    }
+    let mut comm = [0u8; 16];
+    comm.copy_from_slice(&e[th::COMM..th::COMM + 16]);
+    ThreadState {
+        tid: u32_at(e, th::TID),
+        regs,
+        fpu,
+        blocked: u64_at(e, th::BLOCKED),
+        clear_child_tid: u64_at(e, th::CLEAR_CHILD_TID) as usize,
+        robust_list: u64_at(e, th::ROBUST_LIST) as usize,
+        rseq: u64_at(e, th::RSEQ_PTR) as usize,
+        ss: (
+            u64_at(e, th::SS_SP) as usize,
+            u64_at(e, th::SS_SIZE) as usize,
+            u32_at(e, th::SS_FLAGS),
+        ),
+        comm,
+    }
+}
+
+/// The general registers of a `cas_x86_regs` (order: r15 r14 r13 r12 bp bx
+/// r11 r10 r9 r8 ax cx dx si di ip flags sp fsbase gsbase).
+fn set_regs(user_ctx: &mut UserContext, r: &[usize; 20]) {
+    let g = user_ctx.general_regs_mut();
+    g.r15 = r[0];
+    g.r14 = r[1];
+    g.r13 = r[2];
+    g.r12 = r[3];
+    g.rbp = r[4];
+    g.rbx = r[5];
+    g.r11 = r[6];
+    g.r10 = r[7];
+    g.r9 = r[8];
+    g.r8 = r[9];
+    g.rax = r[10];
+    g.rcx = r[11];
+    g.rdx = r[12];
+    g.rsi = r[13];
+    g.rdi = r[14];
+    g.rip = r[15];
+    g.rflags = r[16];
+    g.rsp = r[17];
+}
+
+/// Step 2: become the offered process.  On success the caller returns to user
+/// mode as its leader (`user_ctx` is replaced) and the other threads run.
 pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
     let sh = shared()?;
-    sh.open()?;
-
-    // Before anything changes on VM1: is it something this stage can take?
-    let r = sh.call(&[get("proc"), act("prepare")])?;
-    let proc_rec = record(&r[0], rec::T_PROC, 32)?;
-    let nr_threads = u32_at(proc_rec, 20);
-    if r[1].status < 0 || nr_threads != 1 {
-        abort(&sh);
-        ostd::early_println!("derailleur: refusing: {} threads (stage 1 takes one)", nr_threads);
-        return_errno_with_message!(Errno::EOPNOTSUPP, "multi-threaded process");
+    if !*STOPPED.lock() {
+        // Called without `take` (no files to recreate): stop it here.
+        sh.open()?;
+        let r = sh.call(&[get("proc"), act("prepare"), act("stop")])?;
+        if r[1].status < 0 || r[2].status < 0 {
+            abort(&sh);
+            return_errno_with_message!(Errno::EIO, "the server could not stop the process");
+        }
     }
-
-    // The downtime: stop it, take its state, retire VM1's copy.
     let t0 = read_monotonic_time();
     let r = sh.call(&[
-        act("stop"),
         get("task"),
         get("threads"),
         get("mm/layout"),
         get("vdso"),
         act("retire"),
     ])?;
-    if r[5].status < 0 {
+    if r[4].status < 0 {
         ostd::early_println!(
-            "derailleur: stop batch failed: {:?}",
+            "derailleur: state batch failed: {:?}",
             r.iter().map(|x| x.status).collect::<Vec<_>>()
         );
         abort(&sh);
-        return_errno_with_message!(Errno::EIO, "the server refused the stop batch");
+        return_errno_with_message!(Errno::EIO, "the server refused the state batch");
     }
+    *STOPPED.lock() = false;
     // Retired: the process is ours from here on.
-    let task = record(&r[1], rec::T_TASK, tk::SIZE)?;
-    let threads = record(&r[2], rec::T_THREADS, th::ENTRIES + th::XSTATE)?;
-    let layout = record(&r[3], rec::T_LAYOUT, ly::VMAS)?;
-    let vdso = record(&r[4], rec::T_VDSO, vd::IMAGE)?;
+    let task = record(&r[0], rec::T_TASK, tk::SIZE)?;
+    let threads = record(&r[1], rec::T_THREADS, th::ENTRIES + th::XSTATE)?;
+    let layout = record(&r[2], rec::T_LAYOUT, ly::VMAS)?;
+    let vdso = record(&r[3], rec::T_VDSO, vd::IMAGE)?;
     let t_state = read_monotonic_time();
+
+    // Threads, leader first.
+    let nr_threads = u32_at(threads, th::NR) as usize;
+    let mut states = Vec::with_capacity(nr_threads);
+    let mut at = th::ENTRIES;
+    for _ in 0..nr_threads {
+        let len = u32_at(threads, at) as usize;
+        if len < th::XSTATE || at + len > threads.len() {
+            return_errno_with_message!(Errno::EPROTO, "bad thread entry");
+        }
+        states.push(thread_state(&threads[at..at + len]));
+        at += len;
+    }
+    if states.is_empty() {
+        return_errno_with_message!(Errno::EPROTO, "no threads");
+    }
 
     // The address space: VM1's mappings at the same addresses, contents copied.
     let exe = {
@@ -127,7 +267,7 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
     if layout.len() < ly::VMAS + nr * ly::VMA_SIZE {
         return_errno_with_message!(Errno::EPROTO, "short layout record");
     }
-    let mut buf = vec![0u8; PAGE_SIZE];
+    let mut buf = vec![0u8; sl::PAGES * PAGE_SIZE];
     let (mut pages, mut zero) = (0usize, 0usize);
     for i in 0..nr {
         let v = &layout[ly::VMAS + i * ly::VMA_SIZE..];
@@ -144,36 +284,77 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         while addr < end {
             let n = ((end - addr) / PAGE_SIZE).min(sl::PAGES);
             let gpas = sh.resolve(0, addr as u64, n)?;
-            for (k, g) in gpas.iter().enumerate() {
-                if *g == sl::GPA_NONE || *g & sl::GPA_ZERO != 0 {
+            // Runs of present pages: gather, then one write each.
+            let mut k = 0;
+            while k < n {
+                let g = gpas[k];
+                if g == sl::GPA_NONE || g & sl::GPA_ZERO != 0 {
                     zero += 1;
+                    k += 1;
                     continue; // nothing there: zero on first touch
                 }
-                let paddr = (*g & !sl::GPA_FLAGS) as usize;
-                sh.peer.read_bytes(paddr, &mut buf)?;
-                let mut reader = VmReader::from(&buf[..]).to_fallible();
+                let run = k;
+                while k < n && gpas[k] != sl::GPA_NONE && gpas[k] & sl::GPA_ZERO == 0 {
+                    let paddr = (gpas[k] & !sl::GPA_FLAGS) as usize;
+                    let at = (k - run) * PAGE_SIZE;
+                    sh.peer.read_bytes(paddr, &mut buf[at..at + PAGE_SIZE])?;
+                    k += 1;
+                }
+                let mut reader = VmReader::from(&buf[..(k - run) * PAGE_SIZE]).to_fallible();
                 new_vmar
-                    .write_alien(addr + k * PAGE_SIZE, &mut reader)
+                    .write_alien(addr + run * PAGE_SIZE, &mut reader)
                     .map_err(|(e, _)| e)?;
-                pages += 1;
+                pages += k - run;
             }
             addr += n * PAGE_SIZE;
         }
     }
-
     map_vdso_stubs(&new_vmar, vdso)?;
 
-    // glibc's rseq area: nobody updates it here; make sched_getcpu() ask the kernel.
-    let t0x = &threads[th::ENTRIES..];
-    let rseq = u64_at(t0x, th::RSEQ_PTR) as usize;
-    if rseq != 0 {
-        let failed = (-2i32).to_le_bytes(); // RSEQ_CPU_ID_REGISTRATION_FAILED
-        let mut reader = VmReader::from(&failed[..]).to_fallible();
-        let _ = new_vmar.write_alien(rseq + 4, &mut reader);
+    // glibc's rseq areas: nobody updates them here; make sched_getcpu() ask the kernel.
+    for st in &states {
+        if st.rseq != 0 {
+            let failed = (-2i32).to_le_bytes(); // RSEQ_CPU_ID_REGISTRATION_FAILED
+            let mut reader = VmReader::from(&failed[..]).to_fallible();
+            let _ = new_vmar.write_alien(st.rseq + 4, &mut reader);
+        }
     }
 
     // VM1 may forget the process now: everything was copied.
     let _ = sh.call(&[act("release")]);
+
+    // Process-wide state: signal dispositions, umask, cwd.
+    {
+        let dispositions = ctx.process.sig_dispositions().lock();
+        let mut dispositions = dispositions.lock();
+        for i in 0..64u8 {
+            let Ok(num) = SigNum::try_from(i + 1) else {
+                continue;
+            };
+            if num == SIGKILL || num == SIGSTOP {
+                continue;
+            }
+            let at = tk::SIGACT + i as usize * tk::SIGACT_SIZE;
+            let sa = SigAction::from(<sigaction_t as Pod>::from_bytes(&task[at..at + 32]));
+            let _ = dispositions.set(num, sa);
+        }
+    }
+    if let Ok(mask) = (u32_at(task, tk::UMASK) as u16 & 0o777).try_into() {
+        ctx.thread_local.borrow_fs().swap_umask(mask);
+    }
+    {
+        let cwd = &task[tk::CWD..tk::CWD + 256];
+        let len = cwd.iter().position(|&b| b == 0).unwrap_or(256);
+        if let Ok(name) = core::str::from_utf8(&cwd[..len])
+            && let Ok(fs_path) = FsPath::try_from(name)
+        {
+            let fs_ref = ctx.thread_local.borrow_fs();
+            let mut resolver = fs_ref.resolver().write();
+            if let Ok(path) = resolver.lookup(&fs_path) {
+                resolver.set_cwd(path);
+            }
+        }
+    }
 
     // Become it.
     let range = |a: usize, b: usize| -> Range<Vaddr> {
@@ -188,67 +369,66 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
         range(tk::START_CODE, tk::END_CODE),
         range(tk::START_DATA, tk::END_DATA),
         start_brk..brk.max(start_brk).next_multiple_of(PAGE_SIZE).max(start_brk + PAGE_SIZE),
+        (
+            u64_at(task, tk::START_STACK) as usize,
+            range(tk::ARG_START, tk::ARG_END),
+            range(tk::ENV_START, tk::ENV_END),
+        ),
     );
 
-    // CPU state.
-    let reg = |i: usize| u64_at(t0x, th::REGS + i * 8) as usize;
-    {
-        let g = user_ctx.general_regs_mut();
-        g.r15 = reg(0);
-        g.r14 = reg(1);
-        g.r13 = reg(2);
-        g.r12 = reg(3);
-        g.rbp = reg(4);
-        g.rbx = reg(5);
-        g.r11 = reg(6);
-        g.r10 = reg(7);
-        g.r9 = reg(8);
-        g.r8 = reg(9);
-        g.rax = reg(10);
-        g.rcx = reg(11);
-        g.rdx = reg(12);
-        g.rsi = reg(13);
-        g.rdi = reg(14);
-        g.rip = reg(15);
-        g.rflags = reg(16);
-        g.rsp = reg(17);
+    // The other threads (their user context starts as a copy of ours).
+    let mut tasks = Vec::new();
+    for st in states.iter().skip(1) {
+        let mut uc = user_ctx.clone();
+        set_regs(&mut uc, &st.regs);
+        tasks.push(derailleur_spawn_thread(
+            ctx,
+            uc,
+            st.tid,
+            st.fpu.clone(),
+            st.regs[18],
+            st.regs[19],
+            SigMask::from(st.blocked),
+            st.clear_child_tid,
+            &st.comm,
+        )?);
     }
-    let supp = ctx.thread_local.supp_user_context();
-    supp.fs_base().set(FsBase::new(reg(18)));
-    supp.gs_base().set(GsBase::new(reg(19)));
-    let xsize = u32_at(t0x, th::XSTATE_SIZE) as usize;
-    let mut fpu = FpuContext::new();
-    {
-        let area = fpu.as_bytes_mut();
-        let n = xsize.min(area.len()).min(t0x.len().saturating_sub(th::XSTATE));
-        area[..n].copy_from_slice(&t0x[th::XSTATE..th::XSTATE + n]);
-        if n >= 528 {
-            // XSTATE_BV: only x87, SSE, AVX and AVX-512 (what Asterinas enables);
-            // XCOMP_BV: standard format.
-            let bv = u64::from_le_bytes(area[512..520].try_into().unwrap()) & 0xe7;
-            area[512..520].copy_from_slice(&bv.to_le_bytes());
-            area[520..528].fill(0);
-        }
-    }
-    supp.fpu().set(fpu);
 
-    // Thread and signal state.
-    ctx.set_sig_mask(SigMask::from(u64_at(t0x, th::BLOCKED)));
-    let robust = u64_at(t0x, th::ROBUST_LIST) as usize;
-    ctx.thread_local
-        .robust_list()
-        .set(if robust != 0 { Some(robust) } else { None });
-    ctx.thread_local
-        .clear_child_tid()
-        .set(u64_at(t0x, th::CLEAR_CHILD_TID) as usize);
+    // The leader: this thread.
+    let lead = &states[0];
+    set_regs(user_ctx, &lead.regs);
+    let supp = ctx.thread_local.supp_user_context();
+    supp.fs_base().set(FsBase::new(lead.regs[18]));
+    supp.gs_base().set(GsBase::new(lead.regs[19]));
+    supp.fpu().set(lead.fpu.clone());
+    ctx.set_sig_mask(SigMask::from(lead.blocked));
+    ctx.thread_local.robust_list().set(if lead.robust_list != 0 {
+        Some(lead.robust_list)
+    } else {
+        None
+    });
+    ctx.thread_local.clear_child_tid().set(lead.clear_child_tid);
+    if lead.ss.1 != 0 {
+        *ctx.thread_local.sig_stack().borrow_mut() = SigStack::new(
+            lead.ss.0,
+            SigStackFlags::from_bits_truncate(lead.ss.2),
+            lead.ss.1,
+        );
+    }
+    *ctx.posix_thread.thread_name().lock() = ThreadName::from_bytes_until_nul(&lead.comm);
+
+    for t in &tasks {
+        t.as_thread().unwrap().run();
+    }
 
     let t_end = read_monotonic_time();
     let us = |d: Duration| d.as_micros();
     ostd::early_println!(
-        "derailleur: restored pid {} (VM1 tid {}): {} vmas, {} pages copied, {} empty; \
-         stop+state {} us, memory {} us",
+        "derailleur: restored pid {} (VM1 pid {}): {} threads, {} vmas, {} pages copied, {} empty; \
+         state {} us, memory+threads {} us",
         ctx.process.pid(),
-        u32_at(t0x, th::TID) as i32,
+        lead.tid as i32,
+        states.len(),
         nr,
         pages,
         zero,
@@ -263,7 +443,7 @@ pub fn restore(ctx: &Context, user_ctx: &mut UserContext) -> Result<()> {
 /// with a syscall stub at each function the image exports: `mov $nr, %eax;
 /// syscall; ret`.  Everything else traps (int3).  Slower than a vDSO, but
 /// every cached pointer still works.
-fn map_vdso_stubs(vmar: &crate::vm::vmar::Vmar, rec_vdso: &[u8]) -> Result<()> {
+fn map_vdso_stubs(vmar: &Vmar, rec_vdso: &[u8]) -> Result<()> {
     use xmas_elf::{ElfFile, sections::SectionData, symbol_table::Entry};
 
     let text = u64_at(rec_vdso, vd::TEXT) as usize;

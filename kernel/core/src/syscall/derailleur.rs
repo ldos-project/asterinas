@@ -15,6 +15,14 @@ pub fn sys_derailleur_offered(pid_ptr: Vaddr, ctx: &Context) -> Result<SyscallRe
     Ok(SyscallReturn::Return(0))
 }
 
+/// Stops the offered process on VM1 and copies its open files' records
+/// (`struct cas_fds`) to `buf`; returns their length.  The caller recreates
+/// the files, then calls `sys_derailleur_restore`.
+pub fn sys_derailleur_take(buf: Vaddr, len: usize, ctx: &Context) -> Result<SyscallReturn> {
+    let n = restore::take(ctx, buf, len)?;
+    Ok(SyscallReturn::Return(n as _))
+}
+
 /// Becomes the offered process (the caller must be single-threaded).
 /// Returns to user mode as that process.
 pub fn sys_derailleur_restore(

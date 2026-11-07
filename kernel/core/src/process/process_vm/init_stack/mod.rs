@@ -151,6 +151,19 @@ impl InitStack {
         }
     }
 
+    /// derailleur: adopts the initial stack of a process from another VM:
+    /// its top (the start of the stack) and where argv and envp are.
+    pub(in crate::process) fn derailleur_set(
+        &self,
+        top: Vaddr,
+        argv: Range<Vaddr>,
+        envp: Range<Vaddr>,
+    ) {
+        self.pos.store(top, Ordering::Relaxed);
+        *self.argv_range.lock() = argv;
+        *self.envp_range.lock() = envp;
+    }
+
     /// Returns the top address of the user stack.
     ///
     /// This method should only be called after the stack is initialized.

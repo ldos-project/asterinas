@@ -104,6 +104,10 @@ pub mod task {
     pub const START_BRK: usize = 56;
     pub const BRK: usize = 64;
     pub const START_STACK: usize = 72;
+    pub const ARG_START: usize = 80;
+    pub const ARG_END: usize = 88;
+    pub const ENV_START: usize = 96;
+    pub const ENV_END: usize = 104;
     pub const VDSO_TEXT: usize = 112;
     pub const SIGPENDING: usize = 120;
     pub const SIGACT: usize = 128;

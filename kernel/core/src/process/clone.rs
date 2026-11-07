@@ -4,7 +4,7 @@ use alloc::borrow::Cow;
 use core::{num::NonZeroU64, sync::atomic::Ordering};
 
 #[cfg(target_arch = "x86_64")]
-use ostd::arch::cpu::context::{FsBase, GsBase};
+use ostd::arch::cpu::context::{FpuContext, FsBase, GsBase};
 use ostd::{
     arch::cpu::context::UserContext, cpu::CpuId, mm::VmIo, sync::RwArc, task::Task,
     user::UserContextApi,
@@ -12,9 +12,9 @@ use ostd::{
 
 use super::{
     Credentials, Pid, Process, pid_table,
-    posix_thread::{AsPosixThread, PosixThreadBuilder},
+    posix_thread::{AsPosixThread, PosixThreadBuilder, ThreadName},
     rlimit::ResourceLimits,
-    signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
+    signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_mask::SigMask, sig_num::SigNum},
 };
 use crate::{
     context::current_userspace,
@@ -290,6 +290,93 @@ impl CloneFlags {
 ///
 /// FIXME: currently, the child process or thread will be scheduled to run at once,
 /// but this may not be the expected behavior.
+/// derailleur: a new thread of the current process that starts in user mode
+/// with `user_ctx` and the given CPU and signal state (a process arriving from
+/// another VM recreates its threads).  Shares the address space, files and fs
+/// like `CLONE_THREAD`.  Returns the task; the caller runs it.  Uses `tid`
+/// when it is free.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn derailleur_spawn_thread(
+    ctx: &Context,
+    user_ctx: UserContext,
+    tid: Tid,
+    fpu: FpuContext,
+    fs_base: usize,
+    gs_base: usize,
+    sig_mask: SigMask,
+    clear_child_tid: Vaddr,
+    name: &[u8],
+) -> Result<Arc<Task>> {
+    let flags = CloneFlags::CLONE_VM
+        | CloneFlags::CLONE_FS
+        | CloneFlags::CLONE_FILES
+        | CloneFlags::CLONE_SIGHAND
+        | CloneFlags::CLONE_THREAD
+        | CloneFlags::CLONE_SYSVSEM;
+    let Context {
+        process,
+        thread_local,
+        posix_thread,
+        ..
+    } = ctx;
+    let child_vmar = thread_local.vmar().borrow().as_ref().unwrap().clone_handle();
+    let child_file_table = clone_files(thread_local.borrow_file_table().unwrap(), flags);
+    let child_fs = clone_fs(&thread_local.borrow_fs(), flags);
+    let child_user_ns = thread_local.borrow_user_ns().clone();
+    let child_ns_proxy = clone_ns_proxy(
+        thread_local.borrow_ns_proxy().unwrap(),
+        &child_user_ns,
+        process,
+        posix_thread,
+        flags,
+    )?;
+    let tid = {
+        let table = pid_table::pid_table_mut();
+        if tid != 0
+            && tid < PID_MAX
+            && table.get_thread(tid).is_none()
+            && table.get_process(tid).is_none()
+            && !table.contains_process_group(&tid)
+        {
+            reserve_posix_tid(tid);
+            tid
+        } else {
+            allocate_posix_tid()
+        }
+    };
+    let credentials = {
+        let credentials = posix_thread.credentials();
+        Credentials::new_from(&credentials)
+    };
+    let task = PosixThreadBuilder::new(
+        tid,
+        ThreadName::from_bytes_until_nul(name),
+        Box::new(user_ctx),
+        credentials,
+        child_vmar,
+    )
+    .process(posix_thread.weak_process().clone())
+    .sig_mask(sig_mask.into())
+    .file_table(child_file_table)
+    .fs(child_fs)
+    .fpu_context(fpu)
+    .user_ns(child_user_ns)
+    .ns_proxy(child_ns_proxy)
+    .default_timer_slack_ns(posix_thread.timer_slack_ns())
+    .cpu_affinity(ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed))
+    .sched_policy(ctx.thread.sched_attr().inheritable_policy())
+    .fs_base(FsBase::new(fs_base))
+    .gs_base(GsBase::new(gs_base))
+    .clear_child_tid(clear_child_tid)
+    .build();
+
+    process.tasks().lock().insert(task.clone()).map_err(|_| {
+        Error::with_message(Errno::EINTR, "the process has exited")
+    })?;
+    pid_table::pid_table_mut().insert_thread(tid, task.as_thread().unwrap());
+    Ok(task)
+}
+
 pub fn clone_child(
     ctx: &Context,
     parent_context: &UserContext,

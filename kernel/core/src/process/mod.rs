@@ -24,6 +24,7 @@ mod term_status;
 mod wait;
 
 pub use clone::{CloneArgs, CloneFlags, clone_child};
+pub(crate) use clone::derailleur_spawn_thread;
 pub use credentials::{Credentials, Gid, Uid};
 pub use execve::do_execve;
 pub use kill::{kill, kill_all, kill_group, tgkill};
