@@ -1,5 +1,5 @@
 <div style="text-align: center;">
-<img src="book/src/images/ldos_logo.webp" alt="asterinas-logo" width="350">
+<img src="book/src/images/mariposa-orange-hex.svg" alt="asterinas-logo" width="350">
 </div>
 
 [The Learning-Directed OS project](https://ldos.utexas.edu/) is developing the next-generation Machine Learning-based
