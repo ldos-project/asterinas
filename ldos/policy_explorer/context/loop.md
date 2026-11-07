@@ -20,7 +20,7 @@ turns' workspaces for artifacts they saved before recomputing them.
 
 `run_benchmark` builds and benchmarks a policy without ending your turn, so you can try policies
 before you submit one. With `baseline=true` it benchmarks the baseline; otherwise pass your Rust in
-`code`. `workload='eval'` is the workload your submitted policies are scored on. 
+`code`. `workload='eval'` is the workload your submitted policies are scored on.
 
 `build_policy` only builds and boots your policy, to check that it compiles and runs.
 

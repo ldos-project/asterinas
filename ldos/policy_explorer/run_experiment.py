@@ -312,7 +312,7 @@ class Experiment:
             return
 
         self.log(f"turn {turn_id}: scoring the submitted policy")
-        # Scoring the policy generated in this turn. 
+        # Scoring the policy generated in this turn.
         perf = self.score(turn_id, submitted.code)
         self.log(f"turn {turn_id}: " + (perf["summary"] if perf["build_ok"] else "build or benchmark failed"))
         # Add the turn running info to the database

@@ -68,7 +68,7 @@ class Runner:
             out_dir = out_root / f"run{i + 1}"
             last = i == repeats - 1
             try:
-                # TODO(yingqi): making capturing a separate concern as running benchmark. 
+                # TODO(yingqi): making capturing a separate concern as running benchmark.
                 # Only the last run captures, so the others are not slowed by capturing.
                 self._run_with_retry(out_dir, baseline=baseline, workload=workload, capture=list(capture) if last else [])
             except BenchmarkError as error:

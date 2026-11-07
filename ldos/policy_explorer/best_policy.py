@@ -33,7 +33,7 @@ def main():
     if best is None:
         best = database.current_best()
         selected_by = "fallback: no turn satisfied the criteria; best score"
-    # If the current_best() also says non, that means none of the generated policy even build. 
+    # If the current_best() also says non, that means none of the generated policy even build.
     if best is None:
         sys.exit(f"{args.results_dir} has no successfully built turn")
     args.out.mkdir(parents=True, exist_ok=True)

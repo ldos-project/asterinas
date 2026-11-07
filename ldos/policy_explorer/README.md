@@ -10,12 +10,12 @@ search stops when a policy meets your success criterion or the budget runs out.
 - [SPEC.md](SPEC.md): the template a user fills in to specify a new subsystem.
 
 You can use this loop with an AI Agent to find better policy on any subsystem as long as:
-(1) you have a benchmark inside Mariposa, 
+(1) you have a benchmark inside Mariposa,
 (2) you can boot the kernel with the policy or the baseline, (3) you split the policy's code cleanly
 
 ## How the work is split
 
-To speed through the process of deploying the policy exploration for your subsystem, we designed the development process in a way you can collaborate with a Coding Agent: 
+To speed through the process of deploying the policy exploration for your subsystem, we designed the development process in a way you can collaborate with a Coding Agent:
 
 | You (the human) | A coding agent (Claude Code, Codex, ...) |
 |---|---|
@@ -24,9 +24,9 @@ To speed through the process of deploying the policy exploration for your subsys
 | Review the diff and the short test search. | Runs a build/boot check and a two-turn search. |
 
 `AGENTS.md` describes the code and marks each decision it needs from you as **EXPECT USER TO
-PROVIDE**; `SPEC.md` (in this directory) is the template with one section per decision. 
+PROVIDE**; `SPEC.md` (in this directory) is the template with one section per decision.
 
-In short, you specify what subsystem you want to optimize for what benchmark in `SPEC.md`, and an coding agent implement the harness according to how should them being implemented in `AGENTS.md`. 
+In short, you specify what subsystem you want to optimize for what benchmark in `SPEC.md`, and an coding agent implement the harness according to how should them being implemented in `AGENTS.md`.
 
 ## Setup
 
@@ -93,7 +93,7 @@ end marker (or an error marker), and writes its result files to the shared folde
 
 What has to happen on the host before a run, the kernel arguments that pick your policy or the
 baseline, and the devices the VM needs. The harness does the booting, timeouts, and result
-collection. 
+collection.
 (SPEC §4, §5.)
 
 ### 3. Isolating the policy to evolve
@@ -106,9 +106,9 @@ including after a crash. Describe the interface in your SPEC. (SPEC §2.)
 
 ### 4. OQueues and data collection
 
-OQueues are how Mariposa components expose events. Say which ones matter, in two roles: 
-1. what the policy observes while it runs (part of its interface) (the OQueue containing the data your policy depends on when making a decision), and 
-2. what the model may record and analyze (what data you think is relevant and your agent should look into while searching for good policy). 
+OQueues are how Mariposa components expose events. Say which ones matter, in two roles:
+1. what the policy observes while it runs (part of its interface) (the OQueue containing the data your policy depends on when making a decision), and
+2. what the model may record and analyze (what data you think is relevant and your agent should look into while searching for good policy).
 Every search's prompt already explains OQueues, the registry and how a policy attaches
 observers at runtime (`context/mariposa.md`), so your SPEC only adds what is the OQueue that you think is relevant to your subsystem. The model lists the OQueues the kernel exports with `list_oqueues`, records any of them
 with the `collect_data` tool, and analyzes the records with `run_python`. OQueues are recorded through the OQueue filesystem (`/oqueues`); if a stream you need is not exported yet, the agent exports it. (SPEC §7.)
@@ -121,7 +121,7 @@ statement (§1).
 `database_catalog` / `query_database` (past turns), `list_oqueues`, `collect_data`,
 `run_python` (analysis, training), `build_policy`, `run_benchmark` (try a policy
 or the baseline without ending the turn), `load_skill` (a shared guide the search offers, such as
-`skills/deploying_a_model.md`), and `submit_policy` (ends the turn; the policy is scored). 
+`skills/deploying_a_model.md`), and `submit_policy` (ends the turn; the policy is scored).
 
 The loop settings in `configs/loop.yaml` control which are offered and how many builds/benchmarks a turn may
 spend; a search config overrides them in its `loop:` block and lists its skills in `skills:`.
