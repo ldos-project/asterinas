@@ -109,4 +109,13 @@ Risks to watch:
 - Mariposa OQueue observers of frame events
 
 Progress log:
-- (none of the lending steps committed yet)
+- Steps 1-2 done: `c82424c` (ostd peer memory). Builds.
+- Steps 3-5 done, **builds but untested**: next commit after `c82424c`
+  (device registers PeerMemory; restore lends MOVABLE pages in private
+  mappings via `Vmar::derailleur_install_frame`; `done()` waits for
+  live_frames()==0 then sends release; `derailleur.copy` flag = old copy path).
+- NEXT: in `~/test/vm_live_migration/guest/derailleur.c`, `asterinas()` must
+  call `syscall(SYS_DERAILLEUR_DONE)` after `waitpid` of the child (else VM1
+  is never released when frames were lent); rebuild guest, then test hello,
+  wl_privmem (needs XOS_READY=1), Redis; compare with `derailleur.copy`
+  (pass via ASTER_KCMD). Watch the boot log for "peer memory: ... registered".
