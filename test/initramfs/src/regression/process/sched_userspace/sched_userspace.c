@@ -23,12 +23,12 @@
 // How many times to visit every CPU.
 #define ROUNDS 20
 
-// How long to sleep after each request. 
+// How long to sleep after each request.
 #define SLEEP_US 1000
 
-// Expect less than 24 CPUs. 
-// Or it make the CBOR logic below more complicated, which is not necessary 
-// for a simple migration test. 
+// Expect less than 24 CPUs.
+// Or it make the CBOR logic below more complicated, which is not necessary
+// for a simple migration test.
 #define MAX_CPUS 24
 
 // Asks the policy to place tasks on `cpu`. Returns 0 on success.
