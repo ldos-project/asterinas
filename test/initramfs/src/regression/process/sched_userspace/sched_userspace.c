@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 // The file that userspace writes the requested CPU to.
-#define PRODUCE_PATH "/oqueues/sched/select_cpu/produce"
+#define PRODUCE_PATH "/oqueues/scheduler/select_cpu/produce"
 
 // How many times to visit every CPU.
 #define ROUNDS 20

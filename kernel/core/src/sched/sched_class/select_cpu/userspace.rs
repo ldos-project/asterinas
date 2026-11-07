@@ -16,7 +16,7 @@ use super::{LastCpuPolicy, SelectCpuInput, SelectCpuPolicy};
 
 /// Sends every task to the CPU that userspace wrote most recently.
 ///
-/// Userspace writes a CPU number, CBOR-encoded, to `/oqueues/sched/select_cpu/produce`. A task
+/// Userspace writes a CPU number, CBOR-encoded, to `/oqueues/scheduler/select_cpu/produce`. A task
 /// whose affinity mask does not contain that CPU, or any task placed before the first write, is
 /// placed as [`LastCpuPolicy`] would place it.
 pub struct UserspacePolicy {
@@ -32,13 +32,13 @@ struct Attachments {
 }
 
 impl UserspacePolicy {
-    /// Creates the policy and exports its OQueue at `/oqueues/sched/select_cpu`.
+    /// Creates the policy and exports its OQueue at `/oqueues/scheduler/select_cpu`.
     ///
     /// # Panics
     ///
     /// Panics if that OQueue is already exported, i.e. if this is called twice.
     pub fn new() -> Self {
-        let path = path!(sched.select_cpu);
+        let path = path!(scheduler.select_cpu);
         let oqueue = ConsumableOQueueRef::<u32>::new(OQUEUE_CAPACITY, path.clone());
         registry::register_producible(&path, &oqueue);
         let observer = oqueue

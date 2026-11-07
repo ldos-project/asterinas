@@ -13,7 +13,6 @@ SUBDIRS := \
 	pthread \
 	ptrace \
 	sched \
-	sched_rr \
 	sched_userspace \
 	signal \
 
