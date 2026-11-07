@@ -90,6 +90,10 @@ impl UserMode {
     #[track_caller]
     pub fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
         crate::task::atomic_mode::might_sleep();
+        // A task can enter user mode repeatedly without a context switch.
+        // SAFETY: RCU readers disable preemption, and `might_sleep` above
+        // checks that we are not in atomic mode (including an RCU read side).
+        unsafe { crate::sync::finish_grace_period() };
         self.context.execute(hooks)
     }
 

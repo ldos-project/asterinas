@@ -23,6 +23,11 @@ pub use self::guard::{DisabledPreemptGuard, disable_preempt};
 pub fn halt_cpu() {
     crate::task::atomic_mode::might_sleep();
 
+    // Idle CPUs may not context-switch for an entire RCU grace period.
+    // SAFETY: RCU readers disable preemption, and `might_sleep` above
+    // checks that we are not in atomic mode (including an RCU read side).
+    unsafe { crate::sync::finish_grace_period() };
+
     let irq_guard = crate::irq::disable_local();
 
     if cpu_local::need_preempt() {
