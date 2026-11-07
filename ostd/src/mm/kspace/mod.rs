@@ -301,6 +301,44 @@ pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
     KERNEL_PAGE_TABLE.call_once(|| kpt);
 }
 
+/// Maps peer memory (`frame::peer`) into the kernel: `range` into the linear
+/// mapping (write-back) and `meta_pages[i]` at the metadata slots of the
+/// frames in `range` (one metadata page per `PAGE_SIZE / META_SLOT_SIZE`
+/// frames).
+///
+/// # Safety
+///
+/// `range` must be page aligned, outside RAM (not managed by the frame
+/// allocator) and not mapped elsewhere with another cache policy.  The
+/// metadata pages must be exclusively owned and hold unused slots.
+pub(in crate::mm) unsafe fn map_peer_region(range: &Range<Paddr>, meta_pages: &[Paddr]) {
+    let kpt = KERNEL_PAGE_TABLE.get().unwrap();
+    let preempt_guard = disable_preempt();
+    let prop = PageProperty {
+        flags: PageFlags::RW,
+        cache: CachePolicy::Writeback,
+        priv_flags: PrivilegedPageFlags::GLOBAL,
+    };
+    // The PTEs are new (nothing was mapped there): no TLB flush needed.
+    {
+        let from = paddr_to_vaddr(range.start)..paddr_to_vaddr(range.end);
+        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
+        for (pa, level) in largest_pages::<KernelPtConfig>(from.start, range.start, range.len()) {
+            // SAFETY: the caller guarantees the range may be linear mapped.
+            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
+        }
+    }
+    {
+        let start = mapping::frame_to_meta(range.start);
+        let from = start..start + meta_pages.len() * PAGE_SIZE;
+        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
+        for &pa in meta_pages {
+            // SAFETY: the caller guarantees the pages hold the slots of `range`.
+            unsafe { cursor.map(MappedItem::Untracked(pa, 1, prop)) };
+        }
+    }
+}
+
 /// Activates the kernel page table.
 ///
 /// All address translation of symbols in the boot sections must be manually

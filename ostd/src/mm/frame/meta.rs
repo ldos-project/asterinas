@@ -70,7 +70,7 @@ pub const FRAME_METADATA_MAX_SIZE: usize = META_SLOT_SIZE
 /// The maximum alignment in bytes of the metadata of a frame.
 pub const FRAME_METADATA_MAX_ALIGN: usize = META_SLOT_SIZE;
 
-const META_SLOT_SIZE: usize = 64;
+pub(in crate::mm) const META_SLOT_SIZE: usize = 64;
 
 #[repr(C)]
 pub(in crate::mm) struct MetaSlot {
@@ -210,7 +210,7 @@ pub(super) fn get_slot(paddr: Paddr) -> Result<&'static MetaSlot, GetFrameError>
     if !paddr.is_multiple_of(PAGE_SIZE) {
         return Err(GetFrameError::NotAligned);
     }
-    if paddr >= super::max_paddr() {
+    if paddr >= super::max_paddr() && !super::peer::contains(paddr) {
         return Err(GetFrameError::OutOfBound);
     }
 
@@ -535,6 +535,28 @@ pub(in crate::mm) fn is_initialized() -> bool {
     // to the safety requirement of the `init` function, we can assume that
     // there is no race conditions.
     super::MAX_PADDR.load(Ordering::Relaxed) != 0
+}
+
+/// Writes `PAGE_SIZE / META_SLOT_SIZE` unused metadata slots into the page at
+/// `page` (peer memory's metadata, see `frame::peer`).
+///
+/// # Safety
+///
+/// The page must be exclusively owned RAM in the linear mapping.
+pub(in crate::mm) unsafe fn init_unused_slots(page: Paddr) {
+    let slots = paddr_to_vaddr(page) as *mut MetaSlot;
+    for i in 0..PAGE_SIZE / size_of::<MetaSlot>() {
+        // SAFETY: the page is exclusively owned and holds this many slots.
+        unsafe {
+            slots.add(i).write(MetaSlot {
+                storage: UnsafeCell::new([0; FRAME_METADATA_MAX_SIZE]),
+                level: Cell::new(1),
+                ref_count: AtomicU64::new(REF_COUNT_UNUSED),
+                vtable_ptr: UnsafeCell::new(MaybeUninit::uninit()),
+                in_list: AtomicU64::new(0),
+            })
+        };
+    }
 }
 
 fn alloc_meta_frames(tot_nr_frames: usize) -> (usize, Paddr) {

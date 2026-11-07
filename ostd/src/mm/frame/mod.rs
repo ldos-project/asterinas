@@ -46,6 +46,7 @@
 pub mod allocator;
 pub mod linked_list;
 pub mod meta;
+pub mod peer;
 pub mod segment;
 pub mod unique;
 pub mod untyped;
@@ -277,7 +278,10 @@ impl<M: AnyFrameMeta + ?Sized> Drop for Frame<M> {
             // SAFETY: this is the last reference and is about to be dropped.
             unsafe { self.slot().drop_last_in_place() };
 
-            allocator::get_global_frame_allocator().dealloc(self.paddr(), PAGE_SIZE);
+            // Peer memory is another VM's RAM: never ours to allocate.
+            if !peer::contains(self.paddr()) {
+                allocator::get_global_frame_allocator().dealloc(self.paddr(), PAGE_SIZE);
+            }
         }
     }
 }
