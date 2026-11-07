@@ -70,6 +70,7 @@ use super::{
     link::{sys_link, sys_linkat},
     listen::sys_listen,
     listmount::sys_listmount,
+    derailleur::{sys_derailleur_done, sys_derailleur_offered, sys_derailleur_restore},
     listxattr::{sys_flistxattr, sys_listxattr, sys_llistxattr},
     lseek::sys_lseek,
     madvise::sys_madvise,
@@ -431,4 +432,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_EPOLL_PWAIT2 = 441     => sys_epoll_pwait2(args[..6]);
     SYS_FCHMODAT2 = 452        => sys_fchmodat2(args[..4]);
     SYS_LISTMOUNT = 458        => sys_listmount(args[..4]);
+    SYS_DERAILLEUR_OFFERED = 1000 => sys_derailleur_offered(args[..1]);
+    SYS_DERAILLEUR_RESTORE = 1001 => sys_derailleur_restore(args[..1], &mut user_ctx);
+    SYS_DERAILLEUR_DONE = 1002 => sys_derailleur_done(args[..0]);
 }

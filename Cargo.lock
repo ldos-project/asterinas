@@ -147,6 +147,7 @@ dependencies = [
  "aster-logger",
  "aster-network",
  "aster-nvme",
+ "aster-pci",
  "aster-raid",
  "aster-rights",
  "aster-rights-proc",

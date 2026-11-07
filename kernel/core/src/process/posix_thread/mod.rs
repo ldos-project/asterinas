@@ -426,6 +426,13 @@ pub fn allocate_posix_tid() -> Tid {
     tid
 }
 
+/// Reserves `tid` for a new thread (`clone3`'s `set_tid`): the allocator
+/// never hands it out afterwards.  The caller checked that no thread, process
+/// or group uses it.
+pub fn reserve_posix_tid(tid: Tid) {
+    POSIX_TID_ALLOCATOR.fetch_max(tid + 1, Ordering::Relaxed);
+}
+
 /// Returns the last allocated TID.
 pub fn last_tid() -> Tid {
     POSIX_TID_ALLOCATOR.load(Ordering::Relaxed) - 1

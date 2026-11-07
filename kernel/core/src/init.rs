@@ -75,6 +75,7 @@ fn init() {
     crate::arch::init();
     crate::util::random::init();
     crate::driver::init();
+    crate::derailleur::init();
     crate::time::init();
     crate::net::init();
     crate::process::init();

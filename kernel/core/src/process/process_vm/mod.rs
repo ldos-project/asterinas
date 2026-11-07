@@ -284,6 +284,30 @@ impl<'a> ProcessVmarGuard<'a> {
 /// Activates the [`Vmar`] in the current process's context.
 ///
 /// Returns a [`ProcessVmarGuard`] that keeps the process VMAR lock held and the old [`Vmar`].
+/// derailleur: an empty address space for a process arriving from another VM.
+pub(crate) fn derailleur_new_vmar(executable_file: Path) -> VmarHandle {
+    VmarHandle::new(ProcessVm::new(executable_file))
+}
+
+/// derailleur: makes `new_vmar` (already filled) the current process's address
+/// space, with the code, data and heap ranges the process had on the other VM.
+/// The process must be single-threaded.
+pub(crate) fn derailleur_activate_vmar(
+    ctx: &Context,
+    new_vmar: VmarHandle,
+    code: Range<Vaddr>,
+    data: Range<Vaddr>,
+    heap: Range<Vaddr>,
+) {
+    let pvm = new_vmar.process_vm();
+    pvm.set_code_range(code);
+    pvm.set_data_range(data);
+    pvm.heap().derailleur_set_range(heap);
+    let (vmar_guard, old_vmar) = activate_vmar(ctx, new_vmar);
+    drop(vmar_guard);
+    drop(old_vmar);
+}
+
 pub(super) fn activate_vmar<'a>(
     ctx: &'a Context<'a>,
     new_vmar: VmarHandle,

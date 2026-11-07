@@ -194,6 +194,7 @@ mod unlink;
 mod unshare;
 mod utimens;
 mod wait4;
+mod derailleur;
 mod waitid;
 mod write;
 

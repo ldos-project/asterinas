@@ -41,6 +41,15 @@ impl Heap {
     }
 
     /// Creates a new `Heap` with identical contents of an existing one.
+    /// derailleur: adopts the heap range a process had on another VM (its
+    /// pages are already mapped).
+    pub(super) fn derailleur_set_range(&self, heap_range: Range<Vaddr>) {
+        *self.inner.lock() = Some(HeapInner {
+            data_segment_size: 0,
+            heap_range,
+        });
+    }
+
     pub(super) fn fork_from(heap_guard: &LockedHeap) -> Self {
         let inner = heap_guard.inner.as_ref().expect("Heap is not initialized");
 

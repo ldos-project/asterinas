@@ -40,6 +40,7 @@ pub use process::{
 };
 pub use process_filter::ProcessFilter;
 pub use process_vm::{INIT_STACK_SIZE, LockedHeap, ProcessVm, VmarSnapshot};
+pub(crate) use process_vm::{derailleur_activate_vmar, derailleur_new_vmar};
 pub use rlimit::ResourceType;
 pub use stats::collect_process_creation_count;
 pub use term_status::TermStatus;

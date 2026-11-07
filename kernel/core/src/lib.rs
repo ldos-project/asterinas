@@ -44,6 +44,7 @@ mod context;
 mod cpu;
 #[cfg(not(baseline_asterinas))]
 mod data_capture;
+mod derailleur;
 mod device;
 mod driver;
 mod error;

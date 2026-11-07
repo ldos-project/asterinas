@@ -28,7 +28,7 @@ use crate::{
     process::{
         NsProxy, UserNamespace,
         pid_file::PidFile,
-        posix_thread::{PosixThread, ThreadLocal, allocate_posix_tid},
+        posix_thread::{PID_MAX, PosixThread, ThreadLocal, allocate_posix_tid, reserve_posix_tid},
         stats::PROCESS_CREATION_COUNTER,
     },
     sched::Nice,
@@ -364,6 +364,34 @@ pub fn clone_child(
     }
 }
 
+/// The new thread's TID: `clone3`'s `set_tid` when given (one level of PID
+/// namespace only), else the next free one.  derailleur recreates processes
+/// moved from another VM under their old ids (libc caches them).
+fn child_tid(ctx: &Context, clone_args: &CloneArgs) -> Result<Tid> {
+    let (Some(ptr), Some(size)) = (clone_args._set_tid, clone_args._set_tid_size) else {
+        return Ok(allocate_posix_tid());
+    };
+    if ptr == 0 || size == 0 {
+        return Ok(allocate_posix_tid());
+    }
+    if size != 1 {
+        return_errno_with_message!(Errno::EINVAL, "set_tid: one PID namespace level only");
+    }
+    let tid: Tid = ctx.user_space().read_val(ptr as Vaddr)?;
+    if tid == 0 || tid >= PID_MAX {
+        return_errno_with_message!(Errno::EINVAL, "set_tid: bad tid");
+    }
+    let table = pid_table::pid_table_mut();
+    if table.get_thread(tid).is_some()
+        || table.get_process(tid).is_some()
+        || table.contains_process_group(&tid)
+    {
+        return_errno_with_message!(Errno::EEXIST, "set_tid: the tid is in use");
+    }
+    reserve_posix_tid(tid);
+    Ok(tid)
+}
+
 fn clone_child_task(
     ctx: &Context,
     parent_context: &UserContext,
@@ -436,7 +464,7 @@ fn clone_child_task(
     // Inherit the thread name.
     let thread_name = *posix_thread.thread_name().lock();
 
-    let child_tid = allocate_posix_tid();
+    let child_tid = child_tid(ctx, &clone_args)?;
     let child_task = {
         let credentials = {
             let credentials = ctx.posix_thread.credentials();
@@ -567,7 +595,7 @@ fn clone_child_process(
     // Inherit the parent's OOM score adjustment
     let child_oom_score_adj = process.oom_score_adj().load(Ordering::Relaxed);
 
-    let child_tid = allocate_posix_tid();
+    let child_tid = child_tid(ctx, &clone_args)?;
 
     let child = {
         let child_vmar_arc = child_vmar.clone_arc();
