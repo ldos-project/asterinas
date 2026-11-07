@@ -2,7 +2,8 @@
 
 //! The cassette's wire format: `include/uapi/linux/derailleur_cassette.h` in
 //! the derailleur kernel, as offsets into the shared mailbox.  Everything is
-//! little-endian and fixed width.
+//! little-endian and fixed width.  The whole layout is described, used or not.
+#![allow(dead_code)]
 
 /// The session's offset in the mailbox (`CAS_OFF`).
 pub const CAS_OFF: usize = 2 << 20;

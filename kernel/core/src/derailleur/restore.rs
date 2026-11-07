@@ -23,7 +23,6 @@ use aster_time::read_monotonic_time;
 use ostd::{
     arch::cpu::context::{FpuContext, FsBase, GsBase, UserContext},
     mm::VmIo,
-    sync::Mutex,
 };
 
 use super::{
