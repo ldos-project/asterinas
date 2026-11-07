@@ -223,7 +223,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     /// Also, the caller ensures that the usage of the frame is correct. There's
     /// no checking of the usage in this function.
     pub(in crate::mm) unsafe fn from_raw(paddr: Paddr) -> Self {
-        debug_assert!(paddr < max_paddr());
+        debug_assert!(paddr < max_paddr() || peer::contains(paddr));
 
         let vaddr = mapping::frame_to_meta(paddr);
         let ptr = vaddr as *const MetaSlot;
@@ -379,7 +379,7 @@ impl TryFrom<Frame<dyn AnyFrameMeta>> for UFrame {
 ///  2. The caller must have already held a reference to the frame.
 pub(in crate::mm) unsafe fn inc_frame_ref_count(paddr: Paddr) {
     debug_assert!(paddr.is_multiple_of(PAGE_SIZE));
-    debug_assert!(paddr < max_paddr());
+    debug_assert!(paddr < max_paddr() || peer::contains(paddr));
 
     let vaddr: Vaddr = mapping::frame_to_meta(paddr);
     // SAFETY: `vaddr` points to a valid `MetaSlot` that will never be mutably borrowed, so taking
