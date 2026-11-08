@@ -1,0 +1,18 @@
+# The orchestrator itself (run_experiment.py, orchestrator/, check_model.py).
+openai>=1.0
+PyYAML>=6.0
+python-dotenv>=1.0
+# Tool argument schemas and checks (orchestrator/tools.py).
+pydantic>=2.0
+# Reading the skills' front matter (orchestrator/skills.py).
+python-frontmatter>=1.1
+numpy>=1.26
+scipy>=1.11
+# Decoding the kernel's data capture (`mariposa_data_reader`, which orchestrator/mariposa.py loads).
+cbor2>=5.4
+# Mariposa's host-side library, from this repository (decoding OQFS recordings). pip resolves this
+# path from the directory it runs in, so install from this directory.
+-e ../../mariposa-cli
+
+# The packages the agent can import in `run_python`, which runs in this same environment.
+-r requirements-agent.txt
