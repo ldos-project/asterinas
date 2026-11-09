@@ -125,6 +125,29 @@ jobs:
           smp: ${{ matrix.smp }}
           boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
 
+  sched-test:
+    runs-on: ubuntu-latest
+    container:
+      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      options: -v /dev:/dev --privileged
+      volumes:
+        # Map the following directories on the host into the container so that
+        # the container can remove them to save some precious disk space (~16GB),
+        # which is quite limited on free-tier Github runners.
+        - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
+        - /usr/local/lib/android:/usr/local/lib/android
+        - /usr/share/dotnet:/usr/share/dotnet
+    steps:
+      - name: Free disk space
+        # Remove unused packages from the host to save disk space.
+        run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
+      - uses: actions/checkout@v4
+      - name: Run CPU migration test
+        uses: ./.github/actions/test
+        with:
+          auto_test: 'sched_userspace'
+          smp: 4
+
   conformance-test:
     runs-on: ubuntu-latest
     container:

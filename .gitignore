@@ -55,6 +55,8 @@ distro/result
 
 # direnv cache; nix-direnv also keeps its GC roots here
 /.direnv/
+# policy explorer results
+/ldos/policy_explorer/results/
 
 # cachix package list
 cachix.list
@@ -79,3 +81,5 @@ aster-kernel-profile-*.svg
 CLAUDE.local.md
 # RustRover
 .idea
+
+.env

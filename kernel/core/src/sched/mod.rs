@@ -10,9 +10,6 @@
 //! * [Real-time](`sched_class::real_time`) with round-robin or FIFO scheduling.
 //! * [Fair](`sched_class::fair`) which attempts to provide equal runtime for tasks.
 
-// TODO(arthurp, https://github.com/ldos-project/asterinas/issues/59): The scheduler doesn't support
-// task migration. They are fixed to a CPU once they are scheduled.
-
 mod nice;
 mod sched_class;
 mod stats;
@@ -21,7 +18,7 @@ pub(crate) use self::{
     nice::{AtomicNice, Nice},
     sched_class::{
         LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy, init,
-        init_on_each_cpu,
+        init_on_each_cpu, init_select_cpu_policy,
     },
     stats::{loadavg, nr_queued_and_running},
 };

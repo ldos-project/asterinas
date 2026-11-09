@@ -59,6 +59,7 @@ pub(super) fn main() {
     // Initialize the global states for all CPUs.
     ostd::early_println!("OSTD initialized. Preparing components.");
     component::init_all(InitStage::Bootstrap, component::parse_metadata!()).unwrap();
+    sched::init_select_cpu_policy();
     init();
 
     // Initialize the per-CPU states for BSP.
@@ -242,7 +243,9 @@ fn first_kthread() {
 
     #[cfg(not(baseline_asterinas))]
     if SCHEDULER_CAPTURE_DATA.load(Ordering::Relaxed) {
-        use ostd::orpc::oqueue::LifetimelessElementDescriptor;
+        use ostd::{
+            orpc::oqueue::LifetimelessElementDescriptor, task::scheduler::info::CommonSchedInfo,
+        };
 
         if let Some(oqueue) = lookup_by_path::<LifetimelessElementDescriptor<SchedulingEvent>>(
             &path!(scheduler.events),
@@ -252,6 +255,9 @@ fn first_kthread() {
                 timestamp: Instant,
                 task: TaskId,
                 kind: SchedulingEventKind,
+                /// The CPU whose run queue holds the task, or `None` once it has gone to sleep.
+                /// For a `Schedule` event, this is the CPU about to run the task.
+                cpu: Option<u32>,
             }
 
             let capture_file = new_data_capture_file::<KernelSchedulingEvent>(
@@ -272,6 +278,7 @@ fn first_kthread() {
                                     timestamp: context.timestamp,
                                     task: TaskId::new(&e.task),
                                     kind: e.kind,
+                                    cpu: e.task.cpu().get().map(|cpu| cpu.as_usize() as u32),
                                 }
                             }))
                             .unwrap(),

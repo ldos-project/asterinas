@@ -207,6 +207,11 @@ else ifeq ($(AUTO_TEST), raid)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/raid1.sh"
 KCMD_CONFIG = kcmd_configs/raid_test.toml
+else ifeq ($(AUTO_TEST), sched_userspace)
+# Checks CPU migration through the `userspace` CPU-selection policy. Needs `SMP` of at least 2.
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/sched_userspace.sh"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="sched.select_cpu=userspace"
 else ifeq ($(AUTO_TEST), oqbench)
 # Smoke test for the OQFS round-trip microbenchmark: a small run proving the kernel thread <->
 # userspace peer pipeline completes a clean round trip and the samples reach the capture device. The
@@ -449,6 +454,9 @@ else ifeq ($(AUTO_TEST), boot)
 else ifeq ($(AUTO_TEST), raid)
 	@tail --lines 100 qemu.log | grep -q "All raid1 test passed" \
 		|| (echo "RAID test failed" && exit 1)
+else ifeq ($(AUTO_TEST), sched_userspace)
+	@tail --lines 100 qemu.log | grep -q "All sched_userspace test passed" \
+		|| (echo "sched_userspace test failed" && exit 1)
 else ifeq ($(AUTO_TEST), oqbench)
 	@tail --lines 100 qemu.log | grep -q "MARIPOSA_BENCH|end oqueue_roundtrip" \
 		|| (echo "oqbench round trip did not complete" && exit 1)
