@@ -232,9 +232,9 @@ impl RealTimeClassRq {
     ///
     /// This scans every priority level, so prefer [`SchedClassRq::remove`] when the task is likely
     /// queued at its current priority.
-    // TODO: Avoid the scan once the run queue moves to a data structure that can find a task
-    // directly (e.g., an intrusive list with the task recording its queue).
     pub(super) fn remove_at_any_prio(&mut self, task: &Arc<Task>) -> bool {
+        // TODO: Avoid the scan once the run queue moves to a data structure that can find a task
+        // directly (e.g., an intrusive list with the task recording its queue).
         let removed = self
             .array
             .iter_mut()
