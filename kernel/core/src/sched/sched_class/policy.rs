@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use int_to_c_enum::TryFromInt;
 use ostd::sync::SpinLock;
+use serde::Serialize;
 
 pub use super::real_time::{RealTimePolicy, RealTimePriority};
 use crate::sched::nice::Nice;
@@ -63,6 +64,35 @@ impl From<SchedPolicy> for LinuxSchedPolicy {
                 ..
             } => LinuxSchedPolicy::RoundRobin,
             SchedPolicy::Fair(_) | SchedPolicy::Idle => LinuxSchedPolicy::Normal,
+        }
+    }
+}
+
+/// A serializable summary of a [`SchedPolicy`], for exporting through OQueues.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum SchedPolicyView {
+    Stop,
+    RealTime {
+        /// The real-time priority. Lower values are more urgent.
+        rt_prio: u8,
+        round_robin: bool,
+    },
+    Fair {
+        nice: i8,
+    },
+    Idle,
+}
+
+impl From<SchedPolicy> for SchedPolicyView {
+    fn from(policy: SchedPolicy) -> Self {
+        match policy {
+            SchedPolicy::Stop => Self::Stop,
+            SchedPolicy::RealTime { rt_prio, rt_policy } => Self::RealTime {
+                rt_prio: rt_prio.get(),
+                round_robin: matches!(rt_policy, RealTimePolicy::RoundRobin { .. }),
+            },
+            SchedPolicy::Fair(nice) => Self::Fair { nice: nice.into() },
+            SchedPolicy::Idle => Self::Idle,
         }
     }
 }

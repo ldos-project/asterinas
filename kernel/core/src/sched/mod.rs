@@ -17,8 +17,8 @@ mod stats;
 pub use self::{
     nice::{AtomicNice, Nice},
     sched_class::{
-        LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy, init,
-        init_on_each_cpu, init_select_cpu_policy,
+        LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy,
+        SchedPolicyView, init, init_on_each_cpu, init_select_cpu_policy, set_policy_requeued,
     },
     stats::{loadavg, nr_queued_and_running},
 };
