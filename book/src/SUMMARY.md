@@ -22,12 +22,15 @@
     * [Communication](distro/popular-applications/communication/README.md)
     * [File Management & Terminal](distro/popular-applications/file-management-and-terminal/README.md)
     * [AI & Machine Learning](distro/popular-applications/ai-and-machine-learning/README.md)
+* [Building Asterinas on Asterinas](distro/building-on-asterinas.md)
 
 # Asterinas Kernel
 
 * [Getting Started](kernel/README.md)
+    * [Using Nix for Development](kernel/nix-development.md)
 * [Advanced Build and Test Instructions](kernel/advanced-instructions.md)
     * [Intel TDX](kernel/intel-tdx.md)
+    * [Firecracker](kernel/firecracker.md)
 * [The Framekernel Architecture](kernel/the-framekernel-architecture.md)
 * [Linux Compatibility](kernel/linux-compatibility/README.md)
     * [Syscall Flag Coverage](kernel/linux-compatibility/syscall-flag-coverage/README.md)

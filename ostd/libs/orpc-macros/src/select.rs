@@ -46,7 +46,7 @@ impl Parse for BlockerClause {
 }
 
 /// A syn-parsable sequence of BlockerClauses.
-pub struct SelectInput {
+pub(crate) struct SelectInput {
     clauses: Punctuated<BlockerClause, Comma>,
 }
 
@@ -59,7 +59,7 @@ impl Parse for SelectInput {
 }
 
 /// The implementation of the `select!` macro.
-pub fn select_macro_impl(input: SelectInput) -> TokenStream {
+pub(crate) fn select_macro_impl(input: SelectInput) -> TokenStream {
     let blockers: Vec<_> = input
         .clauses
         .iter()

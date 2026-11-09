@@ -72,7 +72,14 @@ use crate::{
     sync::RcuDrop,
 };
 
+// These bounds are set once during frame metadata initialization, before APs start.
+static MIN_PADDR: AtomicUsize = AtomicUsize::new(0);
 static MAX_PADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the minimum physical address that is tracked by frame metadata.
+pub(in crate::mm) fn min_paddr() -> Paddr {
+    MIN_PADDR.load(Ordering::Relaxed)
+}
 
 /// Returns the maximum physical address that is tracked by frame metadata.
 pub(in crate::mm) fn max_paddr() -> Paddr {
@@ -221,7 +228,7 @@ impl<M: AnyFrameMeta + ?Sized> Frame<M> {
     ///
     /// Also, the caller ensures that the usage of the frame is correct. There's
     /// no checking of the usage in this function.
-    pub(in crate::mm) unsafe fn from_raw(paddr: Paddr) -> Self {
+    pub(crate) unsafe fn from_raw(paddr: Paddr) -> Self {
         debug_assert!(paddr < max_paddr());
 
         let vaddr = mapping::frame_to_meta(paddr);
@@ -274,7 +281,7 @@ impl<M: AnyFrameMeta + ?Sized> Drop for Frame<M> {
             // `Arc::drop`: <https://doc.rust-lang.org/std/sync/struct.Arc.html#method.drop>.
             core::sync::atomic::fence(Ordering::Acquire);
 
-            // SAFETY: this is the last reference and is about to be dropped.
+            // SAFETY: This is the last reference and is about to be dropped.
             unsafe { self.slot().drop_last_in_place() };
 
             allocator::get_global_frame_allocator().dealloc(self.paddr(), PAGE_SIZE);

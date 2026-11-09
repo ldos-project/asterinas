@@ -9,15 +9,18 @@
 //! strongly typed [`Ioctl`] instance, which decodes the ioctl command and includes type
 //! information about the ioctl argument.
 //!
-//! To achieve this, define type aliases for [`Ioctl`] using the [`ioc`] macro, preferably in a
-//! separate module for clarity. At the function that dispatches the ioctl commands, we can
-//! glob-import the defined [`Ioctl`] type aliases and use the [`dispatch_ioctl`] macro for the
-//! ioctl dispatching.
+//! To achieve this, define type aliases for [`Ioctl`] using the [`ioc!`](crate::ioc) macro,
+//! preferably in a separate module for clarity. At the function that dispatches the ioctl
+//! commands, we can glob-import the defined [`Ioctl`] type aliases and use the
+//! [`dispatch_ioctl!`](crate::dispatch_ioctl) macro for the ioctl dispatching.
 //!
 //! Here is an complete example that demonstrates the basic usage:
 //! ```
 //! mod ioctl_defs {
-//!     use crate::util::ioctl::{ioc, InData, OutData, PassByVal};
+//!     use aster_core::{
+//!         ioc,
+//!         util::ioctl::{InData, OutData, PassByVal},
+//!     };
 //!
 //!     // Here we give the code in Linux to provide an intuitive guide on how to use the `ioc`
 //!     // macro and how it corresponds to the Linux definitions. This is for demonstration
@@ -103,7 +106,7 @@ use sealed::{DataSpec, IoctlCmd, IoctlDir, PtrDataSpec};
 
 use crate::{context::current_userspace, prelude::*};
 
-pub mod common_defs;
+pub(crate) mod common_defs;
 mod sealed;
 
 /// An ioctl command and its argument in raw form.
@@ -176,6 +179,7 @@ pub struct Ioctl<const MAGIC: u8, const NR: u8, const IS_MODERN: bool, D> {
 /// ```
 /// type SetPtyLock = Ioctl<b'T', 0x31, /* IS_MODERN = */ true, InData<i32>>;
 /// ```
+#[macro_export]
 macro_rules! ioc {
     // Legacy encoding.
     ($linux_name:ident, $raw:literal, $data:ty) => {
@@ -200,7 +204,6 @@ macro_rules! ioc {
         $crate::util::ioctl::Ioctl::<{ $magic }, { $nr }, { true }, $data>
     };
 }
-pub(crate) use ioc;
 
 /// Extracts the "magic" and "number" fields from an ioctl command.
 #[doc(hidden)]
@@ -323,7 +326,6 @@ impl<const MAGIC: u8, const NR: u8, const IS_MODERN: bool>
     /// Obtains a [`VmReader`] that can read the dynamically-sized ioctl argument from userspace.
     ///
     /// The size of the ioctl argument is specified in [`VmReader::remain`].
-    #[expect(dead_code)]
     pub fn with_reader<F, R>(&self, f: F) -> Result<R>
     where
         F: for<'a> FnOnce(VmReader<'a>) -> Result<R>,
@@ -398,7 +400,7 @@ impl<const MAGIC: u8, const NR: u8, const IS_MODERN: bool, T: Pod>
         self.with_data_ptr(|ptr| Ok(ptr.write(val)?))
     }
 
-    /// Obtains a [`SafePtr`] that can access the ioctl argument in userspace.
+    /// Provides access to the ioctl argument and its userspace memory.
     pub fn with_data_ptr<F, R>(&self, f: F) -> Result<R>
     where
         F: for<'a> FnOnce(SafePtr<T, CurrentUserSpace<'a>>) -> Result<R>,
@@ -423,8 +425,9 @@ const fn u16_size_of<T>() -> u16 {
 
 /// Dispatches ioctl commands.
 ///
-/// See [the module-level documentation](self) for how to use this macro and the suggested style to
-/// use this macro.
+/// See the [`ioctl` module documentation](crate::util::ioctl) for how to use this macro and the
+/// suggested style.
+#[macro_export]
 macro_rules! dispatch_ioctl {
     // An empty match.
     (
@@ -454,7 +457,7 @@ macro_rules! dispatch_ioctl {
         {
             $arm
         } else {
-            crate::util::ioctl::dispatch_ioctl!(match $raw { $($rest)* })
+            $crate::dispatch_ioctl!(match $raw { $($rest)* })
         }
     };
 
@@ -468,11 +471,10 @@ macro_rules! dispatch_ioctl {
         if let Some($bind) = <$ty>::try_from_raw($raw) {
             $arm
         } else {
-            crate::util::ioctl::dispatch_ioctl!(match $raw { $($rest)* })
+            $crate::dispatch_ioctl!(match $raw { $($rest)* })
         }
     };
 }
-pub(crate) use dispatch_ioctl;
 
 /// An ioctl enum that represents one of a possible set of almost identical [`Ioctl`]s.
 ///
@@ -535,7 +537,7 @@ pub(crate) use dispatch_ioctl;
 ///
 /// The enum variant of the ioctl can be obtained by calling [`IoctlEnum::discriminant`],
 /// whose value is equal to `nr & ENUM_MASK`.
-pub struct IoctlEnum<const MAGIC: u8, const BASE_NR: u8, const ENUM_MASK: u8, D> {
+pub(crate) struct IoctlEnum<const MAGIC: u8, const BASE_NR: u8, const ENUM_MASK: u8, D> {
     base_ioctl: Ioctl<MAGIC, BASE_NR, /* IS_MODERN = */ true, D>,
     discriminant: u8,
 }
@@ -547,7 +549,7 @@ impl<const MAGIC: u8, const BASE_NR: u8, const ENUM_MASK: u8, D: DataSpec>
     ///
     /// This method succeeds only if the ioctl command belongs to the ioctl enum. Otherwise, this
     /// method returns `None`.
-    pub fn try_from_raw(raw_ioctl: RawIoctl) -> Option<Self> {
+    pub(crate) fn try_from_raw(raw_ioctl: RawIoctl) -> Option<Self> {
         const {
             assert!(
                 (BASE_NR & ENUM_MASK) == 0,
@@ -579,14 +581,14 @@ impl<const MAGIC: u8, const BASE_NR: u8, const ENUM_MASK: u8, D>
     /// Returns a reference to the base ioctl.
     ///
     /// See the type-level documentations for the definition of the base ioctl.
-    pub const fn base_ioctl(&self) -> &Ioctl<MAGIC, BASE_NR, /* IS_MODERN = */ true, D> {
+    pub(crate) const fn base_ioctl(&self) -> &Ioctl<MAGIC, BASE_NR, /* IS_MODERN = */ true, D> {
         &self.base_ioctl
     }
 
     /// Returns the discriminant of the ioctl enum variant.
     ///
     /// See the type-level documentations for the definition of the enum discriminant.
-    pub const fn discriminant(&self) -> u8 {
+    pub(crate) const fn discriminant(&self) -> u8 {
         self.discriminant
     }
 }

@@ -8,12 +8,9 @@ edition.workspace = true
 [dependencies]
 aster-bigtcp.workspace = true
 aster-softirq.workspace = true
-bitvec.workspace = true
 component.workspace = true
 ostd.workspace = true
-ostd-pod.workspace = true
 spin.workspace = true
-zerocopy.workspace = true
 
 [lints]
 workspace = true

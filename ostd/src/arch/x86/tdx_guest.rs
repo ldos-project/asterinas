@@ -23,7 +23,10 @@ use crate::{mm::PAGE_SIZE, prelude::Paddr};
 ///    within the maximum Guest Physical Address (GPA) limit.
 ///  - All of the physical pages are untyped memory. Therefore, converting and
 ///    erasing the data will not cause memory safety issues.
-pub unsafe fn unprotect_gpa_tdvm_call(gpa: Paddr, size: usize) -> Result<(), PageConvertError> {
+pub(crate) unsafe fn unprotect_gpa_tdvm_call(
+    gpa: Paddr,
+    size: usize,
+) -> Result<(), PageConvertError> {
     debug_assert!(gpa.is_multiple_of(PAGE_SIZE));
     debug_assert!(size.is_multiple_of(PAGE_SIZE));
 
@@ -45,7 +48,10 @@ pub unsafe fn unprotect_gpa_tdvm_call(gpa: Paddr, size: usize) -> Result<(), Pag
 ///    within the maximum Guest Physical Address (GPA) limit.
 ///  - All of the physical pages are untyped memory. Therefore, converting and
 ///    erasing the data will not cause memory safety issues.
-pub unsafe fn protect_gpa_tdvm_call(gpa: Paddr, size: usize) -> Result<(), PageConvertError> {
+pub(crate) unsafe fn protect_gpa_tdvm_call(
+    gpa: Paddr,
+    size: usize,
+) -> Result<(), PageConvertError> {
     debug_assert!(gpa.is_multiple_of(PAGE_SIZE));
     debug_assert!(size.is_multiple_of(PAGE_SIZE));
 
@@ -60,7 +66,7 @@ pub unsafe fn protect_gpa_tdvm_call(gpa: Paddr, size: usize) -> Result<(), PageC
 }
 
 #[derive(Debug)]
-pub enum PageConvertError {
+pub(crate) enum PageConvertError {
     #[expect(dead_code)]
     TdCall(TdCallError),
     #[expect(dead_code)]
@@ -98,20 +104,22 @@ unsafe fn convert_gpa_range(
     // Retrying the same page a second time should succeed; use 3 just in case.
     const MAX_MAP_GPA_RETRIES_PER_PAGE: usize = 3;
 
-    let mut next_gpa = start_gpa;
+    let (mut start_gpa, end_gpa) = {
+        let mask = target_state.as_gpa_mask();
+        (start_gpa | mask, end_gpa | mask)
+    };
     let mut retry_count = 0;
 
     loop {
-        let gpa_with_mask = next_gpa | target_state.as_gpa_mask();
-        let remaining_size = end_gpa - next_gpa;
+        let remaining_size = end_gpa - start_gpa;
 
-        match map_gpa(gpa_with_mask, remaining_size) {
+        match map_gpa(start_gpa, remaining_size) {
             Ok(()) => return Ok(()),
             Err((retry_gpa, TdVmcallError::TdxRetry))
-                if (next_gpa..end_gpa).contains(&retry_gpa)
+                if (start_gpa..end_gpa).contains(&retry_gpa)
                     && retry_gpa.is_multiple_of(PAGE_SIZE as u64) =>
             {
-                if retry_gpa == next_gpa {
+                if retry_gpa == start_gpa {
                     retry_count += 1;
                     if retry_count >= MAX_MAP_GPA_RETRIES_PER_PAGE {
                         return Err(PageConvertError::TdVmcall {
@@ -121,7 +129,7 @@ unsafe fn convert_gpa_range(
                         });
                     }
                 } else {
-                    next_gpa = retry_gpa;
+                    start_gpa = retry_gpa;
                     retry_count = 0;
                 }
             }
@@ -136,7 +144,7 @@ unsafe fn convert_gpa_range(
     }
 }
 
-pub struct TrapFrameWrapper<'a>(pub &'a mut TrapFrame);
+pub(crate) struct TrapFrameWrapper<'a>(pub &'a mut TrapFrame);
 
 impl TdxTrapFrame for TrapFrameWrapper<'_> {
     fn rax(&self) -> usize {

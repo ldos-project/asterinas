@@ -16,11 +16,11 @@ use spin::Once;
 ///
 /// Enables a specific log level for specific `__log_prefix!()` prefixes,
 /// independent of the global level set via `loglevel`.
-pub struct PrefixLevelFilter(HashMap<String, LevelFilter>);
+pub(crate) struct PrefixLevelFilter(HashMap<String, LevelFilter>);
 
 impl PrefixLevelFilter {
     /// Returns `true` if `level` passes the filter configured for `prefix`.
-    pub fn is_enabled(&self, prefix: &str, level: Level) -> bool {
+    pub(crate) fn is_enabled(&self, prefix: &str, level: Level) -> bool {
         // Log prefixes has a trailing ": ".
         let key = prefix.strip_suffix(": ").unwrap_or(prefix);
         self.0

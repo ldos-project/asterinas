@@ -46,6 +46,7 @@ use crate::{
         vfs::{
             file_system::{FileSystem, FsEventSubscriberStats, SuperBlock},
             inode::{Extension, Inode, Metadata},
+            path::Dentry,
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -182,7 +183,7 @@ impl Common {
         self.metadata.read().last_access_at
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_access_at = time;
     }
 
@@ -190,7 +191,7 @@ impl Common {
         self.metadata.read().last_modify_at
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_modify_at = time;
     }
 
@@ -198,7 +199,7 @@ impl Common {
         self.metadata.read().last_meta_change_at
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_meta_change_at = time;
     }
 
@@ -206,7 +207,7 @@ impl Common {
         Ok(self.metadata.read().mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         self.metadata.write().mode = mode;
         Ok(())
     }
@@ -215,7 +216,7 @@ impl Common {
         Ok(self.metadata.read().uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         self.metadata.write().uid = uid;
         Ok(())
     }
@@ -224,7 +225,7 @@ impl Common {
         Ok(self.metadata.read().gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         self.metadata.write().gid = gid;
         Ok(())
     }
@@ -253,8 +254,19 @@ mod tests {
             file::{AccessMode, PerOpenFileOps, StatusFlags},
             vfs::inode::FileOps,
         },
+        prelude::Result,
         process::signal::PollAdaptor,
     };
+
+    /// Opens `inode` through a throwaway root dentry. `oqfs` ignores the dentry.
+    fn open_inode(
+        inode: Arc<dyn Inode>,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+    ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
+        let dentry = Dentry::new_root(inode.clone());
+        inode.open(&dentry, access_mode, status_flags)
+    }
 
     /// Reads all currently-available bytes from a nonblocking stream handle.
     fn read_all(stream: &dyn FileOps) -> Vec<u8> {
@@ -307,11 +319,11 @@ mod tests {
         assert!(names.iter().any(|name| name == metadata::FILE_NAME));
 
         // `strong_observe` streams the values produced after it is opened.
-        let stream = match leaf
-            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-        {
+        let stream = match open_inode(
+            leaf.lookup(reader::STRONG_OBSERVE_FILE_NAME).unwrap(),
+            AccessMode::O_RDONLY,
+            StatusFlags::O_NONBLOCK,
+        ) {
             Some(Ok(stream)) => stream,
             _ => panic!("opening strong_observe should mint a stream handle"),
         };
@@ -371,11 +383,11 @@ mod tests {
             .unwrap();
 
         // Open the stream (which attaches the observer) but never read from it.
-        let stream = match leaf
-            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-        {
+        let stream = match open_inode(
+            leaf.lookup(reader::STRONG_OBSERVE_FILE_NAME).unwrap(),
+            AccessMode::O_RDONLY,
+            StatusFlags::O_NONBLOCK,
+        ) {
             Some(Ok(stream)) => stream,
             _ => panic!("opening strong_observe should mint a stream handle"),
         };
@@ -428,20 +440,20 @@ mod tests {
         );
 
         // Open `consume` (which attaches a consumer to the queue's ring) before producing.
-        let stream = match leaf
-            .lookup(reader::CONSUME_FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-        {
+        let stream = match open_inode(
+            leaf.lookup(reader::CONSUME_FILE_NAME).unwrap(),
+            AccessMode::O_RDONLY,
+            StatusFlags::O_NONBLOCK,
+        ) {
             Some(Ok(stream)) => stream,
             _ => panic!("opening consume should mint a stream handle"),
         };
 
-        let handle = match leaf
-            .lookup(produce::FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_WRONLY, StatusFlags::empty())
-        {
+        let handle = match open_inode(
+            leaf.lookup(produce::FILE_NAME).unwrap(),
+            AccessMode::O_WRONLY,
+            StatusFlags::empty(),
+        ) {
             Some(Ok(handle)) => handle,
             _ => panic!("opening produce should mint a write handle"),
         };
@@ -490,11 +502,11 @@ mod tests {
             .unwrap();
 
         fn open_stream(leaf: &Arc<dyn Inode>) -> Box<dyn PerOpenFileOps> {
-            match leaf
-                .lookup(reader::CONSUME_FILE_NAME)
-                .unwrap()
-                .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-            {
+            match open_inode(
+                leaf.lookup(reader::CONSUME_FILE_NAME).unwrap(),
+                AccessMode::O_RDONLY,
+                StatusFlags::O_NONBLOCK,
+            ) {
                 Some(Ok(stream)) => stream,
                 _ => panic!("opening consume should mint a stream handle"),
             }
@@ -561,18 +573,19 @@ mod tests {
         registry::register(&path, &queue.as_any_oqueue());
 
         let fs = OQueueFs::new();
-        let stream = match fs
-            .root_inode()
-            .lookup("oqfstest")
-            .unwrap()
-            .lookup("pollread")
-            .unwrap()
-            .lookup("0")
-            .unwrap()
-            .lookup(reader::STRONG_OBSERVE_FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_RDONLY, StatusFlags::O_NONBLOCK)
-        {
+        let stream = match open_inode(
+            fs.root_inode()
+                .lookup("oqfstest")
+                .unwrap()
+                .lookup("pollread")
+                .unwrap()
+                .lookup("0")
+                .unwrap()
+                .lookup(reader::STRONG_OBSERVE_FILE_NAME)
+                .unwrap(),
+            AccessMode::O_RDONLY,
+            StatusFlags::O_NONBLOCK,
+        ) {
             Some(Ok(stream)) => stream,
             _ => panic!("opening strong_observe should mint a stream handle"),
         };
@@ -624,18 +637,19 @@ mod tests {
         let consumer = queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
-        let handle = match fs
-            .root_inode()
-            .lookup("oqfstest")
-            .unwrap()
-            .lookup("pollwrite")
-            .unwrap()
-            .lookup("0")
-            .unwrap()
-            .lookup(produce::FILE_NAME)
-            .unwrap()
-            .open(AccessMode::O_WRONLY, StatusFlags::empty())
-        {
+        let handle = match open_inode(
+            fs.root_inode()
+                .lookup("oqfstest")
+                .unwrap()
+                .lookup("pollwrite")
+                .unwrap()
+                .lookup("0")
+                .unwrap()
+                .lookup(produce::FILE_NAME)
+                .unwrap(),
+            AccessMode::O_WRONLY,
+            StatusFlags::empty(),
+        ) {
             Some(Ok(handle)) => handle,
             _ => panic!("opening produce should mint a write handle"),
         };

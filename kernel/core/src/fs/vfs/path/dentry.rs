@@ -130,7 +130,7 @@ use crate::{
 /// and pairs a `Dentry` with the `Mount` it was reached through,
 /// since mounts let a single `Dentry`
 /// appear at several locations in the namespace.
-pub(in crate::fs) struct Dentry {
+pub(crate) struct Dentry {
     inode: Arc<dyn Inode>,
     type_: InodeType,
     name_and_parent: NameAndParent,
@@ -266,21 +266,21 @@ impl Dentry {
     }
 
     /// Gets the type of the `Dentry`.
-    pub(super) fn type_(&self) -> InodeType {
+    pub(in crate::fs) fn type_(&self) -> InodeType {
         self.type_
     }
 
     /// Gets the name of the `Dentry`.
     ///
     /// Returns "/" if it is a root `Dentry`.
-    pub(super) fn name(&self) -> String {
+    pub(in crate::fs) fn name(&self) -> String {
         self.name_and_parent.name(self.inode.as_ref())
     }
 
     /// Gets the parent `Dentry`.
     ///
     /// Returns `None` if it is a root or pseudo `Dentry`.
-    pub(super) fn parent(&self) -> Option<Arc<Self>> {
+    pub(in crate::fs) fn parent(&self) -> Option<Arc<Self>> {
         self.name_and_parent.parent()
     }
 
@@ -294,7 +294,7 @@ impl Dentry {
     }
 
     /// Gets the inner inode.
-    pub(super) fn inode(&self) -> &Arc<dyn Inode> {
+    pub(in crate::fs) fn inode(&self) -> &Arc<dyn Inode> {
         &self.inode
     }
 
@@ -305,7 +305,7 @@ impl Dentry {
 
     /// Checks if this dentry is a descendant of or the same as the given
     /// ancestor dentry.
-    pub(super) fn is_equal_or_descendant_of(&self, ancestor: &Arc<Self>) -> bool {
+    pub(in crate::fs) fn is_equal_or_descendant_of(&self, ancestor: &Arc<Self>) -> bool {
         let mut current = Some(self.this());
 
         while let Some(node) = current {
@@ -361,7 +361,7 @@ impl Dentry {
         path_name
     }
 
-    pub(super) fn as_dir_dentry_or_err(&self) -> Result<DirDentry<'_>> {
+    pub(in crate::fs) fn as_dir_dentry_or_err(&self) -> Result<DirDentry<'_>> {
         debug_assert_eq!(self.dir_state.is_some(), self.type_ == InodeType::Dir);
 
         let Some(dir_state) = &self.dir_state else {
@@ -380,7 +380,7 @@ impl Dentry {
 }
 
 /// A `Dentry` wrapper that has been validated to represent a directory.
-pub(super) struct DirDentry<'a> {
+pub(in crate::fs) struct DirDentry<'a> {
     inner: &'a Dentry,
     children: &'a RwMutex<DentryChildren>,
     revalidation_policy: RevalidationPolicy,
@@ -395,15 +395,13 @@ impl Deref for DirDentry<'_> {
 }
 
 impl DirDentry<'_> {
-    /// Creates a `Dentry` by creating a new inode of the `type_` with the `mode`.
-    pub(super) fn create(
+    pub(in crate::fs) fn create_child(
         &self,
         name: &str,
-        type_: InodeType,
-        mode: InodeMode,
+        create_inode_fn: impl FnOnce() -> Result<Arc<dyn Inode>>,
     ) -> Result<Arc<Dentry>> {
         let children = self.validate_child_absent(name)?;
-        let new_inode = self.inode.create(name, type_, mode)?;
+        let new_inode = create_inode_fn()?;
         let mut children = children.upgrade();
         let new_child = Dentry::new(
             new_inode,
@@ -603,7 +601,7 @@ impl DirDentry<'_> {
     }
 
     /// Creates a `Dentry` by making an inode of the `type_` with the `mode`.
-    pub(super) fn mknod(
+    pub(in crate::fs) fn mknod(
         &self,
         name: &str,
         mode: InodeMode,
@@ -611,7 +609,7 @@ impl DirDentry<'_> {
     ) -> Result<Arc<Dentry>> {
         let children = self.validate_child_absent(name)?;
         Self::check_mknod_capability(&type_)?;
-        let inode = self.inode.mknod(name, mode, type_)?;
+        let inode = self.inode.mknod(self, name, mode, type_)?;
         let new_child = Dentry::new(
             inode,
             DentryOptions::Named((String::from(name), self.this())),
@@ -639,11 +637,11 @@ impl DirDentry<'_> {
     }
 
     /// Links a new `Dentry` by `link()` the old inode.
-    pub(super) fn link(&self, old_inode: &Arc<dyn Inode>, name: &str) -> Result<()> {
+    pub(in crate::fs) fn link(&self, old_dentry: &Dentry, name: &str) -> Result<()> {
         let children = self.validate_child_absent(name)?;
-        self.inode.link(old_inode, name)?;
+        self.inode.link(self, old_dentry, name)?;
         let dentry = Dentry::new(
-            old_inode.clone(),
+            old_dentry.inode().clone(),
             DentryOptions::Named((String::from(name), self.this())),
         );
         let mut children = children.upgrade();
@@ -655,21 +653,22 @@ impl DirDentry<'_> {
     }
 
     /// Deletes a `Dentry` by `unlink()` the inner inode.
-    pub(super) fn unlink(&self, name: &str) -> Result<()> {
+    pub(in crate::fs) fn unlink(&self, name: &str) -> Result<()> {
         if is_dot_or_dotdot(name) {
             return_errno_with_message!(Errno::EISDIR, "unlink on . or ..");
         }
 
         let dir_inode = self.inode();
-        let child_inode = self.remove_child(name, |dir_inode, name| dir_inode.unlink(name))?;
+        let child_dentry = self.remove_child(name, |dir_inode, child| dir_inode.unlink(child))?;
+        let child_inode = child_dentry.inode();
 
         let nlinks = child_inode.metadata()?.nr_hard_links;
-        fs::vfs::notify::on_link_count(&child_inode);
+        fs::vfs::notify::on_link_count(child_inode);
         if nlinks == 0 {
             // FIXME: `DELETE_SELF` should be generated after closing the last FD.
-            fs::vfs::notify::on_inode_removed(&child_inode);
+            fs::vfs::notify::on_inode_removed(child_inode);
         }
-        fs::vfs::notify::on_delete(dir_inode, &child_inode, || name.to_string());
+        fs::vfs::notify::on_delete(dir_inode, child_inode, || name.to_string());
         if nlinks == 0 {
             // Ideally, we would use `fs_event_publisher()` here to avoid creating a
             // `FsEventPublisher` instance on a dying inode. However, it isn't possible because we
@@ -685,7 +684,7 @@ impl DirDentry<'_> {
     }
 
     /// Deletes a directory `Dentry` by `rmdir()` the inner inode.
-    pub(super) fn rmdir(&self, name: &str) -> Result<()> {
+    pub(in crate::fs) fn rmdir(&self, name: &str) -> Result<()> {
         if is_dot(name) {
             return_errno_with_message!(Errno::EINVAL, "rmdir on .");
         }
@@ -694,14 +693,15 @@ impl DirDentry<'_> {
         }
 
         let dir_inode = self.inode();
-        let child_inode = self.remove_child(name, |dir_inode, name| dir_inode.rmdir(name))?;
+        let child_dentry = self.remove_child(name, |dir_inode, child| dir_inode.rmdir(child))?;
+        let child_inode = child_dentry.inode();
 
         let nlinks = child_inode.metadata()?.nr_hard_links;
         if nlinks == 0 {
             // FIXME: `DELETE_SELF` should be generated after closing the last FD.
-            fs::vfs::notify::on_inode_removed(&child_inode);
+            fs::vfs::notify::on_inode_removed(child_inode);
         }
-        fs::vfs::notify::on_delete(dir_inode, &child_inode, || name.to_string());
+        fs::vfs::notify::on_delete(dir_inode, child_inode, || name.to_string());
         if nlinks == 0 {
             // Ideally, we would use `fs_event_publisher()` here to avoid creating a
             // `FsEventPublisher` instance on a dying inode. However, it isn't possible because we
@@ -719,8 +719,8 @@ impl DirDentry<'_> {
     fn remove_child(
         &self,
         name: &str,
-        remove_child_fn: impl FnOnce(&dyn Inode, &str) -> Result<()>,
-    ) -> Result<Arc<dyn Inode>> {
+        remove_child_fn: impl FnOnce(&dyn Inode, &Dentry) -> Result<()>,
+    ) -> Result<Arc<Dentry>> {
         let dir_inode = self.inode();
         let mut children = self.children.upread();
         let cached_child = match children.find(name) {
@@ -745,21 +745,24 @@ impl DirDentry<'_> {
             }
         };
 
-        let child_inode = match &cached_child {
-            Some(child) => child.inode().clone(),
-            None => dir_inode.lookup(name)?,
+        let child_dentry = match &cached_child {
+            Some(child) => child.clone(),
+            None => Dentry::new(
+                dir_inode.lookup(name)?,
+                DentryOptions::Named((String::from(name), self.this())),
+            ),
         };
 
-        remove_child_fn(dir_inode.as_ref(), name)?;
+        remove_child_fn(dir_inode.as_ref(), &child_dentry)?;
         if cached_child.is_some() {
             children.upgrade().delete(name);
         }
-        Ok(child_inode)
+        Ok(child_dentry)
     }
 
     /// Renames the `old_name` entry in this directory to the `new_name` entry
     /// in `new_dir`.
-    pub(super) fn rename(
+    pub(in crate::fs) fn rename(
         &self,
         old_name: &str,
         new_dir: &DirDentry,
@@ -778,7 +781,6 @@ impl DirDentry<'_> {
         }
 
         let old_dir_inode = self.inode();
-        let new_dir_inode = new_dir.inode();
 
         let max_namelen = old_dir_inode.fs().sb().namelen;
         if old_name.len() > max_namelen || new_name.len() > max_namelen {
@@ -799,9 +801,10 @@ impl DirDentry<'_> {
             let mut children = self.children.write();
 
             let old_dentry = self.resolve_child_for_rename(&mut children, old_name)?;
+            let old_inode = old_dentry.inode();
             let new_dentry = match self.resolve_child_for_rename(&mut children, new_name) {
                 Ok(new_dentry) => {
-                    if Arc::ptr_eq(old_dentry.inode(), new_dentry.inode()) {
+                    if Arc::ptr_eq(old_inode, new_dentry.inode()) {
                         return Ok(());
                     }
                     Some(new_dentry)
@@ -812,14 +815,16 @@ impl DirDentry<'_> {
 
             Self::check_rename_mode(mode, new_dentry.as_ref())?;
 
+            let replaced_inode = new_dentry.as_ref().map(|dentry| dentry.inode());
+
             if self.has_sticky_bit()? {
-                self.check_sticky_bit_permission(old_dentry.inode())?;
-                if let Some(new_dentry) = new_dentry.as_ref() {
-                    self.check_sticky_bit_permission(new_dentry.inode())?;
+                self.check_sticky_bit_permission(old_inode)?;
+                if let Some(replaced_inode) = replaced_inode {
+                    self.check_sticky_bit_permission(replaced_inode)?;
                 }
             }
 
-            old_dir_inode.rename(old_name, old_dir_inode, new_name, mode)?;
+            old_dir_inode.rename(&old_dentry, self, new_name, replaced_inode, mode)?;
 
             match mode {
                 RenameMode::Replace | RenameMode::NoReplace => {
@@ -850,9 +855,10 @@ impl DirDentry<'_> {
                 write_lock_children_on_two_dentries(self, new_dir);
 
             let old_dentry = self.resolve_child_for_rename(&mut old_children, old_name)?;
+            let old_inode = old_dentry.inode();
             let new_dentry = match new_dir.resolve_child_for_rename(&mut new_children, new_name) {
                 Ok(new_dentry) => {
-                    if Arc::ptr_eq(old_dentry.inode(), new_dentry.inode()) {
+                    if Arc::ptr_eq(old_inode, new_dentry.inode()) {
                         return Ok(());
                     }
                     Some(new_dentry)
@@ -864,16 +870,18 @@ impl DirDentry<'_> {
             Self::check_rename_mode(mode, new_dentry.as_ref())?;
             Self::check_rename_cycle(mode, self, &old_dentry, new_dir, new_dentry.as_ref())?;
 
+            let replaced_inode = new_dentry.as_ref().map(|dentry| dentry.inode());
+
             if self.has_sticky_bit()? {
-                self.check_sticky_bit_permission(old_dentry.inode())?;
+                self.check_sticky_bit_permission(old_inode)?;
             }
             if new_dir.has_sticky_bit()?
-                && let Some(new_dentry) = new_dentry.as_ref()
+                && let Some(replaced_inode) = replaced_inode
             {
-                new_dir.check_sticky_bit_permission(new_dentry.inode())?;
+                new_dir.check_sticky_bit_permission(replaced_inode)?;
             }
 
-            old_dir_inode.rename(old_name, new_dir_inode, new_name, mode)?;
+            old_dir_inode.rename(&old_dentry, new_dir, new_name, replaced_inode, mode)?;
 
             match mode {
                 RenameMode::Replace | RenameMode::NoReplace => {

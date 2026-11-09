@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// A type of file system.
-pub trait FsType: Send + Sync + 'static {
+pub(crate) trait FsType: Send + Sync + 'static {
     /// Key used to deduplicate mounts of the same logical FS instance.
     ///
     /// Set to `()` (with the default `obtain_key_and_cache` returning `None`) to opt out
@@ -60,7 +60,7 @@ pub trait FsType: Send + Sync + 'static {
 ///
 /// Implemented automatically for every [`FsType`] via a blanket impl, so FS
 /// authors only implement [`FsType`].
-pub trait DynFsType: Send + Sync + 'static {
+pub(crate) trait DynFsType: Send + Sync + 'static {
     /// Gets the name of this FS type such as `"ext4"` or `"sysfs"`.
     fn name(&self) -> &'static str;
 
@@ -102,17 +102,21 @@ impl<T: FsType> DynFsType for T {
 /// A context that describes the inputs used to create a file system instance.
 ///
 /// This context is used to identify and create a file system instance.
-pub struct FsCreationCtx<'a> {
+pub(crate) struct FsCreationCtx<'a> {
     source: Option<&'a str>,
     flags: FsFlags,
     args: Option<&'a str>,
-    task_ctx: &'a Context<'a>,
-    block_device: Option<Arc<dyn BlockDevice>>,
+    block_device: BlockDeviceResolution<'a>,
+}
+
+enum BlockDeviceResolution<'a> {
+    Pending(&'a Context<'a>),
+    Resolved(Arc<dyn BlockDevice>),
 }
 
 impl<'a> FsCreationCtx<'a> {
     /// Creates a file system creation context from syscall inputs.
-    pub fn new(
+    pub(crate) fn new(
         source: Option<&'a str>,
         flags: FsFlags,
         args: Option<&'a str>,
@@ -122,8 +126,21 @@ impl<'a> FsCreationCtx<'a> {
             source,
             flags,
             args,
-            task_ctx,
-            block_device: None,
+            block_device: BlockDeviceResolution::Pending(task_ctx),
+        }
+    }
+
+    /// Creates a file system creation context from an already resolved block device.
+    pub(in crate::fs) fn from_block_device(
+        block_device: Arc<dyn BlockDevice>,
+        flags: FsFlags,
+        args: Option<&'a str>,
+    ) -> Self {
+        Self {
+            source: None,
+            flags,
+            args,
+            block_device: BlockDeviceResolution::Resolved(block_device),
         }
     }
 
@@ -142,22 +159,41 @@ impl<'a> FsCreationCtx<'a> {
         self.args
     }
 
+    /// Returns the task context the creation started from; `None` once a block device replaced it.
+    pub(in crate::fs) fn ctx(&self) -> Option<&'a Context<'a>> {
+        match &self.block_device {
+            BlockDeviceResolution::Pending(task_ctx) => Some(*task_ctx),
+            BlockDeviceResolution::Resolved(_) => None,
+        }
+    }
+
     /// Resolves the mount source into a block device.
     pub(in crate::fs) fn resolve_block_device(&mut self) -> Result<&Arc<dyn BlockDevice>> {
-        if self.block_device.is_none() {
+        if self.block_device().is_none() {
             self.do_resolve_block_device()?;
         }
 
-        Ok(self.block_device.as_ref().unwrap())
+        Ok(self.block_device().unwrap())
+    }
+
+    fn block_device(&self) -> Option<&Arc<dyn BlockDevice>> {
+        match &self.block_device {
+            BlockDeviceResolution::Pending(_) => None,
+            BlockDeviceResolution::Resolved(block_device) => Some(block_device),
+        }
     }
 
     fn do_resolve_block_device(&mut self) -> Result<()> {
+        let task_ctx = match &self.block_device {
+            BlockDeviceResolution::Pending(task_ctx) => *task_ctx,
+            BlockDeviceResolution::Resolved(_) => return Ok(()),
+        };
+
         let source = self
             .source()
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "the source is not specified"))?;
         let fs_path = FsPath::from_fd_at(AT_FDCWD, source, EmptyPathStr::Reject)?;
-        let path = self
-            .task_ctx
+        let path = task_ctx
             .thread_local
             .borrow_fs()
             .resolver()
@@ -172,7 +208,7 @@ impl<'a> FsCreationCtx<'a> {
         let block_device = id
             .and_then(aster_block::lookup)
             .ok_or_else(|| Error::with_message(Errno::ENODEV, "the device is not found"))?;
-        self.block_device = Some(block_device);
+        self.block_device = BlockDeviceResolution::Resolved(block_device);
 
         Ok(())
     }
@@ -180,7 +216,7 @@ impl<'a> FsCreationCtx<'a> {
 
 bitflags! {
     /// The properties common to all FS instances.
-    pub struct FsProperties: u32 {
+    pub(crate) struct FsProperties: u32 {
         /// Whether a FS needs to be backed by a disk.
         ///
         /// Most persistent FSes such as ext2 require disks.
@@ -193,12 +229,12 @@ bitflags! {
 /// Registers a new FS type.
 //
 // TODO: Figure out what should happen when unregistering the FS type.
-pub fn register(new_type: &'static dyn DynFsType) -> Result<()> {
+pub(crate) fn register(new_type: &'static dyn DynFsType) -> Result<()> {
     FS_REGISTRY.get().unwrap().register(new_type)
 }
 
 /// Looks up a FS type.
-pub fn look_up(name: &str) -> Option<&'static dyn DynFsType> {
+pub(crate) fn look_up(name: &str) -> Option<&'static dyn DynFsType> {
     FS_REGISTRY
         .get()
         .unwrap()
@@ -210,7 +246,7 @@ pub fn look_up(name: &str) -> Option<&'static dyn DynFsType> {
 
 /// Executes a user-provided operation with an iterator that can access each
 /// and every FS type.
-pub fn with_iter<F, R>(f: F) -> R
+pub(crate) fn with_iter<F, R>(f: F) -> R
 where
     F: FnOnce(&mut dyn Iterator<Item = (&str, &dyn DynFsType)>) -> R,
 {
@@ -221,7 +257,7 @@ where
 }
 
 /// Initializes the FS registry module.
-pub fn init() {
+pub(crate) fn init() {
     // This object will appear at the `/sys/fs` path
     FS_REGISTRY.call_once(|| {
         let singleton = FsRegistry::new();
@@ -239,13 +275,13 @@ static FS_REGISTRY: Once<Arc<FsRegistry>> = Once::new();
 ///
 /// `FsType` implementations use this cache to deduplicate mounts that refer to
 /// the same logical file system instance, such as the same block device.
-pub struct FsCache<K: Eq + Ord + Clone + Send + Sync + 'static> {
+pub(crate) struct FsCache<K: Eq + Ord + Clone + Send + Sync + 'static> {
     entries: Mutex<BTreeMap<K, WeakFsAndRoot>>,
 }
 
 /// A file system paired with its root [`Dentry`].
 #[derive(Clone)]
-pub struct FsAndRoot {
+pub(crate) struct FsAndRoot {
     fs: Arc<dyn FileSystem>,
     root_dentry: Arc<Dentry>,
 }
@@ -254,7 +290,7 @@ impl FsAndRoot {
     /// Creates an `FsAndRoot` by deriving the root dentry from the file system.
     ///
     /// This root is the file system root created from [`FileSystem::root_inode`].
-    pub fn new(fs: Arc<dyn FileSystem>) -> Self {
+    pub(crate) fn new(fs: Arc<dyn FileSystem>) -> Self {
         let root_dentry = Dentry::new_root(fs.root_inode());
         Self { fs, root_dentry }
     }

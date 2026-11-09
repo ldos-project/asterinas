@@ -8,13 +8,13 @@ use xmas_elf::{
 };
 
 use crate::{
-    fs::{utils::PATH_MAX, vfs::inode::Inode},
+    fs::{file::FileLike, utils::PATH_MAX},
     prelude::*,
     vm::{perms::VmPerms, vmar::VMAR_CAP_ADDR},
 };
 
 /// A wrapper for the [`xmas_elf`] ELF parser.
-pub struct ElfHeaders {
+pub(crate) struct ElfHeaders {
     elf_header: ElfHeader,
     loadable_phdrs: Vec<LoadablePhdr>,
     max_load_align: usize,
@@ -30,7 +30,7 @@ impl ElfHeaders {
     /// [`ENOEXEC`]: Errno::ENOEXEC
     pub(super) const LEN: usize = size_of::<HeaderPt1>() + size_of::<HeaderPt2_64>();
 
-    pub fn parse(input: &[u8]) -> Result<Self> {
+    pub(crate) fn parse(input: &[u8]) -> Result<Self> {
         // Parse the ELF header.
         let header = header::parse_header(input)
             .map_err(|_| Error::with_message(Errno::ENOEXEC, "the ELF header is invalid"))?;
@@ -256,6 +256,8 @@ fn check_elf_header(elf_header: &ElfHeader) -> Result<()> {
     // Reference: <https://loongson.github.io/LoongArch-Documentation/LoongArch-ELF-ABI-EN.html#_e_machine_identifies_the_machine>
     #[cfg(target_arch = "loongarch64")]
     const EXPECTED_ELF_MACHINE: header::Machine = header::Machine::Other(258);
+    #[cfg(target_arch = "aarch64")]
+    const EXPECTED_ELF_MACHINE: header::Machine = header::Machine::AArch64;
 
     if elf_header.pt1.class() != header::Class::SixtyFour {
         return_errno_with_message!(Errno::ENOEXEC, "the ELF file is not 64-bit");
@@ -395,12 +397,12 @@ impl InterpPhdr {
         })
     }
 
-    /// Reads the LDSO path from the ELF inode.
-    pub(super) fn read_ldso_path(&self, elf_inode: &Arc<dyn Inode>) -> Result<CString> {
+    /// Reads the LDSO path from the ELF file.
+    pub(super) fn read_ldso_path(&self, elf_file: &Arc<dyn FileLike>) -> Result<CString> {
         // Note that `self.file_size` is at most `PATH_SIZE`.
         let file_size = self.file_size as usize;
         let mut buffer = vec![0; file_size];
-        if elf_inode.read_bytes_at(self.file_offset, &mut buffer)? != file_size {
+        if elf_file.read_bytes_at(self.file_offset, &mut buffer)? != file_size {
             return_errno_with_message!(Errno::EIO, "the interpreter path cannot be fully read");
         }
 

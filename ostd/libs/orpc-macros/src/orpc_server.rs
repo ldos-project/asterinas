@@ -5,7 +5,7 @@ use syn::{FieldsNamed, ItemStruct, LitStr, Path, Token, spanned::Spanned};
 use crate::parsing_utils::{generics_to_phantom, make_oqueues_field_name};
 
 /// The implementations of the `orpc_server` attr macro.
-pub fn orpc_server_macro_impl(
+pub(crate) fn orpc_server_macro_impl(
     traits: syn::punctuated::Punctuated<Path, Token!(,)>,
     input: ItemStruct,
 ) -> proc_macro2::TokenStream {

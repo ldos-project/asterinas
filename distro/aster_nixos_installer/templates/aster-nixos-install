@@ -73,6 +73,18 @@ if [[ -z "$DISK" ]]; then
     exit 1
 fi
 
+# When a tool below closes the disk after writing it, udevd asks the kernel
+# to re-read the partition table. The re-read deletes and re-creates every
+# partition device, so mkfs fails with ENOENT or ENXIO if it opens a
+# partition in between, even though parted has already created it.
+#
+# udevd skips the re-read while another process holds a flock on the whole
+# disk (https://systemd.io/BLOCK_DEVICE_LOCKING/), so hold one until both
+# partitions are mounted. Open the disk read-only, because closing a
+# writable fd would itself trigger a re-read.
+exec 9<"${DISK}"
+flock -x 9
+
 # Confirm dangerous operation if --force-format-disk is used
 if [[ "$FORCE_FORMAT_DISK" == true ]]; then
     echo "WARNING: You are about to FORMAT the disk: $DISK"
@@ -111,11 +123,17 @@ if findmnt -M ${BUILD_DIR} >/dev/null; then
 fi
 
 mkdir -p ${BUILD_DIR}
-mount -o sync,dirsync "${ROOT_DEVICE}" ${BUILD_DIR}
+mount -t ext2 -o sync,dirsync "${ROOT_DEVICE}" ${BUILD_DIR}
 
 mkdir -p ${BUILD_DIR}/boot
+mkdir -p ${BUILD_DIR}/tmp
+chmod 1777 ${BUILD_DIR}/tmp
 mkdir -p ${BUILD_DIR}/etc/nixos
 mount -o umask=077,sync,dirsync "${BOOT_DEVICE}" ${BUILD_DIR}/boot
+
+# The kernel rejects a partition-table re-read with EBUSY while partitions
+# are mounted, so the lock is no longer needed.
+exec 9<&-
 
 echo "${BUILD_DIR} is mounted successfully!"
 
@@ -137,6 +155,7 @@ COMMON_NIX_ARGS=(
 )
 
 NIX_SYSTEM="@aster-target-platform@"
+NIXPKGS_PATH="@aster-nixpkgs@"
 
 # Pre-build the NixOS system closure on the host
 # so that the result is cached in the host's Nix store.
@@ -144,7 +163,7 @@ NIX_SYSTEM="@aster-target-platform@"
 # causing redundant downloads after every `make clean`.
 #
 # See: https://www.mankier.com/8/nixos-install#--system
-SYSTEM_CLOSURE=$(nix-build '<nixpkgs/nixos>' -A system \
+SYSTEM_CLOSURE=$(nix-build "${NIXPKGS_PATH}/nixos" -A system \
     --option extra-platforms "${NIX_SYSTEM}" \
     --argstr system "${NIX_SYSTEM}" \
     -I "nixos-config=${BUILD_DIR}/etc/nixos/configuration.nix" \
@@ -162,5 +181,4 @@ nix-env --store "${BUILD_DIR}" \
     -p "${BUILD_DIR}/nix/var/nix/profiles/system" \
     --delete-generations old
 nix-store --store "${BUILD_DIR}" --gc
-
 echo "Congratulations! Asterinas NixOS has been installed successfully!"

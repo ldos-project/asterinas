@@ -7,7 +7,7 @@ use core::time::Duration;
 use aster_util::slot_vec::SlotVec;
 use id_alloc::IdAlloc;
 
-pub use self::ptmx::Ptmx;
+pub(crate) use self::ptmx::Ptmx;
 use self::slave::PtySlaveInode;
 use crate::{
     device::PtyMaster,
@@ -20,6 +20,7 @@ use crate::{
             inode::{
                 Extension, FileOps, Inode, Metadata, MknodType, RenameMode, RevalidationPolicy,
             },
+            path::Dentry,
             registry::{FsCreationCtx, FsProperties, FsType},
         },
     },
@@ -46,7 +47,7 @@ const MAX_PTY_NUM: usize = 4096;
 /// represent slaves to the multiplexing master located at "/dev/ptmx".
 ///
 /// Actually, the "/dev/ptmx" is a symlink to the real device at "/dev/pts/ptmx".
-pub struct DevPts {
+pub(crate) struct DevPts {
     _anon_device_id: AnonDeviceId,
     sb: SuperBlock,
     root: Arc<RootInode>,
@@ -56,7 +57,7 @@ pub struct DevPts {
 }
 
 impl DevPts {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         let anon_device_id = AnonDeviceId::acquire().expect("no device ID is available for devpts");
         let sb = SuperBlock::new(DEVPTS_MAGIC, BLOCK_SIZE, NAME_MAX, anon_device_id.id());
         Arc::new_cyclic(|weak_self| Self {
@@ -91,7 +92,7 @@ impl DevPts {
     /// Remove the slave from fs.
     ///
     /// This is called when the master is being dropped.
-    pub fn remove_slave(&self, index: u32) -> Option<Arc<dyn Inode>> {
+    pub(crate) fn remove_slave(&self, index: u32) -> Option<Arc<dyn Inode>> {
         let (_, removed_slave) = self
             .root
             .slaves
@@ -159,7 +160,7 @@ struct RootInode {
 }
 
 impl RootInode {
-    pub fn new(fs: Weak<DevPts>, sb: &SuperBlock) -> Arc<Self> {
+    pub(crate) fn new(fs: Weak<DevPts>, sb: &SuperBlock) -> Arc<Self> {
         Arc::new(Self {
             ptmx: Ptmx::new(fs.clone(), sb),
             slaves: RwLock::new(SlotVec::new()),
@@ -237,7 +238,7 @@ impl Inode for RootInode {
         self.metadata.read().size
     }
 
-    fn resize(&self, new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, new_size: usize) -> Result<()> {
         Err(Error::new(Errno::EISDIR))
     }
 
@@ -261,7 +262,7 @@ impl Inode for RootInode {
         Ok(self.metadata.read().mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         self.metadata.write().mode = mode;
         Ok(())
     }
@@ -270,7 +271,7 @@ impl Inode for RootInode {
         Ok(self.metadata.read().uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         self.metadata.write().uid = uid;
         Ok(())
     }
@@ -279,7 +280,7 @@ impl Inode for RootInode {
         Ok(self.metadata.read().gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         self.metadata.write().gid = gid;
         Ok(())
     }
@@ -288,7 +289,7 @@ impl Inode for RootInode {
         self.metadata.read().last_access_at
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_access_at = time;
     }
 
@@ -296,7 +297,7 @@ impl Inode for RootInode {
         self.metadata.read().last_modify_at
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_modify_at = time;
     }
 
@@ -304,24 +305,37 @@ impl Inode for RootInode {
         self.metadata.read().last_meta_change_at
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_meta_change_at = time;
     }
 
-    fn create(&self, name: &str, type_: InodeType, mode: InodeMode) -> Result<Arc<dyn Inode>> {
+    fn create(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        type_: InodeType,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::EPERM))
     }
 
-    fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Arc<dyn Inode>> {
+    fn mknod(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
         Err(Error::new(Errno::EPERM))
     }
 
-    fn link(&self, old: &Arc<dyn Inode>, name: &str) -> Result<()> {
+    fn link(&self, _self_dentry: &Dentry, _old_dentry: &Dentry, _name: &str) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
-    fn unlink(&self, name: &str) -> Result<()> {
-        match name {
+    fn unlink(&self, child_dentry: &Dentry) -> Result<()> {
+        let name = child_dentry.name();
+        match name.as_str() {
             "." | ".." => {
                 return_errno_with_message!(Errno::EISDIR, "the devpts directory cannot be unlinked")
             }
@@ -335,7 +349,7 @@ impl Inode for RootInode {
         }
     }
 
-    fn rmdir(&self, name: &str) -> Result<()> {
+    fn rmdir(&self, _child_dentry: &Dentry) -> Result<()> {
         Err(Error::new(Errno::EPERM))
     }
 
@@ -356,9 +370,10 @@ impl Inode for RootInode {
 
     fn rename(
         &self,
-        _old_name: &str,
-        _target: &Arc<dyn Inode>,
+        _old_child_dentry: &Dentry,
+        _new_dir_dentry: &Dentry,
         _new_name: &str,
+        _replaced_inode: Option<&Arc<dyn Inode>>,
         _mode: RenameMode,
     ) -> Result<()> {
         Err(Error::new(Errno::EPERM))

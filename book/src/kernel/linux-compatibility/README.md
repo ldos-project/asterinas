@@ -367,7 +367,7 @@ which are summarized in the table below.
     - N/A = not applicable (e.g., syscall not supported)
 
 Most of these system calls (or their variants) are also supported
-for the RISC-V and LoongArch architectures.
+for the ARM, RISC-V, and LoongArch architectures.
 
 ## File systems
 
@@ -397,6 +397,7 @@ Here is the list of supported symbols in vDSO:
 Here is the list of supported boot protocols:
 * [Multiboot](https://www.gnu.org/software/grub/manual/multiboot/multiboot.html)
 * [Multiboot2](https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html)
+* [PVH](https://xenbits.xen.org/docs/unstable/misc/pvh.html)
 * [Linux 32-bit boot protocol](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#bit-boot-protocol)
 * [Linux EFI handover](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#efi-handover-protocol-deprecated)
 * [PE/COFF entry point](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#pe-coff-entry-point)

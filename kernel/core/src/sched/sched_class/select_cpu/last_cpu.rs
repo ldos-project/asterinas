@@ -7,13 +7,13 @@ use super::{SelectCpuInput, SelectCpuPolicy, SelectCpuReason};
 /// Keeps every task on the CPU it was first placed on.
 ///
 /// A new task starts on the least-loaded allowed CPU.
-pub struct LastCpuPolicy {
+pub(crate) struct LastCpuPolicy {
     /// The CPU chosen for the most recent spawn.
     last_chosen_cpu: AtomicCpuId,
 }
 
 impl LastCpuPolicy {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             last_chosen_cpu: AtomicCpuId::default(),
         }

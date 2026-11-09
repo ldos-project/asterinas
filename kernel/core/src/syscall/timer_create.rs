@@ -24,27 +24,20 @@ use crate::{
         Timer, clockid_t,
         clocks::{BootTimeClock, MonotonicClock, RealTimeClock},
         timer::TimerGuard,
+        timer_t,
     },
 };
 
-pub fn sys_timer_create(
+pub(super) fn sys_timer_create(
     clockid: clockid_t,
     sigevent_addr: Vaddr,
     timer_id_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    if timer_id_addr == 0 {
-        return_errno_with_message!(
-            Errno::EINVAL,
-            "the address of timer_id_addr should be valid"
-        );
-    }
-
-    let current_process = current!();
     let sent_signal: Box<dyn Fn() + Send + Sync + 'static> = {
         // If `sigevent_addr` is NULL, use the default method (like `sys_alarm`) to send signal.
         if sigevent_addr == 0 {
-            let process = current_process.clone();
+            let process = ctx.process.clone();
             let signal = KernelSignal::new(SIGALRM);
             Box::new(move || {
                 process.enqueue_signal(Box::new(signal));
@@ -59,7 +52,7 @@ pub fn sys_timer_create(
                 SigNotify::SIGEV_NONE => Box::new(|| {}),
                 // Send a signal to the current process when the timer is expired.
                 SigNotify::SIGEV_SIGNAL => {
-                    let process = current_process.clone();
+                    let process = ctx.process.clone();
                     let signal = KernelSignal::new(SigNum::try_from(signo as u8)?);
                     Box::new(move || {
                         process.enqueue_signal(Box::new(signal));
@@ -80,7 +73,7 @@ pub fn sys_timer_create(
                         Error::with_message(Errno::EINVAL, "the target thread does not exist")
                     })?;
                     let posix_thread = thread.as_posix_thread().unwrap();
-                    if posix_thread.process().pid() != current_process.pid() {
+                    if posix_thread.process().pid() != ctx.process.pid() {
                         return_errno_with_message!(
                             Errno::EINVAL,
                             "the target thread does not belong to the current process"
@@ -108,16 +101,18 @@ pub fn sys_timer_create(
 
     let timer = create_timer(clockid, func, ctx)?;
 
-    let Some(timer_id) = current_process.timer_manager().add_posix_timer(timer) else {
+    let Some(timer_id) = ctx.process.timer_manager().add_posix_timer(timer) else {
         return_errno_with_message!(Errno::EAGAIN, "timer IDs are exhausted");
     };
-    ctx.user_space().write_val(timer_id_addr, &timer_id)?;
+    if let Err(error) = ctx.user_space().write_val(timer_id_addr, &timer_id) {
+        let _ = ctx.process.timer_manager().remove_posix_timer(timer_id);
+        return Err(error.into());
+    }
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_timer_delete(timer_id: usize, _ctx: &Context) -> Result<SyscallReturn> {
-    let current_process = current!();
-    let Some(timer) = current_process.timer_manager().remove_posix_timer(timer_id) else {
+pub(super) fn sys_timer_delete(timer_id: timer_t, ctx: &Context) -> Result<SyscallReturn> {
+    let Some(timer) = ctx.process.timer_manager().remove_posix_timer(timer_id) else {
         return_errno_with_message!(Errno::EINVAL, "invalid timer ID");
     };
 
@@ -125,24 +120,15 @@ pub fn sys_timer_delete(timer_id: usize, _ctx: &Context) -> Result<SyscallReturn
     Ok(SyscallReturn::Return(0))
 }
 
-/// Creates a timer associated with the specified clock ID.
+/// Creates a timer associated with the specified fixed or dynamic clock ID.
 ///
 /// This timer will invoke the given callback function (`func`) when it expires.
-pub fn create_timer<F>(clockid: clockid_t, func: F, ctx: &Context) -> Result<Arc<Timer>>
+fn create_timer<F>(clockid: clockid_t, func: F, ctx: &Context) -> Result<Arc<Timer>>
 where
     F: Fn(TimerGuard) + Send + Sync + 'static,
 {
-    let process_timer_manager = ctx.process.timer_manager();
     let timer = if clockid >= 0 {
-        let clock_id = ClockId::try_from(clockid)?;
-        match clock_id {
-            ClockId::CLOCK_PROCESS_CPUTIME_ID => process_timer_manager.create_prof_timer(func),
-            ClockId::CLOCK_THREAD_CPUTIME_ID => ctx.posix_thread.create_prof_timer(func),
-            ClockId::CLOCK_REALTIME => RealTimeClock::timer_manager().create_timer(func),
-            ClockId::CLOCK_MONOTONIC => MonotonicClock::timer_manager().create_timer(func),
-            ClockId::CLOCK_BOOTTIME => BootTimeClock::timer_manager().create_timer(func),
-            _ => return_errno_with_message!(Errno::EINVAL, "invalid clock ID"),
-        }
+        return create_timer_for_clock(ClockId::try_from(clockid)?, func, ctx);
     } else {
         let dynamic_clockid_info = DynamicClockIdInfo::try_from(clockid)?;
         match dynamic_clockid_info {
@@ -154,8 +140,6 @@ where
                 match clock_type {
                     DynamicClockType::Profiling => process_timer_manager.create_prof_timer(func),
                     DynamicClockType::Virtual => process_timer_manager.create_virtual_timer(func),
-                    // TODO: support scheduling clock and fd clock.
-                    _ => unimplemented!(),
                 }
             }
             DynamicClockIdInfo::Tid(tid, clock_type) => {
@@ -166,11 +150,32 @@ where
                 match clock_type {
                     DynamicClockType::Profiling => posix_thread.create_prof_timer(func),
                     DynamicClockType::Virtual => posix_thread.create_virtual_timer(func),
-                    _ => unimplemented!(),
                 }
             }
-            DynamicClockIdInfo::Fd(_) => unimplemented!(),
         }
+    };
+    Ok(timer)
+}
+
+/// Creates a timer associated with the specified clock ID.
+///
+/// This timer will invoke the given callback function (`func`) when it expires.
+pub(crate) fn create_timer_for_clock<F>(
+    clock_id: ClockId,
+    func: F,
+    ctx: &Context,
+) -> Result<Arc<Timer>>
+where
+    F: Fn(TimerGuard) + Send + Sync + 'static,
+{
+    let process_timer_manager = ctx.process.timer_manager();
+    let timer = match clock_id {
+        ClockId::CLOCK_PROCESS_CPUTIME_ID => process_timer_manager.create_prof_timer(func),
+        ClockId::CLOCK_THREAD_CPUTIME_ID => ctx.posix_thread.create_prof_timer(func),
+        ClockId::CLOCK_REALTIME => RealTimeClock::timer_manager().create_timer(func),
+        ClockId::CLOCK_MONOTONIC => MonotonicClock::timer_manager().create_timer(func),
+        ClockId::CLOCK_BOOTTIME => BootTimeClock::timer_manager().create_timer(func),
+        _ => return_errno_with_message!(Errno::EINVAL, "invalid clock ID"),
     };
     Ok(timer)
 }

@@ -6,12 +6,14 @@ use device_id::{DeviceId, MajorId, MinorId};
 
 use super::{BLOCK_SIZE, DevPts, PTMX_INO};
 use crate::{
-    device::{Device, DeviceType, DevtmpfsInodeMeta},
+    device::{Device, DeviceType},
     fs::{
+        devtmpfs::DevtmpfsNodeMeta,
         file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, mkmod},
         vfs::{
             file_system::{FileSystem, SuperBlock},
             inode::{Extension, FileOps, Inode, Metadata},
+            path::Dentry,
         },
     },
     prelude::*,
@@ -27,7 +29,7 @@ const PTMX_MINOR_NUM: u32 = 2;
 ///
 /// Every time the multiplexing master is opened, a new instance of pty master inode is returned
 /// and an corresponding pty slave inode is also created.
-pub struct Ptmx {
+pub(crate) struct Ptmx {
     inner: Inner,
     metadata: RwLock<Metadata>,
     extension: Extension,
@@ -37,7 +39,7 @@ pub struct Ptmx {
 struct Inner(Weak<DevPts>);
 
 impl Ptmx {
-    pub fn new(fs: Weak<DevPts>, sb: &SuperBlock) -> Arc<Self> {
+    pub(crate) fn new(fs: Weak<DevPts>, sb: &SuperBlock) -> Arc<Self> {
         let inner = Inner(fs.clone());
         let metadata = Metadata::new_device(
             PTMX_INO,
@@ -53,7 +55,7 @@ impl Ptmx {
         })
     }
 
-    pub fn devpts(&self) -> Option<Arc<DevPts>> {
+    pub(crate) fn devpts(&self) -> Option<Arc<DevPts>> {
         self.inner.0.upgrade()
     }
 }
@@ -85,7 +87,7 @@ impl Inode for Ptmx {
         self.metadata.read().size
     }
 
-    fn resize(&self, new_size: usize) -> Result<()> {
+    fn resize(&self, _self_dentry: &Dentry, new_size: usize) -> Result<()> {
         Ok(())
     }
 
@@ -109,7 +111,7 @@ impl Inode for Ptmx {
         Ok(self.metadata.read().mode)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, _self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         self.metadata.write().mode = mode;
         Ok(())
     }
@@ -118,7 +120,7 @@ impl Inode for Ptmx {
         Ok(self.metadata.read().uid)
     }
 
-    fn set_owner(&self, uid: Uid) -> Result<()> {
+    fn set_owner(&self, _self_dentry: &Dentry, uid: Uid) -> Result<()> {
         self.metadata.write().uid = uid;
         Ok(())
     }
@@ -127,7 +129,7 @@ impl Inode for Ptmx {
         Ok(self.metadata.read().gid)
     }
 
-    fn set_group(&self, gid: Gid) -> Result<()> {
+    fn set_group(&self, _self_dentry: &Dentry, gid: Gid) -> Result<()> {
         self.metadata.write().gid = gid;
         Ok(())
     }
@@ -136,7 +138,7 @@ impl Inode for Ptmx {
         self.metadata.read().last_access_at
     }
 
-    fn set_atime(&self, time: Duration) {
+    fn set_atime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_access_at = time;
     }
 
@@ -144,7 +146,7 @@ impl Inode for Ptmx {
         self.metadata.read().last_modify_at
     }
 
-    fn set_mtime(&self, time: Duration) {
+    fn set_mtime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_modify_at = time;
     }
 
@@ -152,7 +154,7 @@ impl Inode for Ptmx {
         self.metadata.read().last_meta_change_at
     }
 
-    fn set_ctime(&self, time: Duration) {
+    fn set_ctime(&self, _self_dentry: &Dentry, time: Duration) {
         self.metadata.write().last_meta_change_at = time;
     }
 
@@ -163,6 +165,7 @@ impl Inode for Ptmx {
 
     fn open(
         &self,
+        _self_dentry: &Dentry,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
@@ -179,7 +182,7 @@ impl Device for Inner {
         DeviceId::new(MajorId::new(PTMX_MAJOR_NUM), MinorId::new(PTMX_MINOR_NUM))
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
         None
     }
 

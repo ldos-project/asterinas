@@ -23,12 +23,12 @@ mod round_robin;
 mod userspace;
 
 #[cfg(not(baseline_asterinas))]
-pub use self::userspace::UserspacePolicy;
-pub use self::{last_cpu::LastCpuPolicy, round_robin::RoundRobinPolicy};
+pub(crate) use self::userspace::UserspacePolicy;
+pub(crate) use self::{last_cpu::LastCpuPolicy, round_robin::RoundRobinPolicy};
 
 /// Why the scheduler is asking for a CPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectCpuReason {
+pub(crate) enum SelectCpuReason {
     /// A new task runs for the first time.
     Spawn,
     /// A sleeping task was woken.
@@ -50,7 +50,7 @@ impl From<EnqueueFlags> for SelectCpuReason {
 }
 
 /// Everything a policy is told about one placement decision.
-pub struct SelectCpuInput<'a> {
+pub(crate) struct SelectCpuInput<'a> {
     pub reason: SelectCpuReason,
     /// The thread being placed.
     pub thread: &'a Arc<Thread>,
@@ -63,7 +63,7 @@ impl SelectCpuInput<'_> {
     ///
     /// Among equally loaded CPUs, it returns the first one after `after` (wrapping around), or the
     /// lowest-numbered one if `after` is `None`.
-    pub fn least_loaded_cpu(&self, after: Option<CpuId>) -> CpuId {
+    pub(crate) fn least_loaded_cpu(&self, after: Option<CpuId>) -> CpuId {
         let affinity = self.thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         let mut selected = None;
         let mut minimum_load = u32::MAX;
@@ -84,7 +84,7 @@ impl SelectCpuInput<'_> {
 }
 
 /// A CPU-selection policy.
-pub trait SelectCpuPolicy: Send + Sync {
+pub(crate) trait SelectCpuPolicy: Send + Sync {
     /// Returns the CPU whose run queue the thread in `input` joins.
     ///
     /// It is called with local IRQs disabled, possibly in interrupt context, and with no run-queue
@@ -96,14 +96,14 @@ pub trait SelectCpuPolicy: Send + Sync {
 /// Returns the CPUs in `cpu_set` in ascending order, starting *after* `cpu` and wrapping around.
 ///
 /// If `cpu` is in the set, it comes last.
-pub fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
+pub(crate) fn cycle_after(cpu: CpuId, cpu_set: &CpuSet) -> impl Iterator<Item = CpuId> + '_ {
     cpu_set
         .iter_in((Bound::Excluded(cpu), Bound::Unbounded))
         .chain(cpu_set.iter_in(..=cpu))
 }
 
 /// Holds a policy that can be replaced while other CPUs are using it.
-pub struct PolicySlot<P: ?Sized + Send + Sync + 'static> {
+pub(crate) struct PolicySlot<P: ?Sized + Send + Sync + 'static> {
     // RCU makes reading the policy nearly free, and frees a replaced policy only after every CPU
     // has finished using it.
     policy: RcuOption<Box<Arc<P>>>,
@@ -111,19 +111,19 @@ pub struct PolicySlot<P: ?Sized + Send + Sync + 'static> {
 
 impl<P: ?Sized + Send + Sync + 'static> PolicySlot<P> {
     /// Creates an empty slot.
-    pub const fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             policy: RcuOption::new_none(),
         }
     }
 
     /// Replaces the policy. Callers already using the old policy finish with it.
-    pub fn set(&self, policy: Arc<P>) {
+    pub(crate) fn set(&self, policy: Arc<P>) {
         self.policy.update(Some(Box::new(policy)));
     }
 
     /// Calls `f` with the current policy, or returns `None` if the slot is empty.
-    pub fn with<R>(&self, f: impl FnOnce(&P) -> R) -> Option<R> {
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&P) -> R) -> Option<R> {
         self.policy.read().get().map(|policy| f(&**policy))
     }
 }

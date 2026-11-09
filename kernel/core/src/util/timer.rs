@@ -42,7 +42,7 @@ impl Notifier for TimerServer {
 
 impl TimerServer {
     /// Create and spawn a new TimerServer.
-    pub fn spawn(freq: Duration) -> Arc<Self> {
+    pub(crate) fn spawn(freq: Duration) -> Arc<Self> {
         let notify_server = Self::new(freq).unwrap();
         spawn_thread(notify_server.clone(), {
             let notify_server = notify_server.clone();
@@ -52,13 +52,13 @@ impl TimerServer {
     }
 
     /// Create a TimerServer with the specified frequency.
-    pub fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
+    pub(crate) fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
         let server = new_server!(|_| Self { freq });
         Ok(server)
     }
 
     /// Start the server and periodically notify.
-    pub fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
+    pub(crate) fn main(&self) -> Result<(), Box<dyn core::error::Error>> {
         let sleep_queue = WaitQueue::new();
         loop {
             let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &self.freq);

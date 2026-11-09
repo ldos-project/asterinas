@@ -2,25 +2,23 @@
 
 use super::{JobControl, Pgid, Process, Session, session::SessionGuard};
 use crate::{
-    device::Device,
-    prelude::*,
-    process::pid_table,
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    device::Device, dispatch_ioctl, prelude::*, process::pid_table, util::ioctl::RawIoctl,
 };
 
 /// A terminal.
 ///
 /// We currently support two kinds of terminal, the TTY and pty. They're associated with a
 /// `JobControl` to track the session and the foreground process group.
-pub trait Terminal: Device {
+pub(crate) trait Terminal: Device {
     /// Returns the job control of the terminal.
     fn job_control(&self) -> &JobControl;
 }
 
 mod ioctl_defs {
     use crate::{
+        ioc,
         process::{Pgid, Sid},
-        util::ioctl::{InData, NoData, OutData, PassByVal, ioc},
+        util::ioctl::{InData, NoData, OutData, PassByVal},
     };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ioctls.h>
@@ -43,7 +41,11 @@ impl dyn Terminal {
     ///   `Err(_)`.
     /// - If the terminal does not recognize the ioctl command, it should return
     ///   `Ok(false)` to indicate that the ioctl command is not supported.
-    pub fn job_ioctl(self: Arc<Self>, raw_ioctl: RawIoctl, via_master: bool) -> Result<bool> {
+    pub(crate) fn job_ioctl(
+        self: Arc<Self>,
+        raw_ioctl: RawIoctl,
+        via_master: bool,
+    ) -> Result<bool> {
         use ioctl_defs::*;
 
         dispatch_ioctl!(match raw_ioctl {

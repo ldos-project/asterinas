@@ -5,14 +5,19 @@ use alloc::sync::UniqueArc;
 use spin::Once;
 
 use super::{
-    mount::{MountNsFileCopying, MountTopology},
+    UniqueMountId,
+    mount::MountTreeCloneMode,
+    mount_propagation::{MountTopology, PendingPropagationChanges},
     try_get_mnt_ns_inode,
 };
 use crate::{
     fs::{
         fs_impls::ramfs::RamFs,
-        pseudofs::{NsCommonOps, NsType, StashedDentry},
-        vfs::path::{Dentry, Mount, Path, PathResolver},
+        pseudofs::{NsCommonOps, NsType, NullFs, StashedDentry},
+        vfs::{
+            path::{Dentry, Mount, Path, PathResolver, PerMountFlags},
+            registry::FsAndRoot,
+        },
     },
     prelude::*,
     process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread},
@@ -25,7 +30,7 @@ use crate::{
 /// A `MountNamespace` only allows operations on [`Mount`]s that belong to that `MountNamespace`.
 /// If the operation target includes [`Mount`]s from other `MountNamespace`s, it will be directly
 /// rejected and return an `Err`.
-pub struct MountNamespace {
+pub(crate) struct MountNamespace {
     /// The root mount of this namespace.
     ///
     /// This field is wrapped within an `Option<_>`
@@ -39,7 +44,7 @@ pub struct MountNamespace {
     /// The stashed dentry in nsfs.
     stashed_dentry: StashedDentry,
     /// Live mounts that belong to this namespace, keyed by [`Mount::unique_id`].
-    mounts: SpinLock<BTreeMap<u64, Weak<Mount>>>,
+    mounts: SpinLock<BTreeMap<UniqueMountId, Weak<Mount>>>,
 }
 
 impl PartialEq for MountNamespace {
@@ -90,20 +95,37 @@ impl MountNamespace {
 
     /// Returns a reference to the singleton initial mount namespace.
     #[doc(hidden)]
-    pub fn get_init_singleton() -> &'static Arc<MountNamespace> {
+    pub(crate) fn get_init_singleton() -> &'static Arc<MountNamespace> {
         static INIT: Once<Arc<MountNamespace>> = Once::new();
 
         INIT.call_once(|| {
             let owner = UserNamespace::get_init_singleton().clone();
+            let nullfs = NullFs::singleton().clone();
             let rootfs = RamFs::new_rootfs();
 
-            Self::new_with_root(owner, |weak_ns| Mount::new_root(rootfs, weak_ns.clone()))
-                .expect("failed to allocate mount ID for the root mount")
+            let namespace = Self::new_with_root(owner, |weak_ns| {
+                Mount::new_root(nullfs, PerMountFlags::RDONLY, weak_ns.clone())
+            })
+            .expect("failed to create the nullfs root mount");
+
+            let mut topology_guard = MountTopology::write_lock();
+            let root_mount = namespace.root();
+            root_mount
+                .do_mount(
+                    FsAndRoot::new(rootfs),
+                    PerMountFlags::default(),
+                    root_mount.root_dentry(),
+                    Some("rootfs".to_string()),
+                    &mut topology_guard,
+                )
+                .expect("failed to mount rootfs on nullfs");
+
+            namespace
         })
     }
 
     /// Gets the root mount of this namespace.
-    pub fn root(&self) -> &Arc<Mount> {
+    pub(crate) fn root(&self) -> &Arc<Mount> {
         self.root.as_ref().unwrap()
     }
 
@@ -114,16 +136,16 @@ impl MountNamespace {
     ///
     /// The "effective root" refers to the currently visible root directory, which
     /// may differ from the original root filesystem if overlay mounts exist.
-    pub fn new_path_resolver(&self) -> PathResolver {
-        let root = Path::new_fs_root(self.root().clone()).get_top_path();
-        let cwd = Path::new_fs_root(self.root().clone()).get_top_path();
+    pub(crate) fn new_path_resolver(&self) -> PathResolver {
+        let root = Path::new_root(self.root().clone()).get_top_path();
+        let cwd = Path::new_root(self.root().clone()).get_top_path();
         PathResolver::new(root, cwd)
     }
 
     /// Creates a deep copy of this mount namespace, including the entire mount tree.
     ///
     /// This is typically used when creating a new namespace for a process or thread.
-    pub fn new_clone(
+    pub(crate) fn new_clone(
         &self,
         owner: Arc<UserNamespace>,
         posix_thread: &PosixThread,
@@ -134,17 +156,20 @@ impl MountNamespace {
             CapSet::SYS_ADMIN,
         ))?;
 
-        let topology_guard = MountTopology::read_lock();
-
         let root_mount = self.root();
         Self::new_with_root(owner, |weak_ns| {
-            root_mount.clone_mount_tree(
+            let mut topology_guard = MountTopology::write_lock();
+            let mut pending_changes = PendingPropagationChanges::default();
+            let cloned_tree = root_mount.clone_mount_tree_deferred(
                 root_mount.root_dentry(),
                 weak_ns,
                 true,
-                MountNsFileCopying::Skip,
+                MountTreeCloneMode::Namespace,
+                &mut pending_changes,
                 &topology_guard,
-            )
+            )?;
+            pending_changes.commit(&mut topology_guard);
+            Ok(cloned_tree)
         })
     }
 
@@ -156,7 +181,7 @@ impl MountNamespace {
     }
 
     /// Removes `unique_id` from this namespace's lookup table.
-    pub(super) fn deregister_mount(&self, unique_id: u64) {
+    pub(super) fn deregister_mount(&self, unique_id: UniqueMountId) {
         self.mounts.lock().remove(&unique_id);
     }
 
@@ -164,7 +189,7 @@ impl MountNamespace {
     ///
     /// No recyclable-`id` counterpart exists: the 32-bit ID space is reused
     /// on drop, so a keyed lookup would race the next allocation.
-    pub fn lookup_by_unique_id(&self, unique_id: u64) -> Option<Arc<Mount>> {
+    pub(crate) fn lookup_by_unique_id(&self, unique_id: UniqueMountId) -> Option<Arc<Mount>> {
         let mount = {
             let mounts = self.mounts.lock();
             mounts.get(&unique_id).and_then(Weak::upgrade)?
@@ -182,7 +207,7 @@ impl MountNamespace {
     /// Live mounts are snapshotted under `mounts.lock`; ancestry is checked
     /// afterward so per-`Mount` locks are never acquired while the table lock
     /// is held.
-    pub fn descendant_mounts_of(
+    pub(crate) fn descendant_mounts_of(
         &self,
         parent: &Arc<Mount>,
     ) -> impl DoubleEndedIterator<Item = Arc<Mount>> {
@@ -225,29 +250,24 @@ impl MountNamespace {
 
     /// Flushes all pending filesystem metadata and cached file data to the device
     /// for all mounted filesystems in this mount namespace.
-    pub fn sync(&self) -> Result<()> {
-        let mut mount_queue = VecDeque::new();
+    pub(crate) fn sync(&self) -> Result<()> {
         let mut visited_filesystems = hashbrown::HashSet::new();
-        mount_queue.push_back(self.root().clone());
 
-        while let Some(current_mount) = mount_queue.pop_front() {
+        self.root().try_walk_tree(|current_mount| {
             let fs_ptr = Arc::as_ptr(current_mount.fs());
             // Only sync each filesystem once.
             if visited_filesystems.insert(fs_ptr) {
                 current_mount.sync()?;
             }
 
-            let children = current_mount.children.read();
-            for child_mount in children.values() {
-                mount_queue.push_back(child_mount.clone());
-            }
-        }
+            Ok(())
+        })?;
 
         Ok(())
     }
 
     /// Checks whether a given mount belongs to this mount namespace.
-    pub fn owns(self: &Arc<Self>, mount: &Mount) -> bool {
+    pub(crate) fn owns(self: &Arc<Self>, mount: &Mount) -> bool {
         mount.mnt_ns().as_ptr() == Arc::as_ptr(self)
     }
 
@@ -268,12 +288,9 @@ impl MountNamespace {
         root_mount: &Arc<Mount>,
         _topology: &MountTopology,
     ) -> Result<()> {
-        let mut worklist = VecDeque::new();
-        worklist.push_back(root_mount.clone());
-
         let mut checked_root_dentries = BTreeSet::new();
 
-        while let Some(mount) = worklist.pop_front() {
+        root_mount.try_walk_tree(|mount| {
             let root_dentry = mount.root_dentry();
             if checked_root_dentries.insert(root_dentry.key())
                 && self.would_form_mnt_ns_loop(root_dentry)
@@ -283,9 +300,8 @@ impl MountNamespace {
                     "the mount tree contains a mount namespace file that would create a namespace loop"
                 );
             }
-            let children = mount.children.read();
-            worklist.extend(children.values().cloned());
-        }
+            Ok(())
+        })?;
 
         Ok(())
     }
@@ -307,6 +323,7 @@ impl Drop for MountNamespace {
         let mut worklist = VecDeque::new();
         worklist.push_back(root.clone());
         while let Some(current_mount) = worklist.pop_front() {
+            current_mount.clear_propagation(&mut topology_guard);
             let mut children = current_mount.children.write();
             for (_, child) in children.drain() {
                 child.clear_topology_link(&mut topology_guard);

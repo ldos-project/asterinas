@@ -7,15 +7,20 @@ use crate::{
     util::net::{CSocketOptionLevel, new_raw_socket_option},
 };
 
-pub fn sys_setsockopt(
+pub(super) fn sys_setsockopt(
     sockfd: RawFileDesc,
     level: i32,
     optname: i32,
     optval: Vaddr,
-    optlen: u32,
+    optlen: i32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let level = CSocketOptionLevel::try_from(level).map_err(|_| Errno::EOPNOTSUPP)?;
+
+    if optlen < 0 {
+        return_errno_with_message!(Errno::EINVAL, "optlen is negative");
+    }
+    let optlen = optlen.cast_unsigned();
 
     debug!(
         "level = {:?}, sockfd = {}, optname = {}, optval = {}",

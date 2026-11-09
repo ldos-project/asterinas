@@ -20,11 +20,13 @@ aster-util.workspace = true
 bitflags.workspace = true
 component.workspace = true
 device-id.workspace = true
+dma-pool.workspace = true
 id-alloc.workspace = true
 int-to-c-enum.workspace = true
 io-util.workspace = true
 ostd.workspace = true
 ostd-pod.workspace = true
+short-vis-path.workspace = true
 smallvec.workspace = true
 spin.workspace = true
 typeflags-util.workspace = true
@@ -33,6 +35,12 @@ zerocopy.workspace = true
 [target.x86_64-unknown-none.dependencies]
 aster-cmdline.workspace = true
 tdx-guest = { workspace = true, optional = true }
+
+[target.riscv64imac-unknown-none-elf.dependencies]
+fdt-util.workspace = true
+
+[target.aarch64-unknown-none-softfloat.dependencies]
+fdt-util.workspace = true
 
 [features]
 all = ["cvm_guest"]

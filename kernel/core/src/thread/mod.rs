@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Posix thread implementation
+//! Thread implementation.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,20 +11,23 @@ use ostd::{
     task::Task,
 };
 
+use self::{kernel_thread::AsKernelThread, stats::CONTEXT_SWITCH_COUNTER};
 use crate::{
     prelude::*,
     sched::{SchedAttr, SchedPolicy},
 };
-mod stats;
-use stats::CONTEXT_SWITCH_COUNTER;
-pub use stats::collect_context_switch_count;
-pub mod exception;
-pub mod kernel_thread;
-pub mod oops;
-pub mod task;
-pub mod work_queue;
 
-pub type Tid = u32;
+pub(crate) mod exception;
+pub(crate) mod kernel_thread;
+pub(crate) mod oops;
+mod softirqd;
+mod stats;
+pub(crate) mod task;
+pub(crate) mod work_queue;
+
+pub(crate) use self::stats::collect_context_switch_count;
+
+pub(crate) type Tid = u32;
 
 fn pre_schedule_handler(irq_guard: &DisabledLocalIrqGuard) {
     let Some(task) = Task::current() else {
@@ -45,13 +48,16 @@ fn post_schedule_handler() {
         .add_on_cpu(CpuId::current_racy(), 1);
 
     let task = Task::current().unwrap();
-    let Some(thread_local) = task.as_thread_local() else {
-        return;
-    };
-
-    let vmar = thread_local.vmar().borrow();
-    if let Some(vmar) = vmar.as_ref() {
-        vmar.vm_space().activate()
+    if let Some(thread_local) = task.as_thread_local() {
+        let vmar = thread_local.vmar().borrow();
+        if let Some(vmar) = vmar.as_ref() {
+            vmar.vm_space().activate()
+        }
+    } else if let Some(vmar) = task
+        .as_kernel_thread()
+        .and_then(|kernel_thread| kernel_thread.vmar())
+    {
+        vmar.vm_space().activate();
     }
 }
 
@@ -62,26 +68,34 @@ pub(super) fn init() {
     ostd::mm::fault::inject_user_page_fault_handler(exception::page_fault_handler);
 }
 
-/// A thread is a wrapper on top of task.
+pub(super) fn init_in_first_kthread() {
+    work_queue::init_in_first_kthread();
+    softirqd::init_in_first_kthread();
+}
+
+/// A thread is a wrapper on top of a task.
 #[derive(Debug)]
-pub struct Thread {
-    // immutable part
-    /// Low-level info
+pub(crate) struct Thread {
+    // Immutable part:
+    //
+    /// Low-level task.
     task: Weak<Task>,
-    /// Data: Posix thread info/Kernel thread Info
+    /// POSIX thread information or kernel thread information.
     data: Box<dyn Send + Sync + Any>,
 
-    // mutable part
-    /// Thread status
+    // Mutable part:
+    //
+    /// Thread status.
     is_exited: AtomicBool,
-    /// Thread CPU affinity
+    /// Thread CPU affinity.
     cpu_affinity: AtomicCpuSet,
+    /// Thread scheduling attribute.
     sched_attr: SchedAttr,
 }
 
 impl Thread {
     /// Never call these function directly
-    pub fn new(
+    pub(crate) fn new(
         task: Weak<Task>,
         data: impl Send + Sync + Any,
         cpu_affinity: CpuSet,
@@ -100,24 +114,24 @@ impl Thread {
     ///
     /// This function returns `None` if the current task is not associated with
     /// a thread, or if called within the bootstrap context.
-    pub fn current() -> Option<Arc<Self>> {
+    pub(crate) fn current() -> Option<Arc<Self>> {
         Task::current()?.as_thread().cloned()
     }
 
     /// Returns the task associated with this thread.
     #[expect(dead_code)]
-    pub fn task(&self) -> Arc<Task> {
+    pub(crate) fn task(&self) -> Arc<Task> {
         self.task.upgrade().unwrap()
     }
 
     /// Runs this thread at once.
     #[track_caller]
-    pub fn run(&self) {
+    pub(crate) fn run(&self) {
         self.task.upgrade().unwrap().run();
     }
 
     /// Returns whether the thread is exited.
-    pub fn is_exited(&self) -> bool {
+    pub(crate) fn is_exited(&self) -> bool {
         self.is_exited.load(Ordering::Acquire)
     }
 
@@ -126,11 +140,11 @@ impl Thread {
     }
 
     /// Returns the reference to the atomic CPU affinity.
-    pub fn atomic_cpu_affinity(&self) -> &AtomicCpuSet {
+    pub(crate) fn atomic_cpu_affinity(&self) -> &AtomicCpuSet {
         &self.cpu_affinity
     }
 
-    pub fn sched_attr(&self) -> &SchedAttr {
+    pub(crate) fn sched_attr(&self) -> &SchedAttr {
         &self.sched_attr
     }
 
@@ -138,7 +152,7 @@ impl Thread {
     ///
     /// This method will return once the current thread is scheduled again.
     #[track_caller]
-    pub fn yield_now() {
+    pub(crate) fn yield_now() {
         Task::yield_now()
     }
 
@@ -147,20 +161,20 @@ impl Thread {
     /// This method will return after the thread exits.
     #[cfg_attr(not(ktest), expect(dead_code))]
     #[track_caller]
-    pub fn join(&self) {
+    pub(crate) fn join(&self) {
         while !self.is_exited() {
             Self::yield_now();
         }
     }
 
     /// Returns the associated data.
-    pub fn data(&self) -> &(dyn Send + Sync + Any) {
+    pub(crate) fn data(&self) -> &(dyn Send + Sync + Any) {
         &*self.data
     }
 }
 
 /// A trait to provide the `as_thread` method for tasks.
-pub trait AsThread {
+pub(crate) trait AsThread {
     /// Returns the associated [`Thread`].
     fn as_thread(&self) -> Option<&Arc<Thread>>;
 }

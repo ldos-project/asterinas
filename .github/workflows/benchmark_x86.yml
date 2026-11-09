@@ -58,8 +58,20 @@ jobs:
           - lmbench/ext2_copy_files_bw
           - fio/ext2_seq_write_bw
           - fio/ext2_seq_read_bw
+          - fio/ext2_seq_write_bw_direct
+          - fio/ext2_seq_read_bw_direct
           - fio/ext2_seq_write_bw_no_iommu
           - fio/ext2_seq_read_bw_no_iommu
+          - fio/ext2_seq_write_bw_direct_no_iommu
+          - fio/ext2_seq_read_bw_direct_no_iommu
+          - fio/virtiofs_seq_write_bw
+          - fio/virtiofs_seq_read_bw
+          - fio/virtiofs_seq_write_bw_direct
+          - fio/virtiofs_seq_read_bw_direct
+          - fio/nvme_seq_write_bw_direct
+          - fio/nvme_seq_read_bw_direct
+          - fio/nvme_seq_write_bw_direct_no_iommu
+          - fio/nvme_seq_read_bw_direct_no_iommu
           # Loopback-related network benchmarks
           - lmbench/tcp_loopback_bw_128
           - lmbench/tcp_loopback_bw_4k
@@ -76,6 +88,8 @@ jobs:
           - lmbench/tcp_virtio_lat
           - lmbench/udp_virtio_lat
           - iperf3/tcp_virtio_bw
+          - iperf3/udp_virtio_bw_rx
+          - iperf3/udp_virtio_bw_tx
           # Scheduler-related benchmarks
           - hackbench/group8_smp1
           # FIXME: hackbench panics on multi-core settings now.
@@ -104,6 +118,10 @@ jobs:
           - memcached/t8_conc32_window10k
           - memcached/t8_conc32_window20k
           - memcached/t16_conc64_window10k
+          # Boot time benchmark (at different initramfs sizes)
+          - boot/boot_lat
+          - boot/boot_lat_100MB
+          - boot/boot_lat_500MB
       fail-fast: false
       # FIXME: Remove the following line after fixing the parallel execution of network benchmarks.
       max-parallel: 1

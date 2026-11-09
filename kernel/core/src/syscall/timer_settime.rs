@@ -7,11 +7,11 @@ use ostd::mm::VmIo;
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    time::{TIMER_ABSTIME, itimerspec_t, timer::Timeout, timespec_t},
+    time::{TIMER_ABSTIME, itimerspec_t, timer::Timeout, timer_t, timespec_t},
 };
 
-pub fn sys_timer_settime(
-    timer_id: usize,
+pub(super) fn sys_timer_settime(
+    timer_id: timer_t,
     flags: i32,
     new_itimerspec_addr: Vaddr,
     old_itimerspec_addr: Vaddr,
@@ -61,14 +61,11 @@ pub fn sys_timer_settime(
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_timer_gettime(
-    timer_id: usize,
+pub(super) fn sys_timer_gettime(
+    timer_id: timer_t,
     itimerspec_addr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    if itimerspec_addr == 0 {
-        return_errno_with_message!(Errno::EINVAL, "invalid pointer to return value");
-    }
     let Some(timer) = ctx.process.timer_manager().find_posix_timer(timer_id) else {
         return_errno_with_message!(Errno::EINVAL, "invalid timer ID");
     };

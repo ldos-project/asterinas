@@ -45,7 +45,7 @@ use device_id::{DeviceId, MinorId};
 use ostd::{
     const_assert,
     mm::{FrameAllocOptions, HasPaddr, HasSize, USegment, VmIo, dma::DmaCoherent},
-    sync::{RwMutexWriteGuard, WaitQueue},
+    sync::{RwMutexWriteGuard, Waiter},
 };
 use spin::Once;
 use tdx_guest::{
@@ -54,27 +54,29 @@ use tdx_guest::{
 };
 
 use crate::{
-    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char::register},
+    device::{Device, DeviceType, registry::char::register},
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
+        devtmpfs::DevtmpfsNodeMeta,
         file::{PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::signal::{PollHandle, Pollable},
-    util::ioctl::{RawIoctl, dispatch_ioctl},
+    util::ioctl::RawIoctl,
 };
 
 const TDX_GUEST_MINOR: u32 = 0x7b;
 
 /// The `/dev/tdx_guest` device.
 #[derive(Debug)]
-pub struct TdxGuest {
+pub(crate) struct TdxGuest {
     id: DeviceId,
 }
 
 impl TdxGuest {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         let major = super::MISC_MAJOR.get().unwrap().get();
         let minor = MinorId::new(TDX_GUEST_MINOR);
 
@@ -92,8 +94,8 @@ impl Device for TdxGuest {
         self.id
     }
 
-    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("tdx_guest"))
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
+        Some(DevtmpfsNodeMeta::new("tdx_guest").unwrap())
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -194,12 +196,7 @@ impl PerOpenFileOps for TdxGuestFile {
                         inblob_ptr.read()?
                     };
 
-                    let report = TDX_REPORT
-                        .get()
-                        .ok_or_else(|| {
-                            Error::with_message(Errno::ENODEV, "TDX report not initialized")
-                        })?
-                        .write();
+                    let report = tdx_report_or_err()?.write();
                     refresh_tdx_report_locked(&report, Some(inblob.as_bytes()))?;
                     let outblob_ptr = field_ptr!(&data_ptr, TdxReportRequest, tdx_report);
                     outblob_ptr.copy_from(&SafePtr::new(&*report, 0))?;
@@ -214,12 +211,18 @@ impl PerOpenFileOps for TdxGuestFile {
 
 static TDX_REPORT: Once<RwMutex<USegment>> = Once::new();
 
+fn tdx_report_or_err() -> Result<&'static RwMutex<USegment>> {
+    TDX_REPORT
+        .get()
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "the TDX report is not initialized"))
+}
+
 /// Runtime Measurement Register (RTMR) index.
 ///
 /// RTMRs are the only measurement registers that can be extended at runtime
 /// via [`extend_tdx_mr`].
 #[derive(Clone, Copy, Debug)]
-pub enum Rtmr {
+pub(crate) enum Rtmr {
     Rtmr0,
     Rtmr1,
     Rtmr2,
@@ -228,7 +231,7 @@ pub enum Rtmr {
 
 /// TDX measurement register.
 #[derive(Clone, Copy, Debug)]
-pub enum MeasurementReg {
+pub(crate) enum MeasurementReg {
     MrConfigId,
     MrOwner,
     MrOwnerConfig,
@@ -237,7 +240,7 @@ pub enum MeasurementReg {
 }
 
 /// Gets the TDX quote given the specified data in `inblob`.
-pub fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
+pub(crate) fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
     const GET_QUOTE_IN_FLIGHT: u64 = 0xFFFF_FFFF_FFFF_FFFF;
     const GET_QUOTE_BUF_SIZE: usize = 8 * 1024;
 
@@ -250,10 +253,7 @@ pub fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
     field_ptr!(&header_ptr, TdxQuoteHdr, in_len).write(&(size_of::<TdReport>() as u32))?;
     field_ptr!(&header_ptr, TdxQuoteHdr, out_len).write(&0u32)?;
 
-    let report = TDX_REPORT
-        .get()
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "TDX report not initialized"))?
-        .write();
+    let report = tdx_report_or_err()?.write();
     refresh_tdx_report_locked(&report, Some(inblob))?;
     payload_ptr.copy_from(&SafePtr::new(&*report, 0))?;
     drop(report);
@@ -265,14 +265,14 @@ pub fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
 
     // Poll for the quote to be ready.
     let status_ptr = field_ptr!(&header_ptr, TdxQuoteHdr, status);
-    let sleep_queue = WaitQueue::new();
+    let (sleep_waiter, _) = Waiter::new_pair();
     let sleep_duration = Duration::from_millis(100);
     loop {
         let status = status_ptr.read()?;
         if status != GET_QUOTE_IN_FLIGHT {
             break;
         }
-        let _ = sleep_queue.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
+        let _ = sleep_waiter.wait_until_or_timeout(|| -> Option<()> { None }, &sleep_duration);
     }
 
     // Note: We cannot convert `DmaCoherent` to `USegment` here. When shared memory is converted back
@@ -294,15 +294,12 @@ pub fn tdx_get_quote(inblob: &[u8]) -> Result<Box<[u8]>> {
 /// Most callers that only need to read a measurement register after an extend
 /// should use [`get_tdx_mr_refresh`] instead, which combines the refresh and
 /// the register read atomically.
-pub fn refresh_tdx_report(inblob: Option<&[u8]>) -> Result<()> {
-    let report = TDX_REPORT
-        .get()
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "TDX report not initialized"))?
-        .write();
+pub(crate) fn refresh_tdx_report(inblob: Option<&[u8]>) -> Result<()> {
+    let report = tdx_report_or_err()?.write();
     refresh_tdx_report_locked(&report, inblob)
 }
 
-pub const SHA384_DIGEST_SIZE: usize = 48;
+pub(crate) const SHA384_DIGEST_SIZE: usize = 48;
 
 /// Gets the measurement register value from the cached TDX report.
 ///
@@ -311,11 +308,8 @@ pub const SHA384_DIGEST_SIZE: usize = 48;
 /// [`get_tdx_mr_refresh`] call. If the register may have been updated by a
 /// recent [`extend_tdx_mr`], use [`get_tdx_mr_refresh`] instead to obtain the
 /// current hardware value.
-pub fn get_tdx_mr(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE]> {
-    let report = TDX_REPORT
-        .get()
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "TDX report not initialized"))?
-        .read();
+pub(crate) fn get_tdx_mr(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE]> {
+    let report = tdx_report_or_err()?.read();
 
     let mut blob = [0u8; SHA384_DIGEST_SIZE];
     report
@@ -334,11 +328,8 @@ pub fn get_tdx_mr(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE]> {
 /// Use this function after [`extend_tdx_mr`] to observe the updated RTMR
 /// value. If no extend has occurred and the cached report is still current,
 /// the cheaper [`get_tdx_mr`] can be used instead.
-pub fn get_tdx_mr_refresh(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE]> {
-    let report = TDX_REPORT
-        .get()
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "TDX report not initialized"))?
-        .write();
+pub(crate) fn get_tdx_mr_refresh(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE]> {
+    let report = tdx_report_or_err()?.write();
 
     refresh_tdx_report_locked(&report, None)?;
 
@@ -357,7 +348,7 @@ pub fn get_tdx_mr_refresh(reg: MeasurementReg) -> Result<[u8; SHA384_DIGEST_SIZE
 /// atomically regenerates the report and reads the register. Alternatively,
 /// call [`refresh_tdx_report`] and then [`get_tdx_mr`] if you need to refresh
 /// once and read multiple registers.
-pub fn extend_tdx_mr(reg: Rtmr, data: &[u8; SHA384_DIGEST_SIZE]) -> Result<()> {
+pub(crate) fn extend_tdx_mr(reg: Rtmr, data: &[u8; SHA384_DIGEST_SIZE]) -> Result<()> {
     let index = match reg {
         Rtmr::Rtmr0 => 0,
         Rtmr::Rtmr1 => 1,
@@ -498,7 +489,7 @@ impl TdReport {
 
 mod ioctl_defs {
     use super::TdxReportRequest;
-    use crate::util::ioctl::{InOutData, ioc};
+    use crate::{ioc, util::ioctl::InOutData};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/linux/tdx-guest.h#L40>
 

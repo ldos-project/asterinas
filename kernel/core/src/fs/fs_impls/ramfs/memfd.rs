@@ -6,7 +6,6 @@ use alloc::format;
 use core::time::Duration;
 
 use align_ext::AlignExt;
-use aster_rights::Rights;
 use inherit_methods_macro::inherit_methods;
 use spin::Once;
 
@@ -18,7 +17,7 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             inode::{Extension, FallocMode, FileOps, Inode, Metadata},
-            path::{Mount, Path},
+            path::{Dentry, Mount, Path},
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
         },
     },
@@ -35,9 +34,9 @@ pub(super) fn init() {
 /// Maximum file name length for `memfd_create`, excluding the final `\0` byte.
 ///
 /// See <https://man7.org/linux/man-pages/man2/memfd_create.2.html>
-pub const MAX_MEMFD_NAME_LEN: usize = 249;
+pub(crate) const MAX_MEMFD_NAME_LEN: usize = 249;
 
-pub struct MemfdInode {
+pub(crate) struct MemfdInode {
     inode: RamInode,
     name: String,
     seals: Mutex<FileSeals>,
@@ -78,7 +77,7 @@ impl MemfdInode {
     /// Checks whether writing to this memfd inode is allowed.
     ///
     /// This method restricts the `may_perms` if needed.
-    pub fn check_writable(&self, perms: VmPerms, may_perms: &mut VmPerms) -> Result<()> {
+    pub(crate) fn check_writable(&self, perms: VmPerms, may_perms: &mut VmPerms) -> Result<()> {
         let seals = self.seals.lock();
         if seals.intersects(FileSeals::F_SEAL_WRITE | FileSeals::F_SEAL_FUTURE_WRITE) {
             if perms.contains(VmPerms::WRITE) {
@@ -151,31 +150,32 @@ impl Inode for MemfdInode {
     fn metadata(&self) -> Result<Metadata>;
     fn size(&self) -> usize;
     fn atime(&self) -> Duration;
-    fn set_atime(&self, time: Duration);
+    fn set_atime(&self, self_dentry: &Dentry, time: Duration);
     fn mtime(&self) -> Duration;
-    fn set_mtime(&self, time: Duration);
+    fn set_mtime(&self, self_dentry: &Dentry, time: Duration);
     fn ctime(&self) -> Duration;
-    fn set_ctime(&self, time: Duration);
+    fn set_ctime(&self, self_dentry: &Dentry, time: Duration);
     fn ino(&self) -> u64;
     fn type_(&self) -> InodeType;
     fn mode(&self) -> Result<InodeMode>;
     fn owner(&self) -> Result<Uid>;
-    fn set_owner(&self, uid: Uid) -> Result<()>;
+    fn set_owner(&self, self_dentry: &Dentry, uid: Uid) -> Result<()>;
     fn group(&self) -> Result<Gid>;
-    fn set_group(&self, gid: Gid) -> Result<()>;
+    fn set_group(&self, self_dentry: &Dentry, gid: Gid) -> Result<()>;
     fn page_cache(&self) -> Option<Arc<Vmo>>;
     fn extension(&self) -> &Extension;
     fn set_xattr(
         &self,
+        self_dentry: &Dentry,
         name: XattrName,
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
     ) -> Result<()>;
     fn get_xattr(&self, name: XattrName, value_writer: &mut VmWriter) -> Result<usize>;
     fn list_xattr(&self, namespace: XattrNamespace, list_writer: &mut VmWriter) -> Result<usize>;
-    fn remove_xattr(&self, name: XattrName) -> Result<()>;
+    fn remove_xattr(&self, self_dentry: &Dentry, name: XattrName) -> Result<()>;
 
-    fn resize(&self, new_size: usize) -> Result<()> {
+    fn resize(&self, self_dentry: &Dentry, new_size: usize) -> Result<()> {
         let seals = self.seals.lock();
         let old_size = self.inode.size();
         if seals.contains(FileSeals::F_SEAL_SHRINK) && new_size < old_size {
@@ -185,10 +185,10 @@ impl Inode for MemfdInode {
             return_errno_with_message!(Errno::EPERM, "the file is sealed against growing");
         }
 
-        self.inode.resize(new_size)
+        self.inode.resize(self_dentry, new_size)
     }
 
-    fn set_mode(&self, mode: InodeMode) -> Result<()> {
+    fn set_mode(&self, self_dentry: &Dentry, mode: InodeMode) -> Result<()> {
         let seals = self.seals.lock();
         if seals.contains(FileSeals::F_SEAL_EXEC)
             && (self.mode().unwrap() ^ mode).intersects(mkmod!(a+x))
@@ -199,7 +199,7 @@ impl Inode for MemfdInode {
             );
         }
 
-        self.inode.set_mode(mode)
+        self.inode.set_mode(self_dentry, mode)
     }
 
     fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
@@ -221,7 +221,7 @@ impl Inode for MemfdInode {
     }
 }
 
-pub trait MemfdInodeHandle: Sized {
+pub(crate) trait MemfdInodeHandle: Sized {
     fn new_memfd(name: String, memfd_flags: MemfdFlags) -> Result<Self>;
     fn add_seals(&self, new_seals: FileSeals) -> Result<()>;
     fn get_seals(&self) -> Result<FileSeals>;
@@ -275,11 +275,10 @@ impl MemfdInodeHandle for InodeHandle {
     }
 
     fn add_seals(&self, new_seals: FileSeals) -> Result<()> {
-        let rights = self.rights();
-        if rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
-        if !rights.contains(Rights::WRITE) {
+        if !self.access_mode().is_writable() {
             return_errno_with_message!(Errno::EPERM, "the file is not opened writable");
         }
 
@@ -287,8 +286,7 @@ impl MemfdInodeHandle for InodeHandle {
     }
 
     fn get_seals(&self) -> Result<FileSeals> {
-        let rights = self.rights();
-        if rights.is_empty() {
+        if self.status_flags().contains(StatusFlags::O_PATH) {
             return_errno_with_message!(Errno::EBADF, "the file is opened as a path");
         }
 
@@ -335,7 +333,7 @@ impl MemfdTmpFs {
 }
 
 bitflags! {
-    pub struct MemfdFlags: u32 {
+    pub(crate) struct MemfdFlags: u32 {
         /// Close on exec.
         const MFD_CLOEXEC = 1 << 0;
         /// Allow sealing operations on this file.
@@ -350,7 +348,7 @@ bitflags! {
 }
 
 bitflags! {
-    pub struct FileSeals: u32 {
+    pub(crate) struct FileSeals: u32 {
         /// Prevent further seals from being set.
         const F_SEAL_SEAL = 0x0001;
         /// Prevent file from shrinking.

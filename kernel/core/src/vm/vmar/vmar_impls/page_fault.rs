@@ -10,7 +10,7 @@ use crate::vm::vmar::{PageFaultOQueueMessage, oqueues};
 use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
-    pub fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
+    pub(crate) fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
         let inner = self.inner.read();
 
         let address = page_fault_info.address;
@@ -47,7 +47,7 @@ impl Vmar {
 ///
 /// [`CpuException`]: ostd::arch::cpu::context::CpuException
 #[derive(Clone, Copy, Debug, Serialize)]
-pub struct PageFaultInfo {
+pub(crate) struct PageFaultInfo {
     /// The virtual address where a page fault occurred.
     pub(crate) address: Vaddr,
 
@@ -62,7 +62,7 @@ pub struct PageFaultInfo {
 
 impl PageFaultInfo {
     /// Creates a new `PageFaultInfo`.
-    pub fn new(address: Vaddr, required_perms: VmPerms) -> Self {
+    pub(crate) fn new(address: Vaddr, required_perms: VmPerms) -> Self {
         Self {
             address,
             required_perms,

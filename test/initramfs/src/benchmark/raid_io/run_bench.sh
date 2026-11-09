@@ -49,10 +49,10 @@ done
 [ -n "$WORKLOAD" ] || fail "missing --workload"
 OUT_DIR=${OUT_DIR:-raid_io/${WORKLOAD}/${SYSTEM}}
 
+mountpoint -q "$SHARE" || mount -t virtiofs aster-virtiofs "$SHARE" || fail "could not mount the share"
+
 # Setting the device for benchmark. Assemble the RAID array for linux
 if [ "$SYSTEM" = linux ]; then
-    # Unlike Mariposa, whose `/init` has mounted the share, Linux boots straight into `bench_runner.sh`.
-    mount -t virtiofs aster-virtiofs "$SHARE" || fail "could not mount the share"
     # Assemble the three members.
     MEMBERS=
     for SERIAL in raid0 raid1 raid2; do
