@@ -8,15 +8,21 @@ use crate::{
 };
 
 /// A thread waiting for a PI futex.
-// Not every policy uses every field.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct PiWaiter {
+    #[expect(
+        dead_code,
+        reason = "reserved for policies that select individual waiters"
+    )]
     pub tid: Tid,
     /// The waiter's current scheduling policy. If the waiter itself owns a contended futex, this
     /// may already be boosted.
     pub policy: SchedPolicy,
     /// How long the waiter has been waiting, in nanoseconds.
+    #[expect(
+        dead_code,
+        reason = "reserved for policies that account for waiting time"
+    )]
     pub waited_ns: u64,
 }
 
