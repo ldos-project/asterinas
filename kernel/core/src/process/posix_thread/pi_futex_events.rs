@@ -2,13 +2,12 @@
 
 //! The `futex.pi.events` OQueue, which reports how threads contend on PI futexes.
 //!
-//! Together with `scheduler.events`, this lets a policy see who waits on whom: a `Block` event
-//! names a waiter and the owner it is stuck behind, along with both of their scheduling policies,
-//! so a high-priority thread blocked behind a low-priority one (a priority inversion) shows up
-//! directly. `WaitEnd` and `Handoff` events then report how long the wait lasted and who the lock
-//! went to.
+//! Together with `scheduler.events`, this lets a policy see who waits on whom. Every event carries
+//! an optional snapshot of the current owner and its scheduling policy. `Block` details name the
+//! waiter and its policy, while `WaitEnd` and `Handoff` details report how long the wait lasted
+//! and who the lock went to.
 //!
-//! Events are published without blocking the locking thread. If a strong observer's ring is
+//! Event delivery never waits for observers. If a strong observer's ring is
 //! full, the event is dropped. The queue is exported at `/oqueues/futex/pi/events`.
 
 use serde::Serialize;
@@ -30,17 +29,29 @@ pub struct PiFutexEvent {
     pub pid: Pid,
     /// The user-space address of the futex word.
     pub futex_addr: u64,
-    pub kind: PiFutexEventKind,
+    /// The current owner sampled while preparing the event, not the original blocking owner.
+    ///
+    /// `None` means the futex is unowned or a consistent owner snapshot was unavailable (for
+    /// example, the word was unmapped, the owner exited, or ownership changed during sampling).
+    /// Ownership and policy can change again before the event is published or observed.
+    pub owner: Option<PiFutexOwner>,
+    pub details: PiFutexEventDetails,
 }
 
+/// A snapshot of a PI futex owner's identity and scheduling policy.
 #[derive(Clone, Copy, Debug, Serialize)]
-pub enum PiFutexEventKind {
-    /// `waiter` started to wait for the futex held by `owner`.
+pub struct PiFutexOwner {
+    pub tid: Tid,
+    pub policy: SchedPolicyView,
+}
+
+/// The details specific to a PI futex event.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub enum PiFutexEventDetails {
+    /// `waiter` started to wait for the futex.
     Block {
         waiter: Tid,
         waiter_policy: SchedPolicyView,
-        owner: Tid,
-        owner_policy: SchedPolicyView,
     },
     /// `waiter` stopped waiting after `waited_ns` nanoseconds.
     WaitEnd {
@@ -69,12 +80,17 @@ pub enum PiWaitOutcome {
 }
 
 impl PiFutexEvent {
-    pub fn new(futex_addr: Vaddr, kind: PiFutexEventKind) -> Self {
+    pub fn new(
+        futex_addr: Vaddr,
+        owner: Option<PiFutexOwner>,
+        details: PiFutexEventDetails,
+    ) -> Self {
         Self {
             time_ns: now_ns(),
             pid: current!().pid(),
             futex_addr: futex_addr as u64,
-            kind,
+            owner,
+            details,
         }
     }
 }
@@ -134,3 +150,6 @@ mod imp {
 }
 
 pub use imp::{init, produce};
+
+#[cfg(ktest)]
+mod tests;

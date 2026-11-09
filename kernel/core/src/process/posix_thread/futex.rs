@@ -9,7 +9,7 @@ use spin::Once;
 
 use super::{
     lockprio::{self, PiWaiter},
-    pi_futex_events::{self, PiFutexEvent, PiFutexEventKind, PiWaitOutcome},
+    pi_futex_events::{self, PiFutexEvent, PiFutexEventDetails, PiFutexOwner, PiWaitOutcome},
 };
 use crate::{
     context::current_userspace,
@@ -471,11 +471,10 @@ pub fn futex_lock_pi(
         pi_futex_events::produce(|| {
             PiFutexEvent::new(
                 futex_addr,
-                PiFutexEventKind::Block {
+                current_pi_owner(futex_addr, ctx),
+                PiFutexEventDetails::Block {
                     waiter: tid,
                     waiter_policy: pi_futex_events::policy_of(&thread),
-                    owner,
-                    owner_policy: pi_futex_events::policy_of(&owner_thread),
                 },
             )
         });
@@ -506,7 +505,8 @@ pub fn futex_lock_pi(
             };
             PiFutexEvent::new(
                 futex_addr,
-                PiFutexEventKind::WaitEnd {
+                current_pi_owner(futex_addr, ctx),
+                PiFutexEventDetails::WaitEnd {
                     waiter: tid,
                     waited_ns: pi_futex_events::now_ns().saturating_sub(wait_start_ns),
                     outcome,
@@ -628,7 +628,8 @@ pub fn futex_unlock_pi(
         pi_futex_events::produce(|| {
             PiFutexEvent::new(
                 futex_addr,
-                PiFutexEventKind::Handoff {
+                current_pi_owner(futex_addr, ctx),
+                PiFutexEventDetails::Handoff {
                     from: tid,
                     to: new_owner.tid,
                     waiters_left: waiters_left as u32,
@@ -655,6 +656,26 @@ pub(super) fn futex_wake_pi_waiter(futex_addr: Vaddr, visibility: FutexVisibilit
         futex_bucket.pi_items[index].waker.wake_up();
     }
     Ok(())
+}
+
+/// Samples the current owner without faulting in user memory or changing the futex operation's
+/// result. The PID table lock may sleep, so the futex bucket must be unlocked.
+fn current_pi_owner(futex_addr: Vaddr, ctx: &Context) -> Option<PiFutexOwner> {
+    let user_space = ctx.user_space();
+    let read_owner = || {
+        ctx.thread_local
+            .with_page_fault_disabled(|| user_space.atomic_load::<u32>(futex_addr))
+            .and_then(Result::ok)
+            .map(|word| word & FUTEX_TID_MASK)
+    };
+    let tid = read_owner()?;
+    if tid == 0 {
+        return None;
+    }
+    let thread = pid_table::pid_table_mut().get_thread(tid)?;
+    let policy = pi_futex_events::policy_of(&thread);
+    // Do not pair a stale TID with a policy sampled after ownership changed during the lookup.
+    (read_owner() == Some(tid)).then_some(PiFutexOwner { tid, policy })
 }
 
 /// Applies the boosts reported by [`lockprio::record`], where `thread` is the thread `tid`.
