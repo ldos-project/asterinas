@@ -16,7 +16,7 @@ jobs:
   test-cargo-component:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: ldosproject/asterinas:0.18.0-ldos-20260831
+    container: ldosproject/asterinas:0.18.1-ldos-20261109
     steps:
       - uses: actions/checkout@v4
       - name: Test cargo-component
