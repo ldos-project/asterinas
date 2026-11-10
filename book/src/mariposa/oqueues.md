@@ -8,25 +8,28 @@ components when a command queue or channel is needed.
 OQueues provide 4 operations, each of which requires the producer, consumer, or observer to
 explicitly attach (i.e., register).
 
-<span id="strong_observers"></span>**Strong observers** receive every value in the OQueue exactly once as they are produced. This
-provides a way to process the exact event stream. All strong observers receive all values, so strong
-observation has "broadcast" semantics. This is useful for tracking precise information, for example,
-maintaining a list of all in flight I/O requests. To allow this, strong observers are notified
-whenever a new value is available.
+<span id="strong_observers"></span>**Strong observers** receive every value in the OQueue exactly
+once as they are produced. This provides a way to process the exact event stream. All strong
+observers receive all values, so strong observation has "broadcast" semantics. This is useful for
+tracking precise information, for example, maintaining a list of all in flight I/O requests. To
+allow this, strong observers are notified whenever a new value is available.
 
-<span id="weak_observers"></span>**Weak observers** can observe a history of values in the OQueue on a best effort basis. The length
-of the history must be specified when the observer registers, but is not guaranteed. This is useful
-for accessing approximate recent information, for example, the last 5 I/O requests. Weak observers
-are also notified when new information is available, but are not guaranteed to be notified of every
-new value and the value may have been discarded before the observer runs.
+<span id="weak_observers"></span>**Weak observers** can observe a history of values in the OQueue on
+a best effort basis. The length of the history must be specified when the observer registers, but is
+not guaranteed. The observer has access to the most recent elements; older elements are discarded.
+See [below for more details](#weak-observing-history). Weak observers are useful for accessing
+approximate recent information, for example, the most recent 5 I/O requests. Weak observers are also
+notified when new information is available, but are not guaranteed to be notified of every new value
+and the value may have been discarded before the observer runs.
 
-<span id="producers"></span>**Producers** push values into the OQueue. This is the same as a producer on a typical queue. Once a
-value is produced, it will be received by one consumer (if one exists) and all strong observers.
+<span id="producers"></span>**Producers** push values into the OQueue. This is the same as a
+producer on a typical queue. Once a value is produced, it will be received by one consumer (if one
+exists) and all strong observers.
 
-<span id="consumers"></span>**Consumers** receive values from the OQueue as they are produced, with every message going to a
-single consumer. This is the same semantics as receivers on typical multi-consumer queues. This is
-similar to network "anycast". This is used when messages are requests and there are multiple clients
-that can handle requests.
+<span id="consumers"></span>**Consumers** receive values from the OQueue as they are produced, with
+every message going to a single consumer. This is the same semantics as receivers on typical
+multi-consumer queues. This is similar to network "anycast". This is used when messages are requests
+and there are multiple clients that can handle requests.
 
 |                 | Message access semantics                   | Message ownership                                                             | Use                          |
 |-----------------|--------------------------------------------|-------------------------------------------------------------------------------|------------------------------|
@@ -44,6 +47,39 @@ Further, if there are no consumers not observers, produce is a no-op.
 
 OQueues have paths to identify them, for example `mm.tlb.miss`. Paths are dot-separated and may
 include optional numeric indices, for example `mm.tlb[0].miss`.
+
+## Weak Observing History
+
+Weak observers always have access to the most recent elements. The number of elements is the
+requested history length provided at attachment time. The basic API simply provides the most
+recent elements.
+
+In reality, weak observers can only request one value at a time, so atomically reading a history is
+not trivial because elements could be produced or dropped while the history is being read. To
+implement an read of a range, the low level weak observers request values by a global index which
+represents the number of elements that have been produced to the OQueue over its entirely life
+(including those which have been discarded). A weak observer first asks the most recent index and
+then reads a history going back from that index. This means that the values read are guaranteed to
+be consecutive regardless of concurrent production. Inspecting the index also allows weak observers
+to tell how many values they missed.
+
+For example, with a history of length 4, and 99 values already discared the values would have the
+following indexes:
+
+|               |                     |     |     |     |                   |
+|---------------|---------------------|-----|-----|-----|-------------------|
+| 0 (discarded) | ... (discarded) ... | 100 | 101 | 104 | 103 (most recent) |
+
+A weak observer would ask for the most recent index (104) and then read values 103, 102, 101, 100 to
+get its history. If a value was produced while this was happening, the index of the existing values
+would stay the same, so the reads would still get the current value if it is available.
+
+|               |                     |                 |     |     |                                  |     |
+|---------------|---------------------|-----------------|-----|-----|----------------------------------|-----|
+| 0 (discarded) | ... (discarded) ... | 100 (discarded) | 101 | 104 | 103 (end of weak observe window) | 104 |
+
+If the weak observer had not yet read value 100, then it will fail to get it. This is why weak
+observers can sometimes get fewer values than the history they requested.
 
 ## Strong Observers vs Consumers
 
