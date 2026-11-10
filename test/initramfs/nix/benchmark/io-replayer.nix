@@ -1,4 +1,8 @@
-{ lib, stdenv, glibc, }:
+{
+  lib,
+  stdenv,
+  glibc,
+}:
 # The LAKE I/O trace replayer (https://github.com/utcs-scea/LAKE, src/linnos/io_replayer).
 stdenv.mkDerivation {
   pname = "io-replayer";
