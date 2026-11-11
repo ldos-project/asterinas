@@ -61,7 +61,7 @@ pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
 }
 
-/// Registers a global handler for `fpu_begin` to bridge OSTD and kernel circular
+/// Registers a global handler for `enable_kernel_fpu` to bridge OSTD and kernel circular
 /// dependencies
 pub fn inject_fpu_context_handler(handler: FpuContextHandler) {
     FPU_CONTEXT_HANDLER.call_once(|| handler);
@@ -200,7 +200,7 @@ impl Task {
         self.id
     }
 
-    /// Get the fpu_begin nesting number
+    /// Get the enable_kernel_fpu nesting number
     pub fn fpu_section_depth(&self) -> usize {
         unsafe { self.fpu_section_depth.get() }.get()
     }

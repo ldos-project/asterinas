@@ -190,10 +190,7 @@ impl SelectionPolicy for LinnOSPolicy {
             }
 
             let predicted_fast = {
-                #[cfg(target_arch = "x86_64")]
-                let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
-                #[cfg(not(target_arch = "x86_64"))]
-                let section = ();
+                let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
                 aster_fpu::model::linnos(
                     &section,
                     &input,
@@ -444,10 +441,7 @@ impl SelectionPolicy for LinnOSPlusPolicy {
             }
 
             let predicted_fast = {
-                #[cfg(target_arch = "x86_64")]
-                let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
-                #[cfg(not(target_arch = "x86_64"))]
-                let section = ();
+                let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
                 aster_fpu::model::linnos_plus(
                     &section,
                     &input,

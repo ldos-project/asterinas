@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::InKernelFpuSection;
+use crate::InKernelFpuGuard;
 
 pub fn linnos(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[f32; 31],
     hidden_weights: &[[f32; 256]; 31],
     hidden_bias: &[f32; 256],
@@ -29,7 +29,7 @@ pub fn linnos(
 }
 
 pub fn linnos_plus(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[f32; 31],
     hidden1_weights: &[[f32; 8]; 31],
     hidden1_bias: &[f32; 8],
@@ -66,7 +66,7 @@ pub fn linnos_plus(
 }
 
 pub fn heimdall(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[f32; 11],
     fc1_weights: &[[f32; 16]; 11],
     fc1_bias: &[f32; 16],

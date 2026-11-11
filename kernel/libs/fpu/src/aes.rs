@@ -9,7 +9,7 @@ use aes_gcm::{
 };
 use ctr::cipher::{NewCipher, StreamCipher};
 
-use crate::InKernelFpuSection;
+use crate::InKernelFpuGuard;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -19,7 +19,7 @@ pub enum Error {
 }
 
 pub fn aead_encrypt(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -41,7 +41,7 @@ pub fn aead_encrypt(
 }
 
 pub fn aead_decrypt(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -64,7 +64,7 @@ pub fn aead_decrypt(
 }
 
 pub fn skcipher_encrypt(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[u8],
     key: &[u8],
     iv: &[u8],
@@ -74,7 +74,7 @@ pub fn skcipher_encrypt(
 }
 
 pub fn skcipher_decrypt(
-    _section: &InKernelFpuSection,
+    _section: &InKernelFpuGuard,
     input: &[u8],
     key: &[u8],
     iv: &[u8],

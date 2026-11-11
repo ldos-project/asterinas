@@ -432,7 +432,7 @@ kernel:
 .PHONY: kernel_fpu
 kernel_fpu:
 	@if [ "$(TARGET_ARCH)" = "x86_64" ]; then \
-		RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo build -p aster-fpu --target x86_64-unknown-none --target-dir target/osdk; \
+		RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo build -p mariposa-fpu --target x86_64-unknown-none --target-dir target/osdk; \
 	fi
 
 # Build the kernel with an initramfs and then run it

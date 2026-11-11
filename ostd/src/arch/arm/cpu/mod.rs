@@ -3,4 +3,5 @@
 //! CPU context & state control and CPU local memory.
 
 pub mod context;
+pub mod kernel_fpu;
 pub mod local;

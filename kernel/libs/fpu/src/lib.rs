@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
+//! This crate holds the hard-float elements of the kernel. It is built specially using hard-float
+//! and then linked to the rest of the kernel.
+
 #![no_std]
 
-#[cfg(target_arch = "x86_64")]
-use ostd::arch::cpu::kernel_fpu::InKernelFpuSection;
-#[cfg(not(target_arch = "x86_64"))]
-pub type InKernelFpuSection = ();
+use ostd::arch::cpu::kernel_fpu::InKernelFpuGuard;
 
 pub mod aes;
 pub mod model;

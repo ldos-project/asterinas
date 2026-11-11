@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+//! Kernel FPU state management and scoped FPU access.
+
 use alloc::boxed::Box;
 use core::marker::PhantomData;
 
@@ -12,14 +14,14 @@ use crate::{
 /// A struct signifying the kernel is within an fpu section
 /// Enables nested sections and dropping the last nested one ensures that the user fpu state is
 /// restored if applicable
-pub struct InKernelFpuSection {
+pub struct InKernelFpuGuard {
     task: CurrentTask,
     #[cfg(debug_assertions)]
     expected_depth: usize,
     _not_send: PhantomData<*const ()>,
 }
 
-impl Drop for InKernelFpuSection {
+impl Drop for InKernelFpuGuard {
     fn drop(&mut self) {
         assert!(self.task.fpu_section_depth() > 0);
         #[cfg(debug_assertions)]
@@ -34,9 +36,9 @@ impl Drop for InKernelFpuSection {
 /// - The user fpu state is saved
 /// - Nested kernel fpu regions do not accidentally clobber each other
 /// - In debug mode kernel fpu sections should resolve in the order they were created.
-pub fn fpu_begin() -> InKernelFpuSection {
+pub fn enable_kernel_fpu() -> InKernelFpuGuard {
     assert!(InterruptLevel::current().is_task_context());
-    let task = Task::current().expect("fpu_begin called without a current task");
+    let task = Task::current().expect("enable_kernel_fpu called without a current task");
 
     task.with_kernel_fpu_context(|kernel_context| {
         kernel_context.get_or_insert_with(|| Box::new(FpuContext::new()));
@@ -52,7 +54,7 @@ pub fn fpu_begin() -> InKernelFpuSection {
     let expected_depth = task.fpu_section_depth() + 1;
     task.set_fpu_section_depth(expected_depth);
 
-    InKernelFpuSection {
+    InKernelFpuGuard {
         task,
         #[cfg(debug_assertions)]
         expected_depth,
@@ -79,7 +81,7 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
 
-    use super::fpu_begin;
+    use super::enable_kernel_fpu;
     use crate::{
         prelude::ktest,
         task::{Task, TaskOptions},
@@ -92,11 +94,11 @@ mod tests {
         let inner_value = [5.5_f64, 6.5];
         let mut output = [0_f64; 2];
         unsafe { asm!("movupd xmm15, [{}]", in(reg) input.as_ptr(), options(nostack)) };
-        let outer = fpu_begin();
+        let outer = enable_kernel_fpu();
         assert_eq!(Task::current().unwrap().fpu_section_depth(), 1);
         unsafe { asm!("movupd xmm15, [{}]", in(reg) outer_value.as_ptr(), options(nostack)) };
 
-        let inner = fpu_begin();
+        let inner = enable_kernel_fpu();
         assert_eq!(Task::current().unwrap().fpu_section_depth(), 2);
         unsafe { asm!("movupd xmm15, [{}]", in(reg) inner_value.as_ptr(), options(nostack)) };
         drop(inner);
@@ -120,7 +122,7 @@ mod tests {
         let switched_clone = switched.clone();
 
         unsafe { asm!("movupd xmm15, [{}]", in(reg) input.as_ptr(), options(nostack)) };
-        let section = fpu_begin();
+        let section = enable_kernel_fpu();
         unsafe { asm!("movupd xmm15, [{}]", in(reg) input.as_ptr(), options(nostack)) };
 
         let task = Arc::new(

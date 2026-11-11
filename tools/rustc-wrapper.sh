@@ -20,7 +20,7 @@ for argument in "$@"; do
 done
 
 if [ "$crate_name" = "aster_fpu" ] && [ "$target" = "x86_64-unknown-none" ]; then
-    exec "$rustc" "$@" -Ctarget-feature=-soft-float,+sse2,+ssse3,+sse4.1,+aes,+pclmulqdq -Awarnings
+    exec "$rustc" "$@" -Ctarget-feature=-soft-float,+sse2,+ssse3,+sse4.1,+aes,+pclmulqdq
 else
     exec "$rustc" "$@"
 fi

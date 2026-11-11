@@ -1,5 +1,8 @@
+# This crate is built specially using hard-float and then linked to the rest of the kernel. It's
+# name is included in parts of the build process.
+
 [package]
-name = "aster-fpu"
+name = "mariposa-fpu"
 version = "0.1.0"
 edition.workspace = true
 

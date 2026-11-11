@@ -15,11 +15,9 @@ use core::{
 };
 
 pub(crate) use hashbrown::{HashMap, HashSet};
-#[cfg(target_arch = "x86_64")]
-use ostd::arch::cpu::kernel_fpu::fpu_begin;
 pub(crate) use ostd::sync::{Mutex, MutexGuard, RwLock, SpinLock};
 use ostd::{
-    arch::read_random,
+    arch::{cpu::kernel_fpu::enable_kernel_fpu, read_random},
     sync::{self, PreemptDisabled, WaitQueue},
     task::{Task, TaskOptions},
 };
@@ -313,10 +311,7 @@ impl crate::util::Aead for Aead {
         aad: &[u8],
         output: &mut [u8],
     ) -> Result<AeadMac> {
-        #[cfg(target_arch = "x86_64")]
-        let section = fpu_begin();
-        #[cfg(not(target_arch = "x86_64"))]
-        let section = ();
+        let section = enable_kernel_fpu();
         let tag = aster_fpu::aes::aead_encrypt(&section, input, key, iv, aad, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-gcm encryption failed"))?;
 
@@ -334,10 +329,7 @@ impl crate::util::Aead for Aead {
         mac: &AeadMac,
         output: &mut [u8],
     ) -> Result<()> {
-        #[cfg(target_arch = "x86_64")]
-        let section = fpu_begin();
-        #[cfg(not(target_arch = "x86_64"))]
-        let section = ();
+        let section = enable_kernel_fpu();
         aster_fpu::aes::aead_decrypt(&section, input, key, iv, aad, mac, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-gcm decryption failed"))
     }
@@ -372,10 +364,7 @@ impl crate::util::Skcipher for Skcipher {
         iv: &SkcipherIv,
         output: &mut [u8],
     ) -> Result<()> {
-        #[cfg(target_arch = "x86_64")]
-        let section = fpu_begin();
-        #[cfg(not(target_arch = "x86_64"))]
-        let section = ();
+        let section = enable_kernel_fpu();
         aster_fpu::aes::skcipher_encrypt(&section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-ctr encryption failed"))
     }
@@ -387,10 +376,7 @@ impl crate::util::Skcipher for Skcipher {
         iv: &SkcipherIv,
         output: &mut [u8],
     ) -> Result<()> {
-        #[cfg(target_arch = "x86_64")]
-        let section = fpu_begin();
-        #[cfg(not(target_arch = "x86_64"))]
-        let section = ();
+        let section = enable_kernel_fpu();
         aster_fpu::aes::skcipher_decrypt(&section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-ctr decryption failed"))
     }

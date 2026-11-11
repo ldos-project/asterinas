@@ -292,10 +292,7 @@ impl Heimdall {
         let b1 = &self.fc1_biases[device_idx];
         let w3 = &self.fc3_weights[device_idx];
         let b3 = self.fc3_biases[device_idx];
-        #[cfg(target_arch = "x86_64")]
-        let section = ostd::arch::cpu::kernel_fpu::fpu_begin();
-        #[cfg(not(target_arch = "x86_64"))]
-        let section = ();
+        let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
         aster_fpu::model::heimdall(&section, &input, w1, b1, w3, b3)
     }
 }
