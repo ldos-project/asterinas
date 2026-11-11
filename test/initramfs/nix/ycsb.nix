@@ -3,11 +3,17 @@
 # Fetches the YCSB repo from https://github.com/ldos-project/YCSB/tree/mootch/mariposa-benchmark-branch,
 # and builds it in distribution mode
 
-{ lib, maven, jre, fetchFromGitHub, makeWrapper, }:
+{
+  lib,
+  maven,
+  jre,
+  fetchFromGitHub,
+  makeWrapper,
+}:
 
 maven.buildMavenPackage rec {
   pname = "ycsb";
-  version = "0.18.0";
+  version = "0.18.1";
 
   src = fetchFromGitHub {
     owner = "ldos-project";

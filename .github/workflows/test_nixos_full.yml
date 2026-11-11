@@ -192,7 +192,7 @@ jobs:
         timeout-minutes: ${{ matrix.test.timeout_minutes || 30 }}
         uses: maus007/docker-run-action-fork@v1
         with:
-          image: ldosproject/asterinas:0.18.0-ldos-20261023
+          image: ldosproject/asterinas:0.18.1-ldos-20261109
           options: --privileged -v /dev:/dev -v ${{ github.workspace }}:/root/asterinas
           # `docker-run-action-fork` joins these lines with ';' and runs them via
           # `sh -c` without fail-fast settings, unlike a normal `run:` step.

@@ -18,7 +18,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['ldosproject/asterinas:0.18.0-ldos-20261023', 'ldosproject/osdk:0.18.0-ldos-20261023']
+        image: ['ldosproject/asterinas:0.18.1-ldos-20261109', 'ldosproject/osdk:0.18.1-ldos-20261109']
     steps:
       - uses: actions/checkout@v4
 
@@ -73,7 +73,7 @@ jobs:
   boot-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
       options: -v /dev:/dev --privileged
     strategy:
       fail-fast: false
@@ -97,7 +97,7 @@ jobs:
   regression-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -128,7 +128,7 @@ jobs:
   sched-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -151,7 +151,7 @@ jobs:
   conformance-test:
     runs-on: ubuntu-latest
     container:
-      image: ldosproject/asterinas:0.18.0-ldos-20261023
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -205,7 +205,7 @@ jobs:
   #       include:
   #         - name: arm-cross-boot
   #           runs_on: ubuntu-24.04-arm
-  #           image: ldosproject/asterinas:0.18.0-ldos-20261023
+  #           image: ldosproject/asterinas:0.18.1-ldos-20261109
   #           auto_test: boot
   #           enable_kvm: false
   #   runs-on: ${{ matrix.runs_on }}
@@ -223,7 +223,7 @@ jobs:
   #   name: xfstests (${{ matrix.fs_type }})
   #   runs-on: ubuntu-latest
   #   container:
-  #     image: ldosproject/asterinas:0.18.0-ldos-20261023
+  #     image: ldosproject/asterinas:0.18.1-ldos-20261109
   #     options: -v /dev:/dev --privileged
   #     volumes:
   #       - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
