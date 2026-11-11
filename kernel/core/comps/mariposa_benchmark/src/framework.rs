@@ -14,7 +14,7 @@ use aster_logger::println;
 use mariposa_data_capture::DataCaptureFile;
 use ostd::{arch::tsc_freq, ostd_error};
 use serde::Serialize;
-use snafu::{ResultExt as _, Snafu};
+use snafu::Snafu;
 
 /// Prefix on every line a benchmark prints, so a host tool can pick the block out of a console log.
 /// A benchmark reporting why it gave up prints `{PREFIX}|error <name>: <reason>`.
@@ -25,14 +25,6 @@ pub(crate) const PREFIX: &str = "MARIPOSA_BENCH";
 pub enum Error {
     #[snafu(display("cannot reserve room for {iterations} samples ({context})"))]
     OutOfMemory { iterations: usize },
-    #[snafu(display("could not write the samples: {source}"))]
-    CaptureWrite {
-        source: mariposa_data_capture::DataCaptureError,
-    },
-    #[snafu(display("could not sync the samples: {source}"))]
-    CaptureSync {
-        source: mariposa_data_capture::DataCaptureError,
-    },
 }
 
 /// Collects one sample per iteration for `iterations` iterations and write the results to a capture file
@@ -65,12 +57,10 @@ where
     }
 
     let measured = samples.len();
-    capture_file
-        .write_values(Box::new(samples.into_iter()))
-        .context(CaptureWriteSnafu)?;
+    capture_file.write_values(Box::new(samples.into_iter()));
     // Stopping the capture file syncs it and waits for the worker to exit, so the
     // samples are on the device before this returns and the caller reports success.
-    capture_file.stop().context(CaptureSyncSnafu)?;
+    capture_file.stop();
 
     Ok(measured)
 }

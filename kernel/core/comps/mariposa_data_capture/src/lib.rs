@@ -69,7 +69,7 @@ fn init() -> Result<(), ComponentInitError> {
 
 #[cfg(all(ktest, not(baseline_asterinas)))]
 mod tests {
-    use alloc::sync::Arc;
+    use alloc::{boxed::Box, sync::Arc};
     use core::time::Duration;
 
     use aster_block::test_utils::MemoryDisk;
@@ -105,7 +105,7 @@ mod tests {
                 .attach_strong_observer(ObservationQuery::new(|x| *x as u8))
                 .unwrap(),
         };
-        capture_file.register_observer(attachment).unwrap();
+        capture_file.register_observer(attachment);
 
         let producer = oqueue.attach_ref_producer().unwrap();
 
@@ -114,14 +114,14 @@ mod tests {
         sleep(Duration::from_millis(10));
 
         // Enable capturing
-        capture_file.start().unwrap();
+        capture_file.start();
         producer.produce_ref(&42);
         producer.produce_ref(&100);
         producer.produce_ref(&200);
         sleep(Duration::from_millis(10));
 
         // Stopping flushes captured data before returning.
-        capture_file.stop().unwrap();
+        capture_file.stop();
 
         let device_data = block_device.data.lock();
 
@@ -140,6 +140,31 @@ mod tests {
                 .any(|window| window == data_bytes)
         );
         drop(device_data);
-        capture_file.stop().unwrap();
+        capture_file.stop();
+    }
+
+    #[ktest]
+    fn write_values_are_flushed_on_stop() {
+        let block_device = Arc::new(MemoryDisk::new(4096 * 4));
+        let device = DataCaptureDevice::new(block_device.clone());
+        let capture_file = device
+            .new_file(FileDescriptor {
+                length: 4096 * 2,
+                path: path!(test_write_values),
+            })
+            .unwrap()
+            .build::<u32>();
+
+        capture_file.write_values(Box::new([42, 100, 200].into_iter()));
+        capture_file.stop();
+
+        let data_bytes = [0x18, 0x2a, 0x18, 0x64, 0x18, 0xc8];
+        assert!(
+            block_device
+                .data
+                .lock()
+                .windows(data_bytes.len())
+                .any(|window| window == data_bytes)
+        );
     }
 }

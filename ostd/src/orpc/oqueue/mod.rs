@@ -121,7 +121,6 @@ pub mod query;
 pub mod registry;
 pub mod reply;
 mod single_thread_ring_buffer;
-mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
@@ -129,7 +128,6 @@ pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
-pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey, WakeEvent};
 use crate::{

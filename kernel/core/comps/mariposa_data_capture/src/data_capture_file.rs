@@ -185,33 +185,24 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileThread<T> {
 impl<T: Copy + Send + Serialize + 'static> DataCaptureFile<T> {
     /// Attach a new OQueue to the output. If output has already started, then the path will not
     /// appear in the block header.
-    pub fn register_observer(
-        &self,
-        attachment: ObserverRegistration<T>,
-    ) -> Result<(), DataCaptureError> {
+    pub fn register_observer(&self, attachment: ObserverRegistration<T>) {
         self.command_producer
             .produce(DataCaptureFileCommand::RegisterObserver(attachment));
-        Ok(())
     }
 
     /// Write values the caller already holds, without routing them through an OQueue.
-    pub fn write_values(
-        &self,
-        values: Box<dyn Iterator<Item = T> + Send>,
-    ) -> Result<(), DataCaptureError> {
+    pub fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) {
         self.command_producer
             .produce(DataCaptureFileCommand::WriteValues(values));
-        Ok(())
     }
 
     /// Sync writes to disk.
-    pub fn sync(&self) -> Result<(), DataCaptureError> {
+    pub fn sync(&self) {
         self.command_producer.produce(DataCaptureFileCommand::Sync);
-        Ok(())
     }
 
     /// Stop the capture thread.
-    pub fn stop(&self) -> Result<(), DataCaptureError> {
+    pub fn stop(&self) {
         if !self.stopped.load(core::sync::atomic::Ordering::Acquire) {
             self.command_producer.produce(DataCaptureFileCommand::Stop);
         }
@@ -220,14 +211,12 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFile<T> {
                 .load(core::sync::atomic::Ordering::SeqCst)
                 .then_some(())
         });
-        Ok(())
     }
 
     /// Enable capturing to this file.
-    pub fn start(&self) -> Result<(), DataCaptureError> {
+    pub fn start(&self) {
         self.started
             .store(true, core::sync::atomic::Ordering::SeqCst);
-        Ok(())
     }
 }
 
