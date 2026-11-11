@@ -312,7 +312,7 @@ impl crate::util::Aead for Aead {
         output: &mut [u8],
     ) -> Result<AeadMac> {
         let section = enable_kernel_fpu();
-        let tag = aster_fpu::aes::aead_encrypt(&section, input, key, iv, aad, output)
+        let tag = mariposa_fpu::aes::aead_encrypt(&section, input, key, iv, aad, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-gcm encryption failed"))?;
 
         let mut aead_mac = AeadMac::new_zeroed();
@@ -330,7 +330,7 @@ impl crate::util::Aead for Aead {
         output: &mut [u8],
     ) -> Result<()> {
         let section = enable_kernel_fpu();
-        aster_fpu::aes::aead_decrypt(&section, input, key, iv, aad, mac, output)
+        mariposa_fpu::aes::aead_decrypt(&section, input, key, iv, aad, mac, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-gcm decryption failed"))
     }
 }
@@ -365,7 +365,7 @@ impl crate::util::Skcipher for Skcipher {
         output: &mut [u8],
     ) -> Result<()> {
         let section = enable_kernel_fpu();
-        aster_fpu::aes::skcipher_encrypt(&section, input, key, iv, output)
+        mariposa_fpu::aes::skcipher_encrypt(&section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-ctr encryption failed"))
     }
 
@@ -377,7 +377,7 @@ impl crate::util::Skcipher for Skcipher {
         output: &mut [u8],
     ) -> Result<()> {
         let section = enable_kernel_fpu();
-        aster_fpu::aes::skcipher_decrypt(&section, input, key, iv, output)
+        mariposa_fpu::aes::skcipher_decrypt(&section, input, key, iv, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-ctr decryption failed"))
     }
 }

@@ -293,6 +293,6 @@ impl Heimdall {
         let w3 = &self.fc3_weights[device_idx];
         let b3 = self.fc3_biases[device_idx];
         let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
-        aster_fpu::model::heimdall(&section, &input, w1, b1, w3, b3)
+        mariposa_fpu::model::heimdall(&section, &input, w1, b1, w3, b3)
     }
 }

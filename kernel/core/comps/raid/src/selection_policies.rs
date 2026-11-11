@@ -191,7 +191,7 @@ impl SelectionPolicy for LinnOSPolicy {
 
             let predicted_fast = {
                 let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
-                aster_fpu::model::linnos(
+                mariposa_fpu::model::linnos(
                     &section,
                     &input,
                     &self.hidden_layers[device_idx],
@@ -442,7 +442,7 @@ impl SelectionPolicy for LinnOSPlusPolicy {
 
             let predicted_fast = {
                 let section = ostd::arch::cpu::kernel_fpu::enable_kernel_fpu();
-                aster_fpu::model::linnos_plus(
+                mariposa_fpu::model::linnos_plus(
                     &section,
                     &input,
                     &self.hidden1_weights[device_idx],
