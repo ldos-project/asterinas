@@ -63,7 +63,7 @@ then reads a history going back from that index. This means that the values read
 be consecutive regardless of concurrent production. Inspecting the index also allows weak observers
 to tell how many values they missed.
 
-For example, with a history of length 4, and 99 values already discared the values would have the
+For example, with a history of length 4, and 99 values already discarded the values would have the
 following indexes:
 
 |               |                     |     |     |     |                   |

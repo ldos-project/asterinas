@@ -19,7 +19,7 @@ because Rust's `dyn` types can hold any value that implements a given trait.
 
 These ideas may seem "high-level" for a kernel, but they are actually present to some extent even in
 Linux. Most values in Linux have a struct (or other type) and an associated set of functions; these
-are the data and methods of an object. 
+are the data and methods of an object.
 
 Asterinas, and by extension Mariposa, is a generally object-oriented system. Information and
 behavior is combined into objects. Static and dynamic dispatch are handled via traits, to provide
@@ -41,7 +41,7 @@ In most cases, the injection will be via a method on an object instead of a glob
 the things we are likely to modify in Asterinas is to add these traits and injection points. For
 more discussion of this pattern see, [slots].
 
-> NOTE: Historically, Mariposa had the concept of ["Observable RPC" ("ORPC")](history.md#observable-rpc-orpc) 
+> NOTE: Historically, Mariposa had the concept of ["Observable RPC" ("ORPC")](history.md#observable-rpc-orpc)
 > as part of the micro-kernel style design. With the move away from a micro-kernel design, "RPC"
 > became a misnomer, so we moved to just calling them objects. However, `orpc` still appears in some
 > parts of the API.
