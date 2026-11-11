@@ -15,21 +15,23 @@ use bitflags::bitflags;
 use int_to_c_enum::TryFromInt;
 use ostd::sync::{SpinLock, SpinLockGuard};
 use smoltcp::{
-    iface::{Context, packet::Packet},
-    phy::Device,
-    wire::{IpAddress, IpEndpoint, Ipv4Cidr, Ipv4Packet, Ipv6Address, Ipv6Cidr, Ipv6Packet},
+    iface::{Context, Route},
+    wire::{IpAddress, IpEndpoint, Ipv4Cidr, Ipv6Address, Ipv6Cidr},
 };
 
 use super::{
     Iface, InterfaceName,
-    poll::{FnHelper, PollContext, SocketTableAction},
+    poll::{PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
     time::get_network_timestamp,
 };
 use crate::{
+    device::{AnyNetworkDevice, WithDevice},
     errors::BindError,
     ext::Ext,
+    iface::ScheduleNextPoll,
+    packet::{FreshTxPacket, LinkLayer, NetworkLayer, RxPacket, TxPacket},
     socket::{TcpListenerBg, UdpSocketBg},
     socket_table::SocketTable,
 };
@@ -46,10 +48,32 @@ pub struct IfaceCommon<E: Ext> {
     sched_poll: E::ScheduleNextPoll,
 }
 
-/// An enum representing either an IPv4 or IPv6 packet.
-pub(super) enum IpPacket<'a> {
-    Ipv4(Ipv4Packet<&'a [u8]>),
-    Ipv6(Ipv6Packet<&'a [u8]>),
+pub(super) struct TxPacketWithDst {
+    pub(super) packet: TxPacket<NetworkLayer>,
+    pub(super) dst_addr: IpAddress,
+}
+
+pub(super) enum PhyProcessResult {
+    Ip(RxPacket<NetworkLayer>),
+    Ipv4(RxPacket<NetworkLayer>),
+    Ipv6(RxPacket<NetworkLayer>),
+    Tx(TxPacket<LinkLayer>),
+}
+
+pub(super) trait PollPhy {
+    fn process(
+        &self,
+        packet: RxPacket<LinkLayer>,
+        iface_cx: &mut Context,
+    ) -> Option<PhyProcessResult>;
+
+    fn dispatch(
+        &self,
+        packet: TxPacketWithDst,
+        iface_cx: &mut Context,
+    ) -> Option<TxPacket<LinkLayer>>;
+
+    fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error>;
 }
 
 /// A normalized IP address for binding purposes.
@@ -122,6 +146,10 @@ impl<E: Ext> IfaceCommon<E> {
 
     pub(super) fn ipv6_cidr(&self) -> Option<Ipv6Cidr> {
         self.interface.lock().ipv6_cidr()
+    }
+
+    pub(super) fn routes(&self) -> Vec<Route> {
+        self.interface.lock().routes()
     }
 
     pub(super) fn sched_poll(&self) -> &E::ScheduleNextPoll {
@@ -214,22 +242,17 @@ impl<E: Ext> IfaceCommon<E> {
 }
 
 impl<E: Ext> IfaceCommon<E> {
-    pub(super) fn poll<D, P, Q>(
-        &self,
-        device: &mut D,
-        mut process_phy: P,
-        mut dispatch_phy: Q,
-    ) -> Option<u64>
-    where
-        D: Device + ?Sized,
-        P: for<'pkt, 'cx, 'tx> FnHelper<
-                &'pkt [u8],
-                &'cx mut Context,
-                D::TxToken<'tx>,
-                Option<(IpPacket<'pkt>, D::TxToken<'tx>)>,
-            >,
-        Q: FnMut(&Packet, &mut Context, D::TxToken<'_>),
-    {
+    pub(super) fn poll<D: WithDevice>(&self, driver: &D, phy: &dyn PollPhy) {
+        driver.with(|device| self.do_poll_and_notify(device, phy));
+    }
+
+    fn do_poll_and_notify(&self, device: &mut dyn AnyNetworkDevice, phy: &dyn PollPhy) {
+        let next_poll = self.do_poll(device, phy);
+        device.notify_poll_end();
+        self.sched_poll.schedule_next_poll(next_poll);
+    }
+
+    fn do_poll(&self, device: &mut dyn AnyNetworkDevice, phy: &dyn PollPhy) -> Option<u64> {
         let mut interface = self.interface();
         interface.context_mut().now = get_network_timestamp();
 
@@ -237,8 +260,8 @@ impl<E: Ext> IfaceCommon<E> {
         let mut socket_actions = Vec::new();
 
         let mut context = PollContext::new(interface.as_mut(), &sockets, &mut socket_actions);
-        context.poll_ingress(device, &mut process_phy, &mut dispatch_phy);
-        context.poll_egress(device, &mut dispatch_phy);
+        context.poll_ingress(device, phy);
+        context.poll_egress(device, phy);
 
         // Insert new connections and remove dead connections.
         for action in socket_actions.into_iter() {
@@ -309,6 +332,29 @@ impl<E: Ext> BoundPort<E> {
         used_ports.set_can_reuse(key, can_reuse);
 
         self.can_reuse.store(can_reuse, Ordering::Relaxed);
+    }
+}
+
+impl<E: Ext> BoundTcpPort<E> {
+    /// Ensures that the bound address is a unicast address.
+    ///
+    /// The bound address will be converted to a unicast address belonging to the local interface if
+    /// it is a broadcast address.
+    pub(crate) fn ensure_unicast(&mut self, interface: &PollableIface<E>) {
+        let new_addr = interface.map_broadcast_to_local(self.addr);
+        if new_addr == self.addr {
+            return;
+        }
+
+        // Lock order: `interface` -> `used_ports`
+        let iface_common = self.0.iface.common();
+        let mut used_ports = iface_common.used_ports.lock();
+
+        let can_reuse = self.can_reuse.load(Ordering::Relaxed);
+
+        used_ports.acquire(new_addr, self.port, can_reuse, self.protocol);
+        used_ports.release(self.addr, self.port, can_reuse, self.protocol);
+        self.0.addr = new_addr;
     }
 }
 
@@ -480,6 +526,26 @@ impl PortTable {
         // to see if any can be reused instead of directly returning `None`.
 
         None
+    }
+
+    fn acquire(&mut self, addr: IpAddress, port: u16, can_reuse: bool, protocol: PortProtocol) {
+        let key = PortKey {
+            addr: NormalizedAddress::from(addr),
+            port,
+            protocol,
+        };
+        match self.used_ports.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                let port_state = occupied.get_mut();
+                port_state.nsocket += 1;
+                if can_reuse {
+                    port_state.nreuse += 1;
+                }
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(PortState::new(can_reuse));
+            }
+        }
     }
 
     fn release(&mut self, addr: IpAddress, port: u16, can_reuse: bool, protocol: PortProtocol) {

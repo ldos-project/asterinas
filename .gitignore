@@ -26,19 +26,37 @@ virtio-net.pcap
 .vscode/launch.json
 .vscode/launch.bak
 
+# act secrets
+/.secrets
+
 # benchmark results
-/result_*.json
+/result_*.json*
+
+# raw benchmark outputs kept by SAVE_LOGS
+/aster_output_*.txt
+/linux_output_*.txt
+/aster_guest_*.log
+/linux_guest_*.log
 
 # howdone run results
 /run-*
 
 # profile results
-aster-nix-profile-*.json
-aster-nix-profile-*.folded
-aster-nix-profile-*.svg
+asterinas-profile-*.json
+asterinas-profile-*.folded
+asterinas-profile-*.svg
 
 # distro results
 distro/result
+
+# nix build results
+/result
+/result-*
+
+# direnv cache; nix-direnv also keeps its GC roots here
+/.direnv/
+# policy explorer results
+/ldos/policy_explorer/results/
 
 # cachix package list
 cachix.list
@@ -61,3 +79,7 @@ aster-kernel-profile-*.svg
 # Local configuration files
 .claude/settings.local.json
 CLAUDE.local.md
+# RustRover
+.idea
+
+.env

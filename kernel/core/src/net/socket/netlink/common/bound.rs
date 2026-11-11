@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#![short_vis_path::add(netlink)]
+
+use crate::{
+    events::IoEvents,
+    net::socket::netlink::{
+        GroupIdSet, NetlinkSocketAddr, receiver::MessageQueue, table::BoundHandle,
+    },
+    prelude::*,
+};
+
+pub(crate) struct BoundNetlink<Message: 'static> {
+    pub(in netlink) handle: BoundHandle<Message>,
+    pub(in netlink) remote_addr: NetlinkSocketAddr,
+    pub(in netlink) receive_queue: Arc<Mutex<MessageQueue<Message>>>,
+}
+
+impl<Message: 'static> BoundNetlink<Message> {
+    pub(super) fn new(
+        handle: BoundHandle<Message>,
+        message_queue: Arc<Mutex<MessageQueue<Message>>>,
+    ) -> Self {
+        Self {
+            handle,
+            remote_addr: NetlinkSocketAddr::new_unspecified(),
+            receive_queue: message_queue,
+        }
+    }
+
+    pub(in netlink) fn bind_common(&mut self, endpoint: &NetlinkSocketAddr) -> Result<()> {
+        if endpoint.port() != self.handle.port() {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the socket cannot be bound to a different port"
+            );
+        }
+
+        let groups = endpoint.groups();
+        self.handle.bind_groups(groups);
+
+        Ok(())
+    }
+
+    pub(in netlink) fn check_io_events_common(&self) -> IoEvents {
+        let mut events = IoEvents::OUT;
+
+        let receive_queue = self.receive_queue.lock();
+        if !receive_queue.is_empty() {
+            events |= IoEvents::IN;
+        }
+        if receive_queue.has_errors() {
+            events |= IoEvents::ERR;
+        }
+
+        events
+    }
+
+    pub(super) fn add_groups(&mut self, groups: GroupIdSet) {
+        self.handle.add_groups(groups);
+    }
+
+    pub(super) fn drop_groups(&mut self, groups: GroupIdSet) {
+        self.handle.drop_groups(groups);
+    }
+}

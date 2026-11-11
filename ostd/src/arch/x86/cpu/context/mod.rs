@@ -35,12 +35,52 @@ cfg_select! {
     }
 }
 
+/// RFLAGS bits that non-privileged code may modify.
+///
+/// This is the union of the flags that Linux allows `ptrace` and `rt_sigreturn`
+/// to modify. Because the set allowed by `rt_sigreturn` is a strict subset of
+/// the `ptrace` set (it excludes `NT`), this is effectively the set of flags
+/// that `ptrace` may modify.
+/// Reference: <https://elixir.bootlin.com/linux/v7.1/source/arch/x86/include/asm/sighandling.h#L11-L14>.
+/// Reference: <https://elixir.bootlin.com/linux/v7.1/source/arch/x86/kernel/ptrace.c#L158-L163>.
+pub const USER_MODIFIABLE_RFLAGS: usize = (RFlags::CARRY_FLAG.bits()
+    | RFlags::PARITY_FLAG.bits()
+    | RFlags::AUXILIARY_CARRY_FLAG.bits()
+    | RFlags::ZERO_FLAG.bits()
+    | RFlags::SIGN_FLAG.bits()
+    | RFlags::TRAP_FLAG.bits()
+    | RFlags::DIRECTION_FLAG.bits()
+    | RFlags::OVERFLOW_FLAG.bits()
+    | RFlags::RESUME_FLAG.bits()
+    | RFlags::ALIGNMENT_CHECK.bits()
+    | RFlags::NESTED_TASK.bits()) as usize;
+
 /// Userspace CPU context, including general-purpose registers and exception information.
 #[repr(C)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct UserContext {
     user_context: RawUserContext,
     exception: Option<CpuException>,
+}
+
+impl Default for UserContext {
+    fn default() -> Self {
+        // RFLAGS bit 1 is reserved, and Linux always sets it to 1 on x86.
+        // Set the interrupt flag to enable the reception of external interrupts in user mode.
+        // Set the ID flag to indicate that the CPU supports the CPUID instruction.
+        const USER_MODE_INITIAL_RFLAGS: usize =
+            (1 << 1) | (RFlags::INTERRUPT_FLAG.bits() | RFlags::ID.bits()) as usize;
+
+        Self {
+            user_context: RawUserContext {
+                general: GeneralRegs::default(),
+                rflags: USER_MODE_INITIAL_RFLAGS,
+                trap_num: 0,
+                error_code: 0,
+            },
+            exception: None,
+        }
+    }
 }
 
 /// General registers.
@@ -65,7 +105,6 @@ pub struct GeneralRegs {
     pub r14: usize,
     pub r15: usize,
     pub rip: usize,
-    pub rflags: usize,
 }
 
 /// The user-mode FS base register.
@@ -210,7 +249,7 @@ pub enum CpuException {
 }
 
 impl CpuException {
-    pub(crate) fn new(trap_num: usize, error_code: usize) -> Option<Self> {
+    pub(in crate::arch) fn new(trap_num: usize, error_code: usize) -> Option<Self> {
         let exception = match trap_num {
             0 => Self::DivisionError,
             1 => Self::Debug,
@@ -274,7 +313,7 @@ impl CpuException {
         }
     }
 
-    pub(crate) const fn is_cpu_exception(trap_num: usize) -> bool {
+    pub(in crate::arch) const fn is_cpu_exception(trap_num: usize) -> bool {
         trap_num <= 31
     }
 }
@@ -286,12 +325,14 @@ impl CpuException {
 pub struct SelectorErrorCode(usize);
 
 impl UserContext {
+    // Methods shared across all architectures (i.e., general registers and exceptions).
+
     /// Returns a reference to the general registers.
     pub fn general_regs(&self) -> &GeneralRegs {
         &self.user_context.general
     }
 
-    /// Returns a mutable reference to the general registers
+    /// Returns a mutable reference to the general registers.
     pub fn general_regs_mut(&mut self) -> &mut GeneralRegs {
         &mut self.user_context.general
     }
@@ -300,14 +341,26 @@ impl UserContext {
     pub fn take_exception(&mut self) -> Option<CpuException> {
         self.exception.take()
     }
+
+    // Architecture-specific methods.
+
+    /// Gets the value of the RFLAGS register.
+    pub fn rflags(&self) -> usize {
+        self.user_context.rflags
+    }
+
+    /// Sets the value of the RFLAGS register.
+    ///
+    /// We only allow the setting or clearing of the bits in [`USER_MODIFIABLE_RFLAGS`].
+    /// Any other bits will be ignored and will remain unchanged.
+    pub fn set_rflags(&mut self, rflags: usize) {
+        self.user_context.rflags = (self.user_context.rflags & !USER_MODIFIABLE_RFLAGS)
+            | (rflags & USER_MODIFIABLE_RFLAGS);
+    }
 }
 
 impl UserContextApiInternal for UserContext {
     fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
-        // set interrupt flag so that in user mode it can receive external interrupts
-        // set ID flag which means cpu support CPUID instruction
-        self.user_context.general.rflags |= (RFlags::INTERRUPT_FLAG | RFlags::ID).bits() as usize;
-
         const SYSCALL_TRAPNUM: usize = 0x100;
 
         // Return when it is syscall or cpu exception type is Fault or Trap.
@@ -382,43 +435,41 @@ impl UserContextApiInternal for UserContext {
             error_code: self.user_context.error_code,
             rip: self.user_context.general.rip,
             cs: 0,
-            rflags: self.user_context.general.rflags,
+            rflags: self.user_context.rflags,
             rsp: self.user_context.general.rsp,
             ss: 0,
         }
     }
 }
 
-/// As Osdev Wiki defines(<https://wiki.osdev.org/Exceptions>):
-/// CPU exceptions are classified as:
+/// Types of CPU exceptions.
 ///
-/// Faults: These can be corrected and the program may continue as if nothing happened.
+/// As defined by Intel, there are three types of x86-64 CPU exceptions:
+///  - **Faults** can be corrected and the program may continue as if nothing happened.
+///  - **Traps** are reported immediately after the execution of the trapping instruction.
+///  - **Aborts** represent some unrecoverable errors.
 ///
-/// Traps: Traps are reported immediately after the execution of the trapping instruction.
-///
-/// Aborts: Some severe unrecoverable error.
-///
-/// But there exists some vector which are special. Vector 1 can be both fault or trap and vector 2 is interrupt.
-/// So here we also define FaultOrTrap and Interrupt
+/// However, there are some special vectors. Vector 1 can be either a fault or a trap, and vector 2
+/// is an interrupt. Here, we also define `FaultOrTrap` and `Interrupt`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CpuExceptionType {
-    /// CPU faults. Faults can be corrected, and the program may continue as if nothing happened.
+enum CpuExceptionType {
+    /// Faults. They can be corrected and the program may continue as if nothing happened.
     Fault,
-    /// CPU traps. Traps are reported immediately after the execution of the trapping instruction
+    /// Traps. They are reported immediately after the execution of the trapping instruction.
     Trap,
-    /// Faults or traps
+    /// Faults or traps.
     FaultOrTrap,
-    /// CPU interrupts
+    /// Interrupts.
     Interrupt,
-    /// Some severe unrecoverable error
+    /// Aborts. They represent some unrecoverable errors.
     Abort,
-    /// Reserved for future use
+    /// Reserved for future use.
     Reserved,
 }
 
 impl CpuExceptionType {
     /// Returns whether this exception type is a fault or a trap.
-    pub fn is_fault_or_trap(self) -> bool {
+    fn is_fault_or_trap(self) -> bool {
         match self {
             CpuExceptionType::Trap | CpuExceptionType::Fault | CpuExceptionType::FaultOrTrap => {
                 true
@@ -521,8 +572,7 @@ cpu_context_impl_getter_setter!(
     [r13, set_r13],
     [r14, set_r14],
     [r15, set_r15],
-    [rip, set_rip],
-    [rflags, set_rflags]
+    [rip, set_rip]
 );
 
 /// The FPU context of user task.

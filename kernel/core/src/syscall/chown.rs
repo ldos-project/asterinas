@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use super::SyscallReturn;
+use crate::{
+    fs::{
+        file::file_table::{RawFileDesc, get_file_fast},
+        utils::PATH_MAX,
+        vfs::path::{AT_FDCWD, EmptyPathStr, FsPath},
+    },
+    prelude::*,
+    process::{Gid, Uid},
+};
+
+pub(super) fn sys_fchown(
+    raw_fd: RawFileDesc,
+    uid: i32,
+    gid: i32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!("raw_fd = {}, uid = {}, gid = {}", raw_fd, uid, gid);
+
+    let uid = to_optional_id(uid, Uid::new)?;
+    let gid = to_optional_id(gid, Gid::new)?;
+    if uid.is_none() && gid.is_none() {
+        return Ok(SyscallReturn::Return(0));
+    }
+
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    let path = file.path();
+    if let Some(uid) = uid {
+        path.set_owner(uid)?;
+    }
+    if let Some(gid) = gid {
+        path.set_group(gid)?;
+    }
+    Ok(SyscallReturn::Return(0))
+}
+
+pub(super) fn sys_chown(
+    path_ptr: Vaddr,
+    uid: i32,
+    gid: i32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    sys_fchownat(AT_FDCWD, path_ptr, uid, gid, 0, ctx)
+}
+
+pub(super) fn sys_lchown(
+    path_ptr: Vaddr,
+    uid: i32,
+    gid: i32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    sys_fchownat(
+        AT_FDCWD,
+        path_ptr,
+        uid,
+        gid,
+        ChownFlags::AT_SYMLINK_NOFOLLOW.bits(),
+        ctx,
+    )
+}
+
+pub(super) fn sys_fchownat(
+    dirfd: RawFileDesc,
+    path_ptr: Vaddr,
+    uid: i32,
+    gid: i32,
+    flags: u32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let path_name = ctx.user_space().read_cstring(path_ptr, PATH_MAX)?;
+    let flags = ChownFlags::from_bits(flags)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
+    debug!(
+        "dirfd = {}, path = {:?}, uid = {}, gid = {}, flags = {:?}",
+        dirfd, path_name, uid, gid, flags
+    );
+
+    let uid = to_optional_id(uid, Uid::new)?;
+    let gid = to_optional_id(gid, Gid::new)?;
+    if uid.is_none() && gid.is_none() {
+        return Ok(SyscallReturn::Return(0));
+    }
+
+    let path = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &path_name, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+
+        let fs_ref = ctx.thread_local.borrow_fs();
+        let path_resolver = fs_ref.resolver().read();
+        if flags.contains(ChownFlags::AT_SYMLINK_NOFOLLOW) {
+            path_resolver.lookup_no_follow(&fs_path)?
+        } else {
+            path_resolver.lookup(&fs_path)?
+        }
+    };
+
+    if let Some(uid) = uid {
+        path.set_owner(uid)?;
+    }
+    if let Some(gid) = gid {
+        path.set_group(gid)?;
+    }
+    Ok(SyscallReturn::Return(0))
+}
+
+fn to_optional_id<T>(id: i32, f: impl Fn(u32) -> T) -> Result<Option<T>> {
+    let id = if id >= 0 {
+        Some(f(id as u32))
+    } else if id == -1 {
+        // If the owner or group is specified as -1, then that ID is not changed.
+        None
+    } else {
+        return_errno!(Errno::EINVAL);
+    };
+
+    Ok(id)
+}
+
+bitflags! {
+    struct ChownFlags: u32 {
+        const AT_SYMLINK_NOFOLLOW = 1 << 8;
+        const AT_EMPTY_PATH = 1 << 12;
+    }
+}

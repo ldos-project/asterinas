@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use super::SyscallReturn;
+use crate::{
+    fs::{
+        file::file_table::{RawFileDesc, get_file_fast},
+        vfs::path::FsPath,
+    },
+    prelude::*,
+    syscall::constants::MAX_FILENAME_LEN,
+};
+
+pub(super) fn sys_chdir(path_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+    let path_name = ctx.user_space().read_cstring(path_ptr, MAX_FILENAME_LEN)?;
+    debug!("path = {:?}", path_name);
+
+    let fs_ref = ctx.thread_local.borrow_fs();
+    let mut path_resolver = fs_ref.resolver().write();
+    let path = {
+        let path_name = path_name.to_string_lossy();
+        let fs_path = FsPath::try_from(path_name.as_ref())?;
+        path_resolver.lookup(&fs_path)?
+    };
+
+    path_resolver.chdir(path)?;
+    Ok(SyscallReturn::Return(0))
+}
+
+pub(super) fn sys_fchdir(raw_fd: RawFileDesc, ctx: &Context) -> Result<SyscallReturn> {
+    debug!("raw_fd = {}", raw_fd);
+
+    let path = {
+        let mut file_table = ctx.thread_local.borrow_file_table_mut();
+        let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+        file.as_inode_handle_or_err()?.path().clone()
+    };
+
+    let fs_ref = ctx.thread_local.borrow_fs();
+    fs_ref.resolver().write().chdir(path)?;
+    Ok(SyscallReturn::Return(0))
+}

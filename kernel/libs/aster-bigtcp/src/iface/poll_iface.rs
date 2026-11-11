@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_set::BTreeSet, sync::Arc};
+use alloc::{collections::btree_set::BTreeSet, sync::Arc, vec::Vec};
 use core::{
     borrow::Borrow,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+use smoltcp::iface::Route;
 
 use crate::{
     ext::Ext,
@@ -55,6 +57,14 @@ impl<E: Ext> PollableIface<E> {
         })
     }
 
+    pub(super) fn routes(&mut self) -> Vec<Route> {
+        let mut routes = Vec::new();
+        self.interface.routes_mut().update(|route_entries| {
+            routes.extend(route_entries.iter().copied());
+        });
+        routes
+    }
+
     /// Returns the next poll time.
     pub(super) fn next_poll_at_ms(&self) -> Option<u64> {
         self.pending_conns.next_poll_at_ms()
@@ -77,6 +87,30 @@ impl<E: Ext> PollableIface<E> {
         poll_at: smoltcp::socket::PollAt,
     ) -> NeedIfacePoll {
         self.pending_conns.update_next_poll_at_ms(socket, poll_at)
+    }
+
+    /// Maps an address to the local unicast address if it is a broadcast address.
+    ///
+    /// For example, if the interface is configured with the address `10.0.2.15/24`, this method
+    ///  - will return `10.0.2.15` for `10.0.2.255`, and
+    ///  - will return the original address for `10.0.2.15` and `10.0.2.16`.
+    ///
+    /// Note: "local" means that the IP address belongs to the local interface, not to be confused
+    /// with the localhost IP (`127.0.0.1`).
+    pub(crate) fn map_broadcast_to_local(
+        &self,
+        addr: smoltcp::wire::IpAddress,
+    ) -> smoltcp::wire::IpAddress {
+        use smoltcp::wire::IpAddress;
+
+        if let IpAddress::Ipv4(addr_v4) = addr
+            && let Some(cidr_v4) = self.ipv4_cidr()
+            && cidr_v4.broadcast() == Some(addr_v4)
+        {
+            return IpAddress::Ipv4(cidr_v4.address());
+        }
+
+        addr
     }
 }
 
@@ -302,5 +336,48 @@ impl<E: Ext> PendingConnSet<E> {
         self.0
             .first()
             .map(|first| first.0.poll_key().next_poll_at_ms.load(Ordering::Relaxed))
+    }
+}
+
+/// An extension trait for an interface context.
+pub(super) trait IsUnicast {
+    /// Returns whether the destination address is a unicast address of an interface.
+    ///
+    /// For example, if the interface is configured with the address `10.0.2.15/24`, this method
+    ///  - will return true for `10.0.2.15` and `10.0.2.254`, and
+    ///  - will return false for `10.0.2.255` and `255.255.255.255`.
+    ///
+    /// Note: This excludes broadcast addresses, link-local broadcast addresses, and multicast
+    /// addresses.
+    fn is_unicast(&self, dst_addr: smoltcp::wire::IpAddress) -> bool;
+
+    /// Returns whether the destination address is a local unicast address of an interface.
+    ///
+    /// For example, if the interface is configured with the address `10.0.2.15/24`, this method
+    ///  - will return true for `10.0.2.15`, and
+    ///  - will return false for `10.0.2.14`, `10.0.2.255`, and `255.255.255.255`.
+    ///
+    /// Note: "local" means that the IP address belongs to the local interface, not to be confused
+    /// with the localhost IP (`127.0.0.1`).
+    fn is_unicast_local(&self, dst_addr: smoltcp::wire::IpAddress) -> bool;
+}
+
+impl IsUnicast for smoltcp::iface::Context {
+    fn is_unicast(&self, dst_addr: smoltcp::wire::IpAddress) -> bool {
+        !self.is_broadcast(&dst_addr) && !dst_addr.is_multicast()
+    }
+
+    fn is_unicast_local(&self, dst_addr: smoltcp::wire::IpAddress) -> bool {
+        use smoltcp::wire::IpAddress;
+
+        match dst_addr {
+            IpAddress::Ipv4(dst_addr) => self.ipv4_addr().is_some_and(|addr| {
+                // All IPv4 loopback addresses are handled by the same loopback interface.
+                // Treating them as local allows direct socket delivery without traversing the
+                // device queues.
+                addr == dst_addr || (addr.is_loopback() && dst_addr.is_loopback())
+            }),
+            IpAddress::Ipv6(dst_addr) => self.ipv6_addr().is_some_and(|addr| addr == dst_addr),
+        }
     }
 }

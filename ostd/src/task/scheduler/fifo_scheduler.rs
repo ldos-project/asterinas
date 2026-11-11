@@ -9,6 +9,7 @@ use crate::{
     sync::SpinLock,
     task::{Task, disable_preempt},
     util::id_set::Id,
+    warn,
 };
 
 pub(super) fn new_instance() -> &'static dyn Scheduler {
@@ -52,7 +53,24 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
         };
 
         let mut rq = self.rq[target_cpu.as_usize()].disable_irq().lock();
-        if still_in_rq && let Err(_) = runnable.cpu().set_if_is_none(target_cpu) {
+
+        // Note: call set_if_is_none again to prevent a race condition.
+        let still_in_rq = still_in_rq && runnable.cpu().set_if_is_none(target_cpu).is_err();
+
+        if flags == EnqueueFlags::ForceSchedule {
+            // A forced task is placed at the front of the queue and should
+            // run next. If the task is still in the queue, it must be removed
+            // from its position first; if the task is the current task,
+            // there is nothing to remove and the force is a no-op.
+            if still_in_rq && !rq.remove_from_queue(&runnable) {
+                warn!("Failed to force schedule task");
+            } else {
+                rq.queue.push_front(runnable);
+                return Some(target_cpu);
+            }
+        }
+
+        if still_in_rq {
             return None;
         }
         rq.queue.push_back(runnable);
@@ -89,11 +107,18 @@ struct FifoRunQueue<T: CommonSchedInfo> {
 }
 
 impl<T: CommonSchedInfo> FifoRunQueue<T> {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
             current: None,
             queue: VecDeque::new(),
         }
+    }
+
+    /// Removes the task from the queue, scanning the queue.
+    fn remove_from_queue(&mut self, task: &Arc<T>) -> bool {
+        let len = self.queue.len();
+        self.queue.retain(|queued| !Arc::ptr_eq(queued, task));
+        self.queue.len() != len
     }
 }
 

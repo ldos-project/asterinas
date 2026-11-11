@@ -1,0 +1,235 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::fmt::Display;
+
+use options::SocketOption;
+use ostd::orpc::trace_methods;
+use util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr};
+
+use crate::{
+    fs::{
+        file::{
+            AccessMode, CreationFlags, FileCommon, FileLike, SettableStatusFlags, StatusFlags,
+            file_table::FdFlags,
+        },
+        pseudofs::SockFs,
+    },
+    net::socket::util::ioctl::socket_ioctl,
+    prelude::*,
+    util::{MultiRead, MultiWrite, ioctl::RawIoctl},
+};
+
+pub(crate) mod ip;
+pub(crate) mod netlink;
+pub(crate) mod options;
+pub(crate) mod unix;
+pub(crate) mod util;
+pub(crate) mod vsock;
+
+#[cfg(all(ktest, not(baseline_asterinas)))]
+mod test;
+
+mod private {
+    use core::time::Duration;
+
+    use crate::{events::IoEvents, prelude::*, process::signal::Pollable, util::ioctl::RawIoctl};
+
+    /// Common methods for sockets, but private to the network module.
+    ///
+    /// These are implementation details of sockets, so shouldn't be accessed outside the network
+    /// module. Therefore, the whole trait is sealed.
+    pub(crate) trait SocketPrivate: Pollable {
+        /// Returns whether the socket is in non-blocking mode.
+        fn is_nonblocking(&self) -> bool;
+
+        /// Blocks until some events occur to complete I/O operations.
+        ///
+        /// If the socket is in non-blocking mode and the I/O operations cannot be completed
+        /// immediately, this method will fail with [`EAGAIN`] instead of blocking.
+        ///
+        /// [`EAGAIN`]: crate::error::Errno::EAGAIN
+        #[track_caller]
+        fn block_on<F, R>(
+            &self,
+            events: IoEvents,
+            timeout: Option<Duration>,
+            mut try_op: F,
+        ) -> Result<R>
+        where
+            Self: Sized,
+            F: FnMut() -> Result<R>,
+        {
+            if self.is_nonblocking() {
+                try_op()
+            } else {
+                self.wait_events(events, timeout.as_ref(), try_op)
+                    .map_err(|err| match err.error() {
+                        Errno::ETIME => {
+                            Error::with_message(Errno::EAGAIN, "the socket timeout expired")
+                        }
+                        _ => err,
+                    })
+            }
+        }
+
+        /// Handles commands specific to its protocol or socket type.
+        fn protocol_ioctl(&self, _raw_ioctl: RawIoctl) -> Result<i32> {
+            return_errno_with_message!(Errno::ENOTTY, "the socket ioctl command is unknown");
+        }
+    }
+}
+
+/// Operations defined on a socket.
+#[trace_methods]
+pub(crate) trait Socket: private::SocketPrivate + Send + Sync {
+    /// Assigns the specified address to the socket.
+    #[trace]
+    fn bind(&self, #[trace(only = call)] _socket_addr: SocketAddr) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "bind() is not supported");
+    }
+
+    /// Builds a connection for the given address
+    #[trace]
+    fn connect(&self, #[trace(only = call)] _socket_addr: SocketAddr) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "connect() is not supported");
+    }
+
+    /// Listens for connections on the socket.
+    #[trace]
+    fn listen(&self, _backlog: usize) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "listen() is not supported");
+    }
+
+    /// Accepts a connection on the socket.
+    #[trace]
+    fn accept(&self, _is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "accept() is not supported");
+    }
+
+    /// Shuts down part of a full-duplex connection.
+    #[trace]
+    fn shutdown(&self, _cmd: SockShutdownCmd) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "shutdown() is not supported");
+    }
+
+    /// Gets the address of this socket.
+    fn addr(&self) -> Result<SocketAddr> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "getsockname() is not supported");
+    }
+
+    /// Gets the address of the peer socket.
+    fn peer_addr(&self) -> Result<SocketAddr> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "getpeername() is not supported");
+    }
+
+    /// Gets options on the socket.
+    ///
+    /// If the method succeeds, the result will be stored in the `option` parameter.
+    fn get_option(&self, _option: &mut dyn SocketOption) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "getsockopt() is not supported");
+    }
+
+    /// Sets options on the socket.
+    #[trace]
+    fn set_option(&self, _option: &dyn SocketOption) -> Result<()> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "setsockopt() is not supported");
+    }
+
+    /// Sends a message on the socket.
+    #[trace]
+    fn sendmsg(
+        &self,
+        reader: &mut dyn MultiRead,
+        #[trace(only = call)] message_header: MessageHeader,
+        flags: SendFlags,
+    ) -> Result<usize>;
+
+    /// Receives a message from the socket.
+    ///
+    /// If successful, the `writer` buffer will be filled with the received content.
+    /// This method returns the length, flags, and header of the received message.
+    #[trace]
+    fn recvmsg(
+        &self,
+        writer: &mut dyn MultiWrite,
+        #[trace(only = call)] flags: RecvFlags,
+    ) -> Result<(RecvOutput, MessageHeader)>;
+
+    /// Returns the common state for this socket.
+    fn common(&self) -> &FileCommon;
+}
+
+impl<T: Socket + 'static> FileLike for T {
+    fn read(&self, writer: &mut VmWriter) -> Result<usize> {
+        if !writer.has_avail() {
+            // Linux always returns `Ok(0)` in this case, so we follow it.
+            return Ok(0);
+        }
+
+        // TODO: Set correct flags
+        self.recvmsg(writer, RecvFlags::empty())
+            .map(|(output, _)| output.len())
+    }
+
+    fn write(&self, reader: &mut VmReader) -> Result<usize> {
+        // TODO: Set correct flags
+        self.sendmsg(
+            reader,
+            MessageHeader::new(None, Vec::new()),
+            SendFlags::empty(),
+        )
+    }
+
+    fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+        socket_ioctl(self, raw_ioctl)
+    }
+
+    fn settable_status_flags(&self) -> SettableStatusFlags {
+        SettableStatusFlags::minimal().with_o_async()
+    }
+
+    fn as_socket(&self) -> Option<&dyn Socket> {
+        Some(self)
+    }
+
+    fn common(&self) -> &FileCommon {
+        Socket::common(self)
+    }
+
+    fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
+        struct FdInfo {
+            flags: u32,
+            ino: u64,
+        }
+
+        impl Display for FdInfo {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                writeln!(f, "pos:\t{}", 0)?;
+                writeln!(f, "flags:\t0{:o}", self.flags)?;
+                writeln!(f, "mnt_id:\t{}", SockFs::mount_node().id())?;
+                writeln!(f, "ino:\t{}", self.ino)
+            }
+        }
+
+        let mut flags = self.common().status_flags().bits() | self.common().access_mode() as u32;
+        if fd_flags.contains(FdFlags::CLOEXEC) {
+            flags |= CreationFlags::O_CLOEXEC.bits();
+        }
+
+        Box::new(FdInfo {
+            flags,
+            ino: self.common().path().inode().ino(),
+        })
+    }
+}
+
+/// Create the `FileCommon` for the socket files.
+fn new_socket_common(is_nonblocking: bool) -> FileCommon {
+    let status_flags = if is_nonblocking {
+        StatusFlags::O_NONBLOCK
+    } else {
+        StatusFlags::empty()
+    };
+    // Reference: <https://elixir.bootlin.com/linux/v7.0/source/net/socket.c#L483>.
+    FileCommon::new(SockFs::new_path(), AccessMode::O_RDWR, status_flags)
+}

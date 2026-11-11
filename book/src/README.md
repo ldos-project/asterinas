@@ -1,14 +1,35 @@
-# The Asterinas Book
+<p align="center">
+    <img src="images/mariposa-orange-hex.svg" alt="mariposa-logo" width="300">
+</p>
+<p align="center">
+    <img src="images/combination-mark-white-orange-hex.svg" alt="mariposa-logo" height="120">
+</p>
+
+# The Mariposa Book
+
+
+Welcome to the documentation for Mariposa, an open-source research kernel based on Asterinas. The
+entire Asterinas portion of this documentation is the work of the upstream Asterinas team. They
+should be given a lot of the credit, while we will accept all the blame.
+
+Mariposa is part of the [LDOS: Learning Directed Operating System](https://ldos.utexas.edu/) project.
+
+*<small>This material is based upon work supported by the U.S. National Science Foundation (NSF)
+under Grant Number 2326576. Any opinions, findings and conclusions or recommendations expressed in
+this material do not necessarily reflect the views of the U.S. National Science Foundation.</small>*
+
+## [Mariposa Documentation](mariposa/index.html)
+
+This covers the Mariposa design and architecture. It provides high-level ideas and concepts. For
+code-level specifics, refer to the [documentation in the source as rendered by Rust doc](LINK).
+
+<hr style="height:3px;border:none;color:#333;background-color:#333;">
+
+## Asterinas Book Structure
 
 <p align="center">
     <img src="images/logo_en.svg" alt="asterinas-logo" width="620"><br>
 </p>
-
-Welcome to the documentation for Asterinas,
-an open-source project and community
-focused on developing cutting-edge Rust OS kernels.
-
-## Book Structure
 
 This book is divided into six distinct parts:
 
@@ -58,6 +79,24 @@ on how you can become an integral part of the Asterinas project.
 Significant decisions in Asterinas are made through a transparent RFC process.
 This part describes the RFC process
 and archives all approvaed RFCs.
+
+## Publications
+
+Asterinas has been the subject of the following publications,
+listed from newest to oldest:
+
+* [_RusyFuzz: Unhandled Exception Guided Fuzzing for Rust OS Kernel_](https://conf.researchr.org/details/icse-2026/icse-2026-research-track/96/RusyFuzz-Unhandled-Exception-Guided-Fuzzing-for-Rust-OS-Kernel),
+  **ICSE 2026**.
+* [_MlsDisk: Trusted Block Storage for TEEs Based on Layered Secure Logging_](https://www.usenix.org/conference/fast26/presentation/xu),
+  **FAST 2026**.
+* [_CortenMM: Efficient Memory Management with Strong Correctness Guarantees_](https://dl.acm.org/doi/10.1145/3731569.3764836),
+  **SOSP 2025**, Best Paper Award.
+* [_Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small and Sound TCB_](https://www.usenix.org/conference/atc25/presentation/peng-yuke),
+  **USENIX ATC 2025**.
+* [_Converos: Practical Model Checking for Verifying Rust OS Kernel Concurrency_](https://www.usenix.org/conference/atc25/presentation/tang),
+  **USENIX ATC 2025**.
+* [_Asterinas: A Rust-Based Framekernel to Reimagine Linux in the 2020s_](https://www.usenix.org/publications/loginonline/asterinas-rust-based-framekernel-reimagine-linux-2020s),
+  **USENIX _;login:_ 2025**.
 
 ## Licensing
 

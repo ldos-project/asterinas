@@ -3,16 +3,19 @@
 block = { name = "aster-block" }
 cmdline = { name = "aster-cmdline" }
 console = { name = "aster-console" }
+core = { name = "aster-core" }
+device = { name = "aster-device" }
+drm = { name = "aster-drm" }
 framebuffer = { name = "aster-framebuffer" }
 data_capture = { name = "mariposa_data_capture" }
 i8042 = { name = "aster-i8042" }
 input = { name = "aster-input" }
-kernel = { name = "aster-kernel" }
 logger = { name = "aster-logger" }
 mlsdisk = { name = "aster-mlsdisk" }
 network = { name = "aster-network" }
 nvme = { name = "aster-nvme" }
 pci = { name = "aster-pci" }
+simpledrm = { name = "aster-simpledrm" }
 softirq = { name = "aster-softirq" }
 systree = { name = "aster-systree" }
 time = { name = "aster-time" }
@@ -20,5 +23,3 @@ uart = { name = "aster-uart" }
 virtio = { name = "aster-virtio" }
 
 [whitelist]
-[whitelist.nix.main]
-main = true

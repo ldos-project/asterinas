@@ -106,16 +106,25 @@ pub static KTEST_CRATE_WHITELIST: Option<&[&str]> = Some(&{:#?});
     // Build the kernel with the given base crate
     let default_bundle_directory = osdk_output_directory.join(&current_crate.name);
     let dir_guard = DirGuard::change_dir(&target_crate_dir);
+
+    let mut config = config.clone();
+    let _vsc_launch_file = if let Some(gdb_server_str) = args.gdb_server.as_deref() {
+        // Configure GDB before building so release profiles retain debug information.
+        super::gdb::adapt_for_gdb_server(&mut config.test, gdb_server_str)
+    } else {
+        None
+    };
+
     let bundle = do_cached_build(
         default_bundle_directory,
         &osdk_output_directory,
         &cargo_target_directory,
-        config,
+        &config,
         ActionChoice::Test,
         &["--cfg ktest", "-C panic=unwind"],
     );
     drop(dir_guard);
 
-    let exit_status = bundle.run_qemu_and_wait(config, ActionChoice::Test);
+    let exit_status = bundle.run_qemu_and_wait(&config, ActionChoice::Test);
     classify_qemu_exit_status(exit_status)
 }

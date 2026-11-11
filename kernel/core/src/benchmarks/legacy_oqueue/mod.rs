@@ -1,0 +1,242 @@
+// SPDX-License-Identifier: MPL-2.0
+//! OQueue - Observable Queue
+//! OQueue provides an interface for passing data within or between subsystems in a way that can be
+//! Observed by policies.
+#![allow(unsafe_code)]
+#![allow(clippy::allow_attributes)]
+
+#[cfg(ktest)]
+pub(super) mod generic_test;
+
+pub(super) mod locking;
+/// OQueue implementations that use lock-free ringbuffers for efficient space management
+pub(super) mod ringbuffer;
+
+use alloc::{boxed::Box, string::String};
+use core::{
+    any::Any,
+    ops::{Add, AddAssign, Sub, SubAssign},
+};
+
+use ostd::orpc::sync::Blocker;
+use snafu::Snafu;
+
+/// A reference to a specific row in a queue. This refers to an element over the full history of a oqueue, not based on
+/// some implementation defined buffer.
+///
+/// See [`WeakObserver`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Cursor(usize);
+
+impl Cursor {
+    /// Get the global index of the cursor. I.e., the index of the row the cursor points to in a hypothetical infinite
+    /// buffer containing all rows ever added to the oqueue.
+    pub(super) fn index(&self) -> usize {
+        self.0
+    }
+}
+
+impl Add<usize> for Cursor {
+    type Output = Self;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        let Cursor(i) = self;
+        Cursor(i.checked_add(rhs).unwrap())
+    }
+}
+
+impl AddAssign<usize> for Cursor {
+    fn add_assign(&mut self, rhs: usize) {
+        *self = *self + rhs;
+    }
+}
+
+impl Sub<usize> for Cursor {
+    type Output = Self;
+    fn sub(self, rhs: usize) -> Self::Output {
+        let Cursor(i) = self;
+        Cursor(i.saturating_sub(rhs))
+    }
+}
+
+impl SubAssign<usize> for Cursor {
+    fn sub_assign(&mut self, rhs: usize) {
+        *self = *self - rhs;
+    }
+}
+
+/// A producer handle to a queue. This allow putting values into the queue. Producers are also called producers.
+pub(super) trait Producer<T>: Send + Blocker {
+    /// Produce a value. This sends `data` to a `Consumer` and makes it available for observation.
+    fn produce(&self, data: T);
+
+    /// Produce a value (a.k.a. send a message) if there is space, otherwise return it to the caller. If this returns
+    /// `None`, the put succeeded.
+    fn try_produce(&self, data: T) -> Option<T>;
+}
+
+/// A consumer handle to a oqueue. This allows taking or receiving values from the oqueue such that no other consumer will
+/// receive the same value ("exactly once to exactly one" semantics).
+pub(super) trait Consumer<T>: Send + Blocker {
+    /// Consume a value. This is also called receiving a message.
+    ///
+    /// This has "exactly once to exactly one consumer" semantics.
+    fn consume(&self) -> T;
+
+    /// Consume a value (a.k.a. receive a message) if there is something in the queue.
+    fn try_consume(&self) -> Option<T>;
+}
+
+/// A strong-observer handle to a oqueue. This allows receiving every value from a oqueue without preventing other
+/// consumers or observers from seeing the same value ("exactly once to each" semantics). If a strong observer falls
+/// behind on observing elements it will cause the oqueue to block producers, so strong observers must make sure they
+/// process data promptly.
+pub(super) trait StrongObserver<T>: Send + Blocker {
+    /// Observe some data. The caller must be subscribed as a strict observer.
+    ///
+    /// This has "exactly once to each observer" semantics.
+    fn strong_observe(&self) -> T;
+
+    /// Observe an element from the oqueue if it is immediately available.
+    fn try_strong_observe(&self) -> Option<T>;
+}
+
+/// A weak-observer handle to a oqueue. This allows looking at the history of the oqueue without affecting any other
+/// producers, consumers, or observers. Weak-observers are not guaranteed to observe every element, so they never block
+/// producers (which can simply overwrite data). However, weak-observers are guaranteed to always get either nothing or
+/// the data at the cursor requested.
+///
+/// When used as a blocker this will wake if there is unobserved data in the queue. Code using this should make sure
+/// they always read up to the most recent value before attempting to block. In the simplest case this is:
+/// `observer.weak_observe(self.recent_cursor())`.
+pub(super) trait WeakObserver<T>: Send + Blocker {
+    /// Observe the data at the given index in the full history of the oqueue. If the data has already been discarded
+    /// this will return `None`. This is guaranteed to always return either `None` or the actual value that existed at
+    /// the given index.
+    fn weak_observe(&self, index: Cursor) -> Option<T>;
+
+    /// Return a cursor pointing to the most recent value in the oqueue. This has very relaxed consistency, the element
+    /// may no longer be the most recent or even no longer be available.
+    fn recent_cursor(&self) -> Cursor;
+
+    /// Return a cursor pointing to the oldest value still in the oqueue. This has very relaxed consistency, the element
+    /// may no longer be the oldest or even no longer be available.
+    fn oldest_cursor(&self) -> Cursor;
+
+    /// Return all available values in the inclusive-range provided.
+    fn weak_observe_range(&self, start: Cursor, end: Cursor) -> alloc::vec::Vec<T> {
+        let mut res = alloc::vec::Vec::default();
+        for i in start.index()..=end.index() {
+            if let Some(v) = self.weak_observe(Cursor(i)) {
+                res.push(v);
+            }
+        }
+        res
+    }
+
+    /// Return the most recent `n` values from the OQueue. Some values may be missing.
+    fn weak_observe_recent(&self, n: usize) -> alloc::vec::Vec<T> {
+        let now = self.recent_cursor();
+        self.weak_observe_range(now - (n - 1), now)
+    }
+}
+
+/// An error for attaching a handle to a [`OQueue`].
+#[derive(Debug, Snafu)]
+pub(super) enum OQueueAttachError {
+    /// The type of oqueue doesn't support attachment of this type.
+    #[snafu(display("oqueue of type {table_type} does not support this kind of attachment"))]
+    Unsupported {
+        /// The name of the type which does not support the attachment.
+        table_type: String,
+    },
+
+    /// An attachment slot of the given kind could not be allocated.
+    #[snafu(display(
+        "oqueue of type {table_type} could not allocate attachment to oqueue, because {message}"
+    ))]
+    AllocationFailed {
+        /// The name of the type which does not support the attachment.
+        table_type: String,
+        /// The reason the allocation failed, for example, "not enough allocated weak-observer slots".
+        message: String,
+    },
+}
+
+/// An Observable Queue. The `attach_*` methods allow a user to use the queue as as a message channel or observe
+/// messages passing through. If no consumers are attached, messages will just disappear once they are observed. If no
+/// consumers and no observers are attached, then messages will be written into the buffer whenever they are produced.
+/// Weak observers can still observe the messages.
+///
+/// NOTE: Due to the needs to ORPC, OQueues should generally implement `RefUnwindSafe`.
+pub(super) trait OQueue<T>: Any + Sync + Send {
+    /// Attach to the oqueue as a producer. An error represents either that producers are not supported or that producers
+    /// are supported but all supported producers are already attached (for instance, if a second producer tries to
+    /// attach to a single-producer oqueue implementation).
+    fn attach_producer(&self) -> Result<Box<dyn Producer<T>>, OQueueAttachError>;
+    /// Attach to the oqueue as a consumer. An error represents either that producers are not supported or that no more
+    /// consumers are allowed on this specific oqueue (for example, for a single-consumer oqueue implementation).
+    fn attach_consumer(&self) -> Result<Box<dyn Consumer<T>>, OQueueAttachError>;
+    /// Attach to the oqueue as a strong observer. An error represents either that strong observers are not supported or that no more
+    /// strong-observers are allowed on this specific oqueue (for example, if the oqueue as a limited number of strong-observer slots).
+    fn attach_strong_observer(&self) -> Result<Box<dyn StrongObserver<T>>, OQueueAttachError>;
+    /// Attach to the oqueue as a weak-observer. An error represents either that weak-observer are not supported or that
+    /// no more weak-observer are allowed on this specific oqueue (for example, if there are a limited number of
+    /// weak-observer slots on the oqueue.).
+    fn attach_weak_observer(&self) -> Result<Box<dyn WeakObserver<T>>, OQueueAttachError>;
+}
+
+#[cfg(ktest)]
+mod test {
+    use alloc::{sync::Arc, vec};
+
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::benchmarks::legacy_oqueue::{
+        generic_test::TestMessage, locking::ObservableLockingQueue,
+    };
+
+    #[ktest]
+    fn default_weak_observe() {
+        let oqueue = Arc::new(ObservableLockingQueue::<TestMessage>::new(8, 8));
+        let producer = oqueue.attach_producer().unwrap();
+        let weak_observer = oqueue.attach_weak_observer().unwrap();
+
+        let recent_cursor = weak_observer.recent_cursor();
+        assert_eq!(weak_observer.weak_observe(recent_cursor), None);
+
+        let test_message1 = TestMessage { x: 42 };
+        let test_message2 = TestMessage { x: 43 };
+        let test_message3 = TestMessage { x: 44 };
+        producer.produce(test_message1);
+        producer.produce(test_message2);
+        producer.produce(test_message3);
+
+        // Check full range from oldest to recent
+        let oldest_cursor = weak_observer.oldest_cursor();
+        let recent_cursor = weak_observer.recent_cursor();
+        assert_eq!(
+            weak_observer.weak_observe_range(oldest_cursor, recent_cursor),
+            vec![test_message1, test_message2, test_message3]
+        );
+
+        // Check a partial range (from index 1 to recent)
+        assert_eq!(
+            weak_observer.weak_observe_range(oldest_cursor + 1, recent_cursor),
+            vec![test_message2, test_message3]
+        );
+
+        // Check weak_observe_recent with n=2
+        assert_eq!(
+            weak_observer.weak_observe_recent(2),
+            vec![test_message2, test_message3]
+        );
+
+        // Check weak_observe_recent with n=5 (more than available)
+        assert_eq!(
+            weak_observer.weak_observe_recent(5),
+            vec![test_message1, test_message2, test_message3]
+        );
+    }
+}

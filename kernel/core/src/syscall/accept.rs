@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: MPL-2.0
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::oqueue::OQueue;
+
+use super::SyscallReturn;
+#[cfg(not(baseline_asterinas))]
+use crate::time::clocks::MonotonicRawClock;
+use crate::{
+    fs::file::{
+        CreationFlags, StatusFlags,
+        file_table::{FdFlags, RawFileDesc, get_file_fast},
+    },
+    prelude::*,
+    util::net::write_socket_addr_to_user,
+};
+
+pub(super) fn sys_accept(
+    sockfd: RawFileDesc,
+    sockaddr_ptr: Vaddr,
+    addrlen_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
+
+    do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)
+}
+
+pub(super) fn sys_accept4(
+    sockfd: RawFileDesc,
+    sockaddr_ptr: Vaddr,
+    addrlen_ptr: Vaddr,
+    flags: u32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!("raw flags = 0x{:x}", flags);
+    let flags = Flags::from_bits(flags)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid accept4 flags"))?;
+    debug!(
+        "sockfd = {}, sockaddr_ptr = 0x{:x}, addrlen_ptr = 0x{:x}, flags = {:?}",
+        sockfd, sockaddr_ptr, addrlen_ptr, flags
+    );
+
+    do_accept(sockfd, sockaddr_ptr, addrlen_ptr, flags, ctx)
+}
+
+fn do_accept(
+    sockfd: RawFileDesc,
+    sockaddr_ptr: Vaddr,
+    addrlen_ptr: Vaddr,
+    flags: Flags,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
+    let socket = file.as_socket_or_err()?;
+
+    let is_nonblocking = flags.contains(Flags::SOCK_NONBLOCK);
+
+    let (connected_socket, socket_addr) = {
+        socket
+            .accept(is_nonblocking)
+            .map_err(|err| match err.error() {
+                // FIXME: `accept` should not be restarted if a timeout has been set on the socket using `setsockopt`.
+                Errno::EINTR => Error::new(Errno::ERESTARTSYS),
+                _ => err,
+            })?
+    };
+
+    let fd_flags = if flags.contains(Flags::SOCK_CLOEXEC) {
+        FdFlags::CLOEXEC
+    } else {
+        FdFlags::empty()
+    };
+
+    if sockaddr_ptr != 0 {
+        write_socket_addr_to_user(&socket_addr, sockaddr_ptr, addrlen_ptr)?;
+    }
+
+    let fd = {
+        let mut file_table_locked = file_table.unwrap().write();
+        file_table_locked.insert(connected_socket, fd_flags)
+    };
+
+    #[cfg(not(baseline_asterinas))]
+    super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
+        fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time(),
+    })?;
+
+    #[cfg(not(baseline_asterinas))]
+    super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
+        fd,
+        is_close: 0,
+        timestamp: MonotonicRawClock::get().read_time(),
+    })?;
+
+    Ok(SyscallReturn::Return(fd.into()))
+}
+
+bitflags! {
+    struct Flags: u32 {
+        const SOCK_NONBLOCK = NONBLOCK;
+        const SOCK_CLOEXEC = CLOEXEC;
+    }
+}
+
+const NONBLOCK: u32 = StatusFlags::O_NONBLOCK.bits();
+const CLOEXEC: u32 = CreationFlags::O_CLOEXEC.bits();

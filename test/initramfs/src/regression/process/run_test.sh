@@ -22,9 +22,11 @@ fi
 ./execve/execve_err
 ./execve/execve_memfd
 ./execve/execve_mt_parent
+./execve/execveat
 
 ./exit/exit_code
 ./exit/exit_procfs
+./exit/robust_list
 
 [ "$(uname -m)" = "x86_64" ] && ./fork/fork
 ./fork_c/fork
@@ -53,12 +55,14 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./sched/sched_attr_getset
+./sched/sched_inherit
 ./sched/sched_param_getset
 ./sched/sched_param_idle
 
 ./signal/kill
 ./signal/parent_death_signal
 ./signal/pidfd_send_signal
+./signal/rt_sigpending
 ./signal/signal_fd
 ./signal/signal_test2
 

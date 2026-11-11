@@ -1,0 +1,297 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! An ORPC server which performs data capture into the format described in [the crate
+//! documentation](`crate`) using an extraction function and a set of OQueues to observe. Data from
+//! different OQueues are not distinguished in the output.
+//!
+//! This uses the following terms:
+//! * "Device" refers to a block storage device.
+//! * "File" refers to a range within a device used to store data of a specific type from a set of
+//!   registered OQueues.
+//! * "Chunk" refers to a chunk of data written to the block device together. Chucks are the size of
+//!   a block device block, but the term was just too confusing here.
+//!
+//! For each block device that will be used for capture, the user should construct a
+//! [`DataCaptureDevice`]. This can then be used to construct [`DataCaptureFile`] servers (via a
+//! builder due to the generic type).
+//!
+//! [`DataCaptureFile`] has a thread which will observe all OQueues attach via
+//! [`DataCaptureFile::register_observer`].
+
+use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
+use core::{any::Any, sync::atomic::AtomicBool};
+
+use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
+use ostd::{
+    new_server,
+    orpc::{
+        errors::RPCError,
+        framework::{Server, spawn_thread},
+        oqueue::{
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, StrongObserver, ValueProducer,
+        },
+        orpc_impl, orpc_server, orpc_trait,
+        path::Path,
+        sync::{BlockOnMany, Blocker},
+    },
+    path,
+    sync::WaitQueue,
+};
+use serde::Serialize;
+
+use crate::{DataCaptureError, data_buffering::ChunkingWriteWrapper};
+
+/// Registration information for an OQueue observer
+pub struct ObserverRegistration<T: Copy + Send + Serialize> {
+    /// The path of the OQueue this is observing
+    pub path: Path,
+    /// An observer attachment at the appropriate type.
+    pub observer: StrongObserver<T>,
+}
+
+impl<T: Copy + Send + Serialize> core::fmt::Debug for ObserverRegistration<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ObserverRegistration")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
+#[orpc_trait]
+pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
+    /// Attach a new OQueue to the output. If output has already started, then the path will not
+    /// appear in the block header.
+    fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
+    /// Write values the caller already holds, without routing them through an OQueue.
+    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError>;
+    /// Sync writes to disk.
+    fn sync(&self) -> Result<(), RPCError>;
+    /// Enable capturing to this file.
+    fn start(&self) -> Result<(), RPCError>;
+    /// Stop the server
+    fn stop(&self) -> Result<(), RPCError>;
+}
+
+/// Command enum for DataCaptureFile operations
+enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
+    RegisterObserver(ObserverRegistration<T>),
+    WriteValues(Box<dyn Iterator<Item = T> + Send>),
+    Sync,
+    Stop,
+}
+
+impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::RegisterObserver(arg0) => {
+                f.debug_tuple("DataCaptureFileCommand").field(arg0).finish()
+            }
+            Self::WriteValues(_) => write!(f, "WriteValues"),
+            Self::Sync => write!(f, "Sync"),
+            Self::Stop => write!(f, "Stop"),
+        }
+    }
+}
+
+/// Writes the block header if it has not been written yet, consuming the collected OQueue paths so
+/// later attachments no longer accumulate into it.
+fn write_header_once<T>(
+    writer: &mut ChunkingWriteWrapper,
+    name: &Path,
+    paths: &mut Option<Vec<Path>>,
+) -> Result<(), DataCaptureError> {
+    let Some(collected) = paths.take() else {
+        return Ok(());
+    };
+    writer.write_header::<T>(&name.to_string(), &collected)
+}
+
+#[orpc_server(DataCaptureFile<T>)]
+struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
+    command_oqueue: ConsumableOQueueRef<DataCaptureFileCommand<T>>,
+    command_producer: ValueProducer<DataCaptureFileCommand<T>>,
+    started: AtomicBool,
+    stopped: AtomicBool,
+    stopped_wait_queue: WaitQueue,
+}
+
+pub(crate) struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
+    path: Path,
+    command_consumer: Consumer<DataCaptureFileCommand<T>>,
+    block_device: Arc<dyn BlockDevice>,
+    start_bid: Bid,
+    end_bid: Bid,
+    server: Arc<DataCaptureFileServer<T>>,
+}
+
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
+    fn run(&self) -> Result<(), DataCaptureError> {
+        let mut data_buf_handler = ChunkingWriteWrapper::new(
+            BLOCK_SIZE * 2,
+            self.block_device.clone(),
+            self.start_bid,
+            self.end_bid,
+        );
+        let mut observers: Vec<StrongObserver<T>> = Default::default();
+        // The paths of the attached OQueues. Once the header is written this is set to None and
+        // paths are no longer collected even if more OQueues are attached.
+        let mut paths = Some(Vec::default());
+        let mut block_handler = BlockOnMany::new();
+
+        loop {
+            let blockers = [(&self.command_consumer) as &dyn Blocker]
+                .into_iter()
+                .chain(observers.iter().map(|o| o as &dyn Blocker));
+            block_handler.block_on(blockers);
+
+            // Handle commands from method calls
+            while let Some(cmd) = self.command_consumer.try_consume() {
+                match cmd {
+                    DataCaptureFileCommand::RegisterObserver(ObserverRegistration {
+                        path,
+                        observer,
+                    }) => {
+                        observers.push(observer);
+                        if let Some(paths) = &mut paths {
+                            paths.push(path);
+                        }
+                    }
+                    DataCaptureFileCommand::WriteValues(values) => {
+                        write_header_once::<T>(&mut data_buf_handler, &self.path, &mut paths)?;
+                        for value in values {
+                            data_buf_handler.write_value(&value);
+                            data_buf_handler.flush_if_needed()?;
+                        }
+                        data_buf_handler.sync()?;
+                    }
+                    DataCaptureFileCommand::Sync => {
+                        data_buf_handler.sync()?;
+                    }
+                    DataCaptureFileCommand::Stop => {
+                        data_buf_handler.sync()?;
+                        self.server
+                            .stopped
+                            .store(true, core::sync::atomic::Ordering::SeqCst);
+                        self.server.stopped_wait_queue.wake_all();
+                        return Ok(());
+                    }
+                }
+            }
+
+            let started = self
+                .server
+                .started
+                .load(core::sync::atomic::Ordering::SeqCst);
+            // Observe and serialize
+            for o in &observers {
+                // We can't skip the try_strong_observe calls when not `capturing` because that
+                // would leave the values in the OQueues and block them.
+                while let Ok(Some(v)) = o.try_strong_observe() {
+                    if started {
+                        write_header_once::<T>(&mut data_buf_handler, &self.path, &mut paths)?;
+
+                        data_buf_handler.write_value(&v);
+                        data_buf_handler.flush_if_needed()?;
+                        if data_buf_handler.current_bid == self.end_bid {
+                            log::warn!("Data capture ran out of space.");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[orpc_impl]
+impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T> {
+    fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
+        self.command_producer
+            .produce(DataCaptureFileCommand::RegisterObserver(attachment));
+        Ok(())
+    }
+
+    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError> {
+        self.command_producer
+            .produce(DataCaptureFileCommand::WriteValues(values));
+        Ok(())
+    }
+
+    fn sync(&self) -> Result<(), RPCError> {
+        self.command_producer.produce(DataCaptureFileCommand::Sync);
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), RPCError> {
+        self.command_producer.produce(DataCaptureFileCommand::Stop);
+        self.stopped_wait_queue.wait_until(|| {
+            self.stopped
+                .load(core::sync::atomic::Ordering::SeqCst)
+                .then_some(())
+        });
+        Ok(())
+    }
+
+    fn start(&self) -> Result<(), RPCError> {
+        self.started
+            .store(true, core::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// A builder for a [`DataCaptureFile`] provided by a [`DataCaptureDevice`]. This is required
+/// because ORPC methods cannot take type parameters, so this serves to hold all the information
+/// needed to construct the [`DataCaptureFile`] and then take the type parameter that is also
+/// needed.
+pub struct DataCaptureFileBuilder {
+    pub(crate) block_device: Arc<dyn BlockDevice>,
+    pub(crate) path: Path,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) server: Arc<dyn Server>,
+}
+
+impl DataCaptureFileBuilder {
+    /// Construct the [`DataCaptureFile`] for a specific type of data.
+    pub fn build<T>(self) -> Arc<dyn DataCaptureFile<T>>
+    where
+        T: Copy + Send + Serialize + 'static,
+    {
+        // We manually context switch into the server here. This is not something we should
+        // generally do, but this build function is required and can't be on a server (due to the
+        // need to take a type parameter) and it's body should run in the context of the manager
+        // server.
+        self.server
+            .orpc_server_base()
+            .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
+                let command_oqueue =
+                    ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));
+                let server = new_server!(|_| DataCaptureFileServer {
+                    command_producer: command_oqueue
+                        .attach_value_producer()
+                        .expect("single purpose OQueue failed."),
+                    command_oqueue,
+                    started: AtomicBool::new(false),
+                    stopped: AtomicBool::new(false),
+                    stopped_wait_queue: WaitQueue::new(),
+                });
+
+                spawn_thread(server.clone(), {
+                    let thread = DataCaptureFileServerThread {
+                        path: self.path.clone(),
+                        command_consumer: server
+                            .command_oqueue
+                            .attach_consumer()
+                            .expect("single purpose OQueue failed."),
+                        block_device: self.block_device,
+                        start_bid: Bid::from_offset(self.start),
+                        end_bid: Bid::from_offset(self.end),
+                        server: server.clone(),
+                    };
+                    move || Ok(thread.run()?)
+                });
+
+                Ok(server)
+            })
+            .expect("Closure cannot fail")
+    }
+}

@@ -77,6 +77,8 @@ use spin::Once;
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
+#[cfg(not(baseline_asterinas))]
+use crate::orpc::oqueue::default_projection::DefaultProjection;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
     prelude::*,
@@ -91,25 +93,10 @@ use crate::{
 pub(crate) fn init() {
     #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
-        use serde::Serialize;
-
         use crate::{
             orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, registry},
             path,
         };
-
-        /// The serializable projection of a [`SchedulingEvent`] exported to userspace.
-        ///
-        /// A `SchedulingEvent` holds an `Arc<Task>`, which is neither `Copy` nor `Serialize`, so
-        /// the exported stream carries this small view instead: the task's identity (its kernel
-        /// address) and whether it was scheduled or descheduled.
-        #[derive(Clone, Copy, Serialize)]
-        struct SchedulingEventView {
-            /// The scheduled/descheduled task's identity (its kernel address).
-            task: u64,
-            /// Whether the task was scheduled or descheduled.
-            kind: SchedulingEventKind,
-        }
 
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
@@ -119,12 +106,7 @@ pub(crate) fn init() {
         // Export the queue so it appears under the OQueue filesystem (e.g. at
         // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
         // dropped rather than blocking the scheduler.
-        registry::register_with(&path, &oqueue.as_any_oqueue(), |event: &SchedulingEvent| {
-            SchedulingEventView {
-                task: Arc::as_ptr(&event.task) as *const () as usize as u64,
-                kind: event.kind,
-            }
-        });
+        registry::register_with(&path, &oqueue.as_any_oqueue());
 
         oqueue.attach_ref_producer().unwrap()
     });
@@ -190,9 +172,10 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
-#[cfg_attr(not(baseline_asterinas), derive(Element))]
+#[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
 pub struct SchedulingEvent {
     /// The task
+    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
     pub task: Arc<Task>,
     /// The kind of event
     pub kind: SchedulingEventKind,
@@ -200,6 +183,7 @@ pub struct SchedulingEvent {
 
 /// The kind of a [`SchedulingEvent`].
 #[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
@@ -490,6 +474,9 @@ pub enum EnqueueFlags {
     Spawn,
     /// Wake a sleeping task.
     Wake,
+    /// Force a task to run next, effectively temporarily raising it's priority to the maximum
+    /// possible.
+    ForceSchedule,
 }
 
 /// Possible triggers of an `update_current` action.
@@ -573,6 +560,16 @@ pub(crate) fn unpark_target(runnable: Arc<Task>) {
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Wake);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
+    }
+}
+
+/// Unblocks a target task and force it to run immediate, giving up the CPU to it if needed
+/// (similarly to yielding).
+pub(crate) fn switch_to_target(runnable: Arc<Task>) {
+    let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::ForceSchedule);
+    if let Some(preempt_cpu_id) = preempt_cpu {
+        set_need_preempt(preempt_cpu_id);
+        might_preempt();
     }
 }
 
@@ -737,4 +734,78 @@ enum ReschedAction {
 /// Return the amount of time spent in idle
 pub fn idle_time() -> Duration {
     SCHEDULER.get().unwrap().idle_time()
+}
+
+#[cfg(ktest)]
+mod test {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::task::TaskOptions;
+
+    /// Test the expected scheduling behavior of unparking. It relies on the behavior of the ostd
+    /// default round-robin scheduler so it has a high-risk of becoming flake sure to scheduler
+    /// changes.
+    #[ktest]
+    fn unpark_task() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let cond = Arc::new(AtomicBool::new(false));
+
+        let test_task = TaskOptions::new({
+            let cond = cond.clone();
+            let counter = counter.clone();
+            move || {
+                park_current(|| cond.load(Ordering::Relaxed));
+
+                assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+            }
+        })
+        .spawn()
+        .unwrap();
+
+        // Make sure the task has had a chance to park.
+        Task::yield_now();
+
+        // Unpark the task. It will not actually preempt this one.
+        cond.store(true, Ordering::Relaxed);
+        unpark_target(test_task);
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 0);
+
+        // Yield to the now unparked thread.
+        Task::yield_now();
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 2);
+    }
+
+    /// This tests that switch_to_target causes a reschedule. It cannot test that things are
+    /// actually forced because the ktest environment has only a pure round-robin scheduler. It
+    /// relies on the behavior of the ostd default round-robin scheduler so it has a high-risk of
+    /// becoming flake sure to scheduler changes.
+    #[ktest]
+    fn switch_to_task() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let cond = Arc::new(AtomicBool::new(false));
+
+        let test_task = TaskOptions::new({
+            let cond = cond.clone();
+            let counter = counter.clone();
+            move || {
+                park_current(|| cond.load(Ordering::Relaxed));
+
+                assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 0);
+            }
+        })
+        .spawn()
+        .unwrap();
+
+        // Make sure the task has had a chance to park.
+        Task::yield_now();
+
+        // Switch to the task.
+        cond.store(true, Ordering::Relaxed);
+        switch_to_target(test_task);
+
+        assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+    }
 }

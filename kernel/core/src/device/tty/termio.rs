@@ -1,0 +1,485 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::ops::Deref;
+
+use crate::prelude::*;
+
+/// A control character; the `cc_t` type in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h#L5>.
+type CCtrlChar = u8;
+
+/// A terminal speed; the `speed_t` type in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h#L6>.
+type CSpeed = u32;
+
+bitflags! {
+    /// The input flags; `c_iflags` bits in Linux.
+    #[repr(C)]
+    #[derive(Pod)]
+    pub(crate) struct CInputFlags: u32 {
+        // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h
+        const IGNBRK  = 0x001;			/* Ignore break condition */
+        const BRKINT  = 0x002;			/* Signal interrupt on break */
+        const IGNPAR  = 0x004;			/* Ignore characters with parity errors */
+        const PARMRK  = 0x008;			/* Mark parity and framing errors */
+        const INPCK   = 0x010;			/* Enable input parity check */
+        const ISTRIP  = 0x020;			/* Strip 8th bit off characters */
+        const INLCR   = 0x040;			/* Map NL to CR on input */
+        const IGNCR   = 0x080;			/* Ignore CR */
+        const ICRNL   = 0x100;			/* Map CR to NL on input */
+        const IXANY   = 0x800;			/* Any character will restart after stop */
+        // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h
+        const IUCLC   = 0x0200;
+        const IXON    = 0x0400;
+        const IXOFF   = 0x1000;
+        const IMAXBEL = 0x2000;
+        const IUTF8   = 0x4000;
+    }
+}
+
+impl Default for CInputFlags {
+    fn default() -> Self {
+        Self::ICRNL | Self::IXON
+    }
+}
+
+bitflags! {
+    /// The output flags; `c_oflags` bits in Linux.
+    #[repr(C)]
+    #[derive(Pod)]
+    pub(super) struct COutputFlags: u32 {
+        // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h#L21
+        const OPOST  = 1 << 0;			/* Perform output processing */
+        const OLCUC  = 1 << 1;
+        const ONLCR  = 1 << 2;
+        const OCRNL  = 1 << 3;
+        const ONOCR  = 1 << 4;
+        const ONLRET = 1 << 5;
+        const OFILL  = 1 << 6;
+        const OFDEL  = 1 << 7;
+    }
+}
+
+impl Default for COutputFlags {
+    fn default() -> Self {
+        Self::OPOST | Self::ONLCR
+    }
+}
+
+/// The control flags; `c_cflags` bits in Linux.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(super) struct CCtrlFlags(u32);
+
+impl Default for CCtrlFlags {
+    fn default() -> Self {
+        let cbaud = CCtrlBaud::B38400 as u32;
+        let csize = CCtrlSize::CS8 as u32;
+        let c_cflags = cbaud | csize | Self::READ_BIT;
+        Self(c_cflags)
+    }
+}
+
+impl CCtrlFlags {
+    const BAUD_MASK: u32 = 0x0000100f;
+    const INPUT_BAUD_SHIFT: u32 = 16;
+    const SIZE_MASK: u32 = 0x00000030;
+    const READ_BIT: u32 = 0x00000080;
+
+    fn output_baud(&self) -> CCtrlBaud {
+        let baud = self.0 & Self::BAUD_MASK;
+        CCtrlBaud::try_from(baud).unwrap()
+    }
+
+    fn input_baud(&self) -> CCtrlBaud {
+        let baud = (self.0 >> Self::INPUT_BAUD_SHIFT) & Self::BAUD_MASK;
+        CCtrlBaud::try_from(baud).unwrap()
+    }
+
+    fn output_speed(&self, raw_speeds: CTermiosSpeeds) -> CSpeed {
+        let baud = self.output_baud();
+        baud.speed().unwrap_or(raw_speeds.output)
+    }
+
+    fn input_speed(&self, raw_speeds: CTermiosSpeeds, output_speed: CSpeed) -> CSpeed {
+        let baud = self.input_baud();
+        if baud == CCtrlBaud::B0 {
+            output_speed
+        } else {
+            baud.speed().unwrap_or(raw_speeds.input)
+        }
+    }
+
+    #[expect(dead_code)]
+    pub(super) fn size(&self) -> Result<CCtrlSize> {
+        let size = self.0 & Self::SIZE_MASK;
+        Ok(CCtrlSize::try_from(size)?)
+    }
+
+    #[expect(dead_code)]
+    pub(super) fn is_read(&self) -> bool {
+        self.0 & Self::READ_BIT != 0
+    }
+}
+
+/// The size part of the control flags ([`CCtrlFlags`]).
+#[repr(u32)]
+#[derive(Clone, Copy, TryFromInt)]
+pub(super) enum CCtrlSize {
+    // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L97
+    CS5 = 0x00000000,
+    CS6 = 0x00000010,
+    CS7 = 0x00000020,
+    CS8 = 0x00000030,
+}
+
+/// The baud part of the control flags ([`CCtrlFlags`]).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromInt)]
+pub(super) enum CCtrlBaud {
+    // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits-common.h#L30
+    B0 = 0x00000000, /* hang up */
+    B50 = 0x00000001,
+    B75 = 0x00000002,
+    B110 = 0x00000003,
+    B134 = 0x00000004,
+    B150 = 0x00000005,
+    B200 = 0x00000006,
+    B300 = 0x00000007,
+    B600 = 0x00000008,
+    B1200 = 0x00000009,
+    B1800 = 0x0000000a,
+    B2400 = 0x0000000b,
+    B4800 = 0x0000000c,
+    B9600 = 0x0000000d,
+    B19200 = 0x0000000e,
+    B38400 = 0x0000000f,
+    // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L108
+    BOther = 0x00001000,
+    B57600 = 0x00001001,
+    B115200 = 0x00001002,
+    B230400 = 0x00001003,
+    B460800 = 0x00001004,
+    B500000 = 0x00001005,
+    B576000 = 0x00001006,
+    B921600 = 0x00001007,
+    B1000000 = 0x00001008,
+    B1152000 = 0x00001009,
+    B1500000 = 0x0000100a,
+    B2000000 = 0x0000100b,
+    B2500000 = 0x0000100c,
+    B3000000 = 0x0000100d,
+    B3500000 = 0x0000100e,
+    B4000000 = 0x0000100f,
+}
+
+impl CCtrlBaud {
+    const fn speed(self) -> Option<CSpeed> {
+        match self {
+            Self::B0 => Some(0),
+            Self::B50 => Some(50),
+            Self::B75 => Some(75),
+            Self::B110 => Some(110),
+            Self::B134 => Some(134),
+            Self::B150 => Some(150),
+            Self::B200 => Some(200),
+            Self::B300 => Some(300),
+            Self::B600 => Some(600),
+            Self::B1200 => Some(1200),
+            Self::B1800 => Some(1800),
+            Self::B2400 => Some(2400),
+            Self::B4800 => Some(4800),
+            Self::B9600 => Some(9600),
+            Self::B19200 => Some(19200),
+            Self::B38400 => Some(38400),
+            Self::BOther => None,
+            Self::B57600 => Some(57600),
+            Self::B115200 => Some(115200),
+            Self::B230400 => Some(230400),
+            Self::B460800 => Some(460800),
+            Self::B500000 => Some(500000),
+            Self::B576000 => Some(576000),
+            Self::B921600 => Some(921600),
+            Self::B1000000 => Some(1000000),
+            Self::B1152000 => Some(1152000),
+            Self::B1500000 => Some(1500000),
+            Self::B2000000 => Some(2000000),
+            Self::B2500000 => Some(2500000),
+            Self::B3000000 => Some(3000000),
+            Self::B3500000 => Some(3500000),
+            Self::B4000000 => Some(4000000),
+        }
+    }
+}
+
+bitflags! {
+    /// The local flags; `c_lflags` bits in Linux.
+    #[repr(C)]
+    #[derive(Pod)]
+    pub(crate) struct CLocalFlags: u32 {
+        // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L127
+        const ISIG    = 0x00001;
+        const ICANON  = 0x00002;
+        const XCASE   = 0x00004;
+        const ECHO    = 0x00008;
+        const ECHOE   = 0x00010;
+        const ECHOK   = 0x00020;
+        const ECHONL  = 0x00040;
+        const NOFLSH  = 0x00080;
+        const TOSTOP  = 0x00100;
+        const ECHOCTL = 0x00200;
+        const ECHOPRT = 0x00400;
+        const ECHOKE  = 0x00800;
+        const FLUSHO  = 0x01000;
+        const PENDIN  = 0x04000;
+        const IEXTEN  = 0x08000;
+        const EXTPROC = 0x10000;
+    }
+}
+
+impl Default for CLocalFlags {
+    fn default() -> Self {
+        Self::ICANON
+            | Self::ECHO
+            | Self::ISIG
+            | Self::ECHOE
+            | Self::ECHOK
+            | Self::ECHOCTL
+            | Self::ECHOKE
+            | Self::IEXTEN
+    }
+}
+
+/// An index for a control character ([`CCtrlChar`]).
+#[expect(clippy::upper_case_acronyms)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
+pub(crate) enum CCtrlCharId {
+    // https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L42
+    VINTR = 0,
+    VQUIT = 1,
+    VERASE = 2,
+    VKILL = 3,
+    VEOF = 4,
+    VTIME = 5,
+    VMIN = 6,
+    VSWTC = 7,
+    VSTART = 8,
+    VSTOP = 9,
+    VSUSP = 10,
+    VEOL = 11,
+    VREPRINT = 12,
+    VDISCARD = 13,
+    VWERASE = 14,
+    VLNEXT = 15,
+    VEOL2 = 16,
+}
+
+impl CCtrlCharId {
+    // The special char is from gvisor
+    pub(super) const fn default_char(&self) -> u8 {
+        const fn control_character(c: char) -> u8 {
+            debug_assert!(c as u8 >= b'A');
+            c as u8 - b'A' + 1u8
+        }
+
+        match self {
+            Self::VINTR => control_character('C'),
+            Self::VQUIT => control_character('\\'),
+            Self::VERASE => b'\x7f',
+            Self::VKILL => control_character('U'),
+            Self::VEOF => control_character('D'),
+            Self::VTIME => b'\0',
+            Self::VMIN => 1,
+            Self::VSWTC => b'\0',
+            Self::VSTART => control_character('Q'),
+            Self::VSTOP => control_character('S'),
+            Self::VSUSP => control_character('Z'),
+            Self::VEOL => b'\0',
+            Self::VREPRINT => control_character('R'),
+            Self::VDISCARD => control_character('O'),
+            Self::VWERASE => control_character('W'),
+            Self::VLNEXT => control_character('V'),
+            Self::VEOL2 => b'\0',
+        }
+    }
+}
+
+/// The termios; `struct termios` in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L30>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(crate) struct CTermios {
+    c_iflags: CInputFlags,
+    c_oflags: COutputFlags,
+    c_cflags: CCtrlFlags,
+    c_lflags: CLocalFlags,
+    c_line: CCtrlChar,
+    c_cc: [CCtrlChar; Self::NUM_CTRL_CHARS],
+}
+
+impl Default for CTermios {
+    fn default() -> Self {
+        let mut termios = Self {
+            c_iflags: CInputFlags::default(),
+            c_oflags: COutputFlags::default(),
+            c_cflags: CCtrlFlags::default(),
+            c_lflags: CLocalFlags::default(),
+            c_line: 0,
+            c_cc: [CCtrlChar::default(); Self::NUM_CTRL_CHARS],
+        };
+        *termios.special_char_mut(CCtrlCharId::VINTR) = CCtrlCharId::VINTR.default_char();
+        *termios.special_char_mut(CCtrlCharId::VQUIT) = CCtrlCharId::VQUIT.default_char();
+        *termios.special_char_mut(CCtrlCharId::VERASE) = CCtrlCharId::VERASE.default_char();
+        *termios.special_char_mut(CCtrlCharId::VKILL) = CCtrlCharId::VKILL.default_char();
+        *termios.special_char_mut(CCtrlCharId::VEOF) = CCtrlCharId::VEOF.default_char();
+        *termios.special_char_mut(CCtrlCharId::VTIME) = CCtrlCharId::VTIME.default_char();
+        *termios.special_char_mut(CCtrlCharId::VMIN) = CCtrlCharId::VMIN.default_char();
+        *termios.special_char_mut(CCtrlCharId::VSWTC) = CCtrlCharId::VSWTC.default_char();
+        *termios.special_char_mut(CCtrlCharId::VSTART) = CCtrlCharId::VSTART.default_char();
+        *termios.special_char_mut(CCtrlCharId::VSTOP) = CCtrlCharId::VSTOP.default_char();
+        *termios.special_char_mut(CCtrlCharId::VSUSP) = CCtrlCharId::VSUSP.default_char();
+        *termios.special_char_mut(CCtrlCharId::VEOL) = CCtrlCharId::VEOL.default_char();
+        *termios.special_char_mut(CCtrlCharId::VREPRINT) = CCtrlCharId::VREPRINT.default_char();
+        *termios.special_char_mut(CCtrlCharId::VDISCARD) = CCtrlCharId::VDISCARD.default_char();
+        *termios.special_char_mut(CCtrlCharId::VWERASE) = CCtrlCharId::VWERASE.default_char();
+        *termios.special_char_mut(CCtrlCharId::VLNEXT) = CCtrlCharId::VLNEXT.default_char();
+        *termios.special_char_mut(CCtrlCharId::VEOL2) = CCtrlCharId::VEOL2.default_char();
+        termios
+    }
+}
+
+impl CTermios {
+    /// The number of the control characters.
+    ///
+    /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L9>.
+    const NUM_CTRL_CHARS: usize = 19;
+
+    pub(crate) fn special_char(&self, id: CCtrlCharId) -> CCtrlChar {
+        self.c_cc[id as usize]
+    }
+
+    pub(super) fn special_char_mut(&mut self, id: CCtrlCharId) -> &mut CCtrlChar {
+        &mut self.c_cc[id as usize]
+    }
+
+    /// Returns whether the terminal is in the canonical mode.
+    ///
+    /// The canonical mode means that the input characters will be handled by lines, not by single
+    /// characters.
+    pub(super) fn is_canonical_mode(&self) -> bool {
+        self.c_lflags.contains(CLocalFlags::ICANON)
+    }
+
+    /// Returns the input flags.
+    pub(crate) fn input_flags(&self) -> &CInputFlags {
+        &self.c_iflags
+    }
+
+    /// Returns the local flags.
+    pub(crate) fn local_flags(&self) -> &CLocalFlags {
+        &self.c_lflags
+    }
+}
+
+/// The speeds stored outside legacy `struct termios`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(crate) struct CTermiosSpeeds {
+    input: CSpeed,
+    output: CSpeed,
+}
+
+impl Default for CTermiosSpeeds {
+    fn default() -> Self {
+        Self {
+            input: Self::DEFAULT_SPEED,
+            output: Self::DEFAULT_SPEED,
+        }
+    }
+}
+
+impl CTermiosSpeeds {
+    const DEFAULT_SPEED: CSpeed = 38400;
+
+    pub(super) fn from_termios(termios: &CTermios, raw_speeds: Self) -> Self {
+        let output = termios.c_cflags.output_speed(raw_speeds);
+        let input = termios.c_cflags.input_speed(raw_speeds, output);
+
+        Self { input, output }
+    }
+}
+
+/// The extended termios; `struct termios2` in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termbits.h#L19>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub(crate) struct CTermios2 {
+    termios: CTermios,
+    speeds: CTermiosSpeeds,
+}
+
+impl CTermios2 {
+    pub(super) fn new(termios: CTermios, speeds: CTermiosSpeeds) -> Self {
+        Self { termios, speeds }
+    }
+
+    pub(super) fn speeds(&self) -> &CTermiosSpeeds {
+        &self.speeds
+    }
+}
+
+impl Deref for CTermios2 {
+    type Target = CTermios;
+
+    fn deref(&self) -> &Self::Target {
+        &self.termios
+    }
+}
+
+/// A window size; `struct winsize` in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/include/uapi/asm-generic/termios.h#L15>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub(crate) struct CWinSize {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+/// A font operation; `struct console_font_op` in Linux.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.15/source/include/uapi/linux/kd.h#L159>.
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub(crate) struct CFontOp {
+    pub(super) op: u32,
+    pub(super) flags: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) charcount: u32,
+    pub(super) data: usize,
+}
+
+impl CFontOp {
+    // https://elixir.bootlin.com/linux/v6.15/source/include/uapi/linux/kd.h#L177
+    pub(super) const OP_SET: u32 = 0;
+    pub(super) const OP_GET: u32 = 1;
+    pub(super) const OP_SET_DEFAULT: u32 = 2;
+    pub(super) const OP_SET_TALL: u32 = 4;
+
+    // https://elixir.bootlin.com/linux/v6.15/source/drivers/tty/vt/vt.c#L4711
+    pub(super) const MAX_WIDTH: u32 = 64;
+    pub(super) const MAX_HEIGHT: u32 = 128;
+    pub(super) const MAX_CHARCOUNT: u32 = 512;
+
+    // https://elixir.bootlin.com/linux/v6.15/source/drivers/tty/vt/vt.c#L4721
+    pub(super) const NONTALL_VPITCH: u32 = 32;
+}

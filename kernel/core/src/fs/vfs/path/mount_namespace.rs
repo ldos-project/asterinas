@@ -1,0 +1,353 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::sync::UniqueArc;
+
+use spin::Once;
+
+use super::{
+    UniqueMountId,
+    mount::MountTreeCloneMode,
+    mount_propagation::{MountTopology, PendingPropagationChanges},
+    try_get_mnt_ns_inode,
+};
+use crate::{
+    fs::{
+        fs_impls::ramfs::RamFs,
+        pseudofs::{NsCommonOps, NsType, NullFs, StashedDentry},
+        vfs::{
+            path::{Dentry, Mount, Path, PathResolver, PerMountFlags},
+            registry::FsAndRoot,
+        },
+    },
+    prelude::*,
+    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread},
+    security::lsm::hooks as lsm_hooks,
+};
+
+/// Represents a mount namespace, which encapsulates a mount tree and provides
+/// isolation for filesystem views between different threads.
+///
+/// A `MountNamespace` only allows operations on [`Mount`]s that belong to that `MountNamespace`.
+/// If the operation target includes [`Mount`]s from other `MountNamespace`s, it will be directly
+/// rejected and return an `Err`.
+pub(crate) struct MountNamespace {
+    /// The root mount of this namespace.
+    ///
+    /// This field is wrapped within an `Option<_>`
+    /// because the root mount is unknown
+    /// in the beginning of the constructor method (see `new_clone`).
+    /// But if the constructor method completes,
+    /// this field is guaranteed to be `Some(_)`.
+    root: Option<Arc<Mount>>,
+    /// The user namespace that owns this mount namespace.
+    owner: Arc<UserNamespace>,
+    /// The stashed dentry in nsfs.
+    stashed_dentry: StashedDentry,
+    /// Live mounts that belong to this namespace, keyed by [`Mount::unique_id`].
+    mounts: SpinLock<BTreeMap<UniqueMountId, Weak<Mount>>>,
+}
+
+impl PartialEq for MountNamespace {
+    fn eq(&self, other: &Self) -> bool {
+        self.stashed_dentry == other.stashed_dentry
+    }
+}
+
+impl Eq for MountNamespace {}
+
+impl PartialOrd for MountNamespace {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MountNamespace {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.stashed_dentry.cmp(&other.stashed_dentry)
+    }
+}
+
+impl MountNamespace {
+    /// Creates a new `MountNamespace` whose root mount is built by `build_root_fn`.
+    ///
+    /// The closure receives a `Weak<Self>` so that mounts in the new tree can
+    /// reference the namespace being constructed. Construction uses `UniqueArc`
+    /// to allow mutable initialization while still providing `Weak` references.
+    fn new_with_root<F>(owner: Arc<UserNamespace>, build_root_fn: F) -> Result<Arc<Self>>
+    where
+        F: FnOnce(&Weak<Self>) -> Result<Arc<Mount>>,
+    {
+        let mut new_ns = UniqueArc::new(Self {
+            root: None,
+            owner,
+            stashed_dentry: StashedDentry::new(),
+            mounts: SpinLock::new(BTreeMap::new()),
+        });
+        let root = build_root_fn(&UniqueArc::downgrade(&new_ns))?;
+        new_ns.root = Some(root);
+        let ns = UniqueArc::into_arc(new_ns);
+        // Mounts created inside `build_root_fn` saw a `Weak` to a
+        // `UniqueArc`, whose `upgrade` returns `None`; they could not
+        // self-register at construction. Register the finished tree.
+        ns.register_existing_mount_tree();
+        Ok(ns)
+    }
+
+    /// Returns a reference to the singleton initial mount namespace.
+    #[doc(hidden)]
+    pub(crate) fn get_init_singleton() -> &'static Arc<MountNamespace> {
+        static INIT: Once<Arc<MountNamespace>> = Once::new();
+
+        INIT.call_once(|| {
+            let owner = UserNamespace::get_init_singleton().clone();
+            let nullfs = NullFs::singleton().clone();
+            let rootfs = RamFs::new_rootfs();
+
+            let namespace = Self::new_with_root(owner, |weak_ns| {
+                Mount::new_root(nullfs, PerMountFlags::RDONLY, weak_ns.clone())
+            })
+            .expect("failed to create the nullfs root mount");
+
+            let mut topology_guard = MountTopology::write_lock();
+            let root_mount = namespace.root();
+            root_mount
+                .do_mount(
+                    FsAndRoot::new(rootfs),
+                    PerMountFlags::default(),
+                    root_mount.root_dentry(),
+                    Some("rootfs".to_string()),
+                    &mut topology_guard,
+                )
+                .expect("failed to mount rootfs on nullfs");
+
+            namespace
+        })
+    }
+
+    /// Gets the root mount of this namespace.
+    pub(crate) fn root(&self) -> &Arc<Mount> {
+        self.root.as_ref().unwrap()
+    }
+
+    /// Creates a new filesystem resolver for this namespace.
+    ///
+    /// The resolver is initialized with the root and current working directory
+    /// both set to the **effective root** of this mount namespace.
+    ///
+    /// The "effective root" refers to the currently visible root directory, which
+    /// may differ from the original root filesystem if overlay mounts exist.
+    pub(crate) fn new_path_resolver(&self) -> PathResolver {
+        let root = Path::new_root(self.root().clone()).get_top_path();
+        let cwd = Path::new_root(self.root().clone()).get_top_path();
+        PathResolver::new(root, cwd)
+    }
+
+    /// Creates a deep copy of this mount namespace, including the entire mount tree.
+    ///
+    /// This is typically used when creating a new namespace for a process or thread.
+    pub(crate) fn new_clone(
+        &self,
+        owner: Arc<UserNamespace>,
+        posix_thread: &PosixThread,
+    ) -> Result<Arc<MountNamespace>> {
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            owner.as_ref(),
+            posix_thread,
+            CapSet::SYS_ADMIN,
+        ))?;
+
+        let root_mount = self.root();
+        Self::new_with_root(owner, |weak_ns| {
+            let mut topology_guard = MountTopology::write_lock();
+            let mut pending_changes = PendingPropagationChanges::default();
+            let cloned_tree = root_mount.clone_mount_tree_deferred(
+                root_mount.root_dentry(),
+                weak_ns,
+                true,
+                MountTreeCloneMode::Namespace,
+                &mut pending_changes,
+                &topology_guard,
+            )?;
+            pending_changes.commit(&mut topology_guard);
+            Ok(cloned_tree)
+        })
+    }
+
+    /// Records that `mount` is now part of this namespace's mount tree.
+    pub(super) fn register_mount(&self, mount: &Arc<Mount>) {
+        self.mounts
+            .lock()
+            .insert(mount.unique_id(), Arc::downgrade(mount));
+    }
+
+    /// Removes `unique_id` from this namespace's lookup table.
+    pub(super) fn deregister_mount(&self, unique_id: UniqueMountId) {
+        self.mounts.lock().remove(&unique_id);
+    }
+
+    /// Looks up a live mount in this namespace by its unique 64-bit ID.
+    ///
+    /// No recyclable-`id` counterpart exists: the 32-bit ID space is reused
+    /// on drop, so a keyed lookup would race the next allocation.
+    pub(crate) fn lookup_by_unique_id(&self, unique_id: UniqueMountId) -> Option<Arc<Mount>> {
+        let mount = {
+            let mounts = self.mounts.lock();
+            mounts.get(&unique_id).and_then(Weak::upgrade)?
+        };
+
+        let topology_guard = MountTopology::read_lock();
+        mount
+            .is_equal_or_descendant_of(self.root(), &topology_guard)
+            .then_some(mount)
+    }
+
+    /// Returns live mounts in this namespace that are strict descendants of
+    /// `parent`, ordered by [`Mount::unique_id`].
+    ///
+    /// Live mounts are snapshotted under `mounts.lock`; ancestry is checked
+    /// afterward so per-`Mount` locks are never acquired while the table lock
+    /// is held.
+    pub(crate) fn descendant_mounts_of(
+        &self,
+        parent: &Arc<Mount>,
+    ) -> impl DoubleEndedIterator<Item = Arc<Mount>> {
+        let snapshot: Vec<_> = {
+            let guard = self.mounts.lock();
+            guard.values().filter_map(|weak| weak.upgrade()).collect()
+        };
+
+        let topology_guard = MountTopology::read_lock();
+
+        let descendants: Vec<_> = snapshot
+            .into_iter()
+            .filter(|mount| {
+                !Arc::ptr_eq(mount, parent)
+                    && mount.is_equal_or_descendant_of(parent, &topology_guard)
+            })
+            .collect();
+
+        descendants.into_iter()
+    }
+
+    /// Walks the in-place mount tree and registers every mount in
+    /// [`Self::mounts`] in a single locked update.
+    fn register_existing_mount_tree(self: &Arc<Self>) {
+        let mut entries = Vec::new();
+        let mut stack = vec![self.root().clone()];
+
+        while let Some(mount) = stack.pop() {
+            entries.push((mount.unique_id(), Arc::downgrade(&mount)));
+
+            let children: Vec<_> = mount.children.read().values().cloned().collect();
+            stack.extend(children);
+        }
+
+        let mut mounts = self.mounts.lock();
+        for (id, weak_mount) in entries {
+            mounts.insert(id, weak_mount);
+        }
+    }
+
+    /// Flushes all pending filesystem metadata and cached file data to the device
+    /// for all mounted filesystems in this mount namespace.
+    pub(crate) fn sync(&self) -> Result<()> {
+        let mut visited_filesystems = hashbrown::HashSet::new();
+
+        self.root().try_walk_tree(|current_mount| {
+            let fs_ptr = Arc::as_ptr(current_mount.fs());
+            // Only sync each filesystem once.
+            if visited_filesystems.insert(fs_ptr) {
+                current_mount.sync()?;
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Checks whether a given mount belongs to this mount namespace.
+    pub(crate) fn owns(self: &Arc<Self>, mount: &Mount) -> bool {
+        mount.mnt_ns().as_ptr() == Arc::as_ptr(self)
+    }
+
+    /// Returns whether bind-mounting or moving `dentry` into this mount namespace
+    /// would create a mount-namespace loop.
+    pub(super) fn would_form_mnt_ns_loop(&self, dentry: &Dentry) -> bool {
+        let Some(mnt_ns_inode) = try_get_mnt_ns_inode(dentry) else {
+            return false;
+        };
+
+        self >= mnt_ns_inode.ns().as_ref()
+    }
+
+    /// Ensures that importing the mount subtree rooted at `root_mount` into this
+    /// mount namespace would not form a mount-namespace loop.
+    pub(super) fn check_no_mnt_ns_loop_in_tree(
+        &self,
+        root_mount: &Arc<Mount>,
+        _topology: &MountTopology,
+    ) -> Result<()> {
+        let mut checked_root_dentries = BTreeSet::new();
+
+        root_mount.try_walk_tree(|mount| {
+            let root_dentry = mount.root_dentry();
+            if checked_root_dentries.insert(root_dentry.key())
+                && self.would_form_mnt_ns_loop(root_dentry)
+            {
+                return_errno_with_message!(
+                    Errno::ELOOP,
+                    "the mount tree contains a mount namespace file that would create a namespace loop"
+                );
+            }
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+}
+
+// When a mount namespace is dropped, it means that the corresponding mount
+// tree is no longer valid. Therefore, all mounts in its mount tree should be
+// detached from their parents and cleared of their mountpoints.
+impl Drop for MountNamespace {
+    fn drop(&mut self) {
+        let Some(root) = self.root.as_ref() else {
+            // The constructor must be incomplete
+            // and thus the subsequent cleanup logic can be skipped.
+            return;
+        };
+
+        let mut topology_guard = MountTopology::write_lock();
+
+        let mut worklist = VecDeque::new();
+        worklist.push_back(root.clone());
+        while let Some(current_mount) = worklist.pop_front() {
+            current_mount.clear_propagation(&mut topology_guard);
+            let mut children = current_mount.children.write();
+            for (_, child) in children.drain() {
+                child.clear_topology_link(&mut topology_guard);
+                worklist.push_back(child);
+            }
+        }
+    }
+}
+
+impl NsCommonOps for MountNamespace {
+    const TYPE: NsType = NsType::Mnt;
+
+    fn owner_user_ns(&self) -> Option<&Arc<UserNamespace>> {
+        Some(&self.owner)
+    }
+
+    fn parent(&self) -> Result<&Arc<Self>> {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "a mount namespace does not have a parent namespace"
+        );
+    }
+
+    fn stashed_dentry(&self) -> &StashedDentry {
+        &self.stashed_dentry
+    }
+}

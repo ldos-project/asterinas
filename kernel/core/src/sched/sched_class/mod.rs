@@ -1,0 +1,591 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Completely Fair Scheduler (CFS).
+
+#![warn(unused)]
+
+use alloc::{boxed::Box, string::String, sync::Arc};
+use core::{fmt, time::Duration};
+
+use ostd::{
+    arch::read_tsc as sched_clock,
+    cpu::{CpuId, PinCurrentCpu, all_cpus},
+    info,
+    irq::disable_local,
+    sync::{LocalIrqDisabled, SpinLock},
+    task::{
+        AtomicCpuId, Task,
+        scheduler::{
+            EnqueueFlags, LocalRunQueue, Scheduler, UpdateFlags, enable_preemption_on_cpu,
+            info::CommonSchedInfo, inject_scheduler,
+        },
+    },
+    util::id_set::Id,
+    warn,
+};
+use spin::Once;
+
+use super::{
+    nice::Nice,
+    stats::{SchedulerStats, set_stats_from_scheduler},
+};
+use crate::thread::{AsThread, Thread};
+
+mod policy;
+mod time;
+
+mod fair;
+mod idle;
+mod real_time;
+mod select_cpu;
+mod stop;
+
+use self::policy::{SchedPolicyKind, SchedPolicyState};
+#[cfg(not(baseline_asterinas))]
+pub(crate) use self::select_cpu::UserspacePolicy;
+pub(crate) use self::{
+    policy::{LinuxSchedPolicy, SchedPolicy},
+    real_time::{RealTimePolicy, RealTimePriority},
+    select_cpu::{
+        LastCpuPolicy, PolicySlot, RoundRobinPolicy, SelectCpuInput, SelectCpuPolicy,
+        SelectCpuReason,
+    },
+};
+
+type SchedEntity = (Arc<Task>, Arc<Thread>);
+
+/// The CPU-selection policy used when `sched.select_cpu` is not set.
+const DEFAULT_SELECT_CPU_POLICY: &str = "last_cpu";
+
+/// The CPU-selection policy name, populated from the `sched.select_cpu` kernel command-line
+/// argument.
+static SELECT_CPU_POLICY: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("sched.select_cpu", SELECT_CPU_POLICY);
+
+/// The scheduler instance.
+static CLASS_SCHEDULER: Once<&'static ClassScheduler> = Once::new();
+
+pub(crate) fn init() {
+    let scheduler: &'static ClassScheduler = Box::leak(Box::new(ClassScheduler::new()));
+    CLASS_SCHEDULER.call_once(|| scheduler);
+
+    // Inject the scheduler into the ostd for actual scheduling work.
+    inject_scheduler(scheduler);
+
+    // Set the scheduler into the system for statistics.
+    // We set this after injecting the scheduler into ostd,
+    // so that the loadavg statistics are updated after the scheduler is used.
+    set_stats_from_scheduler(scheduler);
+}
+
+/// Installs the CPU-selection policy named by `sched.select_cpu`.
+///
+/// Must be called after `component::init_all(InitStage::Bootstrap)`, which parses the kernel
+/// command line, and before any task is spawned or woken.
+pub(crate) fn init_select_cpu_policy() {
+    let requested = SELECT_CPU_POLICY
+        .get()
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_SELECT_CPU_POLICY);
+    let (name, policy): (&str, Arc<dyn SelectCpuPolicy>) = match requested {
+        "last_cpu" => ("last_cpu", Arc::new(LastCpuPolicy::new())),
+        "round_robin" => ("round_robin", Arc::new(RoundRobinPolicy::new())),
+        #[cfg(not(baseline_asterinas))]
+        "userspace" => ("userspace", Arc::new(UserspacePolicy::new())),
+        other => {
+            warn!("unknown sched.select_cpu '{other}'; keeping 'last_cpu'");
+            ("last_cpu", Arc::new(LastCpuPolicy::new()))
+        }
+    };
+    inject_select_cpu_policy(policy);
+    info!("sched: CPU-selection policy is '{name}'");
+}
+
+/// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
+pub(crate) fn inject_select_cpu_policy(policy: Arc<dyn SelectCpuPolicy>) {
+    CLASS_SCHEDULER.get().unwrap().inject_select_policy(policy);
+}
+
+pub(crate) fn init_on_each_cpu() {
+    enable_preemption_on_cpu();
+}
+
+/// Represents the middle layer between scheduling classes and generic scheduler
+/// traits. It consists of all the sets of run queues for CPU cores. Other global
+/// information may also be stored here.
+pub(crate) struct ClassScheduler {
+    /// The per-CPU runqueues.
+    ///
+    /// We use the `LocalIrqDisabled` marker for this spinlock to ensure local IRQs are always disabled,
+    /// preventing potential deadlocks due to the fact that
+    /// the runqueues may be accessed in both the task and interrupt context (L1 and L2).
+    rqs: Box<[SpinLock<PerCpuClassRqSet, LocalIrqDisabled>]>,
+
+    /// The CPU-selection policy, set by [`Self::inject_select_policy`].
+    select_policy: PolicySlot<dyn SelectCpuPolicy>,
+}
+
+/// Represents the run queue for each CPU core. It stores a list of run queues for
+/// scheduling classes in its corresponding CPU core. The current task of this CPU
+/// core is also stored in this structure.
+struct PerCpuClassRqSet {
+    stop: stop::StopClassRq,
+    real_time: real_time::RealTimeClassRq,
+    fair: fair::FairClassRq,
+    idle: idle::IdleClassRq,
+    current: Option<(SchedEntity, CurrentRuntime)>,
+    /// The task just preempted on this CPU, while it waits to be queued again.
+    ///
+    /// A preempted task is still runnable, so the CPU-selection policy decides which run queue it
+    /// joins next. That queue may belong to another CPU, and its lock cannot be taken while this
+    /// one is held, so `try_pick_next` leaves the task here and
+    /// [`ClassScheduler::mut_local_rq_with`] queues it after releasing this lock.
+    preempted: Option<SchedEntity>,
+}
+
+/// Stores the runtime information of the current task.
+///
+/// This is used to calculate the time slice of the current task.
+///
+/// This struct is independent of the current `Arc<Task>` instead encapsulating the
+/// task, because the scheduling class implementations use `CurrentRuntime` and
+/// `SchedAttr` only.
+struct CurrentRuntime {
+    start: u64,
+    delta: u64,
+    period_delta: u64,
+}
+
+impl CurrentRuntime {
+    fn new() -> Self {
+        CurrentRuntime {
+            start: sched_clock(),
+            delta: 0,
+            period_delta: 0,
+        }
+    }
+
+    fn update(&mut self) {
+        let now = sched_clock();
+        self.delta = now - core::mem::replace(&mut self.start, now);
+        self.period_delta += self.delta;
+    }
+}
+
+/// The run queue for scheduling classes (the main trait). Scheduling classes
+/// should implement this trait to function as expected.
+trait SchedClassRq: Send + fmt::Debug {
+    /// Enqueues a task into the run queue.
+    fn enqueue(&mut self, task: Arc<Task>, flags: Option<EnqueueFlags>);
+
+    /// Returns the number of threads in the run queue.
+    fn len(&self) -> usize;
+
+    /// Checks if the run queue is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Removes the task from the run queue, if it is queued. Returns true if it was present.
+    ///
+    /// The task must have the same priority it did when it was inserted, because the priority can
+    /// be used to find it in the queues.
+    ///
+    /// Not every run queue supports removing a specific task. Run queues that don't will always
+    /// return `false`.
+    fn remove(&mut self, task: &Arc<Task>) -> bool;
+
+    /// Picks the next task for running.
+    fn pick_next(&mut self) -> Option<Arc<Task>>;
+
+    /// Update the information of the current task.
+    ///
+    /// The return value of this method indicates whether there is another task
+    /// **in this run queue** to replace the current one.
+    fn update_current(&mut self, rt: &CurrentRuntime, attr: &SchedAttr, flags: UpdateFlags)
+    -> bool;
+}
+
+/// The scheduling attribute for a thread.
+///
+/// This is used to store the scheduling policy and runtime parameters for each
+/// scheduling class.
+#[derive(Debug)]
+pub(crate) struct SchedAttr {
+    policy: SchedPolicyState,
+    /// The CPU that the task is running on or was most recently scheduled on.
+    ///
+    /// This is distinct from [`ostd::task::scheduler::info::CommonSchedInfo::cpu()`] because it is
+    /// not cleared when the thread is descheduled.
+    last_cpu: AtomicCpuId,
+    real_time: real_time::RealTimeAttr,
+    fair: fair::FairAttr,
+    /// The policy before a forced schedule, if the thread's policy has been
+    /// temporarily changed by [`SchedAttr::set_forced_policy`].
+    prev_policy: SpinLock<Option<SchedPolicy>>,
+}
+
+impl SchedAttr {
+    /// Constructs a new `SchedAttr` with the given scheduling policy.
+    pub(crate) fn new(policy: SchedPolicy) -> Self {
+        Self {
+            policy: SchedPolicyState::new(policy),
+            last_cpu: AtomicCpuId::default(),
+            real_time: {
+                let (prio, policy) = match policy {
+                    SchedPolicy::RealTime { rt_prio, rt_policy } => (rt_prio.get(), rt_policy),
+                    _ => (RealTimePriority::MAX.get(), Default::default()),
+                };
+                real_time::RealTimeAttr::new(prio, policy)
+            },
+            fair: fair::FairAttr::new(match policy {
+                SchedPolicy::Fair(nice) => nice,
+                _ => Nice::default(),
+            }),
+            prev_policy: SpinLock::new(None),
+        }
+    }
+
+    /// Retrieves the current scheduling policy of the thread.
+    pub(crate) fn policy(&self) -> SchedPolicy {
+        self.policy.get()
+    }
+
+    /// Retrieves the scheduling policy that a thread cloned from this one starts with.
+    ///
+    /// This is the thread's own policy, not the one it may temporarily have for a forced
+    /// schedule.
+    pub(crate) fn inheritable_policy(&self) -> SchedPolicy {
+        // The scheduler tick may restore the policy on this CPU, so keep IRQs off while locked.
+        let prev_policy = self.prev_policy.disable_irq().lock();
+        prev_policy.unwrap_or_else(|| self.policy())
+    }
+
+    fn policy_kind(&self) -> SchedPolicyKind {
+        self.policy.kind()
+    }
+
+    /// Updates the scheduling policy of the thread.
+    ///
+    /// Specifically for real-time policies, if the new policy doesn't
+    /// specify a base slice factor for RR, the old one will be kept.
+    pub(crate) fn set_policy(&self, policy: SchedPolicy) {
+        self.policy.set(policy, |policy| match policy {
+            SchedPolicy::RealTime { rt_prio, rt_policy } => {
+                self.real_time.update(rt_prio.get(), rt_policy);
+            }
+            SchedPolicy::Fair(nice) => self.fair.update(nice),
+            _ => {}
+        });
+    }
+
+    /// Temporarily sets the highest real-time priority for a forced schedule.
+    ///
+    /// The current policy is saved, if not already saved, so that it can be
+    /// restored by [`SchedAttr::restore_forced_policy`].
+    fn set_forced_policy(&self) {
+        let mut prev = self.prev_policy.lock();
+        if prev.is_none() {
+            *prev = Some(self.policy());
+        }
+        self.set_policy(SchedPolicy::RealTime {
+            rt_prio: RealTimePriority::MIN,
+            rt_policy: RealTimePolicy::Fifo,
+        });
+    }
+
+    /// Restores the policy that was saved by [`SchedAttr::set_forced_policy`].
+    fn restore_forced_policy(&self) {
+        if let Some(policy) = self.prev_policy.lock().take() {
+            self.set_policy(policy);
+        }
+    }
+
+    pub(crate) fn update_policy<T>(&self, f: impl FnOnce(&mut SchedPolicy) -> T) -> T {
+        self.policy.update(|policy| {
+            let ret = f(policy);
+            match *policy {
+                SchedPolicy::RealTime { rt_prio, rt_policy } => {
+                    self.real_time.update(rt_prio.get(), rt_policy);
+                }
+                SchedPolicy::Fair(nice) => self.fair.update(nice),
+                _ => {}
+            }
+            ret
+        })
+    }
+
+    /// The CPU that the thread is running on or was most recently scheduled on.
+    pub(crate) fn last_cpu(&self) -> Option<CpuId> {
+        self.last_cpu.get()
+    }
+
+    /// Set the CPU this thread is being scheduled on.
+    fn set_last_cpu(&self, cpu_id: CpuId) {
+        self.last_cpu.set_anyway(cpu_id);
+    }
+}
+
+impl Scheduler for ClassScheduler {
+    fn enqueue(&self, task: Arc<Task>, flags: EnqueueFlags) -> Option<CpuId> {
+        let thread = task.as_thread()?.clone();
+
+        let (still_in_rq, cpu) = {
+            let selected_cpu_id = self.select_cpu(&thread, flags.into());
+
+            // If the task had already run on a CPU, use that.
+            if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
+                debug_assert!(flags != EnqueueFlags::Spawn);
+                (true, task_cpu_id)
+            } else {
+                (false, selected_cpu_id)
+            }
+        };
+
+        let mut rq = self.rqs[cpu.as_usize()].lock();
+
+        // Note: call set_if_is_none again to prevent a race condition.
+        let still_in_rq = still_in_rq && task.cpu().set_if_is_none(cpu).is_err();
+
+        if flags == EnqueueFlags::ForceSchedule {
+            // A forced task is temporarily assigned the highest real-time priority and is placed at
+            // the front of the run queue. Its previous policy is restored on the next
+            // `update_current` of the task. If the task is still in the run queue, it must be
+            // removed from its queue first; if that is not possible (the task is the current task,
+            // or it is in a run queue which doesn't support removal), the force fails entirely and
+            // falls back to normal scheduling.
+            if still_in_rq && !rq.remove_task(&task) {
+                warn!("Failed to force schedule task: {:?}", task);
+            } else {
+                thread.sched_attr().set_forced_policy();
+                rq.real_time.enqueue_front(task);
+                thread.sched_attr().set_last_cpu(cpu);
+                return Some(cpu);
+            }
+        }
+
+        if still_in_rq {
+            return None;
+        }
+
+        // Preempt if the new task has a higher priority.
+        let should_preempt = rq
+            .current
+            .as_ref()
+            .is_none_or(|((_, rq_current_thread), _)| {
+                thread.sched_attr().policy() < rq_current_thread.sched_attr().policy()
+            });
+
+        thread.sched_attr().set_last_cpu(cpu);
+        rq.enqueue_entity((task, thread), Some(flags));
+
+        should_preempt.then_some(cpu)
+    }
+
+    fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
+        let guard = disable_local();
+        let preempted = {
+            let mut rq = self.rqs[guard.current_cpu().as_usize()].lock();
+            f(&mut *rq);
+            rq.preempted.take()
+        };
+        if let Some(entity) = preempted {
+            self.requeue_preempted(entity);
+        }
+    }
+
+    fn local_rq_with(&self, f: &mut dyn FnMut(&dyn LocalRunQueue)) {
+        let guard = disable_local();
+        f(&*self.rqs[guard.current_cpu().as_usize()].lock())
+    }
+
+    fn idle_time(&self) -> Duration {
+        let mut idle_time = Duration::from_nanos(0);
+        for class_rq in &self.rqs {
+            idle_time += class_rq.lock().idle.get_idle_time();
+        }
+        idle_time + Duration::from_secs(0)
+    }
+}
+
+impl ClassScheduler {
+    pub(crate) fn new() -> Self {
+        let class_rq = |cpu| {
+            SpinLock::new(PerCpuClassRqSet {
+                stop: stop::StopClassRq::new(),
+                real_time: real_time::RealTimeClassRq::new(cpu),
+                fair: fair::FairClassRq::new(cpu),
+                idle: idle::IdleClassRq::new(),
+                current: None,
+                preempted: None,
+            })
+        };
+        ClassScheduler {
+            rqs: all_cpus().map(class_rq).collect(),
+            select_policy: PolicySlot::empty(),
+        }
+    }
+
+    /// Queues a task that was preempted while still runnable on the CPU chosen by the policy.
+    fn requeue_preempted(&self, (task, thread): SchedEntity) {
+        let cpu = self.select_cpu(&thread, SelectCpuReason::Preempt);
+        let mut rq = self.rqs[cpu.as_usize()].lock();
+        // Move the run-queue marker straight to the new CPU. It must never pass through `None`,
+        // which `PosixThread::sleeping_state` reads as "asleep".
+        task.cpu().set_anyway(cpu);
+        thread.sched_attr().set_last_cpu(cpu);
+        // The task may still be running on its old CPU. If the new CPU picks it first, OSTD's
+        // context switch waits for the old CPU to let go of it.
+        rq.enqueue_entity((task, thread), None);
+    }
+
+    /// Replaces the CPU-selection policy. Tasks placed from now on use `policy`.
+    pub(crate) fn inject_select_policy(&self, policy: Arc<dyn SelectCpuPolicy>) {
+        self.select_policy.set(policy);
+    }
+
+    /// Asks the active CPU-selection policy where `thread` should be queued.
+    fn select_cpu(&self, thread: &Arc<Thread>, reason: SelectCpuReason) -> CpuId {
+        // `SelectCpuPolicy::select_cpu` promises policies that local IRQs are disabled.
+        let _guard = disable_local();
+        let queue_len = |cpu: CpuId| self.rqs[cpu.as_usize()].lock().load_stats().queue_len;
+        let input = SelectCpuInput {
+            reason,
+            thread,
+            queue_len: &queue_len,
+        };
+        self.select_policy
+            .with(|policy| policy.select_cpu(&input))
+            .expect("no CPU-selection policy is installed: a task was spawned or woken before `init_select_cpu_policy` ran")
+    }
+}
+
+impl PerCpuClassRqSet {
+    fn pick_next_entity(&mut self) -> Option<SchedEntity> {
+        (self.stop.pick_next())
+            .or_else(|| self.real_time.pick_next())
+            .or_else(|| self.fair.pick_next())
+            .or_else(|| self.idle.pick_next())
+            .and_then(|task| {
+                let thread = task.as_thread()?.clone();
+                Some((task, thread))
+            })
+    }
+
+    fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) {
+        match thread.sched_attr().policy_kind() {
+            SchedPolicyKind::Stop => self.stop.enqueue(task, flags),
+            SchedPolicyKind::RealTime => self.real_time.enqueue(task, flags),
+            SchedPolicyKind::Fair => self.fair.enqueue(task, flags),
+            SchedPolicyKind::Idle => self.idle.enqueue(task, flags),
+        }
+    }
+
+    /// Removes the task from the run queues of this CPU, if it is queued in one of the classes that
+    /// supports that.
+    fn remove_task(&mut self, task: &Arc<Task>) -> bool {
+        let Some(t) = task.as_thread() else {
+            return false;
+        };
+        match t.sched_attr().policy_kind() {
+            SchedPolicyKind::Stop => self.stop.remove(task),
+            SchedPolicyKind::RealTime => self.real_time.remove(task),
+            SchedPolicyKind::Fair => self.fair.remove(task),
+            SchedPolicyKind::Idle => self.idle.remove(task),
+        }
+    }
+
+    fn load_stats(&self) -> PerCpuLoadStats {
+        let queue_len = (self.stop.len() + self.real_time.len() + self.fair.len()) as u32;
+        let is_idle = match &self.current {
+            Some(((_, thread), _)) => thread.sched_attr().policy_kind() == SchedPolicyKind::Idle,
+            None => true,
+        };
+        PerCpuLoadStats { queue_len, is_idle }
+    }
+}
+
+impl LocalRunQueue for PerCpuClassRqSet {
+    fn current(&self) -> Option<&Arc<Task>> {
+        self.current.as_ref().map(|((task, _), _)| task)
+    }
+
+    fn try_pick_next(&mut self) -> Option<&Arc<Task>> {
+        self.pick_next_entity().and_then(|next| {
+            // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
+            // as the current task here.
+            if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new())) {
+                // `old` is still runnable. `ClassScheduler::mut_local_rq_with` places it after
+                // this lock is released, because the policy may send it to another CPU.
+                debug_assert!(self.preempted.is_none());
+                self.preempted = Some(old);
+            }
+            self.current.as_ref().map(|((task, _), _)| task)
+        })
+    }
+
+    fn update_current(&mut self, flags: UpdateFlags) -> bool {
+        let (should_preempt, mut lookahead) = if let Some(((_, cur), rt)) = &mut self.current {
+            rt.update();
+
+            // A forced schedule only lasts until the next `update_current` of
+            // the task: restore the original policy, if any.
+            cur.sched_attr().restore_forced_policy();
+
+            let attr = &cur.sched_attr();
+
+            match attr.policy_kind() {
+                SchedPolicyKind::Stop => (self.stop.update_current(rt, attr, flags), 0),
+                SchedPolicyKind::RealTime => (self.real_time.update_current(rt, attr, flags), 1),
+                SchedPolicyKind::Fair => (self.fair.update_current(rt, attr, flags), 2),
+                SchedPolicyKind::Idle => (self.idle.update_current(rt, attr, flags), 3),
+            }
+        } else {
+            (false, 4)
+        };
+
+        if matches!(flags, UpdateFlags::Wait | UpdateFlags::Exit) {
+            lookahead = 4;
+        }
+
+        should_preempt
+            || (lookahead >= 1 && !self.stop.is_empty())
+            || (lookahead >= 2 && !self.real_time.is_empty())
+            || (lookahead >= 3 && !self.fair.is_empty())
+            || (lookahead >= 4 && !self.idle.is_empty())
+    }
+
+    fn dequeue_current(&mut self) -> Option<Arc<Task>> {
+        self.current.take().map(|((cur_task, _), _)| {
+            cur_task.schedule_info().cpu.set_to_none();
+            cur_task
+        })
+    }
+}
+
+/// Holds per-CPU load information.
+struct PerCpuLoadStats {
+    /// The length of the run queue (excluding the idle task).
+    queue_len: u32,
+    /// If the CPU is currently idle.
+    ///
+    /// A CPU is said to be idle when it is running the idle task, or it is not
+    /// running any task at all. The latter case is very unlikely to happen
+    /// (almost a bug if it happens) as the idle task should always be runnable.
+    is_idle: bool,
+}
+
+impl SchedulerStats for ClassScheduler {
+    fn nr_queued_and_running(&self) -> (u32, u32) {
+        self.rqs.iter().fold((0, 0), |(queued, running), rq| {
+            let PerCpuLoadStats { queue_len, is_idle } = rq.lock().load_stats();
+            (queued + queue_len, running + u32::from(!is_idle))
+        })
+    }
+}
+
+impl Default for ClassScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}

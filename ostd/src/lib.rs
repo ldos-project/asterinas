@@ -12,6 +12,7 @@
 #![feature(sync_unsafe_cell)]
 #![cfg_attr(target_arch = "riscv64", feature(riscv_ext_intrinsics))]
 #![cfg_attr(target_arch = "x86_64", feature(iter_advance_by, macro_metavar_expr))]
+#![cfg_attr(target_arch = "aarch64", feature(iter_next_chunk))]
 #![expect(internal_features)]
 #![no_std]
 #![warn(missing_docs)]
@@ -34,6 +35,7 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86/mod.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv/mod.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
+#[cfg_attr(target_arch = "aarch64", path = "arch/arm/mod.rs")]
 pub mod arch;
 
 pub mod assertion;
@@ -65,11 +67,16 @@ pub mod timer;
 pub mod user;
 pub mod util;
 
+#[cfg(target_arch = "x86_64")]
+pub mod vm;
+
 #[cfg(feature = "coverage")]
 mod coverage;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(baseline_asterinas))]
+pub use ostd_macros::DefaultProjection;
 pub use ostd_macros::{
     early_cmdline_parser, global_frame_allocator, global_heap_allocator,
     global_heap_allocator_slot_map, main, ostd_error, panic_handler,
@@ -104,7 +111,8 @@ unsafe fn init() {
     #[cfg(target_arch = "x86_64")]
     arch::if_tdx_enabled!({
     } else {
-        arch::serial::init(&early_cmdline);
+        // SAFETY: This function is called only once on the BSP.
+        unsafe { arch::serial::init(&early_cmdline) };
     });
     #[cfg(not(target_arch = "x86_64"))]
     arch::serial::init(&early_cmdline);
@@ -138,7 +146,8 @@ unsafe fn init() {
 
     #[cfg(target_arch = "x86_64")]
     arch::if_tdx_enabled!({
-        arch::serial::init(&early_cmdline);
+        // SAFETY: This function is called only once on the BSP.
+        unsafe { arch::serial::init(&early_cmdline) };
     });
 
     smp::init();

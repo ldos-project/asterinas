@@ -1,0 +1,333 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::{boxed::Box, sync::Arc};
+use core::fmt::Debug;
+
+use aster_pci::{
+    PciDeviceId, bus::PciDevice, cfg_space::BarAccess, common_device::PciCommonDevice,
+};
+use aster_util::{field_ptr, safe_ptr::SafePtr};
+use ostd::{
+    bus::BusProbeError,
+    info,
+    io::IoMem,
+    irq::IrqCallbackFunction,
+    mm::{HasDaddr, dma::DmaCoherent},
+    warn,
+};
+
+use super::{
+    common_cfg::{VirtioPciCfgU64Ext, VirtioPciCommonCfg},
+    msix::VirtioMsixManager,
+};
+use crate::{
+    VirtioDeviceType,
+    queue::{AvailRing, Descriptor, UsedRing},
+    transport::{
+        ConfigManager, DeviceStatus, VirtioTransport, VirtioTransportError,
+        pci::capability::{VirtioPciCapabilityData, VirtioPciCpabilityType},
+    },
+};
+
+struct VirtioPciNotify {
+    offset_multiplier: u32,
+    offset: u32,
+    io_memory: IoMem,
+}
+
+#[derive(Debug)]
+pub(super) struct VirtioPciDevice {
+    device_id: PciDeviceId,
+}
+
+impl VirtioPciDevice {
+    pub(super) fn new(device_id: PciDeviceId) -> Self {
+        Self { device_id }
+    }
+}
+
+impl PciDevice for VirtioPciDevice {
+    fn device_id(&self) -> PciDeviceId {
+        self.device_id
+    }
+}
+
+pub(super) struct VirtioPciModernTransport {
+    device_type: VirtioDeviceType,
+    common_device: PciCommonDevice,
+    common_cfg: SafePtr<VirtioPciCommonCfg, IoMem>,
+    device_cfg: VirtioPciCapabilityData,
+    notify: VirtioPciNotify,
+    msix_manager: VirtioMsixManager,
+}
+
+impl Debug for VirtioPciModernTransport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PCIVirtioModernDevice")
+            .field("common_device", &self.common_device)
+            .finish()
+    }
+}
+
+impl VirtioTransport for VirtioPciModernTransport {
+    fn device_type(&self) -> VirtioDeviceType {
+        self.device_type
+    }
+
+    fn set_queue(
+        &mut self,
+        idx: u16,
+        queue_size: u16,
+        descriptor_ptr: &SafePtr<Descriptor, Arc<DmaCoherent>>,
+        avail_ring_ptr: &SafePtr<AvailRing, Arc<DmaCoherent>>,
+        used_ring_ptr: &SafePtr<UsedRing, Arc<DmaCoherent>>,
+    ) -> Result<(), VirtioTransportError> {
+        if idx >= self.num_queues() {
+            return Err(VirtioTransportError::InvalidArgs);
+        }
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+            .write_once(&idx)
+            .unwrap();
+        debug_assert_eq!(
+            field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+                .read_once()
+                .unwrap(),
+            idx
+        );
+
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_size)
+            .write_once(&queue_size)
+            .unwrap();
+
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_desc)
+            .write_u64(descriptor_ptr.daddr() as u64)
+            .unwrap();
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_driver)
+            .write_u64(avail_ring_ptr.daddr() as u64)
+            .unwrap();
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_device)
+            .write_u64(used_ring_ptr.daddr() as u64)
+            .unwrap();
+
+        // Enable queue
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_enable)
+            .write_once(&1u16)
+            .unwrap();
+        Ok(())
+    }
+
+    fn notify_config(&self, idx: usize) -> ConfigManager<u32> {
+        debug_assert!(idx < self.num_queues() as usize);
+        let safe_ptr = Some(SafePtr::new(
+            self.notify.io_memory.clone(),
+            (self.notify.offset + self.notify.offset_multiplier * idx as u32) as usize,
+        ));
+
+        ConfigManager::new(safe_ptr, None)
+    }
+
+    fn num_queues(&self) -> u16 {
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, num_queues)
+            .read_once()
+            .unwrap()
+    }
+
+    fn device_config_mem(&self) -> Option<IoMem> {
+        let offset = self.device_cfg.offset() as usize;
+        let length = self.device_cfg.length() as usize;
+        let io_mem = self
+            .device_cfg
+            .memory_bar()
+            .unwrap()
+            .slice(offset..offset + length);
+
+        Some(io_mem)
+    }
+
+    fn device_config_bar(&self) -> Option<(BarAccess, usize)> {
+        None
+    }
+
+    fn read_device_features(&self) -> u64 {
+        // select low
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_feature_select)
+            .write_once(&0u32)
+            .unwrap();
+        let device_feature_low = field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_features)
+            .read_once()
+            .unwrap();
+        // select high
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_feature_select)
+            .write_once(&1u32)
+            .unwrap();
+        let device_feature_high = field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_features)
+            .read_once()
+            .unwrap() as u64;
+        (device_feature_high << 32) | device_feature_low as u64
+    }
+
+    fn write_driver_features(&mut self, features: u64) -> Result<(), VirtioTransportError> {
+        let low = features as u32;
+        let high = (features >> 32) as u32;
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, driver_feature_select)
+            .write_once(&0u32)
+            .unwrap();
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, driver_features)
+            .write_once(&low)
+            .unwrap();
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, driver_feature_select)
+            .write_once(&1u32)
+            .unwrap();
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, driver_features)
+            .write_once(&high)
+            .unwrap();
+        Ok(())
+    }
+
+    fn read_device_status(&self) -> DeviceStatus {
+        let status = field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_status)
+            .read_once()
+            .unwrap();
+        DeviceStatus::from_bits(status).unwrap()
+    }
+
+    fn write_device_status(&mut self, status: DeviceStatus) -> Result<(), VirtioTransportError> {
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, device_status)
+            .write_once(&(status.bits()))
+            .unwrap();
+        Ok(())
+    }
+
+    fn max_queue_size(&self, idx: u16) -> Result<u16, VirtioTransportError> {
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+            .write_once(&idx)
+            .unwrap();
+        debug_assert_eq!(
+            field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+                .read_once()
+                .unwrap(),
+            idx
+        );
+
+        Ok(field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_size)
+            .read_once()
+            .unwrap())
+    }
+
+    fn register_queue_callback(
+        &mut self,
+        index: u16,
+        func: Box<IrqCallbackFunction>,
+        single_interrupt: bool,
+    ) -> Result<(), VirtioTransportError> {
+        if index >= self.num_queues() {
+            return Err(VirtioTransportError::InvalidArgs);
+        }
+        let (vector, irq) = if single_interrupt {
+            if let Some(unused_irq) = self.msix_manager.pop_unused_irq() {
+                unused_irq
+            } else {
+                warn!(
+                    "{:?}: `single_interrupt` ignored: no more IRQ lines available",
+                    self.device_type()
+                );
+                self.msix_manager.shared_irq_line()
+            }
+        } else {
+            self.msix_manager.shared_irq_line()
+        };
+        irq.on_active(func);
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+            .write_once(&index)
+            .unwrap();
+        debug_assert_eq!(
+            field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_select)
+                .read_once()
+                .unwrap(),
+            index
+        );
+        field_ptr!(&self.common_cfg, VirtioPciCommonCfg, queue_msix_vector)
+            .write_once(&vector)
+            .unwrap();
+        Ok(())
+    }
+
+    fn register_cfg_callback(
+        &mut self,
+        func: Box<IrqCallbackFunction>,
+    ) -> Result<(), VirtioTransportError> {
+        let (_, irq) = self.msix_manager.config_msix_irq();
+        irq.on_active(func);
+        Ok(())
+    }
+
+    fn is_legacy_version(&self) -> bool {
+        // TODO: Support legacy version
+        false
+    }
+}
+
+impl VirtioPciModernTransport {
+    #[expect(clippy::result_large_err)]
+    pub(super) fn new(
+        mut common_device: PciCommonDevice,
+    ) -> Result<Self, (BusProbeError, PciCommonDevice)> {
+        let device_id = common_device.device_id().device_id;
+        let device_type_value = if device_id <= 0x1040 {
+            device_id - 0x1000
+        } else {
+            device_id - 0x1040
+        };
+
+        let device_type = match VirtioDeviceType::try_from(device_type_value as u8) {
+            Ok(device) => device,
+            Err(_) => {
+                warn!("Unrecognized virtio-pci device ID: {:x?}", device_id);
+                return Err((BusProbeError::DeviceNotMatch, common_device));
+            }
+        };
+
+        info!("Found device: {:?}", device_type);
+
+        let mut notify = None;
+        let mut common_cfg = None;
+        let mut device_cfg = None;
+        let (vndr_caps, bar_manager) = common_device.iter_vndr_capability_with_bar_manager();
+        for vndr_cap in vndr_caps {
+            let data = VirtioPciCapabilityData::new(bar_manager, vndr_cap);
+            match data.typ() {
+                VirtioPciCpabilityType::CommonCfg => {
+                    common_cfg = Some(VirtioPciCommonCfg::new(&data));
+                }
+                VirtioPciCpabilityType::NotifyCfg => {
+                    notify = Some(VirtioPciNotify {
+                        offset_multiplier: data.option_value().unwrap(),
+                        offset: data.offset(),
+                        io_memory: data.memory_bar().unwrap().clone(),
+                    });
+                }
+                VirtioPciCpabilityType::IsrCfg => {}
+                VirtioPciCpabilityType::DeviceCfg => {
+                    device_cfg = Some(data);
+                }
+                VirtioPciCpabilityType::PciCfg => {}
+            }
+        }
+        let notify = notify.unwrap();
+        let common_cfg = common_cfg.unwrap();
+        let device_cfg = device_cfg.unwrap();
+
+        // TODO: Support interrupt without MSI-X.
+        let msix = common_device.acquire_msix_capability().unwrap().unwrap();
+        let msix_manager = VirtioMsixManager::new(msix);
+
+        Ok(Self {
+            device_type,
+            common_device,
+            common_cfg,
+            device_cfg,
+            notify,
+            msix_manager,
+        })
+    }
+}

@@ -57,7 +57,7 @@ impl MethodDefinition {
     }
 }
 
-pub fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> TokenStream {
+pub(crate) fn orpc_monitor_impl(monitor_vis: Visibility, input_impl: ItemImpl) -> TokenStream {
     let (impl_generics, type_generics, where_clause) = input_impl.generics.split_for_impl();
     let phantom_type = generics_to_phantom(&input_impl.generics);
 

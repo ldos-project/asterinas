@@ -1,0 +1,827 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::boxed::Box;
+use core::{fmt::Display, time::Duration};
+
+use align_ext::AlignExt;
+use aster_time::read_monotonic_time;
+use aster_util::mem_obj_slice::Slice;
+use dma_pool::{DmaArenaPool, DmaBuffer};
+use int_to_c_enum::TryFromInt;
+use io_util::{
+    IoError,
+    batch::{IoBatch, IoCompletion},
+};
+#[cfg(not(baseline_asterinas))]
+use ostd::orpc::oqueue::{Element, OQueueError, RefProducer};
+use ostd::{
+    Error,
+    error::{AccessDeniedSnafu, NotEnoughResourcesSnafu},
+    mm::{
+        HasSize, Infallible, USegment, VmReader, VmWriter,
+        dma::{DmaStream, FromAndToDevice},
+        io::util::{HasVmReaderWriter, VmReaderWriterResult},
+    },
+    sync::WaitQueue,
+};
+use serde::Serialize;
+use spin::Once;
+
+use super::{BlockDevice, id::Sid};
+use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, prelude::*};
+
+/// Trace data for block device I/O completion.
+///
+/// This struct captures performance metrics when a block I/O request completes.
+#[derive(Clone, Copy, Default, Serialize)]
+pub struct BlockDeviceCompletionStats {
+    /// The latency of the I/O request.
+    pub latency: Duration,
+    /// The number of outstanding 4KB pages at completion time.
+    pub outstanding_pages: u32,
+    /// Length of the IO queue at the time the IO arrives, which is num_outstanding_request of a block device.
+    pub queue_len: u32,
+    /// Size of the IO request, which is num_pages of a bio request.
+    pub request_size_pages: u32,
+    /// The encoded ID (see `DeviceId::to_raw`) of the device that produced this
+    /// stat.
+    pub device_id: u32,
+}
+
+/// The unit for block I/O.
+///
+/// Each `Bio` packs the following information:
+/// (1) The type of the I/O,
+/// (2) The target sectors on the device for doing I/O,
+/// (3) The memory locations (`BioSegment`) from/to which data are read/written,
+/// (4) The optional callback function that will be invoked when the I/O is completed.
+///
+/// Before submission, a `Bio` owns its segments and completion callback.
+/// After submission, that ownership is transferred to `SubmittedBio`.
+pub struct Bio {
+    metadata: Arc<BioMetadata>,
+    complete_fn: Option<BioCompleteFn>,
+    segments: Vec<BioSegment>,
+}
+
+/// The completion function type for BIO operations.
+///
+/// The function receives the final `BioStatus` of the I/O operation.
+pub type BioCompleteFn = Box<dyn FnOnce(BioStatus) + Send>;
+
+impl Bio {
+    /// Constructs a new `Bio`.
+    ///
+    /// The `type_` describes the type of the I/O.
+    /// The `start_sid` is the starting sector ID on the device.
+    /// The `segments` describes the memory segments.
+    /// The `complete_fn` is the optional callback function that will be invoked
+    /// when the I/O is completed, receiving the final `BioStatus`.
+    pub fn new(
+        type_: BioType,
+        start_sid: Sid,
+        segments: Vec<BioSegment>,
+        complete_fn: Option<BioCompleteFn>,
+    ) -> Self {
+        let nsectors = segments
+            .iter()
+            .map(|segment| segment.nsectors().to_raw())
+            .sum();
+
+        let metadata = Arc::new(BioMetadata {
+            type_,
+            sid_range: start_sid..start_sid + nsectors,
+            status: AtomicU32::new(BioStatus::Init as u32),
+            wait_queue: WaitQueue::new(),
+        });
+        Self {
+            metadata,
+            complete_fn,
+            segments,
+        }
+    }
+
+    /// Returns the type.
+    pub fn type_(&self) -> BioType {
+        self.metadata.type_()
+    }
+
+    /// Returns the range of target sectors on the device.
+    pub fn sid_range(&self) -> &Range<Sid> {
+        self.metadata.sid_range()
+    }
+
+    /// Returns the slice to the memory segments currently owned by this handle.
+    pub fn segments(&self) -> &[BioSegment] {
+        &self.segments
+    }
+
+    /// Returns the status.
+    pub fn status(&self) -> BioStatus {
+        self.metadata.status()
+    }
+
+    /// Submits self to the `block_device` asynchronously.
+    ///
+    /// This method consumes `self` and transfers its segments and completion
+    /// callback to the submitted request.
+    ///
+    /// Pushes the completion record into `io_batch`.
+    ///
+    /// # Panics
+    ///
+    /// The caller must not submit a `Bio` more than once. Otherwise, a panic shall be triggered.
+    pub fn submit(
+        self,
+        block_device: &dyn BlockDevice,
+        io_batch: &mut IoBatch,
+    ) -> Result<(), BioEnqueueError> {
+        let Self {
+            metadata,
+            complete_fn,
+            segments,
+        } = self;
+
+        // Change the status from "Init" to "Submit".
+        let result = metadata.status.compare_exchange(
+            BioStatus::Init as u32,
+            BioStatus::Submit as u32,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        assert!(result.is_ok());
+
+        let waiter_metadata = metadata.clone();
+        // Those empty fields will be set just before in the block_device.enqueue function in the prepare_enqueue function.
+        let submitted_bio = SubmittedBio {
+            metadata,
+            sid_offset: 0,
+            complete_fn,
+            segments,
+            #[cfg(not(baseline_asterinas))]
+            reply_handle: None,
+            #[cfg(not(baseline_asterinas))]
+            submission_time: None,
+            #[cfg(not(baseline_asterinas))]
+            device_id: Some(block_device.id().to_raw()),
+            #[cfg(not(baseline_asterinas))]
+            num_pages: None,
+            #[cfg(not(baseline_asterinas))]
+            outstanding_pages: None,
+            #[cfg(not(baseline_asterinas))]
+            outstanding_requests: None,
+        };
+        if let Err(e) = block_device.enqueue(submitted_bio) {
+            // Fail to submit, revert the status.
+            let result = waiter_metadata.status.compare_exchange(
+                BioStatus::Submit as u32,
+                BioStatus::Init as u32,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+            assert!(result.is_ok());
+            return Err(e);
+        }
+
+        io_batch.push(waiter_metadata);
+        Ok(())
+    }
+
+    /// Submits self to the `block_device` and waits for the result synchronously.
+    ///
+    /// Returns the result status of the `Bio`.
+    ///
+    /// # Panics
+    ///
+    /// The caller must not submit a `Bio` more than once. Otherwise, a panic shall be triggered.
+    pub fn submit_and_wait(
+        self,
+        block_device: &dyn BlockDevice,
+    ) -> Result<BioStatus, BioEnqueueError> {
+        let mut io_batch = IoBatch::with_capacity(1);
+        self.submit(block_device, &mut io_batch)?;
+        let _ = io_batch.wait_all();
+        let metadata = io_batch[0].downcast_ref::<BioMetadata>().unwrap();
+        Ok(metadata.status())
+    }
+}
+
+impl Debug for Bio {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("Bio")
+            .field("metadata", &self.metadata)
+            .field("segments", &self.segments)
+            .finish()
+    }
+}
+
+/// The error type returned when enqueueing the `Bio`.
+#[derive(Debug)]
+pub enum BioEnqueueError {
+    /// The request queue is full
+    IsFull,
+    /// Refuse to enqueue the bio
+    Refused,
+    /// Too big bio
+    TooBig,
+    /// OQueue error
+    #[cfg(not(baseline_asterinas))]
+    OQueueError(OQueueError),
+}
+
+#[cfg(not(baseline_asterinas))]
+impl From<OQueueError> for BioEnqueueError {
+    fn from(err: OQueueError) -> Self {
+        Self::OQueueError(err)
+    }
+}
+
+impl Display for BioEnqueueError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl core::error::Error for BioEnqueueError {}
+
+impl From<BioEnqueueError> for Error {
+    fn from(_error: BioEnqueueError) -> Self {
+        NotEnoughResourcesSnafu.build()
+    }
+}
+
+/// A submitted `Bio` object.
+///
+/// The request queue of a block device only accepts `SubmittedBio`s into the queue.
+#[cfg_attr(not(baseline_asterinas), derive(Element))]
+pub struct SubmittedBio {
+    metadata: Arc<BioMetadata>,
+    sid_offset: u64,
+    complete_fn: Option<BioCompleteFn>,
+    segments: Vec<BioSegment>,
+
+    #[cfg(not(baseline_asterinas))]
+    reply_handle: Option<RefProducer<BlockDeviceCompletionStats>>,
+
+    #[cfg(not(baseline_asterinas))]
+    submission_time: Option<Duration>,
+
+    #[cfg(not(baseline_asterinas))]
+    device_id: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    num_pages: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    outstanding_pages: Option<u32>,
+
+    #[cfg(not(baseline_asterinas))]
+    outstanding_requests: Option<u32>,
+}
+
+impl SubmittedBio {
+    /// Returns the type.
+    pub fn type_(&self) -> BioType {
+        self.metadata.type_()
+    }
+
+    /// Returns the range of target sectors on the device.
+    pub fn sid_range(&self) -> &Range<Sid> {
+        self.metadata.sid_range()
+    }
+
+    /// Returns the offset of the first sector ID.
+    pub fn sid_offset(&self) -> u64 {
+        self.sid_offset
+    }
+
+    /// Sets the offset of the first sector ID.
+    pub fn set_sid_offset(&mut self, offset: u64) {
+        self.sid_offset = offset;
+    }
+
+    /// Returns the number of 4KB pages if it has already been computed.
+    ///
+    /// Unlike [`Self::num_pages`], this does not compute the value on demand and
+    /// takes `&self`; it returns `None` when `num_pages` has not been set yet.
+    /// The caller asserts availability where that is known.
+    #[cfg(not(baseline_asterinas))]
+    pub fn get_num_pages(&self) -> Option<u32> {
+        self.num_pages
+    }
+
+    /// Returns the number of 4KB pages covered by this bio's sector range.
+    /// Note the field num_pages is only available when calling this function, but accessing it directly is not available.
+    #[cfg(not(baseline_asterinas))]
+    pub fn num_pages(&mut self) -> u32 {
+        let sectors = self.sid_range().end.to_raw() - self.sid_range().start.to_raw();
+        *self.num_pages.get_or_insert_with(|| {
+            sectors.div_ceil(8) as u32 // each page has 8 sectors
+        })
+    }
+
+    /// Returns the slice to the memory segments.
+    pub fn segments(&self) -> &[BioSegment] {
+        &self.segments
+    }
+
+    /// Returns the status.
+    pub fn status(&self) -> BioStatus {
+        self.metadata.status()
+    }
+
+    /// Completes the `Bio` by consuming `self`, releasing the segments, invoking
+    /// the callback function, and publishing the final status.
+    ///
+    /// The final status becomes visible only after the callback returns.
+    ///
+    /// When the driver finishes the request for this `Bio`, it will call this method.
+    pub fn complete(self, status: BioStatus) {
+        assert!(status != BioStatus::Init && status != BioStatus::Submit);
+
+        let Self {
+            metadata,
+            complete_fn,
+            segments,
+            ..
+        } = self;
+
+        drop(segments);
+
+        // Complete the `complete_fn` before publishing the status change,
+        // so that the effects of the callback function are visible to users.
+        general_complete_fn(metadata.type_(), status, complete_fn);
+
+        let result = metadata.status.compare_exchange(
+            BioStatus::Submit as u32,
+            status as u32,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+        assert!(result.is_ok());
+
+        metadata.wait_queue.wake_all();
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    pub fn submission_time(&self) -> Option<Duration> {
+        self.submission_time
+    }
+
+    /// Argument:
+    /// - `num_pages`: The number of pages covered by this bio's sector range. This is used to update the outstanding page counter in the block device, and also used for performance statistics reporting.
+    /// - `outstanding_pages`: The number of outstanding pages on the fly before enqueuing this bio request.
+    #[cfg(not(baseline_asterinas))]
+    pub fn prepare_enqueue(
+        &mut self,
+        reply_handle: RefProducer<BlockDeviceCompletionStats>,
+        outstanding_pages: u32,
+        outstanding_requests: u32,
+    ) {
+        self.reply_handle = Some(reply_handle);
+        self.submission_time = Some(read_monotonic_time());
+        self.num_pages(); // set the num_pages field
+        self.outstanding_pages = Some(outstanding_pages + self.num_pages.unwrap()); // accumulate the number of outstanding pages
+        self.outstanding_requests = Some(outstanding_requests);
+    }
+
+    #[cfg(not(baseline_asterinas))]
+    pub fn report_statistics(&self) {
+        self.reply_handle
+            .as_ref()
+            .unwrap()
+            .try_produce_ref(&BlockDeviceCompletionStats {
+                latency: read_monotonic_time().saturating_sub(self.submission_time.unwrap()),
+                outstanding_pages: self.outstanding_pages.unwrap_or(u32::MAX),
+                queue_len: self.outstanding_requests.unwrap_or(u32::MAX),
+                request_size_pages: self.num_pages.unwrap_or(u32::MAX),
+                device_id: self
+                    .device_id
+                    .expect("device_id of this Bio request is not set."),
+            });
+    }
+}
+
+impl Debug for SubmittedBio {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("SubmittedBio")
+            .field("metadata", &self.metadata)
+            .field("sid_offset", &self.sid_offset)
+            .field("segments", &self.segments)
+            .finish()
+    }
+}
+
+/// The metadata and waitable state shared by submitted `Bio`s and their waiter handles.
+struct BioMetadata {
+    /// The type of the I/O
+    type_: BioType,
+    /// The logical range of target sectors on the device
+    sid_range: Range<Sid>,
+    /// The I/O status
+    status: AtomicU32,
+    /// The wait queue for I/O completion
+    wait_queue: WaitQueue,
+}
+
+impl BioMetadata {
+    fn type_(&self) -> BioType {
+        self.type_
+    }
+
+    fn sid_range(&self) -> &Range<Sid> {
+        &self.sid_range
+    }
+
+    fn status(&self) -> BioStatus {
+        BioStatus::try_from(self.status.load(Ordering::Acquire)).unwrap()
+    }
+}
+
+impl IoCompletion for BioMetadata {
+    fn wait(&self) -> Result<(), IoError> {
+        let status = self.wait_queue.wait_until(|| {
+            let status = self.status();
+            (status != BioStatus::Submit).then_some(status)
+        });
+
+        match status {
+            BioStatus::Complete => Ok(()),
+            BioStatus::NotSupported => Err(IoError::Unsupported),
+            BioStatus::NoSpace => Err(IoError::OutOfSpace),
+            BioStatus::IoError => Err(IoError::Failed),
+            BioStatus::Init | BioStatus::Submit | BioStatus::Zeros => unreachable!(),
+        }
+    }
+}
+
+impl Debug for BioMetadata {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("BioMetadata")
+            .field("type", &self.type_())
+            .field("sid_range", &self.sid_range())
+            .field("status", &self.status())
+            .finish()
+    }
+}
+
+/// The type of `Bio`.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, TryFromInt)]
+pub enum BioType {
+    /// Read sectors from the device.
+    Read = 0,
+    /// Write sectors into the device.
+    Write = 1,
+    /// Flush the volatile write cache.
+    Flush = 2,
+    // TODO: Add support for other BIO types, such as discarding sectors.
+}
+
+/// The status of `Bio`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+pub enum BioStatus {
+    /// The initial status for a newly created `Bio`.
+    Init = 0,
+    /// After a `Bio` is submitted, its status will be changed to "Submit".
+    Submit = 1,
+    /// The I/O operation has been successfully completed.
+    Complete = 2,
+    /// The I/O operation is not supported.
+    NotSupported = 3,
+    /// Insufficient space is available to perform the I/O operation.
+    NoSpace = 4,
+    /// An error occurred while doing I/O.
+    IoError = 5,
+    /// No I/O operation is needed because the sectors to read only contain zeros.
+    Zeros = 6,
+}
+
+impl BioStatus {
+    /// Returns the priority of this status for aggregation purposes.
+    /// Higher number means higher severity.
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::IoError => 5,
+            Self::NoSpace => 4,
+            Self::NotSupported => 3,
+            Self::Init => 2,
+            Self::Submit => 1,
+            Self::Complete => 0,
+            Self::Zeros => 0,
+        }
+    }
+}
+
+/// `BioSegment` is the basic memory unit of a block I/O request.
+#[derive(Clone, Debug)]
+pub struct BioSegment {
+    inner: Arc<BioSegmentInner>,
+}
+
+/// The inner part of `BioSegment`.
+// TODO: Decouple `BioSegmentInner` with DMA-related buffers.
+#[derive(Debug)]
+struct BioSegmentInner {
+    /// Internal DMA slice.
+    // TODO: The direction is currently `FromAndToDevice`. Implement compile-time checking.
+    storage: Slice<DmaBuffer<FromAndToDevice>>,
+    direction: BioDirection,
+}
+
+/// The direction of a bio request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BioDirection {
+    /// Read from the backed block device.
+    FromDevice,
+    /// Write to the backed block device.
+    ToDevice,
+}
+
+impl BioSegment {
+    /// Allocates a new `BioSegment` with the wanted blocks count and
+    /// the bio direction.
+    pub fn alloc(nblocks: usize, direction: BioDirection) -> Self {
+        Self::alloc_inner(nblocks, 0, nblocks * BLOCK_SIZE, direction)
+    }
+
+    /// The inner function that do the real segment allocation.
+    ///
+    /// Support two extended parameters:
+    /// 1. `offset_within_first_block`: the offset (in bytes) within the first block.
+    /// 2. `len`: the exact length (in bytes) of the wanted segment. (May
+    ///    less than `nblocks * BLOCK_SIZE`)
+    ///
+    /// # Panics
+    ///
+    /// If the `offset_within_first_block` or `len` is not sector aligned,
+    /// this method will panic.
+    pub(super) fn alloc_inner(
+        nblocks: usize,
+        offset_within_first_block: usize,
+        len: usize,
+        direction: BioDirection,
+    ) -> Self {
+        let offset = offset_within_first_block;
+        assert!(
+            is_sector_aligned(offset)
+                && offset < BLOCK_SIZE
+                && is_sector_aligned(len)
+                && offset + len <= nblocks * BLOCK_SIZE
+        );
+
+        // The target segment is whether from the pool or newly-allocated
+        let bio_segment_inner = target_pool(direction)
+            .and_then(|pool| pool.alloc(nblocks, offset, len))
+            .unwrap_or_else(|| {
+                let dma_stream = DmaStream::alloc_uninit(nblocks, false).unwrap();
+                BioSegmentInner {
+                    storage: Slice::new(DmaBuffer::Direct(dma_stream), offset..offset + len),
+                    direction,
+                }
+            });
+
+        Self {
+            inner: Arc::new(bio_segment_inner),
+        }
+    }
+
+    /// Constructs a new `BioSegment` with a given `USegment` and the bio direction.
+    pub fn new_from_segment(segment: USegment, direction: BioDirection) -> Self {
+        let len = segment.size();
+        let dma_stream = DmaStream::map(segment, false).unwrap();
+        Self {
+            inner: Arc::new(BioSegmentInner {
+                storage: Slice::new(DmaBuffer::Direct(dma_stream), 0..len),
+                direction,
+            }),
+        }
+    }
+
+    /// Returns the number of bytes.
+    pub fn nbytes(&self) -> usize {
+        self.inner.dma_slice().size()
+    }
+
+    /// Returns the number of sectors.
+    pub fn nsectors(&self) -> Sid {
+        Sid::from_offset(self.nbytes())
+    }
+
+    /// Returns the number of blocks.
+    pub fn nblocks(&self) -> usize {
+        self.nbytes().align_up(BLOCK_SIZE) / BLOCK_SIZE
+    }
+
+    /// Returns the offset (in bytes) within the first block.
+    pub fn offset_within_first_block(&self) -> usize {
+        self.inner.dma_slice().offset().start % BLOCK_SIZE
+    }
+
+    /// Returns the DMA slice.
+    pub fn dma_slice(&self) -> &Slice<DmaBuffer<FromAndToDevice>> {
+        self.inner.dma_slice()
+    }
+}
+
+impl HasVmReaderWriter for BioSegment {
+    type Types = VmReaderWriterResult;
+
+    fn reader(&self) -> Result<VmReader<'_, Infallible>, Error> {
+        if self.inner.direction != BioDirection::FromDevice {
+            return AccessDeniedSnafu.fail();
+        }
+        self.inner.dma_slice().reader()
+    }
+
+    fn writer(&self) -> Result<VmWriter<'_, Infallible>, Error> {
+        if self.inner.direction != BioDirection::ToDevice {
+            return AccessDeniedSnafu.fail();
+        }
+        self.inner.dma_slice().writer()
+    }
+}
+
+impl BioSegmentInner {
+    fn dma_slice(&self) -> &Slice<DmaBuffer<FromAndToDevice>> {
+        &self.storage
+    }
+}
+
+/// A BIO-specific wrapper around a shared DMA arena.
+//
+// TODO: Replace this wrapper with `DmaArenaPool` directly once the BIO
+// direction and block-oriented allocation API can be represented there.
+struct BioSegmentPool {
+    arena_pool: Arc<DmaArenaPool<FromAndToDevice>>,
+    direction: BioDirection,
+}
+
+impl BioSegmentPool {
+    /// Creates a new pool given the bio direction. The total number of
+    /// managed blocks is currently set to `POOL_DEFAULT_NBLOCKS`.
+    ///
+    /// The new pool will be allocated and mapped for later allocation.
+    fn new(direction: BioDirection) -> Self {
+        Self {
+            arena_pool: DmaArenaPool::new(POOL_DEFAULT_NBLOCKS).unwrap(),
+            direction,
+        }
+    }
+
+    /// Allocates a bio segment with the given count `nblocks`
+    /// from the pool.
+    ///
+    /// Support two extended parameters:
+    /// 1. `offset_within_first_block`: the offset (in bytes) within the first block.
+    /// 2. `len`: the exact length (in bytes) of the wanted segment. (May
+    ///    less than `nblocks * BLOCK_SIZE`)
+    ///
+    /// If there is no enough space in the pool, this method
+    /// will return `None`.
+    ///
+    /// # Panics
+    ///
+    /// If the `offset_within_first_block` exceeds the block size, or the `len`
+    /// exceeds the total length, this method will panic.
+    fn alloc(
+        &self,
+        nblocks: usize,
+        offset_within_first_block: usize,
+        len: usize,
+    ) -> Option<BioSegmentInner> {
+        assert!(
+            offset_within_first_block < BLOCK_SIZE
+                && offset_within_first_block + len <= nblocks * BLOCK_SIZE
+        );
+
+        let arena = self.arena_pool.alloc(nblocks)?;
+        Some(BioSegmentInner {
+            storage: Slice::new(
+                DmaBuffer::Arena(arena),
+                offset_within_first_block..offset_within_first_block + len,
+            ),
+            direction: self.direction,
+        })
+    }
+}
+
+/// A pool of segments for read bio requests only.
+static BIO_SEGMENT_RPOOL: Once<Arc<BioSegmentPool>> = Once::new();
+/// A pool of segments for write bio requests only.
+static BIO_SEGMENT_WPOOL: Once<Arc<BioSegmentPool>> = Once::new();
+/// The default number of blocks in each pool. (16MB each for now)
+const POOL_DEFAULT_NBLOCKS: usize = 4096;
+
+/// Initializes the bio segment pool.
+pub fn bio_segment_pool_init() {
+    BIO_SEGMENT_RPOOL.call_once(|| Arc::new(BioSegmentPool::new(BioDirection::FromDevice)));
+    BIO_SEGMENT_WPOOL.call_once(|| Arc::new(BioSegmentPool::new(BioDirection::ToDevice)));
+}
+
+/// Gets the target pool with the given `direction`.
+fn target_pool(direction: BioDirection) -> Option<&'static Arc<BioSegmentPool>> {
+    match direction {
+        BioDirection::FromDevice => BIO_SEGMENT_RPOOL.get(),
+        BioDirection::ToDevice => BIO_SEGMENT_WPOOL.get(),
+    }
+}
+
+/// Ensures a [`SubmittedBio`] is always completed — either explicitly
+/// via [`complete`](Self::complete) or with [`BioStatus::IoError`] on drop.
+///
+/// This is useful for non-blocking I/O paths where a parent BIO's completion
+/// must be guaranteed even if the child submission fails and is dropped.
+pub struct ParentGuard(Option<SubmittedBio>);
+
+impl ParentGuard {
+    /// Creates a new guard that will complete the given `SubmittedBio` with
+    /// [`BioStatus::IoError`] if not explicitly completed before being dropped.
+    pub fn new(parent: SubmittedBio) -> Self {
+        Self(Some(parent))
+    }
+
+    /// Completes the guarded `SubmittedBio` with the given status, consuming
+    /// the guard so the [`Drop`] impl becomes a no-op.
+    pub fn complete(mut self, status: BioStatus) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(status);
+        }
+    }
+}
+
+impl Drop for ParentGuard {
+    fn drop(&mut self) {
+        if let Some(parent) = self.0.take() {
+            parent.complete(BioStatus::IoError);
+        }
+    }
+}
+
+/// Checks if the given offset is aligned to sector.
+pub(crate) fn is_sector_aligned(offset: usize) -> bool {
+    offset.is_multiple_of(SECTOR_SIZE)
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::test_utils::FakeBlockDevice;
+
+    /// An atomic counter used to track how many times a callback has been called. This must be
+    /// static to work with static `fn`s passed to Bio.
+    static CALLBACK_INVOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    /// Test that a closure passed to `new_with_closure` is called when `complete` is called.
+    #[ktest]
+    fn bio_new_with_closure() {
+        let type_ = BioType::Read;
+        let start_sid = Sid::new(2);
+        let segments = vec![BioSegment::alloc(1, BioDirection::FromDevice)];
+        let complete_fn = |status| {
+            assert_eq!(status, BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        };
+
+        let bio = Bio::new(
+            type_,
+            start_sid,
+            segments.clone(),
+            Some(Box::new(complete_fn)),
+        );
+        assert_eq!(bio.type_(), type_);
+        assert_eq!(bio.sid_range().start, start_sid);
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        let _ = bio.submit(&FakeBlockDevice, &mut IoBatch::new());
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that a fn pointer passed to `new` is called when `complete` is called.
+    #[ktest]
+    fn bio_new_with_fn_callback() {
+        let type_ = BioType::Write;
+        let start_sid = Sid::new(2);
+        let segments = vec![BioSegment::alloc(1, BioDirection::ToDevice)];
+        fn complete_fn(status: BioStatus) {
+            assert_eq!(status, BioStatus::Complete);
+            CALLBACK_INVOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let bio = Bio::new(
+            type_,
+            start_sid,
+            segments.clone(),
+            Some(Box::new(complete_fn)),
+        );
+        assert_eq!(bio.type_(), type_);
+        assert_eq!(bio.sid_range().start, start_sid);
+
+        CALLBACK_INVOCATION_COUNT.store(0, Ordering::SeqCst);
+        let _ = bio.submit(&FakeBlockDevice, &mut IoBatch::new());
+        assert_eq!(CALLBACK_INVOCATION_COUNT.load(Ordering::SeqCst), 1);
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "aster-raid"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+aster-fpu.workspace = true
+ostd = { workspace = true }
+aster-block = { workspace = true }
+aster-virtio = { workspace = true }
+aster-time = { workspace = true }
+io-util = { workspace = true }
+device-id = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+snafu = { workspace = true }
+spin = { workspace = true }
+
+[lints]
+workspace = true

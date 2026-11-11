@@ -1,5 +1,5 @@
 <div style="text-align: center;">
-<img src="book/src/images/ldos_logo.webp" alt="asterinas-logo" width="350">
+<img src="book/src/images/mariposa-orange-hex.svg" alt="asterinas-logo" width="350">
 </div>
 
 [The Learning-Directed OS project](https://ldos.utexas.edu/) is developing the next-generation Machine Learning-based
@@ -101,6 +101,7 @@ that Asterinas can run on as an OS kernel.
 | ------------------- | ------ |
 | x86-64              | Tier 1 |
 | x86-64 (Intel TDX)  | Tier 2 |
+| ARM 64              | Tier 2 |
 | RISC-V 64           | Tier 2 |
 | LoongArch 64        | Tier 3 |
 
@@ -145,6 +146,8 @@ Follow the steps below to get Asterinas up and running.
     Alternatively, if you use VS Code with the
     [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
     extension, open the cloned folder and select "Reopen in Container".
+    If you prefer Nix to Docker, enter the Nix development shell instead,
+    as described in [Using Nix for Development](book/src/kernel/nix-development.md).
 
 3. Inside the container,
 go to the project folder (`/root/asterinas`) and run:
@@ -198,7 +201,11 @@ Please remove the `.template` to use it as the regular configuration file. The v
 
 ## The Book
 
-See [The Asterinas Book](https://asterinas.github.io/book/) to learn more about the project.
+See [The LDOS Book](https://ldos-project.github.io/book/) to learn more about the project.
+
+## Benchmark Dashboard
+
+See [LDOS Benchmark Dashboard](https://ldos-project.github.io/benchmark/) for nightly benchmark scores.
 
 ## License
 

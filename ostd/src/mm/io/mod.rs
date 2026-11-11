@@ -52,10 +52,7 @@ use crate::{
     Error,
     arch::mm::{__atomic_cmpxchg_fallible, __atomic_load_fallible},
     error::{InvalidArgsSnafu, PageFaultSnafu},
-    mm::{
-        MAX_USERSPACE_VADDR,
-        kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
-    },
+    mm::kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
     prelude::*,
 };
 
@@ -128,7 +125,7 @@ pub trait VmIo {
     fn read_slice<T: Pod>(&self, offset: usize, slice: &mut [T]) -> Result<()> {
         let len_in_bytes = size_of_val(slice);
         let ptr = slice as *mut [T] as *mut u8;
-        // SAFETY: the slice can be transmuted to a writable byte slice since the elements
+        // SAFETY: The slice can be transmuted to a writable byte slice since the elements
         // are all Plain-Old-Data (Pod) types.
         let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len_in_bytes) };
         self.read_bytes(offset, buf)
@@ -171,7 +168,7 @@ pub trait VmIo {
     fn write_slice<T: Pod>(&self, offset: usize, slice: &[T]) -> Result<()> {
         let len_in_bytes = size_of_val(slice);
         let ptr = slice as *const [T] as *const u8;
-        // SAFETY: the slice can be transmuted to a readable byte slice since the elements
+        // SAFETY: The slice can be transmuted to a readable byte slice since the elements
         // are all Plain-Old-Data (Pod) types.
         let buf = unsafe { core::slice::from_raw_parts(ptr, len_in_bytes) };
         self.write_bytes(offset, buf)
@@ -500,7 +497,7 @@ impl VmReader<'_, Fallible> {
     ///
     /// The virtual address range `ptr..ptr + len` must be in user space.
     pub unsafe fn from_user_space(ptr: *const u8, len: usize) -> Self {
-        debug_assert!(ptr.addr().checked_add(len).unwrap() <= MAX_USERSPACE_VADDR);
+        debug_assert!(super::is_in_user_space(ptr.addr(), len));
 
         Self {
             cursor: ptr,
@@ -778,7 +775,7 @@ impl VmWriter<'_, Fallible> {
     ///
     /// `ptr` must be in user space for `len` bytes.
     pub unsafe fn from_user_space(ptr: *mut u8, len: usize) -> Self {
-        debug_assert!(ptr.addr().checked_add(len).unwrap() <= MAX_USERSPACE_VADDR);
+        debug_assert!(super::is_in_user_space(ptr.addr(), len));
 
         Self {
             cursor: ptr,
@@ -982,7 +979,8 @@ pub trait PodOnce: Pod {}
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "riscv64",
-    target_arch = "loongarch64"
+    target_arch = "loongarch64",
+    target_arch = "aarch64"
 ))]
 mod pod_once_impls {
     use super::PodOnce;

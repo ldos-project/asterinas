@@ -92,6 +92,19 @@ impl WaitQueue {
     /// Wakes up one waiting thread, if there is one at the point of time when this method is
     /// called, returning whether such a thread was woken up.
     pub fn wake_one(&self) -> bool {
+        self.wake_one_with(Waker::wake_up)
+    }
+
+    /// Wakes up and immediately switches to one waiting thread, if there is one at the point of
+    /// time when this method is called, returning whether such a thread was woken up.
+    pub fn switch_to_one(&self) -> bool {
+        self.wake_one_with(Waker::switch_to)
+    }
+
+    /// Wakes up one waiting thread, if there is one, using the given wake
+    /// strategy (e.g. [`Waker::wake_up`] or [`Waker::switch_to`]), returning
+    /// whether such a thread was woken up.
+    fn wake_one_with(&self, mut wake: impl FnMut(&Waker) -> bool) -> bool {
         // Fast path
         if self.is_empty() {
             return false;
@@ -103,10 +116,10 @@ impl WaitQueue {
                 return false;
             };
             self.num_wakers.fetch_sub(1, Ordering::Release);
-            // Avoid holding lock when calling `wake_up`
+            // Avoid holding lock when waking
             drop(wakers);
 
-            if waker.wake_up() {
+            if wake(&waker) {
                 return true;
             }
         }
@@ -302,6 +315,17 @@ impl Waker {
             return false;
         }
         scheduler::unpark_target(self.task.clone());
+
+        true
+    }
+
+    /// Wakes up the associated [`Waiter`] like [`Self::wake_up`], except that it forces the
+    /// scheduler to run that task immediately.
+    pub fn switch_to(&self) -> bool {
+        if self.has_woken.swap(true, Ordering::Release) {
+            return false;
+        }
+        scheduler::switch_to_target(self.task.clone());
 
         true
     }

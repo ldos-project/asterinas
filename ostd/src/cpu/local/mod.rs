@@ -88,11 +88,6 @@ pub unsafe trait AnyStorage<T> {
 
     /// Gets the `const` pointer for the object on a target CPU.
     fn get_ptr_on_target(&self, cpu: CpuId) -> *const T;
-
-    /// Gets the `mut` pointer for the object on a target CPU.
-    ///
-    /// This method is intended for use when initializing or dropping the storage.
-    fn get_mut_ptr_on_target(&mut self, cpu: CpuId) -> *mut T;
 }
 
 /// A CPU-local variable for type `T`, backed by a storage of type `S`.
@@ -174,9 +169,9 @@ unsafe impl<T: Send + 'static> Send for CpuLocal<T, DynamicStorage<T>> {}
 
 // Implement `!Copy` and `!Clone` for `CpuLocal` to ensure memory safety:
 // - Prevent valid instances of `CpuLocal<T, StaticStorage<T>>` from being copied
-// to any memory areas outside the `.cpu_local` section.
+//   to any memory areas outside the `.cpu_local` section.
 // - Prevent multiple valid instances of `CpuLocal<T, DynamicStorage<T>>` from
-// referring to the same CPU-local object, avoiding double deallocation.
+//   referring to the same CPU-local object, avoiding double deallocation.
 impl<T: 'static, S: AnyStorage<T>> !Copy for CpuLocal<T, S> {}
 impl<T: 'static, S: AnyStorage<T>> !Clone for CpuLocal<T, S> {}
 
@@ -295,18 +290,18 @@ mod is_used {
 
             static IS_USED: AtomicBool = AtomicBool::new(false);
 
-            pub fn debug_set_true() {
+            pub(super) fn debug_set_true() {
                 IS_USED.store(true, Ordering::Relaxed);
             }
 
-            pub fn debug_assert_false() {
+            pub(super) fn debug_assert_false() {
                 debug_assert!(!IS_USED.load(Ordering::Relaxed));
             }
         }
         _ => {
-            pub fn debug_set_true() {}
+            pub(super) fn debug_set_true() {}
 
-            pub fn debug_assert_false() {}
+            pub(super) fn debug_assert_false() {}
         }
     }
 }

@@ -1,0 +1,406 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use aster_rights::{Dup, Read, TRights, Write};
+use aster_rights_proc::require;
+use ostd::sync::{PreemptDisabled, RwLockReadGuard, RwLockWriteGuard};
+
+use super::{
+    Credentials, ExecCred, FileCapabilities, Gid, SecureBits, Uid, capabilities::CapSet,
+    credentials_::Credentials_,
+};
+use crate::prelude::*;
+
+impl<R: TRights> Credentials<R> {
+    /// Creates a root `Credentials`.
+    ///
+    /// This method can only be used when creating the init process.
+    pub(crate) fn new_root() -> Self {
+        let uid = Uid::new_root();
+        let gid = Gid::new_root();
+        let cap = CapSet::new_root();
+        let credentials_ = Arc::new(Credentials_::new(uid, gid, cap));
+        Self(credentials_, R::new())
+    }
+
+    /// Clones a new `Credentials` from an existing `Credentials`.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R1 > Read)]
+    pub(crate) fn new_from<R1: TRights>(credentials: &Credentials<R1>) -> Self {
+        let credentials_ = Arc::new(credentials.0.as_ref().clone());
+
+        Self(credentials_, R::new())
+    }
+
+    /// Duplicates the capabilities.
+    ///
+    /// This method requires the `Dup` right.
+    #[require(R > Dup)]
+    pub(crate) fn dup(&self) -> Self {
+        Self(self.0.clone(), self.1)
+    }
+
+    /// Restricts capabilities to a smaller set.
+    #[require(R > R1)]
+    pub(crate) fn restrict<R1: TRights>(self) -> Credentials<R1> {
+        let Credentials(credentials_, _) = self;
+
+        Credentials(credentials_, R1::new())
+    }
+
+    // *********** UID methods **********
+
+    /// Gets the real user ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn ruid(&self) -> Uid {
+        self.0.ruid()
+    }
+
+    /// Gets the effective user ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn euid(&self) -> Uid {
+        self.0.euid()
+    }
+
+    /// Gets the saved-set user ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn suid(&self) -> Uid {
+        self.0.suid()
+    }
+
+    /// Gets the filesystem user ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn fsuid(&self) -> Uid {
+        self.0.fsuid()
+    }
+
+    /// Sets the user ID.
+    ///
+    /// If `self` is privileged, sets the real, effective, saved-set user IDs as `uid`, Otherwise,
+    /// sets the effective user ID as `uid`.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_uid(&self, uid: Uid) -> Result<()> {
+        self.0.set_uid(uid)
+    }
+
+    /// Sets the real, effective user IDs as `ruid`, `euid` respectively.
+    ///
+    /// If `ruid` or `euid` is `None`, the corresponding user ID will leave unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_reuid(&self, ruid: Option<Uid>, euid: Option<Uid>) -> Result<()> {
+        self.0.set_reuid(ruid, euid)
+    }
+
+    /// Sets the real, effective, saved-set user IDs as `ruid`, `euid`, `suid` respectively.
+    ///
+    /// If `ruid`, `euid`, or `suid` is `None`, the corresponding user ID will leave unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_resuid(
+        &self,
+        ruid: Option<Uid>,
+        euid: Option<Uid>,
+        suid: Option<Uid>,
+    ) -> Result<()> {
+        self.0.set_resuid(ruid, euid, suid)
+    }
+
+    /// Sets the filesystem user ID as `fsuid` and returns the original filesystem user ID.
+    ///
+    /// If `fsuid` is `None`, leaves the filesystem user ID unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_fsuid(&self, fsuid: Option<Uid>) -> Result<Uid, Uid> {
+        self.0.set_fsuid(fsuid)
+    }
+
+    // *********** GID methods **********
+
+    /// Gets the real group ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn rgid(&self) -> Gid {
+        self.0.rgid()
+    }
+
+    /// Gets the effective group ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn egid(&self) -> Gid {
+        self.0.egid()
+    }
+
+    /// Gets the saved-set group ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn sgid(&self) -> Gid {
+        self.0.sgid()
+    }
+
+    /// Gets the filesystem group ID.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn fsgid(&self) -> Gid {
+        self.0.fsgid()
+    }
+
+    /// Sets the group ID.
+    ///
+    /// If `self` is privileged, sets the real, effective, saved-set group IDs as `gid`, Otherwise,
+    /// sets the effective group ID as `gid`.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_gid(&self, gid: Gid) -> Result<()> {
+        self.0.set_gid(gid)
+    }
+
+    /// Sets the real, effective group IDs as `rgid`, `egid` respectively.
+    ///
+    /// If `rgid` or `egid` is `None`, the corresponding group ID will leave unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_regid(&self, rgid: Option<Gid>, egid: Option<Gid>) -> Result<()> {
+        self.0.set_regid(rgid, egid)
+    }
+
+    /// Sets the real, effective, saved-set group IDs as `rgid`, `egid`, `sgid` respectively.
+    ///
+    /// If `rgid`, `egid`, or `sgid` is `None`, the corresponding group ID will leave unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_resgid(
+        &self,
+        rgid: Option<Gid>,
+        egid: Option<Gid>,
+        sgid: Option<Gid>,
+    ) -> Result<()> {
+        self.0.set_resgid(rgid, egid, sgid)
+    }
+
+    /// Sets the filesystem group ID as `fsgid` and returns the original filesystem group ID.
+    ///
+    /// If `fsgid` is `None`, leaves the filesystem group ID unchanged.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_fsgid(&self, fsgid: Option<Gid>) -> Result<Gid, Gid> {
+        self.0.set_fsgid(fsgid)
+    }
+
+    // *********** Supplementary Groups methods **********
+
+    /// Acquires the read lock of supplementary group IDs.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn groups(&self) -> RwLockReadGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
+        self.0.groups()
+    }
+
+    /// Acquires the write lock of supplementary group IDs.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn groups_mut(&self) -> RwLockWriteGuard<'_, BTreeSet<Gid>, PreemptDisabled> {
+        self.0.groups_mut()
+    }
+
+    // *********** Linux Capabilities methods **********
+
+    /// Gets the capabilities that child processes can inherit.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn inheritable_capset(&self) -> CapSet {
+        self.0.inheritable_capset()
+    }
+
+    /// Gets the capabilities that a process can potentially be granted.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn permitted_capset(&self) -> CapSet {
+        self.0.permitted_capset()
+    }
+
+    /// Gets the capabilities that a process can actually use.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn effective_capset(&self) -> CapSet {
+        self.0.effective_capset()
+    }
+
+    /// Gets the capability bounding set.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn bounding_capset(&self) -> CapSet {
+        self.0.bounding_capset()
+    }
+
+    /// Sets the capabilities that child processes can inherit.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_inheritable_capset(&self, inheritable_capset: CapSet) {
+        self.0.set_inheritable_capset(inheritable_capset);
+    }
+
+    /// Sets the capabilities that a process can potentially be granted.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_permitted_capset(&self, permitted_capset: CapSet) {
+        self.0.set_permitted_capset(permitted_capset);
+    }
+
+    /// Sets the capabilities that a process can actually use.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_effective_capset(&self, effective_capset: CapSet) {
+        self.0.set_effective_capset(effective_capset);
+    }
+
+    /// Gets the ambient capability set.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn ambient_capset(&self) -> CapSet {
+        self.0.ambient_capset()
+    }
+
+    /// Raises a capability in the ambient capability set.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn raise_ambient_capability(&self, capability: CapSet) -> Result<()> {
+        self.0.raise_ambient_capability(capability)
+    }
+
+    /// Lowers a capability in the ambient capability set.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn lower_ambient_capability(&self, capability: CapSet) {
+        self.0.lower_ambient_capability(capability);
+    }
+
+    /// Clears the ambient capability set.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn clear_ambient_capset(&self) {
+        self.0.clear_ambient_capset();
+    }
+
+    /// Drops one capability from the capability bounding set.
+    ///
+    /// If the caller does not have the `CAP_SETPCAP` capability, this method returns an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn drop_bounding_capability(&self, capability: CapSet) -> Result<()> {
+        self.0.drop_bounding_capability(capability)
+    }
+
+    /// Gets the keep-capabilities flag.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn keep_capabilities(&self) -> bool {
+        self.0.keep_capabilities()
+    }
+
+    /// Sets the keep-capabilities flag.
+    ///
+    /// If the [`SecureBits::KEEP_CAPS_LOCKED`] is set, this method will return an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_keep_capabilities(&self, keep_capabilities: bool) -> Result<()> {
+        self.0.set_keep_capabilities(keep_capabilities)
+    }
+
+    // *********** Secure Bits methods **********
+
+    /// Gets the secure bits.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn securebits(&self) -> SecureBits {
+        self.0.securebits()
+    }
+
+    /// Sets the secure bits.
+    ///
+    /// If the caller does not have the `CAP_SETPCAP` capability, or if it tries to set locked
+    /// bits, this method will return an error.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_securebits(&self, securebits: SecureBits) -> Result<()> {
+        self.0.set_securebits(securebits)
+    }
+
+    /// Gets the no-new-privileges flag.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(crate) fn no_new_privs(&self) -> bool {
+        self.0.no_new_privs()
+    }
+
+    /// Sets the no-new-privileges flag.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(crate) fn set_no_new_privs(&self) {
+        self.0.set_no_new_privs();
+    }
+
+    // *********** execve() methods **********
+
+    /// Calculates and validates credentials for `execve()`.
+    ///
+    /// This method requires the `Read` right.
+    #[require(R > Read)]
+    pub(in crate::process) fn prepare_exec_cred(
+        &self,
+        file_capabilities: Option<FileCapabilities>,
+        setuid: Option<Uid>,
+        setgid: Option<Gid>,
+    ) -> Result<ExecCred> {
+        self.0.prepare_exec_cred(file_capabilities, setuid, setgid)
+    }
+
+    /// Applies previously computed credentials for `execve()`.
+    ///
+    /// This method requires the `Write` right.
+    #[require(R > Write)]
+    pub(in crate::process) fn apply_exec_cred(&self, exec_cred: ExecCred) -> Result<()> {
+        self.0.apply_exec_cred(exec_cred)
+    }
+}

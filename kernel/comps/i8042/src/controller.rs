@@ -34,8 +34,17 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
     // Flush the output buffer by reading from the data port and discarding the data.
     controller.flush_output_buffer();
 
-    // Set the controller configuration byte.
+    // Get the controller configuration byte.
     let mut config = controller.read_configuration()?;
+    let translation_mode = if config.contains(Configuration::FIRST_PORT_TRANSLATION_ENABLED) {
+        super::keyboard::TranslationMode::Hardware
+    } else {
+        // Some controllers do not support translation. Therefore, we will not attempt to enable
+        // translation if it is not initially enabled.
+        super::keyboard::TranslationMode::Software
+    };
+
+    // Set the controller configuration byte.
     config.remove(
         Configuration::FIRST_PORT_INTERRUPT_ENABLED
             | Configuration::FIRST_PORT_TRANSLATION_ENABLED
@@ -43,17 +52,19 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
     );
     controller.write_configuration(&config)?;
 
-    // Perform controller self-test.
-    controller.wait_and_send_command(Command::TestController)?;
-    let result = controller.wait_and_recv_data()?;
-    if result != SELF_TEST_OK {
-        // Any value other than `SELF_TEST_OK` indicates a self-test fail.
-        return Err(I8042ControllerError::ControllerTestFailed);
+    if I8042_RESET.load(Ordering::Relaxed) {
+        // Perform controller self-test.
+        controller.wait_and_send_command(Command::TestController)?;
+        let result = controller.wait_and_recv_data()?;
+        if result != SELF_TEST_OK {
+            // Any value other than `SELF_TEST_OK` indicates a self-test fail.
+            return Err(I8042ControllerError::ControllerTestFailed);
+        }
+        // The self-test may reset the controller. Restore the original configuration.
+        controller.write_configuration(&config)?;
+        // The ports may have been enabled if the controller was reset. Flush the output buffer.
+        controller.flush_output_buffer();
     }
-    // The self-test may reset the controller. Restore the original configuration.
-    controller.write_configuration(&config)?;
-    // The ports may have been enabled if the controller was reset. Flush the output buffer.
-    controller.flush_output_buffer();
 
     // Determine if there are two channels.
     controller.wait_and_send_command(Command::EnableSecondPort)?;
@@ -65,12 +76,16 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
     // Flush the output buffer again since we may have enabled the second port.
     controller.flush_output_buffer();
 
-    // Perform interface tests to the first PS/2 port.
-    controller.wait_and_send_command(Command::TestFirstPort)?;
-    let result = controller.wait_and_recv_data()?;
-    if result != PORT_TEST_OK {
-        return Err(I8042ControllerError::FirstPortTestFailed);
-    }
+    // Per the OSDev wiki, we should perform interface tests to the first PS/2 port. But the
+    // command is unreliable. Many chipsets return error codes even when the interface is
+    // perfectly functional.
+    //
+    // We skip it following the common practice. Linux defines the command but never calls it,
+    // and EDK II skips it by default.
+    //
+    // Reference:
+    // <https://elixir.bootlin.com/linux/v7.0/source/include/linux/i8042.h#L19>
+    // <https://github.com/tianocore/edk2/blob/edk2-stable202605/MdeModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2KbdCtrller.c#L1690>
 
     // Perform interface tests to the second PS/2 port (if it exists).
     if has_second_port {
@@ -83,14 +98,14 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
 
     // Enable the first PS/2 port (keyboard).
     controller.wait_and_send_command(Command::EnableFirstPort)?;
-    if let Err(err) = super::keyboard::init(&mut controller) {
+    if let Err(err) = super::keyboard::init(&mut controller, translation_mode) {
         ostd::warn!("i8042 keyboard initialization failed: {:?}", err);
     } else {
         config.remove(Configuration::FIRST_PORT_CLOCK_DISABLED);
-        config.insert(
-            Configuration::FIRST_PORT_INTERRUPT_ENABLED
-                | Configuration::FIRST_PORT_TRANSLATION_ENABLED,
-        );
+        config.insert(Configuration::FIRST_PORT_INTERRUPT_ENABLED);
+        if translation_mode == super::keyboard::TranslationMode::Hardware {
+            config.insert(Configuration::FIRST_PORT_TRANSLATION_ENABLED);
+        }
     }
     // Temporarily disable the first PS/2 port to avoid interference.
     controller.wait_and_send_command(Command::DisableFirstPort)?;
@@ -106,7 +121,7 @@ pub(super) fn init() -> Result<(), I8042ControllerError> {
             config.insert(Configuration::SECOND_PORT_INTERRUPT_ENABLED);
         }
         // Temporarily disable the second PS/2 port to avoid interference.
-        controller.wait_and_send_command(Command::DisableFirstPort)?;
+        controller.wait_and_send_command(Command::DisableSecondPort)?;
         controller.flush_output_buffer();
     }
 
@@ -275,6 +290,12 @@ impl I8042Controller {
     fn flush_output_buffer(&mut self) {
         while self.receive_data().is_some() {}
     }
+
+    pub(super) fn reset_cpu(&mut self) {
+        if !self.read_status().contains(Status::INPUT_BUFFER_IS_FULL) {
+            self.write_command(Command::CpuReset as u8);
+        }
+    }
 }
 
 /// Timeout in milliseconds for sending commands or receiving data.
@@ -323,7 +344,6 @@ where
 pub(super) enum I8042ControllerError {
     NotPresent,
     ControllerTestFailed,
-    FirstPortTestFailed,
     SecondPortTestFailed,
     OutputBusy,
     NoInput,
@@ -344,10 +364,10 @@ enum Command {
     EnableSecondPort = 0xA8,
     TestSecondPort = 0xA9,
     TestController = 0xAA,
-    TestFirstPort = 0xAB,
     DisableFirstPort = 0xAD,
     EnableFirstPort = 0xAE,
     WriteToSecondPort = 0xD4,
+    CpuReset = 0xFE,
 }
 
 bitflags! {
@@ -397,3 +417,9 @@ bitflags! {
 
 static I8042_EXIST: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("i8042.exist", I8042_EXIST);
+
+/// Whether to force the controller self-test during initialization.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v7.0/source/drivers/input/serio/i8042.c#L84>
+static I8042_RESET: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("i8042.reset", I8042_RESET);

@@ -2,6 +2,15 @@
 
 [Introduction](README.md)
 
+# Mariposa
+
+* [Introduction](mariposa/README.md)
+* [Glossary](mariposa/glossary.md)
+* [OQueues](mariposa/oqueues.md)
+* [Objects](mariposa/objects.md)
+* [Slots](mariposa/slots.md)
+* [History](mariposa/history.md)
+
 # Asterinas NixOS
 
 * [Getting Started](distro/README.md)
@@ -22,12 +31,15 @@
     * [Communication](distro/popular-applications/communication/README.md)
     * [File Management & Terminal](distro/popular-applications/file-management-and-terminal/README.md)
     * [AI & Machine Learning](distro/popular-applications/ai-and-machine-learning/README.md)
+* [Building Asterinas on Asterinas](distro/building-on-asterinas.md)
 
 # Asterinas Kernel
 
 * [Getting Started](kernel/README.md)
+    * [Using Nix for Development](kernel/nix-development.md)
 * [Advanced Build and Test Instructions](kernel/advanced-instructions.md)
     * [Intel TDX](kernel/intel-tdx.md)
+    * [Firecracker](kernel/firecracker.md)
 * [The Framekernel Architecture](kernel/the-framekernel-architecture.md)
 * [Linux Compatibility](kernel/linux-compatibility/README.md)
     * [Syscall Flag Coverage](kernel/linux-compatibility/syscall-flag-coverage/README.md)
@@ -54,6 +66,7 @@
 * [An Overview of OSTD](ostd/README.md)
 * [Example: Writing a Kernel in 100 Lines of Safe Rust](ostd/a-100-line-kernel.md)
 * [Example: Writing a Driver in 100 Lines of Safe Rust]()
+* [Debugging Tools in OSTD](ostd/debugging.md)
 * [Soundness Analysis](ostd/soundness/README.md)
     * [What Soundness Means](ostd/soundness/what-soundness-means.md)
     * [The Sensitivity Classification](ostd/soundness/sensitivity-classification.md)
