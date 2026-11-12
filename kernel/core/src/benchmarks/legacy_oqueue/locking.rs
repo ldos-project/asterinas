@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! A simple implementation of a [`crate::oqueue::OQueue`] using a [`crate::sync::Mutex`]s. This is a baseline
+//! A simple implementation of a [`ostd::orpc::oqueue::OQueue`] using a [`ostd::sync::Mutex`]s. This is a baseline
 //! implementation that supports all features, but is also slow in many cases.
 
 use alloc::{
@@ -513,7 +513,7 @@ impl<T: Clone + Send> StrongObserver<T> for LockingStrongObserver<T> {
     }
 }
 
-/// A weak observer for a locking OQueue. This only works with [`ObservableLockingOQueue`] since otherwise the values
+/// A weak observer for a locking OQueue. This only works with [`ObservableLockingQueue`] since otherwise the values
 /// would have been moved out instead of cloned.
 struct LockingWeakObserver<T> {
     oqueue: Weak<LockingQueue<T>>,

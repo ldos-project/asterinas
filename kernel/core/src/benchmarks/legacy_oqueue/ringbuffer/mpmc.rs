@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! A MPMC OQueue implementation with support for strong and weak observation with both static and dynamic configurability.
-//! Most of the implementation is inspired by https://github.com/rigtorp/MPMCQueue, the major
+//! Most of the implementation is inspired by <https://github.com/rigtorp/MPMCQueue>, the major
 //! modification is the support for strong/weak observers.
 
 use alloc::{

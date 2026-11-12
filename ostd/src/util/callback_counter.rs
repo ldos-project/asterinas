@@ -91,8 +91,9 @@ impl<F> CallbackCounterIncrementer<F>
 where
     F: FnOnce() + Send + 'static,
 {
-    /// Increment the counter increasing the number of times [`decrement_and_check`] must be called
-    /// before the underlying function is called.
+    /// Increment the counter increasing the number of times
+    /// [`decrement_and_check`](`CallbackCounter::decrement_and_check`) must be called before the
+    /// underlying function is called.
     pub fn increment(&self) {
         self.0.inner.count.fetch_add(1, Ordering::Relaxed);
     }

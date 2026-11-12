@@ -49,10 +49,11 @@ macro_rules! ptr_null_of {
 
 #[cfg(not(baseline_asterinas))]
 #[macro_export]
-/// Emits structured trace data into a callsite-local observation OQueue.
+/// Emits structured trace data into an observation OQueue.
 ///
 /// The macro accepts `path, value, Type` and optionally a queue length as the fourth argument.
-/// The default queue length is 1024.
+/// On first use at each call site, it reuses a compatible observation queue already registered at
+/// `path`, or creates one with the requested length. The default queue length is 1024.
 macro_rules! trace_structured_data {
     ({$($path:tt)*}, $value:expr, $ty:ty $(,)?) => {{ $crate::trace_structured_data!({$($path)*}, $value, $ty, length = 1024) }};
 

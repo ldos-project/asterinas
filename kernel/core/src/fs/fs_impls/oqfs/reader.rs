@@ -67,7 +67,7 @@ const MAX_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// The inode for a `strong_observe` or `consume` file.
 ///
-/// It is a regular file whose [`Inode::open`] mints a fresh per-open [`FileIo`] stream, so no
+/// It is a regular file whose [`Inode::open`] mints a fresh per-open `FileIo` stream, so no
 /// device registration under `/dev` is needed.
 pub(super) struct ReaderInode {
     /// The OQueue path this file reads from.
