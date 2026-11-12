@@ -29,7 +29,7 @@ pub struct ObservationQuery<D: ElementDescriptor, U> {
 impl<D: ElementDescriptor, U> ObservationQuery<D, U> {
     /// Create a query which extracts a value from the message.
     ///
-    /// This function **must** be fast and side-effect free. It is called on the publication path
+    /// This function **must** be fast and side-effect free. It is called during production
     /// for any OQueue it is used to observer.
     pub fn new(extractor: impl for<'a> Fn(&D::Element<'a>) -> U + Sync + Send + 'static) -> Self {
         Self {
@@ -39,7 +39,7 @@ impl<D: ElementDescriptor, U> ObservationQuery<D, U> {
 
     /// Create a query which extracts a value from the message or discards it.
     ///
-    /// This function **must** be fast and side-effect free. It is called on the publication path
+    /// This function **must** be fast and side-effect free. It is called during production
     /// for any OQueue it is used to observer.
     pub fn new_filter(
         extractor: impl for<'a> Fn(&D::Element<'a>) -> Option<U> + Sync + Send + 'static,
