@@ -394,17 +394,34 @@ mod tests {
             .unwrap()
             .lookup(weak_observe::FILE_NAME)
             .unwrap();
-        let weak_file = match open_inode(weak_inode, AccessMode::O_RDONLY, StatusFlags::empty()) {
+        let weak_file = match open_inode(
+            weak_inode.clone(),
+            AccessMode::O_RDONLY,
+            StatusFlags::empty(),
+        ) {
             Some(Ok(file)) => file,
             _ => panic!("opening weak_observe should attach a weak observer"),
         };
-        assert_eq!(weak_file.poll(IoEvents::IN, None), IoEvents::IN);
+        let notified = Arc::new(AtomicUsize::new(0));
+        let mut adaptor = PollAdaptor::with_observer(NotifyCounter(notified.clone()));
+        assert!(
+            weak_file
+                .poll(IoEvents::IN, Some(adaptor.as_handle_mut()))
+                .is_empty()
+        );
         assert!(weak_file.poll(IoEvents::OUT, None).is_empty());
 
         let producer = queue.attach_value_producer().unwrap();
         for value in [23u64, 24, 1000] {
             producer.produce(value);
         }
+        assert!(notified.load(Ordering::Relaxed) > 0);
+        assert_eq!(weak_file.poll(IoEvents::IN, None), IoEvents::IN);
+        let late_file = match open_inode(weak_inode, AccessMode::O_RDONLY, StatusFlags::empty()) {
+            Some(Ok(file)) => file,
+            _ => panic!("opening weak_observe should attach a weak observer"),
+        };
+        assert_eq!(late_file.poll(IoEvents::IN, None), IoEvents::IN);
 
         // The newest records encode to three and two bytes. A five-byte buffer holds exactly
         // those two complete records, but not the one-byte oldest record.
@@ -415,6 +432,7 @@ mod tests {
             .unwrap();
         assert_eq!(len, short_buf.len());
         assert_eq!(decode_records(&short_buf), [1000, 24]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
 
         // Reading again at offset zero is non-consuming and starts a fresh newest-first snapshot.
         let mut full_buf = [0u8; 16];
@@ -423,13 +441,18 @@ mod tests {
             .read_at(0, &mut writer, StatusFlags::empty())
             .unwrap();
         assert_eq!(decode_records(&full_buf[..len]), [1000, 24, 23]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
 
+        let notifications = notified.load(Ordering::Relaxed);
         producer.produce(7);
+        assert!(notified.load(Ordering::Relaxed) > notifications);
+        assert_eq!(weak_file.poll(IoEvents::IN, None), IoEvents::IN);
         let mut writer = VmWriter::from(&mut full_buf[..]).to_fallible();
         let len = weak_file
             .read_at(0, &mut writer, StatusFlags::empty())
             .unwrap();
         assert_eq!(decode_records(&full_buf[..len]), [7, 1000, 24, 23]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
 
         let mut writer = VmWriter::from(&mut full_buf[..]).to_fallible();
         let err = weak_file

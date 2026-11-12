@@ -6,15 +6,18 @@
 //! value retained since that open and emits a self-delimiting CBOR stream. Values are never split
 //! across reads: a value is emitted only when its complete CBOR record fits in the caller's
 //! remaining buffer.
-//!
-//! TODO(amp): This provides a somewhat crude API and the design could be improved. This provides no
-//! way to wait for new data.
+//! Polling reports readability for retained values at open and for new values since the previous
+//! read. Reads remain non-consuming, so another read can return the same snapshot while polling is
+//! idle.
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use inherit_methods_macro::inherit_methods;
 use ostd::orpc::{
-    oqueue::{CborWeakObserver, registry},
+    oqueue::{CborWeakObserver, WakeHook, registry},
     path::Path,
 };
 
@@ -32,7 +35,7 @@ use crate::{
     prelude::*,
     process::{
         Gid, Uid,
-        signal::{PollHandle, Pollable},
+        signal::{PollHandle, Pollable, Pollee},
     },
 };
 
@@ -88,6 +91,40 @@ impl FileOps for WeakObserveInode {
 /// A per-open weak observer over an OQueue's recent values.
 struct WeakObserveFile {
     observer: Mutex<Box<dyn CborWeakObserver>>,
+    readable: Arc<AtomicBool>,
+    pollee: Pollee,
+    _wake_hook: WakeHook,
+}
+
+impl WeakObserveFile {
+    fn new(observer: Box<dyn CborWeakObserver>) -> Self {
+        let pollee = Pollee::new();
+        let readable = Arc::new(AtomicBool::new(false));
+        let wake_hook = observer.on_ready(Box::new({
+            let pollee = pollee.clone();
+            let readable = readable.clone();
+            move || {
+                readable.store(true, Ordering::Relaxed);
+                pollee.notify(IoEvents::IN);
+            }
+        }));
+
+        // Register the hook before checking history, so production cannot be missed at open.
+        let mut record = Vec::new();
+        if observer
+            .observe_into(observer.newest_cursor(), &mut record)
+            .unwrap_or(false)
+        {
+            readable.store(true, Ordering::Relaxed);
+        }
+
+        Self {
+            observer: Mutex::new(observer),
+            readable,
+            pollee,
+            _wake_hook: wake_hook,
+        }
+    }
 }
 
 impl FileOps for WeakObserveFile {
@@ -107,6 +144,9 @@ impl FileOps for WeakObserveFile {
             return Ok(0);
         }
 
+        // Clear before reading, so concurrent production makes the file readable again.
+        self.readable.store(false, Ordering::Relaxed);
+        self.pollee.invalidate();
         let observer = self.observer.lock();
         let mut cursor = observer.newest_cursor();
         let initial_avail = writer.avail();
@@ -152,8 +192,14 @@ impl PerOpenFileOps for WeakObserveFile {
 }
 
 impl Pollable for WeakObserveFile {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        IoEvents::IN & mask
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        self.pollee.poll_with(mask, poller, || {
+            if self.readable.load(Ordering::Relaxed) {
+                IoEvents::IN
+            } else {
+                IoEvents::empty()
+            }
+        })
     }
 }
 
@@ -204,11 +250,7 @@ impl Inode for WeakObserveInode {
                     Error::with_message(Errno::ENODEV, "failed to attach an OQueue weak observer")
                 })
             })
-            .map(|observer| {
-                Box::new(WeakObserveFile {
-                    observer: Mutex::new(observer),
-                }) as Box<dyn PerOpenFileOps>
-            });
+            .map(|observer| Box::new(WeakObserveFile::new(observer)) as Box<dyn PerOpenFileOps>);
         Some(result)
     }
 }

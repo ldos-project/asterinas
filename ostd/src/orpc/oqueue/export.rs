@@ -185,6 +185,10 @@ pub trait CborWeakObserver: Send {
 
     /// Appends the value at `cursor` to `out`, if it is still retained.
     fn observe_into(&self, cursor: Cursor, out: &mut Vec<u8>) -> Result<bool, OQueueError>;
+
+    /// Registers a hook to run when a new value may be available, until the returned handle is
+    /// dropped. The hook must be fast and non-blocking; see [`WeakObserver::on_ready`].
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook;
 }
 
 /// A closure that attaches a fresh reader (observer or consumer) to an OQueue and wraps it as a
@@ -335,6 +339,10 @@ impl<U: Copy + Send + Serialize + 'static> CborWeakObserver for CborWeakObserver
         };
         encode_record(value, out);
         Ok(true)
+    }
+
+    fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        self.observer.on_ready(hook)
     }
 }
 

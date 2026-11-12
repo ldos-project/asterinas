@@ -1005,6 +1005,18 @@ impl<U: Copy + Send + 'static> WeakObserver<U> {
         }
         Ok(())
     }
+
+    /// Registers `hook` to be called when a new value is produced, until the returned
+    /// [`WakeHook`] is dropped. The hook may run even if a weak observation finds no value, so
+    /// treat it as a prompt to retry.
+    ///
+    /// ## WARNING
+    ///
+    /// `hook` **must** be fast and non-blocking. It is called with a lock held and interrupts
+    /// disabled on the producer's thread. It must not create or drop a [`WakeHook`] for this OQueue.
+    pub fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
+        WakeHook::register(self.oqueue.clone(), WakeEvent::Produced, hook)
+    }
 }
 
 #[cfg(ktest)]
