@@ -53,7 +53,7 @@ macro_rules! ptr_null_of {
 ///
 /// The macro accepts `path, value, Type` and optionally a queue length as the fourth argument.
 /// On first use at each call site, it reuses a compatible observation queue already registered at
-/// `path`, or creates one with the requested length. The default queue length is 1024.
+/// `path`, or creates one with the requested length.
 macro_rules! trace_structured_data {
     ({$($path:tt)*}, $value:expr, $ty:ty $(,)?) => {{ $crate::trace_structured_data!({$($path)*}, $value, $ty, length = 1024) }};
 

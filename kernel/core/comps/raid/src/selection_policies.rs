@@ -569,7 +569,7 @@ struct SelectionChannel {
 }
 
 /// Selection policy driven by a userspace server over OQFS: each call sends the admitted candidates
-/// and blocks (bounded by a 200 ms `REPLY_TIMEOUT_MS`) for the server's reply.
+/// and blocks (bounded by `REPLY_TIMEOUT_MS`) for the server's reply.
 ///
 /// Falls back to round-robin among the candidates when no server is attached (e.g. early boot or
 /// after it exits), on a reply timeout, or on a reply naming a no-longer-admitted candidate.
