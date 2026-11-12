@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
   # Pull request events for checking API docs
   pull_request:
-  Scheduled events for nightly API docs
+  # Scheduled events for nightly API docs
   schedule:
     # UTC 00:00 everyday
     - cron: "0 0 * * *"
-  Events for API docs of new release
+  # Events for API docs of new release
   push:
     branches:
       - main
@@ -38,7 +38,7 @@ jobs:
           API_DOCS_NIGHTLY_PUBLISH_KEY: ${{ secrets.API_DOCS_NIGHTLY_PUBLISH_KEY }}
         run: |
           KEY_FILE=./api_docs_nightly_publish_key
-          echo "$API_DOCS_NIGHTLY_PUBLISH_KEY\n" > ${KEY_FILE}
+          echo "$API_DOCS_NIGHTLY_PUBLISH_KEY" > ${KEY_FILE}
           ./tools/github_workflows/publish_api_docs.sh nightly ${KEY_FILE}
 
       - name: Build & Upload Release API Docs
@@ -47,5 +47,5 @@ jobs:
           API_DOCS_PUBLISH_KEY: ${{ secrets.API_DOCS_PUBLISH_KEY }}
         run: |
           KEY_FILE=./api_docs_publish_key
-          echo "$API_DOCS_PUBLISH_KEY\n" > ${KEY_FILE}
+          echo "$API_DOCS_PUBLISH_KEY" > ${KEY_FILE}
           ./tools/github_workflows/publish_api_docs.sh release ${KEY_FILE}
