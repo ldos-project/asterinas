@@ -121,7 +121,6 @@ pub mod query;
 pub mod registry;
 pub mod reply;
 mod single_thread_ring_buffer;
-mod utils;
 
 pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
@@ -129,7 +128,6 @@ pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
 pub use query::ObservationQuery;
 use snafu::Snafu;
-pub use utils::new_reply_pair;
 
 use self::implementation::{InlineObserverKey, ObserverKey, WakeEvent};
 use crate::{
@@ -215,8 +213,7 @@ pub trait OQueueBase<D: ElementDescriptor + 'static> {
         U: Copy + Send + 'static;
 
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
-    /// value. This function does not run in the context of any server. If the function should, it
-    /// should use [`crate::orpc::framework::ServerBase::call_in_context`].
+    /// value. It runs in the producer context.
     ///
     /// Note: This is different from [`StrongObserver::strong_observe_inline`] because this
     /// observes the entire message without requiring a filter.
@@ -728,8 +725,7 @@ impl<T: Send + 'static> Consumer<T> {
     }
 
     /// Register a function to be called by the OQueue to observe each message. This function does
-    /// not run in the context of any server. If the function should, it should use
-    /// [`crate::orpc::framework::ServerBase::call_in_context`].
+    /// run in the producer context.
     ///
     /// This consumes `self`, because the messages will now be consumed via a different mechanism.
     /// This will return an error if switching to inline is impossible or meaningless, for example
@@ -860,8 +856,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
     }
 
     /// Register a function to be called by the OQueue to observe each message. This function does
-    /// not run in the context of any server. If the function should, it should use
-    /// [`crate::orpc::framework::ServerBase::call_in_context`].
+    /// run in the producer context.
     ///
     /// This consumes `self`, because the messages will now be observed via a different mechanism.
     /// This will return an error if switching to inline is impossible.

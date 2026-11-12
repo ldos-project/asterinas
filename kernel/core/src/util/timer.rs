@@ -5,46 +5,31 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ostd::{
-    new_server,
-    orpc::{
-        errors::RPCError,
-        framework::{
-            notifier::{Notifier, NotifierOQueues},
-            spawn_thread,
-        },
-        oqueue::{OQueue, OQueueRef},
-        orpc_impl, orpc_server,
-    },
+    orpc::oqueue::{GenericOQueueRef, OQueue, OQueueError, OQueueRef},
     sync::WaitQueue,
 };
-use snafu::Whatever;
 
 use crate::prelude::WaitTimeout;
 
 /// TimerServer periodically produces a notification with a configurable frequency.
-#[orpc_server(Notifier)]
-pub struct TimerServer {
+pub(crate) struct TimerServer {
     freq: Duration,
-}
-
-#[orpc_impl]
-impl Notifier for TimerServer {
-    fn notify(&self) -> Result<(), RPCError> {
-        if self.notification_oqueue().produce_ref(&()).is_err() {
-            panic!("Could not produce into notification_oqueue")
-        } else {
-            Ok(())
-        }
-    }
-
-    fn notification_oqueue(&self) -> OQueueRef<()>;
+    notification_oqueue: OQueueRef<()>,
 }
 
 impl TimerServer {
+    fn notify(&self) -> Result<(), OQueueError> {
+        self.notification_oqueue.produce_ref(&())
+    }
+
+    pub(crate) fn notification_oqueue(&self) -> OQueueRef<()> {
+        self.notification_oqueue.clone()
+    }
+
     /// Create and spawn a new TimerServer.
     pub(crate) fn spawn(freq: Duration) -> Arc<Self> {
-        let notify_server = Self::new(freq).unwrap();
-        spawn_thread(notify_server.clone(), {
+        let notify_server = Self::new(freq);
+        ostd::task::spawn_thread({
             let notify_server = notify_server.clone();
             move || notify_server.main()
         });
@@ -52,9 +37,11 @@ impl TimerServer {
     }
 
     /// Create a TimerServer with the specified frequency.
-    pub(crate) fn new(freq: Duration) -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self { freq });
-        Ok(server)
+    pub(crate) fn new(freq: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            freq,
+            notification_oqueue: GenericOQueueRef::new_anonymous(1),
+        })
     }
 
     /// Start the server and periodically notify.

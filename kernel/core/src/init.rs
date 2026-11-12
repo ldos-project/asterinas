@@ -17,7 +17,6 @@ use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
 use ostd::path;
 use ostd::{
     cpu::CpuId,
-    ignore_err,
     power::{ExitCode, poweroff},
     task::scheduler::{SchedulingEvent, SchedulingEventKind},
     util::id_set::Id,
@@ -47,14 +46,12 @@ use crate::{
 pub(super) fn main() {
     // TODO(amp, BIG MERGE): Reconsider this initialization order, and placement of initialization code.
 
-    // CRITICAL: Initialize scheduler and ORPC BEFORE component initialization!
+    // CRITICAL: Initialize scheduler and thread spawning BEFORE component initialization!
     // - Scheduler must be injected first, otherwise OSTD's fallback FIFO scheduler gets used
-    // - ORPC spawn function must be injected, otherwise ORPC threads are created without
+    // - The thread spawn function must be injected, otherwise threads are created without
     //   Thread association and are ignored by the ClassScheduler
     thread::init();
     sched::init();
-    #[cfg(not(baseline_asterinas))]
-    crate::orpc_utils::init();
 
     // Initialize the global states for all CPUs.
     ostd::early_println!("OSTD initialized. Preparing components.");
@@ -228,9 +225,7 @@ fn first_kthread() {
 
     #[cfg(not(baseline_asterinas))]
     if VM_HUGEPAGED_ENABLED.load(Ordering::Relaxed) {
-        vm::hugepaged::HugepagedServer::spawn(
-            INIT_PROCESS.get().expect("initialed already").clone(),
-        );
+        vm::hugepaged::spawn(INIT_PROCESS.get().expect("initialed already").clone());
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -268,23 +263,21 @@ fn first_kthread() {
             );
 
             if let Some(capture_file) = capture_file {
-                ignore_err!(
-                    capture_file.register_observer(ObserverRegistration {
-                        path: path!(scheduler.events),
-                        observer: oqueue
-                            .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
-                                let context = EventContext::new();
-                                KernelSchedulingEvent {
-                                    timestamp: context.timestamp,
-                                    task: TaskId::new(&e.task),
-                                    kind: e.kind,
-                                    cpu: e.task.cpu().get().map(|cpu| cpu.as_usize() as u32),
-                                }
-                            }))
-                            .unwrap(),
-                    })
-                );
-                ignore_err!(capture_file.start());
+                capture_file.register_observer(ObserverRegistration {
+                    path: path!(scheduler.events),
+                    observer: oqueue
+                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
+                            let context = EventContext::new();
+                            KernelSchedulingEvent {
+                                timestamp: context.timestamp,
+                                task: TaskId::new(&e.task),
+                                kind: e.kind,
+                                cpu: e.task.cpu().get().map(|cpu| cpu.as_usize() as u32),
+                            }
+                        }))
+                        .unwrap(),
+                });
+                capture_file.start();
             }
         } else {
             error!("Could not find scheduler.events OQueue. Scheduler events will not be captured.")

@@ -315,7 +315,7 @@ impl OQueueRoundTrip {
     }
 
     /// Runs the benchmark and then tells the peer how it went.
-    pub fn run(self, capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>) {
+    pub fn run(self, capture_file: Arc<DataCaptureFile<RoundTripSample>>) {
         let Self {
             config,
             producer,
@@ -345,7 +345,7 @@ fn measure(
     config: &Config,
     producer: &ValueProducer<Request>,
     consumer: &Consumer<[u64; 3]>,
-    capture_file: Arc<dyn DataCaptureFile<RoundTripSample>>,
+    capture_file: Arc<DataCaptureFile<RoundTripSample>>,
 ) -> Result<(), Error> {
     let timeout = TimeoutBlocker::new();
     let timeout_jiffies = config.timeout_ms as u64 * TIMER_FREQ / 1000;

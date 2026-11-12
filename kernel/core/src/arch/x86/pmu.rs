@@ -5,16 +5,10 @@ use core::time::Duration;
 
 use aster_time::Instant;
 use ostd::{
-    new_server,
-    orpc::{
-        framework::{notifier::Notifier, spawn_thread},
-        oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
-        orpc_server,
-    },
+    orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
     path,
 };
 use serde::Serialize;
-use snafu::Whatever;
 
 use crate::util::timer::TimerServer;
 
@@ -30,27 +24,25 @@ struct DtlbMisses {
 /// Icelake-Server
 // TODO(tewaro, after SOSP) actually support interesting option
 // TODO(tewaro, after SOSP) actually support multi-process
-#[orpc_server]
-pub struct PmuServer {
+pub(crate) struct PmuServer {
     dtlb_miss_count_oqueue: OQueueRef<DtlbMisses>,
 }
 
 impl PmuServer {
     /// Create and spawn a new PmuServer.
     pub(crate) fn spawn() -> Arc<Self> {
-        let pmud = Self::new().unwrap();
+        let pmud = Self::new();
         // TODO(tewaro, after SOSP) needs to run inline with jiffies and defer push to oqueue
-        spawn_thread(pmud.clone(), {
+        ostd::task::spawn_thread({
             let pmud = pmud.clone();
             move || pmud.main()
         });
         pmud
     }
-    pub(crate) fn new() -> Result<Arc<Self>, Whatever> {
-        let server = new_server!(|_| Self {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
             dtlb_miss_count_oqueue: GenericOQueueRef::new(32, path!(pmu.dtlb_miss_count)),
-        });
-        Ok(server)
+        })
     }
 
     /// Resets counter and automatically stops it from continuing.

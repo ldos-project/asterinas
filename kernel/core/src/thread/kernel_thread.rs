@@ -132,9 +132,24 @@ impl ThreadOptions {
     }
 }
 
+fn spawn_thread(body: Box<dyn FnOnce() + Send>) {
+    ThreadOptions::new(body)
+        .sched_policy(SchedPolicy::RealTime {
+            rt_prio: 50.try_into().unwrap(),
+            rt_policy: Default::default(),
+        })
+        .spawn();
+}
+
+pub(super) fn init() {
+    ostd::task::inject_spawn_thread(spawn_thread);
+}
+
 #[cfg(ktest)]
 mod tests {
-    use ostd::{Error, cpu::CpuId, prelude::ktest};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use ostd::{Error, assert_eq_eventually, cpu::CpuId, prelude::ktest};
 
     use super::*;
     use crate::{
@@ -274,5 +289,22 @@ mod tests {
         .spawn();
 
         worker.join();
+    }
+
+    #[ktest]
+    fn spawn_thread_runs_as_kernel_thread() {
+        super::super::init();
+
+        let ran = Arc::new(AtomicBool::new(false));
+        ostd::task::spawn_thread({
+            let ran = ran.clone();
+            move || {
+                assert!(Thread::current().unwrap().as_kernel_thread().is_some());
+                ran.store(true, Ordering::Release);
+                Ok(())
+            }
+        });
+
+        assert_eq_eventually!(ran.load(Ordering::Acquire), true);
     }
 }
