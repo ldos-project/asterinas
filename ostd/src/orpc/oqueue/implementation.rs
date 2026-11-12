@@ -584,7 +584,9 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
 
 /// The part of [`OQueueImplementation`] which is protected by a lock.
 struct OQueueInner<D: ElementDescriptor> {
-    /// The ring buffer used for consumers.
+    /// The ring buffer used for consumers. Using `'static` is safe here because by construction any
+    /// OQueue that supports consumers has an element type with `Send + 'static` (see
+    /// ConsumableOQueueRef and the impl for GenericAnyOQueueRef).
     consumer_ring_buffer: Option<RingBuffer<D::Element<'static>>>,
     /// The number of attached consumers. This is required to detect when the `consumer_ring_buffer`
     /// can be discarded.

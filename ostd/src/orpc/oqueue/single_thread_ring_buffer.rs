@@ -4,11 +4,9 @@
 //! contended cases.
 
 use alloc::alloc::AllocError;
-use core::{
-    any::{TypeId, type_name},
-    marker::PhantomData,
-    mem::MaybeUninit,
-};
+#[cfg(debug_assertions)]
+use core::any::{TypeId, type_name};
+use core::{marker::PhantomData, mem::MaybeUninit};
 
 use smallvec::SmallVec;
 
@@ -49,8 +47,9 @@ use crate::{orpc::oqueue::Cursor, util::untyped_box::SliceAllocation};
 /// This will attempt to drop any values still in the buffer when this is dropped when they are
 /// overwritten. However, if there is no consumer, this will not happen. Because of this, any
 /// RingBuffer with a type which is not `Copy` should have a consumer.
-pub(super) struct RingBuffer<E: ?Sized> {
+pub(super) struct RingBuffer<T: ?Sized> {
     /// The type of the elements.
+    #[cfg(debug_assertions)]
     element_type: TypeId,
 
     /// The name of the type of this ring buffer for debug messages. The errors are rare enough that
@@ -76,10 +75,10 @@ pub(super) struct RingBuffer<E: ?Sized> {
 
     /// Function to drop all values still in the queue. This is safe, because it will simply discard
     /// values until the queue has no droppable values in it.
-    drop_fn: fn(&mut RingBuffer<E>),
+    drop_fn: fn(&mut RingBuffer<T>),
     // Construction requires Send + 'static elements. The non-owning marker lets descriptor-
     // generic queues contain an empty consumer ring even for unsized or non-Send elements.
-    element: PhantomData<fn() -> E>,
+    element: PhantomData<fn() -> T>,
 }
 
 impl<E: ?Sized> Drop for RingBuffer<E> {
@@ -97,6 +96,7 @@ impl<E: Send + 'static> RingBuffer<E> {
         let buffer = SliceAllocation::new::<E>(n_buffer_elements)?;
 
         Ok(RingBuffer {
+            #[cfg(debug_assertions)]
             element_type: TypeId::of::<E>(),
             #[cfg(debug_assertions)]
             element_type_name: type_name::<E>(),
@@ -224,24 +224,17 @@ impl<E: Send + 'static> RingBuffer<E> {
 }
 
 impl<E: ?Sized> RingBuffer<E> {
-    /// Panic if the type doesn't match this ringbuffer.
-    ///
-    /// TODO: PERFORMANCE: This is called a lot, and while it will probably be elided most of the
-    /// time. Making the callers to this unsafe and having their callers perform the check might
-    /// reduce the number of checks.
+    /// Panics in debug builds if the type does not match this ring buffer.
     #[inline(always)]
     #[track_caller]
-    pub(super) fn assert_type<T: Send + 'static>(&self) {
+    fn assert_type<T: Send + 'static>(&self) {
         #[cfg(debug_assertions)]
-        let element_type_name = self.element_type_name;
-        #[cfg(not(debug_assertions))]
-        let element_type_name = "[not captured]";
-        assert_eq!(
+        debug_assert_eq!(
             TypeId::of::<T>(),
             self.element_type,
             "requested {} constructed with {}",
             type_name::<T>(),
-            element_type_name
+            self.element_type_name
         );
     }
 
