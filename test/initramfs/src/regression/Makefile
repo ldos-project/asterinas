@@ -19,6 +19,7 @@ SUBDIRS := \
 	ipc \
 	memory \
 	network \
+	oqfs \
 	process \
 	scripts \
 	security \

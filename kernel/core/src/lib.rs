@@ -58,6 +58,8 @@ mod ipc;
 mod log;
 mod net;
 #[cfg(not(baseline_asterinas))]
+mod oqfs_test;
+#[cfg(not(baseline_asterinas))]
 mod orpc_utils;
 pub mod power;
 pub mod prelude;
