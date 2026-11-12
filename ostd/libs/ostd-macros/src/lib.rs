@@ -11,10 +11,35 @@ use rand::{Rng, distr::Alphanumeric};
 use syn::{Expr, Ident, Item, ItemFn, parse_macro_input};
 
 /// Derives a projection that recursively projects fields using `DefaultProjection`.
-/// Fields that should be opaque identifiers can be marked with `#[projection(opaque)]`.
+///
+/// Projection can be controlled using `#[projection(options...)]` attributes on the fields.
+/// The options can be:
+/// * `opaque` to use an opaque ID for the value instead of projecting the value itself
+/// * `deref` to dereference the value before doing other projection steps
+/// * `omit` to omit the field from the projection
 #[proc_macro_derive(DefaultProjection, attributes(projection))]
 pub fn default_projection_derive(input: TokenStream) -> TokenStream {
     default_projection::derive(input)
+}
+
+/// Marks a type as trivially projectable.
+///
+/// A `Projectable` type projects to itself, so it gets the blanket `DefaultProjection` impl.
+#[proc_macro_derive(Projectable)]
+pub fn projectable_derive(input: TokenStream) -> TokenStream {
+    default_projection::projectable_derive(input)
+}
+
+/// Accepts projection derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(DefaultProjectionNoop, attributes(projection))]
+pub fn default_projection_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
+/// Accepts projectable derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(ProjectableNoop)]
+pub fn projectable_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
 }
 
 /// A macro attribute to mark the kernel entry point.

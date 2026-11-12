@@ -9,3 +9,38 @@ pub use orpc_macros::{
 };
 
 pub use crate::{new_server, orpc_common::errors};
+
+/// Baseline exports for OQueue derives used by shared types.
+pub mod oqueue {
+    pub use orpc_macros::ElementNoop as Element;
+    pub use ostd_macros::{
+        DefaultProjectionNoop as DefaultProjection, ProjectableNoop as Projectable,
+    };
+}
+
+#[cfg(ktest)]
+mod test {
+    use crate::orpc::{
+        oqueue::{DefaultProjection, Element, Projectable},
+        trace_methods,
+    };
+
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct Projected(#[projection(opaque)] usize);
+
+    #[expect(dead_code)]
+    #[derive(Projectable)]
+    struct Trivial(usize);
+
+    #[expect(dead_code)]
+    #[derive(Element)]
+    struct Message(Trivial);
+
+    #[expect(dead_code)]
+    #[trace_methods]
+    trait TracedTrait {
+        #[trace]
+        fn f(&self, _a: usize) {}
+    }
+}

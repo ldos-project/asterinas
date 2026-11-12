@@ -311,7 +311,7 @@ impl Socket for UnixDatagramSocket {
     fn recvmsg(
         &self,
         writer: &mut dyn MultiWrite,
-        #[trace(only = call)] flags: RecvFlags,
+        flags: RecvFlags,
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {

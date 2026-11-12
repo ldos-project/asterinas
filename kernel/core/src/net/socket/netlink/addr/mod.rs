@@ -3,6 +3,8 @@
 mod multicast;
 
 pub(crate) use multicast::{GroupIdSet, MAX_GROUPS};
+use ostd::orpc::oqueue::Projectable;
+use serde::Serialize;
 
 use crate::{net::socket::util::SocketAddr, prelude::*};
 
@@ -10,7 +12,7 @@ use crate::{net::socket::util::SocketAddr, prelude::*};
 ///
 /// The address contains the port number for unicast
 /// and the group IDs for multicast.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Pod, Projectable)]
 pub(crate) struct NetlinkSocketAddr {
     port: PortNum,
     groups: GroupIdSet,

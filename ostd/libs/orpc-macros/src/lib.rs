@@ -272,6 +272,10 @@ pub fn noop(_attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Arguments may be left out of either event with `#[trace(only = call)]` or
 /// `#[trace(only = return)]`. An empty `#[trace(only = ())]` omits an argument from both events.
+/// Arguments and the return value can be given `#[projection(...)]` attributes which are passed
+/// though to the underlying derived `DefaultProjection`. The macro automatically adds `deref` along
+/// with other projection options, because the the generated event structure contains *reference* to
+/// the argument type. The `self` argument is automatically projected as an opaque ID.
 #[proc_macro_attribute]
 pub fn trace_methods(attr: TokenStream, input: TokenStream) -> TokenStream {
     let options = parse_macro_input!(attr as ImplOptions);
@@ -329,6 +333,12 @@ pub fn baseline_trace_methods(attr: TokenStream, input: TokenStream) -> TokenStr
 #[proc_macro_derive(TupleSerialize)]
 pub fn tuple_serialize_derive(input: TokenStream) -> TokenStream {
     tuple_serialize::tuple_serialize_derive(input)
+}
+
+/// Accepts `Element` derives in baseline mode without generating OQueue code.
+#[proc_macro_derive(ElementNoop)]
+pub fn element_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
 }
 
 /// Derive macro for the `Element` trait.

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use ostd::orpc::oqueue::Projectable;
+
 use crate::prelude::*;
 
 /// Shutdown types
 /// From <https://elixir.bootlin.com/linux/v6.0.9/source/include/linux/net.h>
 #[expect(non_camel_case_types)]
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromInt, Projectable, serde::Serialize)]
 pub(crate) enum SockShutdownCmd {
     /// Shutdown receptions
     SHUT_RD = 0,
