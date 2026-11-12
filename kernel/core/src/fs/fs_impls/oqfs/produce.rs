@@ -44,7 +44,7 @@ const MAX_PENDING_BYTES: usize = 64 * 1024;
 
 /// The inode for a `produce` file.
 ///
-/// It is a regular file whose [`Inode::open`] mints a fresh per-open `FileIo` handle, so no
+/// It is a regular file whose [`Inode::open`] mints a fresh per-open [`PerOpenFileOps`] handle, so no
 /// device registration under `/dev` is needed.
 pub(super) struct ProduceInode {
     /// The OQueue path this file produces into.
