@@ -563,6 +563,26 @@ impl<D: ElementDescriptor + 'static> GenericOQueueRef<D> {
             inner: Arc::new(implementation::OQueueImplementation::new(len, false, None)),
         }
     }
+
+    /// Create a new observation OQueue which only allows weak observers to attach.
+    ///
+    /// Attaching any kind of strong observer fails with [`OQueueError::Unsupported`]. Since weak
+    /// observers never hold back producers, [`GenericRefProducer::produce_ref`] on such an OQueue
+    /// never blocks. Use this for OQueues produced into from contexts that must not block or lose
+    /// values to a slow observer, such as while holding a lock.
+    ///
+    /// The OQueue can be looked up in-kernel by `path`, but it cannot be exported to userspace,
+    /// since userspace only observes OQueues through strong observers.
+    pub fn new_weak_observers_only(len: usize, path: Path) -> Self {
+        let ret = Self {
+            inner: Arc::new(
+                implementation::OQueueImplementation::new(len, false, Some(path.clone()))
+                    .with_weak_observers_only(),
+            ),
+        };
+        registry::register_no_export(&path, &ret.as_any_oqueue());
+        ret
+    }
 }
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
@@ -1156,6 +1176,38 @@ mod test {
             observer.try_strong_observe(),
             Err(OQueueError::Revoked { .. })
         ));
+    }
+
+    #[ktest]
+    fn weak_observers_only_oqueue() {
+        let queue = OQueueRef::<u32>::new_weak_observers_only(4, Path::test());
+        let producer = queue.attach_ref_producer().unwrap();
+
+        assert!(matches!(
+            queue.attach_strong_observer(ObservationQuery::<_, u32>::identity()),
+            Err(OQueueError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            queue.attach_revocable_strong_observer(ObservationQuery::<_, u32>::identity()),
+            Err(OQueueError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            queue.attach_inline_strong_observer(|_: &u32| {}),
+            Err(OQueueError::Unsupported { .. })
+        ));
+
+        let observer = queue
+            .attach_weak_observer(4, ObservationQuery::identity())
+            .unwrap();
+        // Producing far more than the ring holds never blocks; the weak observer just sees the
+        // most recent values.
+        for value in 0..100u32 {
+            producer.produce_ref(&value);
+        }
+        assert_eq!(
+            observer.weak_observe_recent(2).unwrap(),
+            vec![Some(98), Some(99)]
+        );
     }
 
     #[ktest]
