@@ -3,7 +3,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    Data, DeriveInput, Fields, Index, parse_macro_input, parse_quote, spanned::Spanned as _,
+    Data, DeriveInput, Fields, Index, ext::IdentExt, parse_macro_input, parse_quote,
+    spanned::Spanned as _,
 };
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
@@ -424,13 +425,18 @@ fn project_field(
             ));
         }
         has_projection_attribute = true;
-        let options = attr.parse_args_with(
-            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
-        )?;
+        let options = attr.parse_args_with(|input: syn::parse::ParseStream| {
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated_with(
+                input,
+                syn::Ident::parse_any,
+            )
+        })?;
         for option in options {
             if option == "deref" && !deref {
                 deref = true;
-            } else if (option == "opaque" || option == "omit") && projection_kind.is_none() {
+            } else if (option == "opaque" || option == "omit" || option == "self")
+                && projection_kind.is_none()
+            {
                 projection_kind = Some(option);
             } else {
                 return Err(syn::Error::new_spanned(
@@ -463,12 +469,13 @@ fn project_field(
         quote!(#ty)
     };
     let projected_value = if deref { quote!(&**(#value)) } else { value };
-    if projection_kind
+    match projection_kind
         .as_ref()
-        .is_some_and(|kind| kind == "opaque")
+        .map(syn::Ident::to_string)
+        .as_deref()
     {
-        let use_opaque_id =
-            if let syn::Type::Reference(reference) = ty {
+        Some("opaque") => {
+            let use_opaque_id = if let syn::Type::Reference(reference) = ty {
                 deref
                     && match reference.elem.as_ref() {
                         syn::Type::Reference(_) => true,
@@ -480,26 +487,39 @@ fn project_field(
             } else {
                 false
             };
-        Ok(Some((
-            quote!(::ostd::orpc::oqueue::OID),
-            if use_opaque_id {
-                quote!(<#projected_input as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
-            } else if deref {
-                quote!(::ostd::orpc::oqueue::OID::of_ref::<#projected_input>(#projected_value))
-            } else {
-                quote!(<#ty as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
-            },
-        )))
-    } else {
-        let span = ty.span();
-        generics
-            .make_where_clause()
-            .predicates
-            .push(syn::parse_quote_spanned!(span => #projected_input: #default_projection));
-        Ok(Some((
-            quote_spanned!(span => <#projected_input as #default_projection>::Projection),
-            quote_spanned!(span => <#projected_input as #default_projection>::default_projection(#projected_value)),
-        )))
+            Ok(Some((
+                quote!(::ostd::orpc::oqueue::OID),
+                if use_opaque_id {
+                    quote!(<#projected_input as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
+                } else if deref {
+                    quote!(::ostd::orpc::oqueue::OID::of_ref::<#projected_input>(#projected_value))
+                } else {
+                    quote!(<#ty as ::ostd::orpc::oqueue::OpaqueId>::opaque_id(#projected_value))
+                },
+            )))
+        }
+        Some("self") => {
+            let span = ty.span();
+            generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote_spanned!(span => #projected_input: Copy + Send + ::serde::Serialize + 'static));
+            Ok(Some((
+                quote_spanned!(span => #projected_input),
+                quote_spanned!(span => *#projected_value),
+            )))
+        }
+        _ => {
+            let span = ty.span();
+            generics
+                .make_where_clause()
+                .predicates
+                .push(syn::parse_quote_spanned!(span => #projected_input: #default_projection));
+            Ok(Some((
+                quote_spanned!(span => <#projected_input as #default_projection>::Projection),
+                quote_spanned!(span => <#projected_input as #default_projection>::default_projection(#projected_value)),
+            )))
+        }
     }
 }
 
