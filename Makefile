@@ -420,25 +420,31 @@ rootfs: check_vdso
 
 # Build the kernel with an initramfs
 .PHONY: kernel
-kernel: check_kcmd_config $(CARGO_OSDK)
+kernel: kernel_fpu check_kcmd_config $(CARGO_OSDK)
 ifeq ($(INITRAMFS),on)
 kernel: initramfs
 else
 kernel: rootfs
 endif
 kernel:
-	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
+	@cd kernel && RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
+
+.PHONY: kernel_fpu
+kernel_fpu:
+	@if [ "$(TARGET_ARCH)" = "x86_64" ]; then \
+		RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo build -p mariposa-fpu --target x86_64-unknown-none --target-dir target/osdk; \
+	fi
 
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
-run_kernel: check_kcmd_config $(CARGO_OSDK)
+run_kernel: kernel_fpu check_kcmd_config $(CARGO_OSDK)
 ifeq ($(INITRAMFS),on)
 run_kernel: initramfs
 else
 run_kernel: rootfs
 endif
 run_kernel:
-	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
+	@cd kernel && RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Check the running status of auto tests from the QEMU log
 # TODO(arthurp, https://github.com/ldos-project/asterinas/issues/237): Using `^` to anchor to the
 # beginning of the line is probably better. But the dataloss bug makes that spuriously fail.
@@ -559,11 +565,11 @@ test:
 
 .PHONY: ktest
 ktest: CONSOLE = ttyS0
-ktest: initramfs $(CARGO_OSDK)
+ktest: kernel_fpu initramfs $(CARGO_OSDK)
 	@# cargo-osdk tests default workspace members.
 	@# `linux-bzimage-setup` is left out of `default-members`
 	@# because it is hard to unit test.
-	@cargo osdk test $(CARGO_OSDK_TEST_ARGS)
+	@RUSTC_WRAPPER=$(abspath tools/rustc-wrapper.sh) cargo osdk test $(CARGO_OSDK_TEST_ARGS)
 
 
 .PHONY: early_boot_test

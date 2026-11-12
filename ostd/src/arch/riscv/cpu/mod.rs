@@ -4,4 +4,5 @@
 
 pub mod context;
 pub mod extension;
+pub mod kernel_fpu;
 pub mod local;
