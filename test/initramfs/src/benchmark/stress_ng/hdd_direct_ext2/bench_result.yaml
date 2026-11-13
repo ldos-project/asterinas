@@ -1,0 +1,13 @@
+alert:
+  bigger_is_better: true
+  threshold: 130%
+chart:
+  description: stress-ng --hdd 4 --hdd-bytes 256M --hdd-opts direct --temp-path /ext2 -t 60s
+  legend: Bogo ops/s of stress-ng hdd on {system}
+  title: '[Ext2] stress-ng hdd, 4 direct I/O workers'
+  unit: bogo ops/sec
+result_extraction:
+  result_index: 9
+  search_pattern: 'metrc: \[[0-9]+\] hdd '
+runtime_config:
+  smp: 4
