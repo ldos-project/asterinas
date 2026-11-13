@@ -12,9 +12,11 @@
 //! `lookup`/`readdir`, since queues register and unregister at runtime. An OQueue whose path is
 //! `a.b[3].c` appears as the directory `/oqueues/a/b/3/c` (names become directory components,
 //! indices become numeric components). Each such leaf directory contains `metadata.yaml` plus
-//! whichever of the following its export currently carries — an export may carry either, or both,
-//! independently:
+//! whichever of the following its export supports:
 //!
+//! - `weak_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
+//!   [`ostd::orpc::oqueue::registry::register_with`]: a newest-first CBOR snapshot of the values
+//!   retained since this file was opened (see [`weak_observe`]).
 //! - `strong_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
 //!   [`ostd::orpc::oqueue::registry::register_with`]: a per-open CBOR stream of every value
 //!   produced after `open` (see [`reader`]).
@@ -30,6 +32,7 @@
 //!
 //! - [`dir`]: the volatile directory tree.
 //! - [`reader`]: the `strong_observe` and `consume` stream files.
+//! - [`weak_observe`]: the newest-first weak-observation snapshot file.
 //! - [`produce`]: the `produce` file.
 //! - [`metadata`]: the `metadata.yaml` file.
 
@@ -58,6 +61,7 @@ mod dir;
 mod metadata;
 mod produce;
 mod reader;
+mod weak_observe;
 
 /// Magic number for the OQueue filesystem (`"oqfs"`).
 const OQUEUE_MAGIC: u64 = 0x6f71_6673;
@@ -283,6 +287,16 @@ mod tests {
         out
     }
 
+    /// Decodes a self-delimiting CBOR stream of unsigned integers.
+    fn decode_records(buf: &[u8]) -> Vec<u64> {
+        let mut de = minicbor_serde::Deserializer::new(buf);
+        let mut records = Vec::new();
+        while de.decoder().position() < buf.len() {
+            records.push(serde::Deserialize::deserialize(&mut de).unwrap());
+        }
+        records
+    }
+
     #[ktest]
     fn tree_and_observation_files() {
         // Inode metadata reads the real-time clock, which the ktest kernel does not boot.
@@ -306,10 +320,11 @@ mod tests {
         let leaf = queue_dir.lookup("0").unwrap();
         assert!(root.lookup("nonexistent").is_err());
 
-        // The leaf directory lists exactly the two observation files: an observe-registered
+        // The leaf directory lists exactly the three observation files: an observe-registered
         // export has no consume attachment, so `consume` is not listed.
         let mut names = Vec::<String>::new();
         leaf.readdir_at(0, &mut names).unwrap();
+        assert!(names.iter().any(|name| name == weak_observe::FILE_NAME));
         assert!(
             names
                 .iter()
@@ -356,6 +371,100 @@ mod tests {
         drop(producer);
         drop(queue);
         assert!(root.lookup("oqfstest").is_err());
+    }
+
+    #[ktest]
+    fn weak_observe_reads_newest_first_without_splitting_records() {
+        crate::time::clocks::init_for_ktest();
+
+        let path = Path::new(alloc::vec![
+            PathComponent::Name("oqfstest"),
+            PathComponent::Name("weak"),
+            PathComponent::Index(0),
+        ]);
+        let queue = ConsumableOQueueRef::<u64>::new(8, path.clone());
+        registry::register(&path, &queue.as_any_oqueue());
+        let weak_inode = OQueueFs::new()
+            .root_inode()
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("weak")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(weak_observe::FILE_NAME)
+            .unwrap();
+        let weak_file = match open_inode(
+            weak_inode.clone(),
+            AccessMode::O_RDONLY,
+            StatusFlags::empty(),
+        ) {
+            Some(Ok(file)) => file,
+            _ => panic!("opening weak_observe should attach a weak observer"),
+        };
+        let notified = Arc::new(AtomicUsize::new(0));
+        let mut adaptor = PollAdaptor::with_observer(NotifyCounter(notified.clone()));
+        assert!(
+            weak_file
+                .poll(IoEvents::IN, Some(adaptor.as_handle_mut()))
+                .is_empty()
+        );
+        assert!(weak_file.poll(IoEvents::OUT, None).is_empty());
+
+        let producer = queue.attach_value_producer().unwrap();
+        for value in [23u64, 24, 1000] {
+            producer.produce(value);
+        }
+        assert!(notified.load(Ordering::Relaxed) > 0);
+        assert_eq!(weak_file.poll(IoEvents::IN, None), IoEvents::IN);
+        let late_file = match open_inode(weak_inode, AccessMode::O_RDONLY, StatusFlags::empty()) {
+            Some(Ok(file)) => file,
+            _ => panic!("opening weak_observe should attach a weak observer"),
+        };
+        assert_eq!(late_file.poll(IoEvents::IN, None), IoEvents::IN);
+
+        // The newest records encode to three and two bytes. A five-byte buffer holds exactly
+        // those two complete records, but not the one-byte oldest record.
+        let mut short_buf = [0u8; 5];
+        let mut writer = VmWriter::from(&mut short_buf[..]).to_fallible();
+        let len = weak_file
+            .read_at(0, &mut writer, StatusFlags::empty())
+            .unwrap();
+        assert_eq!(len, short_buf.len());
+        assert_eq!(decode_records(&short_buf), [1000, 24]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
+
+        // Reading again at offset zero is non-consuming and starts a fresh newest-first snapshot.
+        let mut full_buf = [0u8; 16];
+        let mut writer = VmWriter::from(&mut full_buf[..]).to_fallible();
+        let len = weak_file
+            .read_at(0, &mut writer, StatusFlags::empty())
+            .unwrap();
+        assert_eq!(decode_records(&full_buf[..len]), [1000, 24, 23]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
+
+        let notifications = notified.load(Ordering::Relaxed);
+        producer.produce(7);
+        assert!(notified.load(Ordering::Relaxed) > notifications);
+        assert_eq!(weak_file.poll(IoEvents::IN, None), IoEvents::IN);
+        let mut writer = VmWriter::from(&mut full_buf[..]).to_fallible();
+        let len = weak_file
+            .read_at(0, &mut writer, StatusFlags::empty())
+            .unwrap();
+        assert_eq!(decode_records(&full_buf[..len]), [7, 1000, 24, 23]);
+        assert!(weak_file.poll(IoEvents::IN, None).is_empty());
+
+        let mut writer = VmWriter::from(&mut full_buf[..]).to_fallible();
+        let err = weak_file
+            .read_at(1, &mut writer, StatusFlags::empty())
+            .unwrap_err();
+        assert_eq!(err.error(), Errno::EINVAL);
+
+        let mut input = VmReader::from(&[0u8][..]).to_fallible();
+        let err = weak_file
+            .write_at(0, &mut input, StatusFlags::empty())
+            .unwrap_err();
+        assert_eq!(err.error(), Errno::EPERM);
     }
 
     #[ktest]
@@ -724,6 +833,23 @@ mod tests {
         assert!(observe_meta.mode.is_owner_readable());
         assert!(!observe_meta.mode.is_group_readable());
         assert!(!observe_meta.mode.is_other_readable());
+
+        let weak_observe_meta = root
+            .lookup("oqfstest")
+            .unwrap()
+            .lookup("perm_observe")
+            .unwrap()
+            .lookup("0")
+            .unwrap()
+            .lookup(weak_observe::FILE_NAME)
+            .unwrap()
+            .metadata()
+            .unwrap();
+        assert_eq!(weak_observe_meta.uid, Uid::new_root());
+        assert_eq!(weak_observe_meta.gid, Gid::new_root());
+        assert!(weak_observe_meta.mode.is_owner_readable());
+        assert!(!weak_observe_meta.mode.is_group_readable());
+        assert!(!weak_observe_meta.mode.is_other_readable());
 
         let produce_leaf = root
             .lookup("oqfstest")
