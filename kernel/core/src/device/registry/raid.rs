@@ -200,7 +200,7 @@ fn attach_weak_observers(
 /// `/oqueues/raid1/bio_completion/<index>/`.
 ///
 /// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror
-/// of the whole [`BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
+/// of the whole [`aster_block::bio::BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
 /// field name).
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
@@ -220,7 +220,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
     }
 }
 
-/// A `Copy` projection of [`BlockDeviceCompletionStats`] exposing every field to userspace (see
+/// A `Copy` projection of [`aster_block::bio::BlockDeviceCompletionStats`] exposing every field to userspace (see
 /// [`expose_bio_completion_oqueues`]).
 ///
 /// Mirrored by `BioCompletionStats` in `test/initramfs/src/raid_policy_server/src/main.rs`.

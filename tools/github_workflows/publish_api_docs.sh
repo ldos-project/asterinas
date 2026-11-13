@@ -99,7 +99,7 @@ update_nightly_doc() {
     git checkout --orphan new_branch
     rm -rf *
     cp -r ${ASTER_SRC_DIR}/target/x86_64-unknown-none/doc/* ./
-    generate_redirect_index_html "https://asterinas.github.io/api-docs-nightly/ostd"
+    generate_redirect_index_html "https://ldos-project.github.io/api-docs-nightly/ostd"
     git add .
     git commit -am "Update nightly API docs"
     git branch -D main
@@ -115,7 +115,7 @@ update_release_doc() {
     git rm -rf --ignore-unmatch "${VERSION}"
     mkdir "${VERSION}"
     cp -r ${ASTER_SRC_DIR}/target/x86_64-unknown-none/doc/* ${VERSION}/
-    generate_redirect_index_html "https://asterinas.github.io/api-docs/${VERSION}/ostd"
+    generate_redirect_index_html "https://ldos-project.github.io/api-docs/${VERSION}/ostd"
     git add .
     git commit -am "Update API docs to v${VERSION}"
     GIT_SSH_COMMAND="ssh -i ${SSH_KEY_FILE} -o UserKnownHostsFile=${KNOWN_HOSTS_FILE}" git push -f origin main
