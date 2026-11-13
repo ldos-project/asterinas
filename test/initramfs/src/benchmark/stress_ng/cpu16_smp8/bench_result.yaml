@@ -1,0 +1,13 @@
+alert:
+  bigger_is_better: true
+  threshold: 130%
+chart:
+  description: stress-ng --cpu 16 -t 60s
+  legend: Bogo ops/s of stress-ng cpu on {system}
+  title: '[Scheduler] stress-ng cpu, 16 CPU-bound workers on 8 CPUs'
+  unit: bogo ops/sec
+result_extraction:
+  result_index: 9
+  search_pattern: 'metrc: \[[0-9]+\] cpu '
+runtime_config:
+  smp: 8
