@@ -65,6 +65,7 @@ pub mod process;
 mod sched;
 pub mod security;
 mod syscall;
+mod test;
 mod thread;
 mod time;
 pub mod util;

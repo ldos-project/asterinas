@@ -19,6 +19,7 @@ SUBDIRS := \
 	ipc \
 	memory \
 	network \
+	oqfs \
 	process \
 	scripts \
 	security \
@@ -31,6 +32,8 @@ endif
 
 # The C header and source files of all regression tests.
 C_SOURCES := $(shell find . -type f \( -name "*.c" -or -name "*.h" \))
+# The Cargo manifests of all Rust regression tests.
+RUST_MANIFESTS := $(shell find . -type f -name "Cargo.toml")
 
 .PHONY: all
 all: $(SUBDIRS)
@@ -46,8 +49,10 @@ $(SUBDIRS): $(OUTPUT_DIR)
 format:
 	@echo "Fixing code format for regression tests..."
 	@clang-format -i $(C_SOURCES)
+	@for manifest in $(RUST_MANIFESTS); do cargo fmt --manifest-path $$manifest; done
 
 .PHONY: check
 check:
 	@echo "Checking code format for regression tests..."
 	@clang-format --dry-run --Werror $(C_SOURCES)
+	@for manifest in $(RUST_MANIFESTS); do cargo fmt --check --manifest-path $$manifest; done
