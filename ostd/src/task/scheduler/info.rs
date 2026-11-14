@@ -2,7 +2,7 @@
 
 //! Scheduling related information in a task.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::{cpu::CpuId, task::Task};
 
@@ -18,6 +18,9 @@ use crate::{cpu::CpuId, task::Task};
 pub struct TaskScheduleInfo {
     /// The CPU that the task would like to be running on.
     pub cpu: AtomicCpuId,
+    /// Whether the task has finished running for the last time and is being removed from its
+    /// runqueue. See [`CommonSchedInfo::exiting`].
+    pub exiting: AtomicBool,
 }
 
 /// An atomic CPUID container.
@@ -80,10 +83,24 @@ impl CommonSchedInfo for Task {
     fn cpu(&self) -> &AtomicCpuId {
         &self.schedule_info().cpu
     }
+
+    fn exiting(&self) -> &AtomicBool {
+        &self.schedule_info().exiting
+    }
 }
 
 /// Trait for fetching common scheduling information.
 pub trait CommonSchedInfo {
     /// Gets the CPU that the task is running on or lately ran on.
     fn cpu(&self) -> &AtomicCpuId;
+
+    /// Gets the flag that is set once the task is exiting. The flag must be set under the runqueue
+    /// lock, so `enqueue` sees it once it holds that lock.
+    ///
+    /// This should be set after the task has been descheduled for the last time and will never
+    /// execute another instruction.
+    ///
+    /// Schedulers are not strictly speaking required to use this flag. See
+    /// [`super::Scheduler::enqueue`].
+    fn exiting(&self) -> &AtomicBool;
 }

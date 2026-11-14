@@ -5,7 +5,7 @@
 #![warn(unused)]
 
 use alloc::{boxed::Box, string::String, sync::Arc};
-use core::{fmt, time::Duration};
+use core::{fmt, sync::atomic::Ordering, time::Duration};
 
 use ostd::{
     arch::read_tsc as sched_clock,
@@ -347,6 +347,15 @@ impl Scheduler for ClassScheduler {
         // Note: call set_if_is_none again to prevent a race condition.
         let still_in_rq = still_in_rq && task.cpu().set_if_is_none(cpu).is_err();
 
+        // An exiting task will never run again, so it must not be enqueued.
+        if task.exiting().load(Ordering::Relaxed) {
+            // Release the CPU claimed above, as the task is in no runqueue.
+            if !still_in_rq {
+                task.cpu().set_to_none();
+            }
+            return None;
+        }
+
         if flags == EnqueueFlags::ForceSchedule {
             // A forced task is temporarily assigned the highest real-time priority and is placed at
             // the front of the run queue. Its previous policy is restored on the next
@@ -525,8 +534,12 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
-        let (should_preempt, mut lookahead) = if let Some(((_, cur), rt)) = &mut self.current {
+        let (should_preempt, mut lookahead) = if let Some(((task, cur), rt)) = &mut self.current {
             rt.update();
+
+            if matches!(flags, UpdateFlags::Exit) {
+                task.exiting().store(true, Ordering::Relaxed);
+            }
 
             // A forced schedule only lasts until the next `update_current` of
             // the task: restore the original policy, if any.
