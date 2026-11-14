@@ -18,8 +18,8 @@ use crate::{cpu::CpuId, task::Task};
 pub struct TaskScheduleInfo {
     /// The CPU that the task would like to be running on.
     pub cpu: AtomicCpuId,
-    /// Whether the task has finished running and is being removed from its runqueue. See
-    /// [`CommonSchedInfo::exiting`].
+    /// Whether the task has finished running for the last time and is being removed from its
+    /// runqueue. See [`CommonSchedInfo::exiting`].
     pub exiting: AtomicBool,
 }
 
@@ -96,6 +96,9 @@ pub trait CommonSchedInfo {
 
     /// Gets the flag that is set once the task is exiting. The flag must be set under the runqueue
     /// lock, so `enqueue` sees it once it holds that lock.
+    ///
+    /// This should be set after the task has been descheduled for the last time and will never
+    /// execute another instruction.
     ///
     /// Schedulers are not strictly speaking required to use this flag. See
     /// [`super::Scheduler::enqueue`].

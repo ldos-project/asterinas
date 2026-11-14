@@ -86,6 +86,11 @@ pub(crate) struct Thread {
     // Mutable part:
     //
     /// Thread status.
+    ///
+    /// This is similar to [`ostd::task::scheduler::info::TaskScheduleInfo::exiting`], but is set
+    /// earlier in the exit process. This is set when the userspace process exits, but the task is
+    /// technically still executing instructions. The `ostd` `exiting` flag is set after the task
+    /// has been descheduled for the last time and will never execute another instruction.
     is_exited: AtomicBool,
     /// Thread CPU affinity.
     cpu_affinity: AtomicCpuSet,
