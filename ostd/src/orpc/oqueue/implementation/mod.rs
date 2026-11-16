@@ -4,6 +4,15 @@
 //!
 //! See [`OQueueImplementation`].
 //!
+//! ## Type parameters and erasure
+//!
+//! * `D` describes the queue element (including its lifetime). [`OQueueImplementation<D>`]
+//!   carries it; observer handles erase it behind [`UntypedOQueueImplementation`]. For owned
+//!   elements, `D` is `LifetimelessElementDescriptor<T>`.
+//! * `U` is a query's output type. [`ObservationQuery<D, U>`] and
+//!   [`TypedObservationStream<D, U>`] carry it; the queue erases it in `dyn ObservationStream<D>`.
+//!   Reads and inline callbacks cross that boundary via [`ErasedOutput`] and [`ErasedHandler`].
+//!
 //! ## Terminology
 //!
 //! * By convention, methods which place their output into an untyped buffer are named `*_into` and
@@ -596,6 +605,7 @@ struct OQueueInner<D: ElementDescriptor> {
     /// can be discarded.
     n_consumers: usize,
     /// A query and result ring, independently of the handles attached to it.
+    /// `dyn ObservationStream<D>` erases each stream's output type `U`.
     streams: SlotMap<StreamKey, Box<dyn ObservationStream<D>>>,
     observers: SlotMap<ObserverKey, (StreamKey, ReaderKey)>,
     // TODO: PERFORMANCE: There will be a bunch of cases where there is *only* a consumer ring
@@ -663,7 +673,7 @@ impl<D: ElementDescriptor> OQueueInner<D> {
 
 /// A dyn-compatible trait to type erase `D` from [`OQueueImplementation<D>`]. The operations here
 /// conceptually take the observed type `U` as a type parameter, but this is not possible in a
-/// dyn-compatible trait.
+/// dyn-compatible trait. [`ObservationStream<D>`] erases `U` separately.
 pub(super) trait UntypedOQueueImplementation: Sync + Send {
     /// Release any resources held by observer with the given ID. Using that `observer_id` again may
     /// produce UB.

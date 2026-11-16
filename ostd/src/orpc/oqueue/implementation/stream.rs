@@ -30,9 +30,12 @@ pub(super) enum ReadPosition {
 }
 
 /// A destination whose type is guaranteed by its observer handle.
+/// It erases the output type `U` when passed through the stream interface.
 pub(super) struct ErasedOutput<'a> {
+    /// Writable storage for `U`, passed through the stream interface as an untyped pointer.
     pointer: *mut (),
     #[cfg(debug_assertions)]
+    /// The `TypeId` of erased `U`, checked against the stream in debug builds.
     type_id: TypeId,
     lifetime: PhantomData<&'a mut ()>,
 }
@@ -60,6 +63,7 @@ impl<'a> ErasedOutput<'a> {
 }
 
 /// A boxed typed callback, downcast once when attaching it to a stream.
+/// The callback's input type `U` is erased until it reaches that stream.
 pub(in crate::orpc::oqueue) type ErasedHandler = Box<dyn Any + Send>;
 
 /// A query-backed sequence of observations and the readers attached to it.
@@ -67,7 +71,7 @@ pub(in crate::orpc::oqueue) type ErasedHandler = Box<dyn Any + Send>;
 /// A stream evaluates one query on produced queue elements and retains its results in a ring
 /// shared by its buffered readers. Strong readers have independent heads; weak readers access
 /// retained results by cursor. Inline readers receive results directly without a ring head.
-/// The query's output type is erased, while its input descriptor remains `D`.
+/// The query's output type `U` is erased, while its input descriptor remains `D`.
 pub(super) trait ObservationStream<D: ElementDescriptor>: Send {
     /// Attaches a reader with the requested mode.
     fn attach_reader(&mut self, mode: ReaderMode) -> Result<ReaderKey, AllocError>;
