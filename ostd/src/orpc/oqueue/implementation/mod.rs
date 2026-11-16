@@ -297,8 +297,12 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         })
     }
 
-    /// Converts a strong observer to inline delivery through the stream's erased interface.
-    /// Buffered values are drained for this reader; other readers retain their positions.
+    /// Attach a strong observer to the OQueue by calling a strong observer function with each
+    /// value. The value is passed through a query. This is used for converting a strong-observer
+    /// attachment into an inline.
+    ///
+    /// This returns a new ID associated with the registered inline attachment. This will not be the
+    /// same as the argument.
     pub(super) fn convert_strong_observer_to_inline<U: Send + Copy + 'static>(
         this: &dyn UntypedOQueueImplementation,
         observer_id: ObserverKey,
