@@ -459,7 +459,10 @@ fn clone_child_task(
         .ns_proxy(child_ns_proxy)
         .default_timer_slack_ns(default_timer_slack_ns)
         .cpu_affinity(ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed))
-        .sched_policy(ctx.thread.sched_attr().inheritable_policy());
+        .sched_policy(super::posix_thread::inheritable_policy(
+            ctx.thread,
+            ctx.posix_thread.tid(),
+        ));
         #[cfg(target_arch = "x86_64")]
         {
             thread_builder = thread_builder.fs_base(child_fs_base).gs_base(child_gs_base);
@@ -596,7 +599,10 @@ fn clone_child_process(
             .ns_proxy(child_ns_proxy)
             .default_timer_slack_ns(default_timer_slack_ns)
             .cpu_affinity(ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed))
-            .sched_policy(ctx.thread.sched_attr().inheritable_policy())
+            .sched_policy(super::posix_thread::inheritable_policy(
+                ctx.thread,
+                ctx.posix_thread.tid(),
+            ))
         };
         #[cfg(target_arch = "x86_64")]
         {
