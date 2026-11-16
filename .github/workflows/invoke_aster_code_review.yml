@@ -236,7 +236,7 @@ jobs:
     # benchmark need. The one tool the image lacks is the GitHub CLI, installed below.
     # This tag is pinned deliberately and is not updated by tools/bump_version.sh.
     container:
-      image: ldosproject/asterinas:0.18.0-20260701
+      image: ldosproject/asterinas:0.18.1-ldos-20261109
     timeout-minutes: 60          # headroom for a full `benchmark`; review/smoke finish far sooner
     permissions:
       contents: read

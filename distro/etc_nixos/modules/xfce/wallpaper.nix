@@ -34,6 +34,15 @@ let
       <property name="last-settings-migration-version" type="uint" value="1"/>
       <property name="backdrop" type="empty">
         <property name="screen0" type="empty">
+          <!-- The DRM modesetting driver exposes the virtual display as Virtual-1.
+               XFCE uses the connector name to look up its backdrop settings. -->
+          <property name="monitorVirtual-1" type="empty">
+            <property name="workspace0" type="empty">
+              <property name="last-image" type="string" value="${wallpaper}"/>
+              <!-- image-style=5 means "zoomed" wallpaper mode in XFCE -->
+              <property name="image-style" type="int" value="5"/>
+            </property>
+          </property>
           <property name="monitor0" type="empty">
             <property name="workspace0" type="empty">
               <property name="last-image" type="string" value="${wallpaper}"/>

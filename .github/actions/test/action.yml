@@ -68,6 +68,11 @@ inputs:
     description: 'The disk size for xfstests'
     required: false
 
+  # Pjdfstest-specific parameters
+  pjdfstest_fs_type:
+    description: 'Filesystem under test for pjdfstest (ramfs, ext2, etc.)'
+    required: false
+
 runs:
   using: 'composite'
   steps:
@@ -78,6 +83,11 @@ runs:
       shell: bash
       run: |
         # Set common environment variables using GitHub's environment files
+        #
+        # Container jobs run with HOME=/github/home, and GitHub mounts a runner
+        # directory there. Point rustup at the toolchain installed in the image
+        # so that it is not downloaded again in every job.
+        echo "RUSTUP_HOME=/root/.rustup" >> $GITHUB_ENV
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
           echo "TDX not supported"
           exit 1
@@ -124,6 +134,7 @@ runs:
         [[ -n "${{ inputs.xfstests_fs_type }}" ]] && CMD+=" XFSTESTS_FS_TYPE=${{ inputs.xfstests_fs_type }}"
         [[ -n "${{ inputs.xfstests_runlist }}" ]] && CMD+=" XFSTESTS_RUNLIST=${{ inputs.xfstests_runlist }}"
         [[ -n "${{ inputs.xfstests_disk_size }}" ]] && CMD+=" XFSTESTS_DISK_SIZE=${{ inputs.xfstests_disk_size }}"
+        [[ -n "${{ inputs.pjdfstest_fs_type }}" ]] && CMD+=" PJDFSTEST_FS_TYPE=${{ inputs.pjdfstest_fs_type }}"
 
         echo "Executing: $CMD"
         eval $CMD
@@ -134,7 +145,7 @@ runs:
       run: |
         [[ "${{ !contains(matrix.container, 'osdk') }}" == "true" ]] && make --keep-going check_osdk
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
-          RUSTUP_HOME=/root/.rustup make test_osdk INTEL_TDX=1
+          make test_osdk INTEL_TDX=1
         else
-          RUSTUP_HOME=/root/.rustup make test_osdk
+          make test_osdk
         fi

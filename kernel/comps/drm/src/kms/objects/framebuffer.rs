@@ -18,21 +18,16 @@ use crate::{
 ///
 // TODO: Support framebuffers backed by multiple planes.
 #[derive(Debug)]
-pub(crate) struct DrmFramebuffer {
+pub struct DrmFramebuffer {
     id: KmsObjectId,
-    #[expect(dead_code)]
     size: DrmSize,
-    #[expect(dead_code)]
     pixel_format: DrmPixelFormat,
     #[expect(dead_code)]
     flags: DrmFramebufferFlags,
-    #[expect(dead_code)]
     pitch: u32,
-    #[expect(dead_code)]
     offset: u32,
     #[expect(dead_code)]
     modifier: u64,
-    #[expect(dead_code)]
     gem_object: Arc<DrmGemObject>,
 }
 
@@ -100,16 +95,37 @@ impl DrmFramebuffer {
     pub(crate) fn id(&self) -> KmsObjectId {
         self.id
     }
+
+    pub fn size(&self) -> DrmSize {
+        self.size
+    }
+
+    pub fn pixel_format(&self) -> DrmPixelFormat {
+        self.pixel_format
+    }
+
+    pub fn pitch(&self) -> u32 {
+        self.pitch
+    }
+
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    pub fn gem_object(&self) -> &DrmGemObject {
+        &self.gem_object
+    }
 }
 
 bitflags::bitflags! {
     /// Framebuffer flags exposed through the DRM mode UAPI.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm_mode.h#L666-L667>
+    #[derive(Clone, Copy, Debug)]
     pub(crate) struct DrmFramebufferFlags: u32 {
         /// The framebuffer contains interlaced image data.
         const INTERLACED = 1 << 0;
         /// The framebuffer uses an explicitly specified format modifier.
-        const MODIFIERS = 1 << 1;
+        const MODIFIERS  = 1 << 1;
     }
 }
