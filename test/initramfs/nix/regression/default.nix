@@ -23,6 +23,7 @@ let
     "process"
     "security"
     "time"
+    "oqfs"
     "raid1"
   ];
 
