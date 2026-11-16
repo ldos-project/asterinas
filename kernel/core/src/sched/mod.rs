@@ -7,8 +7,8 @@
 //!
 //! This scheduler supports 2 task classes:
 //!
-//! * [Real-time](`sched_class::real_time`) with round-robin or FIFO scheduling.
-//! * [Fair](`sched_class::fair`) which attempts to provide equal runtime for tasks.
+//! * Real-time with round-robin or FIFO scheduling.
+//! * Fair which attempts to provide equal runtime for tasks.
 
 mod nice;
 mod sched_class;

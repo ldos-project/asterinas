@@ -185,7 +185,7 @@ pub fn register_with_projection<T, U, F>(
 ///
 /// # Panics
 ///
-/// Panics if a live export already exists at `path` (see [`insert_export`]).
+/// Panics if a live export already exists at `path`.
 pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOwned + 'static>(
     path: &Path,
     oqueue: &ConsumableOQueueRef<T>,

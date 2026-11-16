@@ -143,7 +143,7 @@ pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
 ///
 /// There is no way to put the path of the actual source OQueue into the output file via the query.
 /// This is because `Path` is not `Copy`, so it can't go in the event. (see
-/// https://github.com/ldos-project/asterinas/issues/232)
+/// <https://github.com/ldos-project/asterinas/issues/232>)
 pub(crate) fn new_data_capture_data_file_by_type<
     T: Element,
     E: Copy + Sync + Send + Serialize + 'static,

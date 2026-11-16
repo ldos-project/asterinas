@@ -70,8 +70,8 @@ pub fn wrap_server_thread_body(
 }
 
 /// Set a custom function for spawning threads. This allows overriding the default thread spawning
-/// behavior. This is required in kernels, like Asterinas, that do not run raw OSTD [`Task`]s
-/// correctly.
+/// behavior. This is required in kernels, like Asterinas, that do not run raw OSTD
+/// [`Task`](`ostd::task::Task`)s correctly.
 pub fn inject_spawn_thread(func: SpawnThreadFn) {
     SPAWN_THREAD_FN.call_once(|| func);
 }
