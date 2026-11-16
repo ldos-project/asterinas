@@ -81,25 +81,25 @@ pub(super) struct RingBuffer<T: ?Sized> {
     element: PhantomData<fn() -> T>,
 }
 
-impl<E: ?Sized> Drop for RingBuffer<E> {
+impl<T: ?Sized> Drop for RingBuffer<T> {
     fn drop(&mut self) {
         (self.drop_fn)(self);
     }
 }
 
-impl<E: Send + 'static> RingBuffer<E> {
+impl<T: Send + 'static> RingBuffer<T> {
     /// Create a new ring buffer for a specific type.
     pub(super) fn new(n_buffer_elements: usize) -> Result<Self, AllocError> {
         // TODO: PERFORMANCE: We could potentially eliminate the padding and not align the values in
         // the buffer to save space. However, safety of this will require more thinking and may well
         // not help, so we leave it as is for now.
-        let buffer = SliceAllocation::new::<E>(n_buffer_elements)?;
+        let buffer = SliceAllocation::new::<T>(n_buffer_elements)?;
 
         Ok(RingBuffer {
             #[cfg(debug_assertions)]
-            element_type: TypeId::of::<E>(),
+            element_type: TypeId::of::<T>(),
             #[cfg(debug_assertions)]
-            element_type_name: type_name::<E>(),
+            element_type_name: type_name::<T>(),
             buffer,
             tail_index: 0,
             strong_reader_heads: SmallVec::default(),
@@ -126,8 +126,8 @@ impl<E: Send + 'static> RingBuffer<E> {
 
     /// Get a reference to the slot which is used for the slot index `i`. This does no checking as
     /// to the data that is actually held in that slot. It could be uninitialized.
-    fn slot_mut(&mut self, i: usize) -> &mut MaybeUninit<E> {
-        self.assert_type::<E>();
+    fn slot_mut(&mut self, i: usize) -> &mut MaybeUninit<T> {
+        self.assert_type::<T>();
 
         // SAFETY: the ring was constructed for E, which is Send, so
         // reading the value out of `self` (which is `Send`) is allowed.
@@ -136,8 +136,8 @@ impl<E: Send + 'static> RingBuffer<E> {
 
     /// Try to write the value into the buffer. This will return `Some(v)` if `v` could not be moved
     /// into the buffer.
-    pub(super) fn try_produce(&mut self, v: E) -> Option<E> {
-        self.assert_type::<E>();
+    pub(super) fn try_produce(&mut self, v: T) -> Option<T> {
+        self.assert_type::<T>();
 
         // TODO: PERFORMANCE: The caller will often already have checked `can_produce`, so maybe we
         // should use a `produce_unchecked` instead.
@@ -159,8 +159,8 @@ impl<E: Send + 'static> RingBuffer<E> {
     /// Get a reference to a value at the head stored in `strong_reader_heads[head_id]`. The
     /// returned value is always initialized when returned. It is returned as `MaybeUninit<E>`, so
     /// allow mutating it leaving it in an uninitialized state. This does not update that head.
-    fn try_get_for_head(&mut self, head_id: usize) -> Option<&mut MaybeUninit<E>> {
-        self.assert_type::<E>();
+    fn try_get_for_head(&mut self, head_id: usize) -> Option<&mut MaybeUninit<T>> {
+        self.assert_type::<T>();
 
         if self.can_get_for_head(head_id) {
             Some(self.slot_mut(self.mod_len(self.strong_reader_heads[head_id].unwrap())))
@@ -171,8 +171,8 @@ impl<E: Send + 'static> RingBuffer<E> {
 
     /// Consume the value at head 0 (`strong_reader_heads[0]`).
     /// Panics if more than one strong head slot has been allocated.
-    pub(super) fn try_consume(&mut self) -> Option<E> {
-        self.assert_type::<E>();
+    pub(super) fn try_consume(&mut self) -> Option<T> {
+        self.assert_type::<T>();
 
         assert_eq!(
             self.strong_reader_heads.len(),
@@ -189,11 +189,11 @@ impl<E: Send + 'static> RingBuffer<E> {
     }
 
     /// Copies the next observation for the specified reader.
-    pub(super) fn try_strong_observe(&mut self, head_id: usize) -> Option<E>
+    pub(super) fn try_strong_observe(&mut self, head_id: usize) -> Option<T>
     where
-        E: Copy,
+        T: Copy,
     {
-        self.assert_type::<E>();
+        self.assert_type::<T>();
 
         let res = self.try_get_for_head(head_id)?;
         // SAFETY: The return value of `try_get_for_head` is always initialized. This leaves the
@@ -205,11 +205,11 @@ impl<E: Send + 'static> RingBuffer<E> {
     }
 
     /// Copies the retained observation at the specified cursor.
-    pub(super) fn try_weak_observe(&mut self, index: Cursor) -> Option<E>
+    pub(super) fn try_weak_observe(&mut self, index: Cursor) -> Option<T>
     where
-        E: Copy,
+        T: Copy,
     {
-        self.assert_type::<E>();
+        self.assert_type::<T>();
 
         let Cursor(index) = index;
         if index < self.tail_index.saturating_sub(self.buffer.len()) || index >= self.tail_index {
@@ -223,17 +223,17 @@ impl<E: Send + 'static> RingBuffer<E> {
     }
 }
 
-impl<E: ?Sized> RingBuffer<E> {
+impl<T: ?Sized> RingBuffer<T> {
     /// Panics in debug builds if the type does not match this ring buffer.
     #[inline(always)]
     #[track_caller]
-    fn assert_type<T: Send + 'static>(&self) {
+    fn assert_type<U: Send + 'static>(&self) {
         #[cfg(debug_assertions)]
         debug_assert_eq!(
-            TypeId::of::<T>(),
+            TypeId::of::<U>(),
             self.element_type,
             "requested {} constructed with {}",
-            type_name::<T>(),
+            type_name::<U>(),
             self.element_type_name
         );
     }
