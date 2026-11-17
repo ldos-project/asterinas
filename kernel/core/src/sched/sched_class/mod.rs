@@ -421,6 +421,9 @@ pub(crate) fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
     };
 
     let mut policy_set = false;
+
+    // Retry until we succeed in setting the policy while the task is either not running, or running
+    // on this CPU.
     loop {
         let Some(cpu) = task.cpu().get() else {
             if policy_set {
@@ -430,10 +433,12 @@ pub(crate) fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
             // be enqueued concurrently, though, using either policy, so check again.
             thread.sched_attr().set_policy(policy);
             policy_set = true;
+            // Retry to handle cases when the task was enqueued concurrently with the above.
             continue;
         };
 
         let mut rq = scheduler.rqs[cpu.as_usize()].lock();
+        // If the task has been reenqueued before we take the lock, retry.
         if task.cpu().get() != Some(cpu) {
             continue;
         }
@@ -443,6 +448,7 @@ pub(crate) fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
             .is_some_and(|((current, _), _)| Arc::ptr_eq(current, &task));
         if is_current {
             thread.sched_attr().set_policy(policy);
+            // The task is the current task and we have changed it's policy. We are done.
             return;
         }
 
@@ -457,6 +463,7 @@ pub(crate) fn set_policy_requeued(thread: &Arc<Thread>, policy: SchedPolicy) {
             || rq.real_time.remove_at_any_prio(&task);
         thread.sched_attr().set_policy(policy);
         if !removed {
+            // The task was not in any queue, so we are done.
             return;
         }
         let should_preempt = rq
