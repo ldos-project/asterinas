@@ -112,6 +112,11 @@ pub(crate) fn init() {
     });
 }
 
+// TODO: The `scheduler.events` OQueue is set up with a pattern that is repeated for other OQueues
+// (e.g., `futex.pi.events` and `lockprio.decisions` in the kernel): a `Once` holding the producer,
+// an `init` that creates and registers the OQueue, and a `cfg`-gated produce path. Factor this
+// into a general structure, perhaps with utilities to create it, and use it consistently instead of
+// repeating it.
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 static SCHEDULING_EVENT_PRODUCER: Once<RefProducer<SchedulingEvent>> = Once::new();
 
@@ -592,7 +597,11 @@ pub(super) fn run_new_task(runnable: Arc<Task>) {
     }
 }
 
-fn set_need_preempt(cpu_id: CpuId) {
+/// Asks the CPU `cpu_id` to reschedule at its next preemption point.
+///
+/// A scheduler calls this when it changes a queued task's priority outside of
+/// [`Scheduler::enqueue`] so that the task now outranks the task running on that CPU.
+pub fn set_need_preempt(cpu_id: CpuId) {
     let preempt_guard = disable_preempt();
 
     if preempt_guard.current_cpu() == cpu_id {

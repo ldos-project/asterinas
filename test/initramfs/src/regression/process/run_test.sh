@@ -43,6 +43,8 @@ fi
 ./prctl/subreaper
 ./prctl/thread_name
 
+./pthread/pi_futex
+./pthread/pi_boost
 ./pthread/pthread_signal_test
 ./pthread/pthread_test
 
