@@ -30,6 +30,13 @@ cd asterinas/ostd
 cargo osdk test
 ```
 
+To match `make ktest` more closely and get better performance use:
+
+```bash
+cd asterinas/ostd
+cargo osdk test --qemu-args="-accel kvm"
+```
+
 ## Integration test
 
 ### Regression test

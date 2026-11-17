@@ -1,0 +1,13 @@
+alert:
+  bigger_is_better: true
+  threshold: 130%
+chart:
+  description: stress-ng --iomix 2 --iomix-bytes 256M --temp-path /ext2 -t 60s
+  legend: Bogo ops/s of stress-ng iomix on {system}
+  title: '[Ext2] stress-ng iomix, 2 mixed I/O workers'
+  unit: bogo ops/sec
+result_extraction:
+  result_index: 9
+  search_pattern: 'metrc: \[[0-9]+\] iomix '
+runtime_config:
+  smp: 4

@@ -150,6 +150,7 @@ x86_64_pkgs:
 		-A benchmark.redis \
 		-A benchmark.schbench \
 		-A benchmark.sqlite-speedtest1 \
+		-A benchmark.stress-ng \
 		-A benchmark.sysbench \
 		-A conformance.ltp \
 		-A conformance.kselftest \
