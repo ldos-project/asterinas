@@ -5,7 +5,7 @@ use alloc::{boxed::Box, format};
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::OQueueError;
-use ostd::{orpc::errors::RPCError, ostd_error, stack_info::StackInfo};
+use ostd::{ostd_error, stack_info::StackInfo};
 use snafu::Snafu;
 
 /// Error number.
@@ -291,6 +291,10 @@ pub enum Errno {
 
     /// Restart of an interrupted system call. For kernel internal use only.
     ERESTARTSYS = 512,
+
+    /// Unconditional restart of an interrupted system call, even if the signal handler does not
+    /// have `SA_RESTART`. For kernel internal use only.
+    ERESTARTNOINTR = 513,
 }
 
 /// Error used in this crate.
@@ -356,20 +360,6 @@ impl Error {
 
     pub const fn error(&self) -> Errno {
         self.errno
-    }
-}
-
-impl From<RPCError> for Error {
-    #[track_caller]
-    fn from(value: RPCError) -> Self {
-        match value {
-            RPCError::Panic { .. } => {
-                Self::from_ostd_error(Errno::ECONNABORTED, "Server panic", value)
-            }
-            RPCError::ServerMissing { .. } => {
-                Self::from_ostd_error(Errno::ECONNREFUSED, "Server missing", value)
-            }
-        }
     }
 }
 
@@ -444,7 +434,6 @@ impl From<ostd::Error> for Error {
                 msg: None,
                 context,
             },
-            ostd::Error::RPCError { source } => source.into(),
             #[cfg(not(baseline_asterinas))]
             ostd::Error::OQueueError { source } => source.into(),
         }
@@ -686,21 +675,4 @@ macro_rules! return_errno_with_message {
     ($errno: expr, $message: expr) => {
         return Err($crate::error::Error::with_message($errno, $message))
     };
-}
-
-#[cfg(ktest)]
-mod test {
-    use ostd::{orpc::errors::ServerMissingSnafu, prelude::ktest};
-
-    use super::*;
-
-    #[ktest]
-    fn convert_errors_orpc() {
-        fn orpc() -> Result<(), Error> {
-            Err(ServerMissingSnafu.build())?;
-            Ok(())
-        }
-
-        assert!(orpc().is_err());
-    }
 }

@@ -177,7 +177,6 @@ fn build_admission(
 fn attach_weak_observers(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Vec<Mutex<ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>>> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     members
@@ -200,12 +199,11 @@ fn attach_weak_observers(
 /// `/oqueues/raid1/bio_completion/<index>/`.
 ///
 /// Each OQueue is exposed via a projection onto [`BioCompletionStatsMessage`], a plain-field mirror
-/// of the whole [`BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
+/// of the whole [`aster_block::bio::BlockDeviceCompletionStats`] with a derived `Serialize` (a CBOR map keyed by
 /// field name).
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, registry};
 
     for (index, member) in members.iter().enumerate() {
@@ -220,7 +218,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
     }
 }
 
-/// A `Copy` projection of [`BlockDeviceCompletionStats`] exposing every field to userspace (see
+/// A `Copy` projection of [`aster_block::bio::BlockDeviceCompletionStats`] exposing every field to userspace (see
 /// [`expose_bio_completion_oqueues`]).
 ///
 /// Mirrored by `BioCompletionStats` in `test/initramfs/src/raid_policy_server/src/main.rs`.
@@ -305,7 +303,6 @@ aster_cmdline::define_kv_param!(
 fn setup_heimdall(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Arc<aster_raid::heimdall::Heimdall> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     let device_observers = members

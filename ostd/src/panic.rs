@@ -26,7 +26,6 @@ impl From<ostd_test::PanicInfo> for CaughtPanic {
                 stack_trace: CapturedStackTrace::empty(),
                 task_id: None,
                 cpu_id: CpuId::current_racy(),
-                server_id: None,
                 location: Some(crate::stack_info::Location {
                     file: value.file.into(),
                     line: value.line as u32,

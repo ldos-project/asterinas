@@ -27,7 +27,7 @@ pub use orpc_macros::Element;
 /// has the descriptor:
 /// ```ignore
 /// struct ArgsDescriptor {
-///     type Element<'a> = Args<a'>
+///     type Element<'a> = Args<'a>
 /// }
 /// ```
 pub trait ElementDescriptor: 'static {

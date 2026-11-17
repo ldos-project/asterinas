@@ -22,12 +22,16 @@ pub mod pmu;
 pub(crate) mod tdx_guest;
 
 #[cfg(feature = "cvm_guest")]
-pub(crate) fn init_cvm_guest() {
+use crate::mm::frame::unaccepted;
+
+#[cfg(feature = "cvm_guest")]
+pub(crate) fn init_cvm_guest(boot_params: &linux_boot_params::BootParams) {
     use ::tdx_guest::{
         SeptVeError, disable_sept_ve, init_tdx, metadata, reduce_unnecessary_ve,
         tdcall::{InitError, write_td_metadata},
         tdvmcall::report_fatal_error_simple,
     };
+
     match init_tdx() {
         Ok(td_info) => {
             reduce_unnecessary_ve().unwrap();
@@ -56,6 +60,7 @@ pub(crate) fn init_cvm_guest() {
                 td_info.gpaw,
                 td_info.attributes
             );
+            unaccepted::init(boot_params);
         }
         Err(InitError::TdxGetVpInfoError(td_call_error)) => {
             crate::early_println!(
@@ -96,6 +101,11 @@ pub(crate) unsafe fn late_init_on_bsp() {
 
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
+
+    if_tdx_enabled!({
+        // SAFETY: This is only called once on this BSP in the boot context. APs have been booted.
+        unsafe { unaccepted::accept_memory_on_bsp() };
+    });
 
     if_tdx_enabled!({
     } else {

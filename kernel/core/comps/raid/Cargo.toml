@@ -9,7 +9,6 @@ edition = "2024"
 mariposa-fpu.workspace = true
 ostd = { workspace = true }
 aster-block = { workspace = true }
-aster-virtio = { workspace = true }
 aster-time = { workspace = true }
 io-util = { workspace = true }
 device-id = { workspace = true }

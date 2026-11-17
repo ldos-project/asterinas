@@ -8,7 +8,7 @@ use crate::time::clocks::MonotonicRawClock;
 use crate::{
     fs::file::{
         CreationFlags, StatusFlags,
-        file_table::{FdFlags, RawFileDesc, get_file_fast},
+        file_table::{FdFlags, FileTableInsert, RawFileDesc, get_file_fast},
     },
     prelude::*,
     util::net::write_socket_addr_to_user,
@@ -76,10 +76,9 @@ fn do_accept(
         write_socket_addr_to_user(&socket_addr, sockaddr_ptr, addrlen_ptr)?;
     }
 
-    let fd = {
-        let mut file_table_locked = file_table.unwrap().write();
-        file_table_locked.insert(connected_socket, fd_flags)
-    };
+    let fd = file_table
+        .unwrap()
+        .lock_and_insert(connected_socket, fd_flags)?;
 
     #[cfg(not(baseline_asterinas))]
     super::oqueue::get_socket_oqueue().produce_ref(&super::oqueue::SocketOQueueMessage {
@@ -99,9 +98,10 @@ fn do_accept(
 }
 
 bitflags! {
+    #[derive(Clone, Copy, Debug)]
     struct Flags: u32 {
         const SOCK_NONBLOCK = NONBLOCK;
-        const SOCK_CLOEXEC = CLOEXEC;
+        const SOCK_CLOEXEC  = CLOEXEC;
     }
 }
 

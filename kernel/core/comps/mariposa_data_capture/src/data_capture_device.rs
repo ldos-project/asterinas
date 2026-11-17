@@ -2,8 +2,7 @@
 
 //! A server for managing data capture block devices.
 //!
-//! This module provides [`DataCaptureDevice`], which manages block storage devices and creates
-//! [`DataCaptureFile`](crate::data_capture_file::DataCaptureFile) instances.
+//! This module manages block storage devices and creates capture files.
 
 use alloc::{
     string::{String, ToString as _},
@@ -12,11 +11,7 @@ use alloc::{
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aster_block::{self, BLOCK_SIZE, BlockDevice, SECTOR_SIZE, id::Bid};
-use ostd::{
-    new_server,
-    orpc::{framework::Server, orpc_impl, orpc_server, orpc_trait, path::Path},
-    sync::Mutex,
-};
+use ostd::{orpc::path::Path, sync::Mutex};
 use serde::Serialize;
 use snafu::ensure;
 
@@ -36,44 +31,31 @@ pub struct FileDescriptor {
 /// in `mariposa_data_reader.py`.
 const DIRECTORY_BLOCKS: usize = 1;
 
-/// A wrapper around a [`BlockDevice`] which supports creating [`DataCaptureFile`]s.
-#[orpc_trait]
-pub trait DataCaptureDevice {
-    /// Create a new file for capturing data, via a builder. The file will start disabled. You must
-    /// call `start()` to start it. This allocates `length` bytes on the device and
-    /// returns an error if there is not enough space.
-    fn new_file(
-        &self,
-        descriptor: FileDescriptor,
-    ) -> Result<DataCaptureFileBuilder, DataCaptureError>;
-}
-
-/// An implementation of [`DataCaptureDevice`].
-#[orpc_server(DataCaptureDevice)]
-pub struct DataCaptureDeviceServer {
+/// A wrapper around a [`BlockDevice`] which supports creating capture files.
+pub struct DataCaptureDevice {
     block_device: Arc<dyn BlockDevice>,
     next_block_offset: AtomicUsize,
     directory_writer: Mutex<ChunkingWriteWrapper>,
 }
 
-impl DataCaptureDeviceServer {
-    pub fn new(block_device: Arc<dyn BlockDevice>) -> Arc<DataCaptureDeviceServer> {
-        new_server!(|_| DataCaptureDeviceServer {
-            directory_writer: Mutex::new(ChunkingWriteWrapper::new(
-                BLOCK_SIZE * 2,
-                block_device.clone(),
-                Bid::from_offset(0),
-                Bid::from_offset(DIRECTORY_BLOCKS * BLOCK_SIZE)
-            )),
+impl DataCaptureDevice {
+    pub fn new(block_device: Arc<dyn BlockDevice>) -> Arc<DataCaptureDevice> {
+        let directory_writer = ChunkingWriteWrapper::new(
+            BLOCK_SIZE * 2,
+            block_device.clone(),
+            Bid::from_offset(0),
+            Bid::from_offset(DIRECTORY_BLOCKS * BLOCK_SIZE),
+        );
+        Arc::new(DataCaptureDevice {
             block_device,
             next_block_offset: AtomicUsize::new(DIRECTORY_BLOCKS * BLOCK_SIZE),
+            directory_writer: Mutex::new(directory_writer),
         })
     }
-}
-
-#[orpc_impl]
-impl DataCaptureDevice for DataCaptureDeviceServer {
-    fn new_file(
+    /// Create a new file for capturing data, via a builder. The file will start disabled. You must
+    /// call `start()` to start it. This allocates `length` bytes on the device and
+    /// returns an error if there is not enough space.
+    pub fn new_file(
         &self,
         descriptor: FileDescriptor,
     ) -> Result<DataCaptureFileBuilder, DataCaptureError> {
@@ -106,8 +88,6 @@ impl DataCaptureDevice for DataCaptureDeviceServer {
             path: descriptor.path,
             start,
             end,
-            // TODO(arthurp): This uses the internal ORPC base. A public API for this should probably exist.
-            server: self.orpc_server_base().get_ref().unwrap(),
         })
     }
 }

@@ -72,6 +72,7 @@ fn fpu_context_handler(callback: &mut dyn FnMut(&dyn FpuContextAccess)) {
 }
 
 pub(super) fn init() {
+    kernel_thread::init();
     CONTEXT_SWITCH_COUNTER.call_once(PerCpuCounter::new);
     ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);
@@ -127,6 +128,11 @@ impl Thread {
     /// a thread, or if called within the bootstrap context.
     pub(crate) fn current() -> Option<Arc<Self>> {
         Task::current()?.as_thread().cloned()
+    }
+
+    /// Returns the task associated with this thread, or `None` if it has been dropped.
+    pub(crate) fn try_task(&self) -> Option<Arc<Task>> {
+        self.task.upgrade()
     }
 
     /// Returns the task associated with this thread.

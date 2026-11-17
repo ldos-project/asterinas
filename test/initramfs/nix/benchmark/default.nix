@@ -29,6 +29,7 @@ rec {
       { withSystemd = false; };
   schbench = callPackage ./schbench.nix { };
   sqlite-speedtest1 = callPackage ./sqlite-speedtest1.nix { };
+  stress-ng = pkgsHostTarget.stress-ng;
   sysbench = if hostPlatform.isx86_64 then pkgsHostTarget.sysbench else null;
 
   # Pairs a package with the shell that installs its files into `$out`.
@@ -72,6 +73,7 @@ rec {
     redis = packWith redis (p: "cp -r ${p}/bin/redis-server $out/bin/");
     schbench = packWith schbench (p: "cp -r ${p}/bin/schbench $out/bin/");
     sqlite = packWith sqlite-speedtest1 (p: "cp -r ${p}/bin/sqlite-speedtest1 $out/bin/");
+    stress_ng = packWith stress-ng (p: "cp -r ${p}/bin/stress-ng $out/bin/");
   }
   // lib.optionalAttrs (sysbench != null) {
     sysbench = packWith sysbench (p: "cp -r ${p}/bin/sysbench $out/bin/");
@@ -82,15 +84,24 @@ rec {
   benchmarkGroup =
     if benchmarkName == "none" then "none" else builtins.head (lib.splitString "/" benchmarkName);
 
+  installBenchmark = name: g: ''
+    # Pack the benchmark's binaries.
+    ${g.install g.pkg}
+
+    # Pack the benchmark's scripts.
+    cp -r $src/${name} $out/
+  '';
+
   installSelected =
     group:
     if group == "none" then
-      ""
+      # "none" means that the user did not specify a benchmark name. However,
+      # if this file is being evaluated, the user has enabled the benchmark
+      # test. In this case, we will include all of the benchmarks because we do
+      # not know which one the user asked for.
+      lib.concatMapAttrsStringSep "\n" installBenchmark benchmarkGroups
     else if benchmarkGroups ? ${group} then
-      let
-        g = benchmarkGroups.${group};
-      in
-      g.install g.pkg
+      installBenchmark group benchmarkGroups.${group}
     else
       throw ("Unknown benchmark group '${group}' (from '${benchmarkName}').");
 
@@ -111,9 +122,6 @@ rec {
 
       # Install the selected group's package.
       ${installSelected benchmarkGroup}
-
-      # Pack the selected group's scripts.
-      ${lib.optionalString (benchmarkGroup != "none") "cp -r $src/${benchmarkGroup} $out/"}
     '';
   };
 }

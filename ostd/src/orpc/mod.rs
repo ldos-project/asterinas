@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-//! ORPC - Observable Remote Procedure Call
+//! OQueue-based communication and observation.
 
 extern crate alloc;
 
-pub mod framework;
 pub mod oqueue;
 pub mod path;
 pub mod serialization;
-pub mod statistics;
 pub mod sync;
 
-pub use orpc_macros::{TupleSerialize, orpc_impl, orpc_server, orpc_trait, trace_methods};
+pub use orpc_macros::{TupleSerialize, trace_methods};
 
-pub use crate::{new_server, orpc_common::errors};
+mod tuple_serialize_test;

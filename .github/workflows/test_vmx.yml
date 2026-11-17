@@ -10,7 +10,7 @@ jobs:
   ktest-vmx:
       runs-on: self-hosted
       container:
-        image: ldosproject/asterinas:0.18.1-ldos-20261109
+        image: ldosproject/asterinas:0.19.0-ldos-20261117
         options: -v /dev:/dev --privileged
 
       steps:
@@ -25,3 +25,6 @@ jobs:
 
         - name: Run kernel tests
           run: make ktest ENABLE_KVM=1 NETDEV=tap
+
+        - name: Run OSDK tests
+          run: make test_osdk

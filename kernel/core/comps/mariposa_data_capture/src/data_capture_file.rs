@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! An ORPC server which performs data capture into the format described in [the crate
+//! A thread which performs data capture into the format described in [the crate
 //! documentation](`crate`) using an extraction function and a set of OQueues to observe. Data from
 //! different OQueues are not distinguished in the output.
 //!
@@ -12,25 +12,21 @@
 //!   a block device block, but the term was just too confusing here.
 //!
 //! For each block device that will be used for capture, the user should construct a
-//! [`DataCaptureDevice`]. This can then be used to construct [`DataCaptureFile`] servers (via a
+//! capture device. This can then be used to construct capture files (via a
 //! builder due to the generic type).
 //!
-//! [`DataCaptureFile`] has a thread which will observe all OQueues attach via
-//! [`DataCaptureFile::register_observer`].
+//! A capture file has a thread which will observe all OQueues attach via
+//! `register_observer`.
 
 use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
-use core::{any::Any, sync::atomic::AtomicBool};
+use core::sync::atomic::AtomicBool;
 
 use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
 use ostd::{
-    new_server,
     orpc::{
-        errors::RPCError,
-        framework::{Server, spawn_thread},
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, Consumer, StrongObserver, ValueProducer,
         },
-        orpc_impl, orpc_server, orpc_trait,
         path::Path,
         sync::{BlockOnMany, Blocker},
     },
@@ -57,22 +53,7 @@ impl<T: Copy + Send + Serialize> core::fmt::Debug for ObserverRegistration<T> {
     }
 }
 
-#[orpc_trait]
-pub trait DataCaptureFile<T: Copy + Send + Serialize>: Any {
-    /// Attach a new OQueue to the output. If output has already started, then the path will not
-    /// appear in the block header.
-    fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError>;
-    /// Write values the caller already holds, without routing them through an OQueue.
-    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError>;
-    /// Sync writes to disk.
-    fn sync(&self) -> Result<(), RPCError>;
-    /// Enable capturing to this file.
-    fn start(&self) -> Result<(), RPCError>;
-    /// Stop the server
-    fn stop(&self) -> Result<(), RPCError>;
-}
-
-/// Command enum for DataCaptureFile operations
+/// Command enum for capture file operations
 enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     RegisterObserver(ObserverRegistration<T>),
     WriteValues(Box<dyn Iterator<Item = T> + Send>),
@@ -106,8 +87,7 @@ fn write_header_once<T>(
     writer.write_header::<T>(&name.to_string(), &collected)
 }
 
-#[orpc_server(DataCaptureFile<T>)]
-struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
+pub struct DataCaptureFile<T: Copy + Send + Serialize + 'static> {
     command_oqueue: ConsumableOQueueRef<DataCaptureFileCommand<T>>,
     command_producer: ValueProducer<DataCaptureFileCommand<T>>,
     started: AtomicBool,
@@ -115,16 +95,16 @@ struct DataCaptureFileServer<T: Copy + Send + Serialize + 'static> {
     stopped_wait_queue: WaitQueue,
 }
 
-pub(crate) struct DataCaptureFileServerThread<T: Copy + Send + Serialize + 'static> {
+pub(crate) struct DataCaptureFileThread<T: Copy + Send + Serialize + 'static> {
     path: Path,
     command_consumer: Consumer<DataCaptureFileCommand<T>>,
     block_device: Arc<dyn BlockDevice>,
     start_bid: Bid,
     end_bid: Bid,
-    server: Arc<DataCaptureFileServer<T>>,
+    server: Arc<DataCaptureFile<T>>,
 }
 
-impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFileThread<T> {
     fn run(&self) -> Result<(), DataCaptureError> {
         let mut data_buf_handler = ChunkingWriteWrapper::new(
             BLOCK_SIZE * 2,
@@ -171,7 +151,7 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
                         data_buf_handler.sync()?;
                         self.server
                             .stopped
-                            .store(true, core::sync::atomic::Ordering::SeqCst);
+                            .store(true, core::sync::atomic::Ordering::Release);
                         self.server.stopped_wait_queue.wake_all();
                         return Ok(());
                     }
@@ -202,96 +182,84 @@ impl<T: Copy + Send + Serialize + 'static> DataCaptureFileServerThread<T> {
     }
 }
 
-#[orpc_impl]
-impl<T: Copy + Send + Serialize> DataCaptureFile<T> for DataCaptureFileServer<T> {
-    fn register_observer(&self, attachment: ObserverRegistration<T>) -> Result<(), RPCError> {
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFile<T> {
+    /// Attach a new OQueue to the output. If output has already started, then the path will not
+    /// appear in the block header.
+    pub fn register_observer(&self, attachment: ObserverRegistration<T>) {
         self.command_producer
             .produce(DataCaptureFileCommand::RegisterObserver(attachment));
-        Ok(())
     }
 
-    fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) -> Result<(), RPCError> {
+    /// Write values the caller already holds, without routing them through an OQueue.
+    pub fn write_values(&self, values: Box<dyn Iterator<Item = T> + Send>) {
         self.command_producer
             .produce(DataCaptureFileCommand::WriteValues(values));
-        Ok(())
     }
 
-    fn sync(&self) -> Result<(), RPCError> {
+    /// Sync writes to disk.
+    pub fn sync(&self) {
         self.command_producer.produce(DataCaptureFileCommand::Sync);
-        Ok(())
     }
 
-    fn stop(&self) -> Result<(), RPCError> {
-        self.command_producer.produce(DataCaptureFileCommand::Stop);
+    /// Stop the capture thread.
+    pub fn stop(&self) {
+        if !self.stopped.load(core::sync::atomic::Ordering::Acquire) {
+            self.command_producer.produce(DataCaptureFileCommand::Stop);
+        }
         self.stopped_wait_queue.wait_until(|| {
             self.stopped
                 .load(core::sync::atomic::Ordering::SeqCst)
                 .then_some(())
         });
-        Ok(())
     }
 
-    fn start(&self) -> Result<(), RPCError> {
+    /// Enable capturing to this file.
+    pub fn start(&self) {
         self.started
             .store(true, core::sync::atomic::Ordering::SeqCst);
-        Ok(())
     }
 }
 
-/// A builder for a [`DataCaptureFile`] provided by a [`DataCaptureDevice`]. This is required
-/// because ORPC methods cannot take type parameters, so this serves to hold all the information
-/// needed to construct the [`DataCaptureFile`] and then take the type parameter that is also
-/// needed.
+/// A builder for a capture file provided by a capture device.
+/// The file type is chosen after allocating space on the device.
 pub struct DataCaptureFileBuilder {
     pub(crate) block_device: Arc<dyn BlockDevice>,
     pub(crate) path: Path,
     pub(crate) start: usize,
     pub(crate) end: usize,
-    pub(crate) server: Arc<dyn Server>,
 }
 
 impl DataCaptureFileBuilder {
-    /// Construct the [`DataCaptureFile`] for a specific type of data.
-    pub fn build<T>(self) -> Arc<dyn DataCaptureFile<T>>
+    /// Construct the capture file for a specific type of data.
+    pub fn build<T>(self) -> Arc<DataCaptureFile<T>>
     where
         T: Copy + Send + Serialize + 'static,
     {
-        // We manually context switch into the server here. This is not something we should
-        // generally do, but this build function is required and can't be on a server (due to the
-        // need to take a type parameter) and it's body should run in the context of the manager
-        // server.
-        self.server
-            .orpc_server_base()
-            .call_in_context(move || -> Result<Arc<DataCaptureFileServer<T>>, RPCError> {
-                let command_oqueue =
-                    ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));
-                let server = new_server!(|_| DataCaptureFileServer {
-                    command_producer: command_oqueue
-                        .attach_value_producer()
-                        .expect("single purpose OQueue failed."),
-                    command_oqueue,
-                    started: AtomicBool::new(false),
-                    stopped: AtomicBool::new(false),
-                    stopped_wait_queue: WaitQueue::new(),
-                });
+        let command_oqueue = ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));
+        let command_producer = command_oqueue
+            .attach_value_producer()
+            .expect("single purpose OQueue failed.");
+        let server = Arc::new(DataCaptureFile {
+            command_oqueue,
+            command_producer,
+            started: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            stopped_wait_queue: WaitQueue::new(),
+        });
 
-                spawn_thread(server.clone(), {
-                    let thread = DataCaptureFileServerThread {
-                        path: self.path.clone(),
-                        command_consumer: server
-                            .command_oqueue
-                            .attach_consumer()
-                            .expect("single purpose OQueue failed."),
-                        block_device: self.block_device,
-                        start_bid: Bid::from_offset(self.start),
-                        end_bid: Bid::from_offset(self.end),
-                        server: server.clone(),
-                    };
-                    move || Ok(thread.run()?)
-                });
+        let thread = DataCaptureFileThread {
+            path: self.path,
+            command_consumer: server
+                .command_oqueue
+                .attach_consumer()
+                .expect("single purpose OQueue failed."),
+            block_device: self.block_device,
+            start_bid: Bid::from_offset(self.start),
+            end_bid: Bid::from_offset(self.end),
+            server: server.clone(),
+        };
+        ostd::task::spawn_thread(move || Ok(thread.run()?));
 
-                Ok(server)
-            })
-            .expect("Closure cannot fail")
+        server
     }
 }

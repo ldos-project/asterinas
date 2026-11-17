@@ -114,6 +114,19 @@ struct DrmModeTiming {
 }
 
 impl DrmModeTiming {
+    fn new(active: u32, sync_start: u32, sync_end: u32, total: u32) -> Result<Self> {
+        if active == 0 || active > sync_start || sync_start > sync_end || sync_end > total {
+            return_errno_with_message!(Errno::EINVAL, "the display mode timing is invalid");
+        }
+
+        Ok(Self {
+            active,
+            sync_start,
+            sync_end,
+            total,
+        })
+    }
+
     fn from_active(active: u32) -> Self {
         Self {
             active,
@@ -131,6 +144,7 @@ bitflags::bitflags! {
     /// Their bit values are part of the userspace ABI and must remain compatible with Linux.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm_mode.h#L49-L59>.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct DrmModeType: u32 {
         /// Deprecated by Linux; retained for UAPI compatibility.
         const BUILTIN   = 1 << 0;
@@ -154,6 +168,7 @@ bitflags::bitflags! {
     /// and must not be changed or reused.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm_mode.h#L61-L84>.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct DrmModeFlag: u32 {
         const PHSYNC    = 1 << 0;
         const NHSYNC    = 1 << 1;
@@ -229,6 +244,42 @@ impl TryFrom<DrmDisplayMode> for DrmModeInfo {
             flags: display_mode.flags.bits(),
             type_: display_mode.mode_type.bits(),
             name: FixedCStr::from_bytes_until_nul(&display_mode.name),
+        })
+    }
+}
+
+impl TryFrom<DrmModeInfo> for DrmDisplayMode {
+    type Error = Error;
+
+    fn try_from(mode_info: DrmModeInfo) -> Result<Self> {
+        let horizontal = DrmModeTiming::new(
+            u32::from(mode_info.hdisplay),
+            u32::from(mode_info.hsync_start),
+            u32::from(mode_info.hsync_end),
+            u32::from(mode_info.htotal),
+        )?;
+        let vertical = DrmModeTiming::new(
+            u32::from(mode_info.vdisplay),
+            u32::from(mode_info.vsync_start),
+            u32::from(mode_info.vsync_end),
+            u32::from(mode_info.vtotal),
+        )?;
+        let flags = DrmModeFlag::from_bits(mode_info.flags).ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "the display mode has unknown flags")
+        })?;
+        let mode_type = DrmModeType::from_bits(mode_info.type_).ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "the display mode has an unknown type")
+        })?;
+
+        Ok(Self {
+            pixel_clock_khz: mode_info.clock,
+            horizontal,
+            vertical,
+            hskew: u32::from(mode_info.hskew),
+            vscan: u32::from(mode_info.vscan),
+            flags,
+            mode_type,
+            name: *mode_info.name.as_array(),
         })
     }
 }

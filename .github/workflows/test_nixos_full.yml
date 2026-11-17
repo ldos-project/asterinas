@@ -24,6 +24,7 @@ on:
   #     # Paths of test infra, which triggers smoke test.
   #     # REMINDER: Keep in sync with INFRA_PATH_PREFIXES below.
   #     - distro/**
+  #     - flake.lock
   #     - tools/nixos/**
   #     - tools/github_workflows/filter_json_array_with_changed_files.sh
   #     - test/nixos/common/**
@@ -88,6 +89,7 @@ jobs:
           # Keep in sync with on.<event>.paths above (anchored as &triggering_paths).
           INFRA_PATH_PREFIXES: |
             distro/
+            flake.lock
             tools/nixos/
             tools/github_workflows/filter_json_array_with_changed_files.sh
             test/nixos/common/
@@ -96,6 +98,7 @@ jobs:
           FULL_TEST_MATRIX: >-
             [
               { "name": "system-core", "disk_size": 10240, "timeout_minutes": 45 },
+              { "name": "drm", "disk_size": 8192, "timeout_minutes": 45 },
               { "name": "nix-and-nixos-tools", "disk_size": 8192, "timeout_minutes": 60, "test_timeout_minutes": 30 },
               { "name": "containerization-and-virtualization", "disk_size": 10240, "timeout_minutes": 45 },
               { "name": "networking", "disk_size": 10240, "timeout_minutes": 45 },
@@ -138,7 +141,7 @@ jobs:
                 exit 1
               fi
             fi
-          elif grep -Fxq 'distro/nixpkgs.nix' /tmp/changed; then
+          elif grep -Fxq -e flake.lock -e distro/nixpkgs.nix /tmp/changed; then
             matrix="$FULL_TEST_MATRIX"
           else
             matrix="$(
@@ -157,6 +160,16 @@ jobs:
                 jq -c \
                   --arg suite_name "$SMOKE_TEST_NAME" \
                   '[.[] | select(.name == $suite_name)]' <<< "$FULL_TEST_MATRIX"
+              )"
+            fi
+
+            # Desktop changes need DRM coverage even when another suite is selected.
+            if grep -qE '^distro/etc_nixos/(modules/xfce|overlays/desktop)/' /tmp/changed; then
+              matrix="$(
+                jq -c \
+                  --argjson full_matrix "$FULL_TEST_MATRIX" \
+                  '. + [$full_matrix[] | select(.name == "drm")] | unique_by(.name)' \
+                  <<< "$matrix"
               )"
             fi
           fi
@@ -192,7 +205,7 @@ jobs:
         timeout-minutes: ${{ matrix.test.timeout_minutes || 30 }}
         uses: maus007/docker-run-action-fork@v1
         with:
-          image: ldosproject/asterinas:0.18.1-ldos-20261109
+          image: ldosproject/asterinas:0.19.0-ldos-20261117
           options: --privileged -v /dev:/dev -v ${{ github.workspace }}:/root/asterinas
           # `docker-run-action-fork` joins these lines with ';' and runs them via
           # `sh -c` without fail-fast settings, unlike a normal `run:` step.

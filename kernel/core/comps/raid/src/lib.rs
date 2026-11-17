@@ -52,7 +52,6 @@ use aster_block::{
 };
 use device_id::MinorId;
 use io_util::batch::IoBatch;
-use ostd::orpc::orpc_server;
 use snafu::{ResultExt as _, Snafu, ensure};
 use spin::Once;
 
@@ -61,7 +60,6 @@ use crate::server_traits::{BioCandidates, SelectionPolicy};
 
 /// A RAID-1 block device that mirrors I/O to multiple member devices.
 #[derive(Debug)]
-#[orpc_server]
 pub struct Raid1Device {
     /// Member block devices that store identical data (mirrors).
     members: Vec<Arc<dyn BlockDevice>>,
@@ -152,7 +150,7 @@ impl Raid1Device {
         let all_indices = (0..members.len()).collect();
 
         #[cfg(not(baseline_asterinas))]
-        let device = Self::new_with(|orpc_internal, _weak_self| Raid1Device {
+        let device = Arc::new(Raid1Device {
             members,
             queue,
             metadata,
@@ -161,7 +159,6 @@ impl Raid1Device {
             all_indices,
             name: name.to_owned(),
             id,
-            orpc_internal,
         });
         #[cfg(baseline_asterinas)]
         let device = Arc::new_cyclic(|_weak_self| Raid1Device {

@@ -7,8 +7,8 @@
 //!
 //! This scheduler supports 2 task classes:
 //!
-//! * [Real-time](`sched_class::real_time`) with round-robin or FIFO scheduling.
-//! * [Fair](`sched_class::fair`) which attempts to provide equal runtime for tasks.
+//! * Real-time with round-robin or FIFO scheduling.
+//! * Fair which attempts to provide equal runtime for tasks.
 
 mod nice;
 mod sched_class;
@@ -17,8 +17,8 @@ mod stats;
 pub(crate) use self::{
     nice::{AtomicNice, Nice},
     sched_class::{
-        LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy, init,
-        init_on_each_cpu, init_select_cpu_policy,
+        LinuxSchedPolicy, RealTimePolicy, RealTimePriority, SchedAttr, SchedPolicy,
+        SchedPolicyView, init, init_on_each_cpu, init_select_cpu_policy, set_policy_requeued,
     },
     stats::{loadavg, nr_queued_and_running},
 };

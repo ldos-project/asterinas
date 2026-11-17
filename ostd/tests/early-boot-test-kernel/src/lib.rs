@@ -15,22 +15,9 @@ use ostd::{
     prelude::println,
 };
 
-#[cfg(not(baseline_asterinas))]
-mod orpc_tests;
-
-#[cfg(not(baseline_asterinas))]
-fn test_early_boot_server() {
-    orpc_tests::test_early_boot_server()
-}
-
-#[cfg(baseline_asterinas)]
-fn test_early_boot_server() {}
-
 #[ostd::main]
 fn main() {
     println!("Early-boot tests...");
-
-    test_early_boot_server();
 
     println!("Tests passed.");
 

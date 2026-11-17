@@ -3,11 +3,9 @@
 //! The Linux 64-bit Boot Protocol supporting module.
 //!
 
-use linux_boot_params::{BootParams, E820Type, LINUX_BOOT_HEADER_MAGIC};
+use linux_boot_params::{BootParams, E820Type, EfiInfo, LINUX_BOOT_HEADER_MAGIC};
 
 use super::ToEarlyBootInfo;
-#[cfg(feature = "cvm_guest")]
-use crate::arch::init_cvm_guest;
 use crate::{
     arch::if_tdx_enabled,
     boot::{
@@ -24,21 +22,19 @@ fn is_efi_boot(boot_params: &BootParams) -> bool {
     let efi_info = boot_params.efi_info;
     matches!(
         efi_info.efi_loader_signature,
-        EFI32_LOADER_SIGNATURE | EFI64_LOADER_SIGNATURE
+        EFI32_LOADER_SIGNATURE | EFI64_LOADER_SIGNATURE | EfiInfo::TDX_LOADER_SIGNATURE
     )
 }
 
 impl From<E820Type> for MemoryRegionType {
     fn from(value: E820Type) -> Self {
         match value {
-            E820Type::Ram => Self::Usable,
-            E820Type::Reserved => Self::Reserved,
-            E820Type::Acpi => Self::Reclaimable,
-            E820Type::Nvs => Self::NonVolatileSleep,
-            E820Type::Unusable => Self::BadMemory,
+            E820Type::RAM => Self::Usable,
+            E820Type::RESERVED => Self::Reserved,
+            E820Type::ACPI => Self::Reclaimable,
+            E820Type::NVS => Self::NonVolatileSleep,
+            E820Type::UNUSABLE => Self::BadMemory,
             // All other memory regions are reserved.
-            // FIXME: Using Rust enum in this way can be unsound if the bootloader passes an
-            // unknown memory type to the kernel (e.g., due to a newer protocol version).
             _ => Self::Reserved,
         }
     }
@@ -84,19 +80,28 @@ impl ToEarlyBootInfo for BootParams {
             return None;
         }
 
-        let cmdline_ptr = paddr_to_vaddr(self.hdr.cmd_line_ptr as usize);
-        let cmdline_len = self.hdr.cmdline_size as usize;
+        let cmdline_ptr = paddr_to_vaddr(self.hdr.cmd_line_ptr as usize) as *const u8;
+        let cmdline_max_len = self.hdr.cmdline_size as usize;
+
+        let mut len = 0;
+        while len < cmdline_max_len {
+            // SAFETY: By the contract with the loader, the command line terminates at the first nul
+            // byte or after `cmdline_max_len` bytes, whichever comes first. `len` is within the
+            // bounds, so the byte is safe to read.
+            if unsafe { cmdline_ptr.add(len).read() } == 0 {
+                break;
+            }
+            len += 1;
+        }
+
         // SAFETY:
         // 1. The command line is safe to read because of the contract with the loader.
         // 2. We reserve the command-line region in `finish_memory_regions`, so it will live as an
         //    immutable reference for `'static`.
-        let cmdline = unsafe { core::slice::from_raw_parts(cmdline_ptr as *const u8, cmdline_len) };
+        let cmdline = unsafe { core::slice::from_raw_parts(cmdline_ptr, len) };
 
         // Now, unfortunately, there are silent errors because the serial is not up.
-        core::ffi::CStr::from_bytes_until_nul(cmdline)
-            .ok()?
-            .to_str()
-            .ok()
+        core::str::from_utf8(cmdline).ok()
     }
 
     fn initramfs(&self) -> Option<&'static [u8]> {
@@ -171,6 +176,18 @@ impl ToEarlyBootInfo for BootParams {
                 .unwrap();
         }
 
+        if_tdx_enabled!({
+            if let Some(range) = crate::mm::frame::unaccepted::table_memory_range() {
+                regions
+                    .push(MemoryRegion::new(
+                        range.start,
+                        range.len(),
+                        MemoryRegionType::Reserved,
+                    ))
+                    .unwrap();
+            }
+        });
+
         // FIXME: Early versions of TDVF did not correctly report the location of AP's page tables as
         // EfiACPIMemoryNVS. We need to manually reserve this memory region to prevent them from being
         // corrupted. TDVF has now been upstreamed to OVMF, and this issue has been fixed in OVMF
@@ -212,7 +229,7 @@ unsafe extern "sysv64" fn __linux_boot(params_ptr: *const BootParams) -> ! {
     use crate::boot::{EARLY_INFO, start_kernel};
 
     #[cfg(feature = "cvm_guest")]
-    init_cvm_guest();
+    crate::arch::init_cvm_guest(params);
 
     EARLY_INFO.call_once(|| params.to_early_boot_info());
 

@@ -33,7 +33,9 @@ mod builder;
 mod cpu_sync;
 mod exit;
 pub(crate) mod futex;
+mod lockprio;
 mod personality;
+mod pi_futex_events;
 mod posix_thread_ext;
 pub(crate) mod ptrace;
 mod robust_list;
@@ -42,9 +44,12 @@ mod thread_local;
 pub(crate) use builder::PosixThreadBuilder;
 pub(super) use exit::sigkill_other_threads;
 pub(crate) use exit::{do_exit, do_exit_group};
+pub(super) use lockprio::inheritable_policy;
 pub(crate) use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub(crate) use robust_list::RobustListHead;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use thread_local::SuppUserContext;
 pub(crate) use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
 
 pub struct PosixThread {
