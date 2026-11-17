@@ -23,7 +23,6 @@ use ostd::orpc::oqueue::OQueueRef;
 use ostd::{
     cpu::{CpuId, all_cpus},
     mm::VmSpace,
-    new_server,
 };
 
 use super::{
@@ -78,8 +77,7 @@ impl Vmar {
         let inner = VmarInner::new();
         let mut vm_space = VmSpace::new();
         if huge_mapping_enabled() {
-            vm_space =
-                vm_space.with_mapping_policy(new_server!(|_| VmMappingPolicyGreedyHugeMapping {}));
+            vm_space = vm_space.with_mapping_policy(Arc::new(VmMappingPolicyGreedyHugeMapping {}));
         }
         let rss_counters = array::from_fn(|_| PerCpuCounter::new());
         let rss_hwm_counters =

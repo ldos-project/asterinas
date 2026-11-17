@@ -10,11 +10,9 @@ use core::{
 
 use aster_block::BlockDevice;
 use ostd::{
-    error, ignore_err, info, new_server,
+    error, info,
     orpc::{
-        framework::{notifier::Notifier as _, spawn_thread},
         oqueue::{Element, OQueueBase as _, ObservationQuery, registry::lookup_by_type},
-        orpc_server,
         path::Path,
     },
 };
@@ -23,35 +21,21 @@ use spin::Once;
 
 use crate::{prelude::*, util::timer::TimerServer};
 
-#[orpc_server]
-struct DataCaptureManager {}
+fn sync_capture_files(period: Duration) -> Result<(), Box<dyn core::error::Error>> {
+    let notify_server = TimerServer::spawn(period);
 
-impl DataCaptureManager {
-    pub(crate) fn spawn(period: Duration) -> Arc<Self> {
-        let server = new_server!(|_| Self {});
-        spawn_thread(server.clone(), {
-            let server = server.clone();
-            move || server.main(period)
-        });
-        server
-    }
-
-    pub(crate) fn main(&self, period: Duration) -> Result<(), Box<dyn core::error::Error>> {
-        let notify_server = TimerServer::spawn(period);
-
-        let notify_observer = notify_server
-            .notification_oqueue()
-            .attach_strong_observer(ObservationQuery::identity())?;
-        loop {
-            notify_observer.strong_observe()?;
-            for f in DATA_CAPTURE_FILE_SYNCERS.lock().iter() {
-                f();
-            }
+    let notify_observer = notify_server
+        .notification_oqueue()
+        .attach_strong_observer(ObservationQuery::identity())?;
+    loop {
+        notify_observer.strong_observe()?;
+        for f in DATA_CAPTURE_FILE_SYNCERS.lock().iter() {
+            f();
         }
     }
 }
 
-static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<dyn mariposa_data_capture::DataCaptureDevice>>> =
+static DATA_CAPTURE_DEVICE: Mutex<Option<Arc<mariposa_data_capture::DataCaptureDevice>>> =
     Mutex::new(None);
 
 pub(super) static DATA_CAPTURE_FILE_FINALIZERS: Mutex<Vec<Box<dyn Fn() + Send>>> =
@@ -90,25 +74,25 @@ fn init_capture_device_from_arg(init_device: impl FnOnce(Arc<dyn BlockDevice + '
 }
 
 pub(super) fn start_capture_devices() {
-    init_capture_device_from_arg(|server| {
+    init_capture_device_from_arg(|device| {
         DATA_CAPTURE_DEVICE
             .lock()
-            .replace(mariposa_data_capture::DataCaptureDeviceServer::new(server));
+            .replace(mariposa_data_capture::DataCaptureDevice::new(device));
     });
 
-    // Start a server which syncs the data_capture devices every `ms` milliseconds based on the
+    // Start a thread which syncs the data_capture devices every `ms` milliseconds based on the
     // kernel command line arg `data_capture.sync_period`. If `data_capture.sync_period` is not
     // provided or is <= 0, then do not sync periodically.
     let ms = DATA_CAPTURE_SYNC_PERIOD_MS.load(Ordering::Relaxed);
     if ms > 0 {
-        DataCaptureManager::spawn(Duration::from_millis(ms as u64));
+        ostd::task::spawn_thread(move || sync_capture_files(Duration::from_millis(ms as u64)));
     }
 }
 
 /// Create a new data capture file for OQueues.
 pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
     descriptor: mariposa_data_capture::FileDescriptor,
-) -> Option<Arc<dyn mariposa_data_capture::DataCaptureFile<T>>> {
+) -> Option<Arc<mariposa_data_capture::DataCaptureFile<T>>> {
     let ret = DATA_CAPTURE_DEVICE
         .lock()
         .as_ref()?
@@ -118,14 +102,14 @@ pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
     DATA_CAPTURE_FILE_FINALIZERS.lock().push(Box::new({
         let ret = ret.clone();
         move || {
-            ignore_err!(ret.stop());
+            ret.stop();
             info!("[kernel] Stopped data capture device");
         }
     }));
     DATA_CAPTURE_FILE_SYNCERS.lock().push(Box::new({
         let ret = ret.clone();
         move || {
-            ignore_err!(ret.sync());
+            ret.sync();
             info!("[kernel] Sync'd data capture device");
         }
     }));
@@ -171,14 +155,12 @@ pub(crate) fn new_data_capture_data_file_by_type<
                 );
                 continue;
             };
-            ignore_err!(capture_file.register_observer(
-                mariposa_data_capture::ObserverRegistration {
-                    observer: oqueue.attach_strong_observer(query()).unwrap(),
-                    path: oqueue_path,
-                }
-            ));
+            capture_file.register_observer(mariposa_data_capture::ObserverRegistration {
+                observer: oqueue.attach_strong_observer(query()).unwrap(),
+                path: oqueue_path,
+            });
         }
-        ignore_err!(capture_file.start());
+        capture_file.start();
     }
 }
 

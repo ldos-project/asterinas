@@ -473,7 +473,7 @@ impl VmMapping {
 
             let req = VmMappingRequest { page_aligned_addr };
             // Get the level of page to map based on the mapping policy
-            let level = vm_space.vm_mapping_policy().get_page_level(&req)?;
+            let level = vm_space.vm_mapping_policy().get_page_level(&req);
 
             let make_cursor_level_1 = || {
                 vm_space.cursor_mut(

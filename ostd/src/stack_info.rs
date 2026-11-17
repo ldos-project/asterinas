@@ -92,10 +92,6 @@ pub struct StackInfo {
     /// may or may not be the CPU on which the actual error occurred as a migration could happen
     /// during context capture.
     pub cpu_id: CpuId,
-    /// The ID of the [`Server`](crate::orpc::framework::Server) context in which the error
-    /// happened. This is the server that would have handled a panic at the point the error
-    /// occurred.
-    pub server_id: Option<NonZeroUsize>,
     /// The source location.
     pub location: Option<Location>,
 }
@@ -107,21 +103,11 @@ impl StackInfo {
     pub fn new(skip: usize) -> StackInfo {
         let current_task = Task::current();
         let task_id = current_task.as_ref().map(|t| t.id());
-        #[cfg(not(baseline_asterinas))]
-        let server_id = current_task.and_then(|t| {
-            t.server()
-                .borrow()
-                .as_ref()
-                .map(|s| s.orpc_server_base().id())
-        });
-        #[cfg(baseline_asterinas)]
-        let server_id = None;
         let stack_trace = CapturedStackTrace::capture(skip + 1);
         StackInfo {
             stack_trace,
             task_id,
             cpu_id: CpuId::current_racy(),
-            server_id,
             location: Some(core::panic::Location::caller().into()),
         }
     }
@@ -132,7 +118,6 @@ impl StackInfo {
             stack_trace: CapturedStackTrace::empty(),
             task_id: None,
             cpu_id: CpuId::bsp(),
-            server_id: None,
             location: None,
         }
     }
@@ -145,9 +130,6 @@ impl Display for StackInfo {
         }
         if let Some(tid) = self.task_id {
             write!(f, "on task {tid} ")?;
-        }
-        if let Some(id) = self.server_id {
-            write!(f, "in server {id} ")?;
         }
         write!(f, "on cpu {}", self.cpu_id.as_usize())?;
         write!(f, " with stack: {}", self.stack_trace)?;
@@ -194,7 +176,6 @@ and generate a stack trace with the top frame
         let task = Task::current().unwrap();
 
         assert_eq!(context.task_id.unwrap(), task.id());
-        assert!(context.server_id.is_none());
         assert_eq!(
             context.location.unwrap().file.as_ref(),
             core::panic::Location::caller().file()

@@ -10,7 +10,6 @@ use ostd::{
     Error,
     orpc::{
         oqueue::{Consumer, ValueProducer},
-        orpc_server,
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
     sync::Mutex,
@@ -20,17 +19,13 @@ use ostd::{
 use crate::server_traits::{BioCandidates, SelectionPolicy};
 
 #[derive(Debug)]
-#[orpc_server]
 pub struct Dummy0Policy {
     members: Vec<Arc<dyn BlockDevice>>,
 }
 
 impl Dummy0Policy {
     pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
-            members,
-            orpc_internal,
-        });
+        let server = Arc::new(Self { members });
         Ok(server)
     }
 }
@@ -42,7 +37,6 @@ impl SelectionPolicy for Dummy0Policy {
 }
 
 #[derive(Debug)]
-#[orpc_server]
 pub struct RoundRobinPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -50,10 +44,9 @@ pub struct RoundRobinPolicy {
 
 impl RoundRobinPolicy {
     pub fn new(members: Vec<Arc<dyn BlockDevice>>) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
+        let server = Arc::new(Self {
             read_cursor: AtomicUsize::new(0),
             members,
-            orpc_internal,
         });
         Ok(server)
     }
@@ -79,7 +72,6 @@ impl SelectionPolicy for RoundRobinPolicy {
 ///
 /// Number of Outstanding Requests: number of pending 4KB pages.
 /// List of observers attached to the list of member block devices.
-#[orpc_server]
 pub struct LinnOSPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -120,7 +112,7 @@ impl LinnOSPolicy {
             (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
         let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
-        let server = Self::new_with(|orpc_internal, _| Self {
+        let server = Arc::new(Self {
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
@@ -128,7 +120,6 @@ impl LinnOSPolicy {
             hidden_biases,
             output_layers,
             output_biases,
-            orpc_internal,
         });
 
         Ok(server)
@@ -248,7 +239,6 @@ impl SelectionPolicy for LinnOSPolicy {
 /// digit per feature, 0–9) and returns 0 (slow) or 1 (fast).
 ///
 /// Looping and fallback logic mirrors LinnOS exactly.
-#[orpc_server]
 pub struct DecisionTreePolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -273,11 +263,10 @@ impl DecisionTreePolicy {
         members: Vec<Arc<dyn BlockDevice>>,
         observers: Vec<Mutex<ostd::orpc::oqueue::WeakObserver<BlockDeviceCompletionStats>>>,
     ) -> Result<Arc<Self>, Error> {
-        let server = Self::new_with(|orpc_internal, _| Self {
+        let server = Arc::new(Self {
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
-            orpc_internal,
         });
         Ok(server)
     }
@@ -355,7 +344,6 @@ impl SelectionPolicy for DecisionTreePolicy {
 ///
 /// The input feature vector is identical to LinnOS (31 elements).
 /// Weights are loaded from `linnos_plus_weights`.
-#[orpc_server]
 pub struct LinnOSPlusPolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -403,7 +391,7 @@ impl LinnOSPlusPolicy {
             (0..num_devices).map(|i| *OUTPUT_WEIGHTS[i]).collect();
         let output_biases: Vec<[f32; 2]> = (0..num_devices).map(|i| *OUTPUT_BIASES[i]).collect();
 
-        let server = Self::new_with(|orpc_internal, _| Self {
+        let server = Arc::new(Self {
             read_cursor: AtomicUsize::new(0),
             members,
             observers,
@@ -413,7 +401,6 @@ impl LinnOSPlusPolicy {
             hidden2_biases,
             output_weights,
             output_biases,
-            orpc_internal,
         });
 
         Ok(server)
@@ -573,7 +560,6 @@ struct SelectionChannel {
 ///
 /// Falls back to round-robin among the candidates when no server is attached (e.g. early boot or
 /// after it exits), on a reply timeout, or on a reply naming a no-longer-admitted candidate.
-#[orpc_server]
 pub struct UserspacePolicy {
     read_cursor: AtomicUsize,
     members: Vec<Arc<dyn BlockDevice>>,
@@ -601,11 +587,10 @@ impl UserspacePolicy {
             reply_timeout: TimeoutBlocker::new(),
             block_on_many: BlockOnMany::new(),
         };
-        let server = Self::new_with(|orpc_internal, _| Self {
+        let server = Arc::new(Self {
             read_cursor: AtomicUsize::new(0),
             members,
             channel: Mutex::new(channel),
-            orpc_internal,
         });
 
         Ok(server)

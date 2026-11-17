@@ -17,8 +17,7 @@
 #![no_std]
 #![warn(missing_docs)]
 
-// This declaration exposes the current crate under the name `orpc`. This is required to make the
-// orpc macros work correctly in this crate, since they generate references to `::orpc`.
+// Procedural macros generate references to `::ostd`, including when used within this crate.
 extern crate self as ostd;
 
 extern crate alloc;
@@ -54,7 +53,6 @@ pub mod orpc;
 #[cfg(baseline_asterinas)]
 #[path = "orpc_stub.rs"]
 pub mod orpc;
-mod orpc_common;
 pub mod panic;
 pub mod power;
 pub mod prelude;

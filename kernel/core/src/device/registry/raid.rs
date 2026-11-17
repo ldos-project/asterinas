@@ -177,7 +177,6 @@ fn build_admission(
 fn attach_weak_observers(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Vec<Mutex<ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>>> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     members
@@ -205,7 +204,6 @@ fn attach_weak_observers(
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, registry};
 
     for (index, member) in members.iter().enumerate() {
@@ -305,7 +303,6 @@ aster_cmdline::define_kv_param!(
 fn setup_heimdall(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Arc<aster_raid::heimdall::Heimdall> {
-    use aster_virtio::device::block::server_traits::BlockIOObservable as _;
     use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
 
     let device_observers = members

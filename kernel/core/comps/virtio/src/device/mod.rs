@@ -2,7 +2,7 @@
 
 use int_to_c_enum::TryFromInt;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::{errors::RPCError, oqueue::OQueueError};
+use ostd::orpc::oqueue::OQueueError;
 use ostd::ostd_error;
 use snafu::{ResultExt as _, Snafu};
 
@@ -59,14 +59,6 @@ pub enum VirtioDeviceError {
     },
     InvalidQueueArgs,
     UnsupportedConfig,
-    /// The ORPC Errors
-    #[cfg(not(baseline_asterinas))]
-    #[snafu(transparent)]
-    #[ostd(context(source))]
-    RPCError {
-        /// Source ORPC error
-        source: RPCError,
-    },
     /// The OQueue errors
     #[cfg(not(baseline_asterinas))]
     #[snafu(transparent)]

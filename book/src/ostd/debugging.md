@@ -3,8 +3,7 @@
 ## Context/Stack Capture
 
 OSTD captures context information when errors occur and optionally at other points (see [Mutex
-Tacking](#mutex-tracking)). By default, this includes a file, line, task ID, CPU ID, and ORPC server
-ID. However, OSTD supports capturing a stack trace as well by enabling the `capture_stacks` feature
+Tacking](#mutex-tracking)). By default, this includes a file, line, task ID, and CPU ID. However, OSTD supports capturing a stack trace as well by enabling the `capture_stacks` feature
 at build time.
 
 When enabled, the stack traces are printed as part of context information. For example,

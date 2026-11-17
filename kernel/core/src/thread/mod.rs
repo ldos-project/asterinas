@@ -62,6 +62,7 @@ fn post_schedule_handler() {
 }
 
 pub(super) fn init() {
+    kernel_thread::init();
     CONTEXT_SWITCH_COUNTER.call_once(PerCpuCounter::new);
     ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);

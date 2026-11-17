@@ -31,17 +31,6 @@
 //! as well, leaving the handle only a pointer to the metadata slot. Users
 //! can create custom metadata types by implementing the [`AnyFrameMeta`] trait.
 //!
-//! ### Relationship to ORPC Servers
-//!
-//! Frame references are shared between servers in multiples places. This is an exception to the
-//! rule against sharing state between servers. However, we cannot practically rule this out,
-//! because both applications and remaining monolithic parts of the kernel assume that this sharing
-//! is possible. ORPC code should avoid reading and writing from shared frames. Doing so should be
-//! viewed as semantically unsafe.
-//!
-//! TODO(arthurp): It should be possible to pass around capabilities to frames most of the time
-//! instead of full references. This would restrict the part of the code that needs to be aware of
-//! the shared nature of frames.
 
 pub mod allocator;
 pub mod linked_list;
