@@ -14,16 +14,10 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use aes_gcm::{
-    Aes128Gcm,
-    aead::{AeadInPlace, Key, NewAead, Nonce, Tag},
-    aes::Aes128,
-};
-use ctr::cipher::{NewCipher, StreamCipher};
 pub(crate) use hashbrown::{HashMap, HashSet};
 pub(crate) use ostd::sync::{Mutex, MutexGuard, RwLock, SpinLock};
 use ostd::{
-    arch::read_random,
+    arch::{cpu::kernel_fpu::enable_kernel_fpu, read_random},
     sync::{self, PreemptDisabled, WaitQueue},
     task::{Task, TaskOptions},
 };
@@ -317,13 +311,8 @@ impl crate::util::Aead for Aead {
         aad: &[u8],
         output: &mut [u8],
     ) -> Result<AeadMac> {
-        let key = Key::<Aes128Gcm>::from_slice(key);
-        let nonce = Nonce::<Aes128Gcm>::from_slice(iv);
-        let cipher = Aes128Gcm::new(key);
-
-        output.copy_from_slice(input);
-        let tag = cipher
-            .encrypt_in_place_detached(nonce, aad, output)
+        let section = enable_kernel_fpu();
+        let tag = mariposa_fpu::aes::aead_encrypt(&section, input, key, iv, aad, output)
             .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-gcm encryption failed"))?;
 
         let mut aead_mac = AeadMac::new_zeroed();
@@ -340,19 +329,11 @@ impl crate::util::Aead for Aead {
         mac: &AeadMac,
         output: &mut [u8],
     ) -> Result<()> {
-        let key = Key::<Aes128Gcm>::from_slice(key);
-        let nonce = Nonce::<Aes128Gcm>::from_slice(iv);
-        let tag = Tag::<Aes128Gcm>::from_slice(mac);
-        let cipher = Aes128Gcm::new(key);
-
-        output.copy_from_slice(input);
-        cipher
-            .decrypt_in_place_detached(nonce, aad, output, tag)
+        let section = enable_kernel_fpu();
+        mariposa_fpu::aes::aead_decrypt(&section, input, key, iv, aad, mac, output)
             .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-gcm decryption failed"))
     }
 }
-
-type Aes128Ctr = ctr::Ctr128LE<Aes128>;
 
 const AES_CTR_KEY_SIZE: usize = 16;
 const AES_CTR_IV_SIZE: usize = 16;
@@ -383,10 +364,9 @@ impl crate::util::Skcipher for Skcipher {
         iv: &SkcipherIv,
         output: &mut [u8],
     ) -> Result<()> {
-        let mut cipher = Aes128Ctr::new_from_slices(key, iv).unwrap();
-        output.copy_from_slice(input);
-        cipher.apply_keystream(output);
-        Ok(())
+        let section = enable_kernel_fpu();
+        mariposa_fpu::aes::skcipher_encrypt(&section, input, key, iv, output)
+            .map_err(|_| Error::with_msg(Errno::EncryptFailed, "aes-128-ctr encryption failed"))
     }
 
     fn decrypt(
@@ -396,9 +376,8 @@ impl crate::util::Skcipher for Skcipher {
         iv: &SkcipherIv,
         output: &mut [u8],
     ) -> Result<()> {
-        let mut cipher = Aes128Ctr::new_from_slices(key, iv).unwrap();
-        output.copy_from_slice(input);
-        cipher.apply_keystream(output);
-        Ok(())
+        let section = enable_kernel_fpu();
+        mariposa_fpu::aes::skcipher_decrypt(&section, input, key, iv, output)
+            .map_err(|_| Error::with_msg(Errno::DecryptFailed, "aes-128-ctr decryption failed"))
     }
 }
