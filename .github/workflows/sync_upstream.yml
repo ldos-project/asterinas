@@ -1,0 +1,38 @@
+name: Sync upstream (dry run)
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # daily 07:00 UTC (~1-2am US Central)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/asterinas/asterinas.git
+          git fetch upstream main
+
+      - name: Report divergence
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/main)
+          ahead=$(git rev-list --count upstream/main..HEAD)
+          echo "Fork is $behind commits behind and $ahead ahead of upstream/main"
+          {
+            echo "### Upstream sync (dry run)"
+            echo "- Behind upstream/main: **$behind**"
+            echo "- Ahead of upstream/main: **$ahead**"
+            echo ""
+            echo "Newest upstream commits not in the fork:"
+            echo '```'
+            git log --oneline HEAD..upstream/main | head -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
