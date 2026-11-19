@@ -25,6 +25,7 @@ use alloc::{
 };
 use core::{
     any::{Any, TypeId},
+    fmt::Display,
     marker::PhantomData,
     ops::DerefMut,
     sync::atomic::{AtomicUsize, Ordering},
@@ -36,6 +37,7 @@ use snafu::ensure;
 use static_assertions::assert_obj_safe;
 
 use crate::{
+    info,
     orpc::{
         oqueue::{
             Cursor, ElementDescriptor, InlineStrongObserver, LifetimelessElementDescriptor,
@@ -578,10 +580,13 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             } else if let Some(consumer) = &inner.inline_consumer {
                 consumer(v);
             } else {
-                // No consumer attached, so `v` has nowhere to land; warn instead of dropping it
-                // silently.
-                warn!(
-                    "Produced a value into a ConsumableOQueue with no consumer attached; the value is dropped"
+                // No consumer attached, this is often a bug since a command is being dropped, log it.
+                info!(
+                    "Produced a value into a ConsumableOQueue with no consumer attached: {}",
+                    self.path
+                        .as_ref()
+                        .map_or(&"[anonymous]" as &dyn Display, |value| value
+                            as &dyn Display)
                 );
             }
             self.num_full_buffers
