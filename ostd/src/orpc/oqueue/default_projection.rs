@@ -9,7 +9,9 @@ pub use ostd_macros::{DefaultProjection, Projectable};
 use serde::Serialize;
 pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
-/// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
+/// Supplies the value exported for an OQueue message built with
+/// [`OQueueBuilder::build`](super::OQueueBuilder::build) or registered with
+/// [`register_with`](super::registry::register_with).
 ///
 /// The `DefaultProjection` derive recursively projects fields that implement this trait. POD values
 /// project to themselves; mark fields that should be opaque identifiers with
