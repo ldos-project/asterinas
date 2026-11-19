@@ -204,7 +204,7 @@ fn attach_weak_observers(
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
-    use ostd::orpc::oqueue::{OQueueBase as _, registry};
+    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery, registry};
 
     for (index, member) in members.iter().enumerate() {
         let virtio = member
@@ -213,7 +213,9 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
         registry::register_with_projection(
             &path!(raid1.bio_completion[{ index }]),
             &virtio.bio_completion_oqueue().as_any_oqueue(),
-            |stats: &BlockDeviceCompletionStats| BioCompletionStatsMessage::from(*stats),
+            ObservationQuery::new(|stats: &BlockDeviceCompletionStats| {
+                BioCompletionStatsMessage::from(*stats)
+            }),
         );
     }
 }
