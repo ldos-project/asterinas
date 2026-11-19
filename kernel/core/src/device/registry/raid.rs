@@ -177,7 +177,7 @@ fn build_admission(
 fn attach_weak_observers(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Vec<Mutex<ostd::orpc::oqueue::WeakObserver<aster_block::bio::BlockDeviceCompletionStats>>> {
-    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+    use ostd::orpc::oqueue::{OQueueBase as _, Projection};
 
     members
         .iter()
@@ -188,7 +188,7 @@ fn attach_weak_observers(
             Mutex::new(
                 virtio
                     .bio_completion_oqueue()
-                    .attach_weak_observer(4, ObservationQuery::identity())
+                    .attach_weak_observer(4, Projection::identity())
                     .expect("Failed to attach weak observer to bio_completion_oqueue"),
             )
         })
@@ -204,7 +204,7 @@ fn attach_weak_observers(
 #[cfg(not(baseline_asterinas))]
 fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) {
     use aster_block::bio::BlockDeviceCompletionStats;
-    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery, registry};
+    use ostd::orpc::oqueue::{OQueueBase as _, Projection, registry};
 
     for (index, member) in members.iter().enumerate() {
         let virtio = member
@@ -213,7 +213,7 @@ fn expose_bio_completion_oqueues(members: &[Arc<dyn aster_block::BlockDevice>]) 
         registry::register_with_projection(
             &path!(raid1.bio_completion[{ index }]),
             &virtio.bio_completion_oqueue().as_any_oqueue(),
-            ObservationQuery::new(|stats: &BlockDeviceCompletionStats| {
+            Projection::new(|stats: &BlockDeviceCompletionStats| {
                 BioCompletionStatsMessage::from(*stats)
             }),
         );
@@ -305,7 +305,7 @@ aster_cmdline::define_kv_param!(
 fn setup_heimdall(
     members: &[Arc<dyn aster_block::BlockDevice>],
 ) -> Arc<aster_raid::heimdall::Heimdall> {
-    use ostd::orpc::oqueue::{OQueueBase as _, ObservationQuery};
+    use ostd::orpc::oqueue::{OQueueBase as _, Projection};
 
     let device_observers = members
         .iter()
@@ -315,7 +315,7 @@ fn setup_heimdall(
                 .expect("RAID member must be a VirtIoBlockDevice");
             let observer = virtio
                 .bio_completion_oqueue()
-                .attach_strong_observer(ObservationQuery::identity())
+                .attach_strong_observer(Projection::identity())
                 .expect("Failed to attach strong observer for Heimdall");
             (member.clone(), observer)
         })

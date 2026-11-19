@@ -65,7 +65,7 @@ pub(super) struct RingBuffer {
 
     /// The index of the next element to write in the buffer. Used by producers. This must be stored
     /// for each buffer because different ring may move at different speed if there are filters in
-    /// queries.
+    /// projections.
     tail_index: usize,
 
     /// The heads used by consumers and strong observers.

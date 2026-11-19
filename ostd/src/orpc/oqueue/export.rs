@@ -25,7 +25,7 @@ use snafu::Snafu;
 
 use super::{
     ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
-    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, ObservationQuery, RevokedSnafu,
+    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, Projection, RevokedSnafu,
     StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
 };
 
@@ -303,15 +303,15 @@ impl<T: Send + Serialize + 'static> CborReader for CborConsumer<T> {
     }
 }
 
-/// Attaches a strong observer with the given query and wraps it as a CBOR record source.
+/// Attaches a strong observer with the given projection and wraps it as a CBOR record source.
 fn attach_cbor_observer<D: ElementDescriptor, U>(
     oqueue: &GenericAnyOQueueRef<D>,
-    query: ObservationQuery<D, U>,
+    projection: Projection<D, U>,
 ) -> Result<Box<dyn CborReader>, OQueueError>
 where
     U: Copy + Send + Serialize + 'static,
 {
-    let observer = oqueue.attach_revocable_strong_observer(query)?;
+    let observer = oqueue.attach_revocable_strong_observer(projection)?;
     Ok(Box::new(CborStrongObserver { observer }))
 }
 
@@ -325,7 +325,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
         weak: oqueue.downgrade(),
         type_name: core::any::type_name::<T>(),
         observe: Some(Box::new(|oqueue| {
-            attach_cbor_observer(oqueue, ObservationQuery::identity())
+            attach_cbor_observer(oqueue, Projection::identity())
         })),
         produce: None,
         consume: None,
@@ -336,7 +336,7 @@ pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
 /// messages are streamed through `query`, which produces the `Copy + Serialize` stream values.
 pub(super) fn make_export_with<D, U>(
     oqueue: &GenericAnyOQueueRef<D>,
-    query: ObservationQuery<D, U>,
+    query: Projection<D, U>,
 ) -> OQueueExportHandle<D>
 where
     D: ElementDescriptor,

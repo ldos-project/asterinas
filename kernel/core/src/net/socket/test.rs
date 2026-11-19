@@ -3,7 +3,7 @@
 use core::net::Ipv6Addr;
 
 use ostd::{
-    orpc::oqueue::{OQueueBase, ObservationQuery, registry::lookup_by_path},
+    orpc::oqueue::{OQueueBase, Projection, registry::lookup_by_path},
     path,
     prelude::ktest,
 };
@@ -39,7 +39,7 @@ fn socket_method_traces_call_and_return() {
     let call_observer = call_queue
         .attach_weak_observer(
             2,
-            ObservationQuery::new(|event: &socket::BindCall| {
+            Projection::new(|event: &socket::BindCall| {
                 (
                     event.self_.common().path().inode().ino(),
                     event.socket_addr == &SocketAddr::IPv6(Ipv6Addr::LOCALHOST, 0),
@@ -50,7 +50,7 @@ fn socket_method_traces_call_and_return() {
     let return_observer = return_queue
         .attach_weak_observer(
             2,
-            ObservationQuery::new(|event: &socket::BindReturn| {
+            Projection::new(|event: &socket::BindReturn| {
                 (
                     event.self_.common().path().inode().ino(),
                     event.return_value.as_ref().err().map(|error| error.error()),

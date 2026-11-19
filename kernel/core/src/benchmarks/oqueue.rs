@@ -27,7 +27,7 @@ use ostd::{
     orpc::{
         oqueue::{
             ConsumableOQueue, ConsumableOQueueRef, GenericOQueueRef, LifetimelessElementDescriptor,
-            OQueue as OtherOQueue, OQueueRef, ObservationQuery,
+            OQueue as OtherOQueue, OQueueRef, Projection,
         },
         sync::Blocker,
     },
@@ -903,7 +903,7 @@ fn weak_observer_bench<Q: ConsumableOQueue<u64>>(
         },
         || {
             let weak_observer = q
-                .attach_weak_observer(1, ObservationQuery::new(|v: &u64| *v))
+                .attach_weak_observer(1, Projection::new(|v: &u64| *v))
                 .unwrap();
             move || {
                 let _ = weak_observer.weak_observe_recent(1);
@@ -1058,7 +1058,7 @@ fn strong_observer_bench<Q: ConsumableOQueue<u64>>(
         },
         || {
             let strong_observer = q
-                .attach_strong_observer(ObservationQuery::new(|v: &u64| *v))
+                .attach_strong_observer(Projection::new(|v: &u64| *v))
                 .unwrap();
             move || {
                 let _ = strong_observer.strong_observe();

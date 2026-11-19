@@ -12,7 +12,7 @@ use mariposa_data_capture::ObserverRegistration;
 #[cfg(not(baseline_asterinas))]
 use ostd::orpc::oqueue::registry::lookup_by_path;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{OQueueBase, ObservationQuery};
+use ostd::orpc::oqueue::{OQueueBase, Projection};
 #[cfg(not(baseline_asterinas))]
 use ostd::path;
 use ostd::{
@@ -271,7 +271,7 @@ fn first_kthread() {
                 capture_file.register_observer(ObserverRegistration {
                     path: path!(scheduler.events),
                     observer: oqueue
-                        .attach_strong_observer(ObservationQuery::new(|e: &SchedulingEvent| {
+                        .attach_strong_observer(Projection::new(|e: &SchedulingEvent| {
                             let context = EventContext::new();
                             KernelSchedulingEvent {
                                 timestamp: context.timestamp,
@@ -305,7 +305,7 @@ fn first_kthread() {
             path!(io.block.submitted),
             500 * 1024 * 1024,
             || {
-                ObservationQuery::new(|e: &SubmittedBio| {
+                Projection::new(|e: &SubmittedBio| {
                     let sid_range = e.sid_range();
                     let context = EventContext::new();
                     SubmittedBioEvent {
@@ -326,7 +326,7 @@ fn first_kthread() {
             path!(io.block.completion),
             500 * 1024 * 1024,
             || {
-                ObservationQuery::new(|stats| {
+                Projection::new(|stats| {
                     let context = EventContext::new();
                     BlockDeviceCompletionEvent {
                         stats: *stats,

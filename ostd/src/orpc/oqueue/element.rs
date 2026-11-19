@@ -75,7 +75,7 @@ mod test {
     use crate::orpc::{
         oqueue::{
             ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
-            ObservationQuery,
+            Projection,
         },
         path::Path,
     };
@@ -111,7 +111,7 @@ mod test {
         let queue = OQueueRef::<OneLifetime>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &OneLifetime| *m.value))
+            .attach_strong_observer(Projection::new(|m: &OneLifetime| *m.value))
             .unwrap();
 
         let value = 123usize;
@@ -132,9 +132,7 @@ mod test {
         let queue = OQueueRef::<WithTypeParamNoLifetime<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParamNoLifetime<u32>| {
-                m.value
-            }))
+            .attach_strong_observer(Projection::new(|m: &WithTypeParamNoLifetime<u32>| m.value))
             .unwrap();
 
         let value = 999u32;
@@ -155,7 +153,7 @@ mod test {
         let queue = OQueueRef::<WithTypeParam<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &WithTypeParam<u32>| *m.value))
+            .attach_strong_observer(Projection::new(|m: &WithTypeParam<u32>| *m.value))
             .unwrap();
 
         let value = 999u32;
@@ -179,7 +177,7 @@ mod test {
         let queue = OQueueRef::<WithWhereClause<u32>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &WithWhereClause<u32>| *m.value))
+            .attach_strong_observer(Projection::new(|m: &WithWhereClause<u32>| *m.value))
             .unwrap();
 
         let value = 777u32;
@@ -201,7 +199,7 @@ mod test {
         let queue = OQueueRef::<MultiTypeParams<u32, usize>>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &MultiTypeParams<u32, usize>| {
+            .attach_strong_observer(Projection::new(|m: &MultiTypeParams<u32, usize>| {
                 (*m.value1, *m.value2)
             }))
             .unwrap();

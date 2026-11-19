@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use aster_time::Instant;
 use ostd::{
-    orpc::oqueue::{OQueueBase, ObservationQuery, Projectable},
+    orpc::oqueue::{OQueueBase, Projectable, Projection},
     trace_structured_data,
 };
 use serde::Serialize;
@@ -59,7 +59,7 @@ impl PmuServer {
 
         let notify_observer = notify_server
             .notification_oqueue()
-            .attach_strong_observer(ObservationQuery::identity())?;
+            .attach_strong_observer(Projection::identity())?;
         loop {
             notify_observer.strong_observe()?;
             let (miss_l1_tlb, miss_all_tlb) = ostd::arch::pmu::pmu_read_dtlb();

@@ -36,7 +36,7 @@ pub(crate) fn test_produce_direct(queue: ConsumableOQueueRef<TestMessage>) {
 
 pub(crate) fn test_produce_ref_direct(queue: OQueueRef<TestMessage>) {
     let observer = queue
-        .attach_strong_observer(ObservationQuery::identity())
+        .attach_strong_observer(Projection::identity())
         .unwrap();
     let test_message = TestMessage { x: 42 };
 
@@ -81,7 +81,7 @@ pub(crate) fn test_produce_strong_observe(queue: ConsumableOQueueRef<TestMessage
 
     // With observer we should block sooner.
     let observer = queue
-        .attach_strong_observer(ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_strong_observer(Projection::new(|m: &TestMessage| m.x))
         .unwrap();
 
     producer.produce(test_message);
@@ -104,7 +104,7 @@ pub(crate) fn test_produce_weak_observe(queue: ConsumableOQueueRef<TestMessage>)
     let producer = queue.attach_value_producer().unwrap();
     let consumer = queue.attach_consumer().unwrap();
     let weak_observer = queue
-        .attach_weak_observer(2, ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_weak_observer(2, Projection::new(|m: &TestMessage| m.x))
         .unwrap();
 
     let newest_cursor = weak_observer.newest_cursor();
@@ -214,7 +214,7 @@ pub(crate) fn test_send_receive_blocker(
     let _observers: Vec<_> = (0..n_observers)
         .map(|_| {
             let strong_observer = queue
-                .attach_strong_observer(ObservationQuery::new(|m: &TestMessage| m.x))
+                .attach_strong_observer(Projection::new(|m: &TestMessage| m.x))
                 .unwrap();
             let completed_threads = completed_threads.clone();
             let wait_queue = wait_queue.clone();
@@ -341,7 +341,7 @@ pub(crate) fn test_produce_strong_observe_only(queue: ConsumableOQueueRef<TestMe
 
     let producer = queue.attach_value_producer().unwrap();
     let observer = queue
-        .attach_strong_observer(ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_strong_observer(Projection::new(|m: &TestMessage| m.x))
         .unwrap();
 
     for i in 0..100 {
@@ -393,7 +393,7 @@ pub(crate) fn test_strong_observer_late_attach(queue: ConsumableOQueueRef<TestMe
     producer.produce(TestMessage { x: 1 });
 
     let observer = queue
-        .attach_strong_observer(ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_strong_observer(Projection::new(|m: &TestMessage| m.x))
         .unwrap();
 
     producer.produce(TestMessage { x: 2 });
@@ -406,7 +406,7 @@ pub(crate) fn test_strong_observer_late_attach(queue: ConsumableOQueueRef<TestMe
 pub(crate) fn test_strong_observer_detach(queue: ConsumableOQueueRef<TestMessage>) {
     let producer = queue.attach_value_producer().unwrap();
     let observer = queue
-        .attach_strong_observer(ObservationQuery::new(|m: &TestMessage| m.x))
+        .attach_strong_observer(Projection::new(|m: &TestMessage| m.x))
         .unwrap();
 
     producer.produce(TestMessage { x: 0 });

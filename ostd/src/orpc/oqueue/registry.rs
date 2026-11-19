@@ -11,17 +11,16 @@ use hashbrown::{
 use log::warn;
 use serde::Serialize;
 
-use super::{
-    ConsumableOQueueRef, OQueueBase as _, ObservationQuery,
-    default_projection::DefaultProjection,
-    export::{
-        OQueueExport, OQueueExportHandle, make_export, make_export_with, make_produce_export,
-    },
-};
 use crate::{
     orpc::{
         oqueue::{
-            ElementDescriptor, GenericAnyOQueueRef, LifetimelessElementDescriptor, WeakAnyOQueueRef,
+            ConsumableOQueueRef, ElementDescriptor, GenericAnyOQueueRef,
+            LifetimelessElementDescriptor, OQueueBase as _, Projection, WeakAnyOQueueRef,
+            default_projection::DefaultProjection,
+            export::{
+                OQueueExport, OQueueExportHandle, make_export, make_export_with,
+                make_produce_export,
+            },
         },
         path::{Path, PathPattern},
     },
@@ -157,11 +156,11 @@ where
     register_with_projection(
         path,
         oqueue,
-        ObservationQuery::new(|message: &D::Element<'_>| message.default_projection()),
+        Projection::new(|message: &D::Element<'_>| message.default_projection()),
     );
 }
 
-/// Registers an OQueue at `path` and exports it to userspace via a caller-supplied query.
+/// Registers an OQueue at `path` and exports it to userspace via a caller-supplied projection.
 ///
 /// The projected value `U` (which must be `Copy + Serialize`) is what appears in the stream. Use
 /// this when the whole message is not `Copy`/`Serialize` but a small serializable summary can be
@@ -169,13 +168,13 @@ where
 pub fn register_with_projection<D, U>(
     path: &Path,
     oqueue: &GenericAnyOQueueRef<D>,
-    query: ObservationQuery<D, U>,
+    projection: Projection<D, U>,
 ) where
     D: ElementDescriptor,
     U: Copy + Send + Serialize + 'static,
 {
     ensure_registered(path, oqueue);
-    insert_export(path, make_export_with(oqueue, query));
+    insert_export(path, make_export_with(oqueue, projection));
 }
 
 /// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production
@@ -529,7 +528,7 @@ mod test {
         register_with_projection(
             &path,
             &queue.as_any_oqueue(),
-            ObservationQuery::new(|sample: &Sample| sample.0),
+            Projection::new(|sample: &Sample| sample.0),
         );
 
         let handle = lookup_export(&path).unwrap();
@@ -547,7 +546,7 @@ mod test {
     }
 
     #[ktest]
-    fn export_borrowed_message_with_query() {
+    fn export_borrowed_message_with_projection() {
         #[derive(crate::orpc::oqueue::Element)]
         struct Borrowed<'a> {
             value: &'a u64,
@@ -558,7 +557,7 @@ mod test {
         register_with_projection(
             &path,
             &queue.as_any_oqueue(),
-            ObservationQuery::new(|message: &Borrowed| *message.value),
+            Projection::new(|message: &Borrowed| *message.value),
         );
 
         let handle = lookup_export(&path).unwrap();
