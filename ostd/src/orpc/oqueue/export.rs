@@ -24,9 +24,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
-    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, Projection, RevokedSnafu,
-    StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
+    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, DefaultProjection, ElementDescriptor,
+    GenericAnyOQueueRef, LifetimelessElementDescriptor, OQueueBase as _, OQueueError, Projection,
+    RevokedSnafu, StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -176,7 +176,8 @@ type AttachReaderFn<D> =
     Box<dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborReader>, OQueueError> + Send + Sync>;
 
 /// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProducer`]. Only
-/// present on exports registered via [`super::registry::register_producible`].
+/// present on exports configured with [`userspace_producible`](super::OQueueBuilder::userspace_producible)
+/// or registered via [`super::registry::register_producible`].
 type AttachProducerFn<D> = Box<
     dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborProducer>, OQueueError> + Send + Sync,
 >;
@@ -413,7 +414,7 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
 ///
 /// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&GenericAnyOQueueRef<T>`) enforces at
 /// compile time that only a `ConsumableOQueue` can be made producible.
-pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned + 'static>(
+pub(super) fn make_produce_export<T: Send + Serialize + DeserializeOwned + 'static>(
     oqueue: &ConsumableOQueueRef<T>,
 ) -> OQueueExportHandle<LifetimelessElementDescriptor<T>> {
     OQueueExportHandle {
@@ -428,6 +429,27 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
             let consumer = oqueue.attach_consumer()?;
             Ok(Box::new(CborConsumer { consumer }) as Box<dyn CborReader>)
         })),
+    }
+}
+
+/// Builds one export handle with observation, production, and consumption attachments.
+pub(super) fn make_public_producible_export<T>(
+    oqueue: &ConsumableOQueueRef<T>,
+) -> OQueueExportHandle<LifetimelessElementDescriptor<T>>
+where
+    T: Send + Serialize + DeserializeOwned + DefaultProjection + 'static,
+{
+    let observe = make_export_with(
+        &oqueue.as_any_oqueue(),
+        Projection::new(|message: &T| message.default_projection()),
+    );
+    let produce = make_produce_export(oqueue);
+    OQueueExportHandle {
+        weak: observe.weak,
+        type_name: core::any::type_name::<T>(),
+        observe: observe.observe,
+        produce: produce.produce,
+        consume: produce.consume,
     }
 }
 

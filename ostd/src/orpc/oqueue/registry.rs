@@ -19,7 +19,7 @@ use crate::{
             default_projection::DefaultProjection,
             export::{
                 OQueueExport, OQueueExportHandle, make_export, make_export_with,
-                make_produce_export,
+                make_produce_export, make_public_producible_export,
             },
         },
         path::{Path, PathPattern},
@@ -188,12 +188,21 @@ pub fn register_with_projection<D, U>(
 /// # Panics
 ///
 /// Panics if a live export already exists at `path`.
-pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOwned + 'static>(
+pub fn register_producible<T: Send + Serialize + serde::de::DeserializeOwned + 'static>(
     path: &Path,
     oqueue: &ConsumableOQueueRef<T>,
 ) {
     ensure_registered(path, &oqueue.as_any_oqueue());
     insert_export(path, make_produce_export(oqueue));
+}
+
+/// Registers a consumable OQueue with userspace observation, production, and consumption.
+pub fn register_public_producible<T>(path: &Path, oqueue: &ConsumableOQueueRef<T>)
+where
+    T: Send + Serialize + serde::de::DeserializeOwned + DefaultProjection + 'static,
+{
+    ensure_registered(path, &oqueue.as_any_oqueue());
+    insert_export(path, make_public_producible_export(oqueue));
 }
 
 /// Inserts an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
