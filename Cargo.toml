@@ -284,7 +284,7 @@ time = { version = "0.3", default-features = false, features = ["alloc"] }
 tinyvec = "1.11.0"
 
 # External dependencies for both safe and unsafe crates
-bitflags = "2.13"
+bitflags = { version = "2.13", features = ["serde"] }
 bitvec = { version = "1.0.1", default-features = false, features = ["alloc"] }
 cfg-if = "1.0"
 crc32fast = "1.4"

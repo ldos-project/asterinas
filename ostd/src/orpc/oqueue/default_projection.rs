@@ -5,16 +5,21 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::any::type_name;
 
+pub use ostd_macros::{DefaultProjection, Projectable};
 use serde::Serialize;
 pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
-
-pub use crate::DefaultProjection;
 
 /// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
 ///
 /// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
 /// values project to themselves; mark fields that should be opaque identifiers with
-/// `#[projection(opaque)]`, which projects them through [`OpaqueId`].
+/// `#[projection(opaque)]`, which projects them through [`OpaqueId`], or omit fields with
+/// `#[projection(omit)]`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not implement `DefaultProjection`",
+    note = "derive `DefaultProjection` for a local type, or use `#[projection(opaque)]` on a field that should be represented by an ID;",
+    note = "for a Copy, Send, and Serialize type that projects to itself, derive `Projectable`"
+)]
 pub trait DefaultProjection {
     /// The projected value type written to the export stream.
     type Projection: Copy + Send + Serialize + 'static;
@@ -24,20 +29,90 @@ pub trait DefaultProjection {
 }
 
 /// Tag to mark types as trivially projectable
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not implement `Projectable`",
+    note = "derive `Projectable` if this type can be copied, sent, and serialized as-is"
+)]
 pub trait Projectable {}
 
-impl Projectable for bool {}
-impl Projectable for i32 {}
-impl Projectable for i64 {}
-impl Projectable for isize {}
-impl Projectable for u32 {}
-impl Projectable for u64 {}
-impl Projectable for usize {}
-impl Projectable for f32 {}
-impl Projectable for f64 {}
+/// Implements `Projectable` for a set of types.
+macro_rules! impl_projectable {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Projectable for $ty {}
+        )*
+    };
+}
 
-impl Projectable for core::net::Ipv4Addr {}
-impl Projectable for core::net::Ipv6Addr {}
+impl_projectable!(());
+impl_projectable!(bool);
+impl_projectable!(char, f32, f64);
+impl_projectable!(&'static str);
+impl_projectable!(i8, i16, i32, i64, i128, isize);
+impl_projectable!(u8, u16, u32, u64, u128, usize);
+impl_projectable!(core::time::Duration);
+impl_projectable!(
+    core::net::IpAddr,
+    core::net::Ipv4Addr,
+    core::net::Ipv6Addr,
+    core::net::SocketAddr,
+    core::net::SocketAddrV4,
+    core::net::SocketAddrV6,
+);
+impl_projectable!(
+    core::num::NonZeroI8,
+    core::num::NonZeroI16,
+    core::num::NonZeroI32,
+    core::num::NonZeroI64,
+    core::num::NonZeroI128,
+    core::num::NonZeroIsize,
+    core::num::NonZeroU8,
+    core::num::NonZeroU16,
+    core::num::NonZeroU32,
+    core::num::NonZeroU64,
+    core::num::NonZeroU128,
+    core::num::NonZeroUsize,
+);
+
+impl<T: Projectable, const N: usize> Projectable for [T; N] {}
+impl<T: ?Sized> Projectable for core::marker::PhantomData<T> {}
+impl<T: Projectable> Projectable for core::cmp::Reverse<T> {}
+impl<T: Projectable> Projectable for core::num::Saturating<T> {}
+impl<T: Projectable> Projectable for core::num::Wrapping<T> {}
+impl<T: Projectable> Projectable for core::ops::Bound<T> {}
+
+macro_rules! impl_tuple_default_projection {
+    ($(($($ty:ident),+)),+ $(,)?) => {
+        $(impl<$($ty: DefaultProjection),+> DefaultProjection for ($($ty,)+) {
+            type Projection = ($($ty::Projection,)+);
+
+            #[expect(non_snake_case)]
+            fn default_projection(&self) -> Self::Projection {
+                let ($($ty,)+) = self;
+                ($($ty.default_projection(),)+)
+            }
+        })+
+    };
+}
+
+impl_tuple_default_projection!(
+    (A),
+    (A, B),
+    (A, B, C),
+    (A, B, C, D),
+    (A, B, C, D, E),
+    (A, B, C, D, E, F),
+    (A, B, C, D, E, F, G),
+    (A, B, C, D, E, F, G, H),
+    (A, B, C, D, E, F, G, H, I),
+    (A, B, C, D, E, F, G, H, I, J),
+    (A, B, C, D, E, F, G, H, I, J, K),
+    (A, B, C, D, E, F, G, H, I, J, K, L),
+    (A, B, C, D, E, F, G, H, I, J, K, L, M),
+    (A, B, C, D, E, F, G, H, I, J, K, L, M, N),
+    (A, B, C, D, E, F, G, H, I, J, K, L, M, N, O),
+    (A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P),
+);
 
 impl<T> DefaultProjection for T
 where
@@ -47,6 +122,25 @@ where
 
     fn default_projection(&self) -> Self::Projection {
         *self
+    }
+}
+
+impl<T: DefaultProjection> DefaultProjection for Option<T> {
+    type Projection = Option<T::Projection>;
+
+    fn default_projection(&self) -> Self::Projection {
+        self.as_ref().map(DefaultProjection::default_projection)
+    }
+}
+
+impl<T: DefaultProjection, E: DefaultProjection> DefaultProjection for Result<T, E> {
+    type Projection = Result<T::Projection, E::Projection>;
+
+    fn default_projection(&self) -> Self::Projection {
+        match self {
+            Ok(value) => Ok(value.default_projection()),
+            Err(error) => Err(error.default_projection()),
+        }
     }
 }
 
@@ -109,6 +203,15 @@ impl<T: ?Sized> OpaqueId for Box<T> {
 
 #[cfg(ktest)]
 mod test {
+    use core::{
+        cmp::Reverse,
+        marker::PhantomData,
+        net::SocketAddr,
+        num::{NonZeroU128, Saturating, Wrapping},
+        ops::Bound,
+        time::Duration,
+    };
+
     use serde::Serialize;
 
     use super::DefaultProjection;
@@ -120,6 +223,29 @@ mod test {
     #[expect(dead_code)]
     #[derive(DefaultProjection)]
     struct TestProjectBool(bool);
+
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct CoreTypeCoverage {
+        character: char,
+        signed: i128,
+        unsigned: u128,
+        nonzero: NonZeroU128,
+        address: SocketAddr,
+        duration: Duration,
+        marker: PhantomData<u8>,
+        bound: Bound<u32>,
+        reverse: Reverse<u32>,
+        saturating: Saturating<u32>,
+        wrapping: Wrapping<u32>,
+        array: [u8; 32],
+        tuple: (u8, u16, u32),
+        pair: (u8, crate::Error),
+        option: Option<u32>,
+        optional_error: Option<crate::Error>,
+        result: Result<u32, crate::Error>,
+        error: crate::Error,
+    }
 
     #[derive(DefaultProjection)]
     struct ProjectedLeaf {
@@ -180,6 +306,69 @@ mod test {
         assert_eq!(decoder.position(), actual.len());
     }
 
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct OmittedNamedField {
+        included: u32,
+        #[projection(omit)]
+        omitted: Vec<u8>,
+    }
+
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct OmittedTupleField(#[projection(omit)] Vec<u8>, u32);
+
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    enum OmittedEnumFields {
+        Named {
+            #[projection(omit)]
+            omitted: Vec<u8>,
+            included: u32,
+        },
+        Tuple(#[projection(omit)] Vec<u8>, u32),
+    }
+
+    #[ktest]
+    fn default_projection_omits_named_and_tuple_fields() {
+        let named = OmittedNamedField {
+            included: 7,
+            omitted: Vec::new(),
+        }
+        .default_projection();
+        assert_eq!(named.included, 7);
+
+        let mut encoded = Vec::new();
+        Serialize::serialize(&named, &mut minicbor_serde::Serializer::new(&mut encoded)).unwrap();
+        let mut decoder = minicbor::Decoder::new(&encoded);
+        assert_eq!(decoder.map().unwrap(), Some(1));
+        assert_eq!(decoder.str().unwrap(), "included");
+        assert_eq!(decoder.u32().unwrap(), 7);
+        assert_eq!(decoder.position(), encoded.len());
+
+        let tuple = OmittedTupleField(Vec::new(), 9).default_projection();
+        assert_eq!(tuple.0, 9);
+    }
+
+    #[ktest]
+    fn default_projection_omits_enum_fields() {
+        let named = OmittedEnumFields::Named {
+            omitted: Vec::new(),
+            included: 7,
+        }
+        .default_projection();
+        assert!(matches!(
+            named,
+            OmittedEnumFieldsDefaultProjection::Named { included: 7 }
+        ));
+
+        let tuple = OmittedEnumFields::Tuple(Vec::new(), 9).default_projection();
+        assert!(matches!(
+            tuple,
+            OmittedEnumFieldsDefaultProjection::Tuple(9)
+        ));
+    }
+
     #[derive(DefaultProjection)]
     struct ProjectedPointers<'a> {
         #[projection(opaque)]
@@ -205,5 +394,25 @@ mod test {
         assert_eq!(projected.arc, OID::of_ref(arc.as_ref()));
         assert_eq!(projected.boxed, OID::of_ref(message.boxed.as_ref()));
         assert_eq!(projected.reference, OID::of_ref(&data));
+    }
+
+    #[expect(dead_code)]
+    #[derive(DefaultProjection)]
+    struct BorrowedValue<'a> {
+        #[projection(deref)]
+        value: &'a bool,
+    }
+
+    #[derive(DefaultProjection)]
+    struct BorrowedArc<'a> {
+        #[projection(deref, opaque)]
+        arc: &'a Arc<u32>,
+    }
+
+    #[ktest]
+    fn deref_projection_identifies_arc_referent() {
+        let arc = Arc::new(7);
+        let projected = BorrowedArc { arc: &arc }.default_projection();
+        assert_eq!(projected.arc, OID::of_ref(arc.as_ref()));
     }
 }
