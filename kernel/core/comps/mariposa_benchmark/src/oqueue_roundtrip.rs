@@ -17,10 +17,7 @@ use mariposa_data_capture::DataCaptureFile;
 use ostd::{
     arch::read_tsc,
     orpc::{
-        oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, OQueueBase, ValueProducer,
-            registry,
-        },
+        oqueue::{ConsumableOQueue as _, Consumer, ValueProducer},
         sync::{BlockOnMany, Blocker, TimeoutBlocker},
     },
     ostd_error,
@@ -81,7 +78,7 @@ static BUSY_PROCS: AtomicU32 = AtomicU32::new(0);
 aster_cmdline::define_kv_param!("oqbench.busy_procs", BUSY_PROCS);
 
 /// What the kernel asks the peer to do next; mirrored by `Request` in `oqbench_server`.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ostd::orpc::oqueue::Projectable)]
 enum Request {
     /// Time the round trip identified by this sequence number.
     Measure(u64),
@@ -102,7 +99,9 @@ impl Request {
 }
 
 /// Status the userspace peer receives.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, PartialEq, Serialize, ostd::orpc::oqueue::Projectable,
+)]
 enum PeerSignal {
     /// Attached to every stream and ready to serve requests. Nothing is measured before this.
     Ready,
@@ -253,26 +252,30 @@ fn setup_queues(
     Consumer<[u64; 3]>,
     Consumer<PeerSignal>,
 ) {
-    let request_path = ostd::path!(oqbench.request);
-    let request_oqueue =
-        ConsumableOQueueRef::<Request>::new(request_capacity as usize, request_path.clone());
-    registry::register(&request_path, &request_oqueue.as_any_oqueue());
+    let request_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+        .default_buffer_length(request_capacity as usize)
+        .path(ostd::path!(oqbench.request))
+        .allow_consumers()
+        .build::<Request>();
     let request_producer = request_oqueue
         .attach_value_producer()
         .expect("the oqbench request OQueue always allows a value producer");
 
-    let reply_path = ostd::path!(oqbench.reply);
-    let reply_oqueue =
-        ConsumableOQueueRef::<[u64; 3]>::new(reply_capacity as usize, reply_path.clone());
-    registry::register_producible(&reply_path, &reply_oqueue);
+    let reply_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+        .default_buffer_length(reply_capacity as usize)
+        .path(ostd::path!(oqbench.reply))
+        .userspace_producible()
+        .build::<[u64; 3]>();
     let reply_consumer = reply_oqueue
         .attach_consumer()
         .expect("the oqbench reply OQueue always allows attaching its consumer");
 
     // Two is enough for the whole run: the peer sends `Ready` once and `Done` once.
-    let control_path = ostd::path!(oqbench.control);
-    let control_oqueue = ConsumableOQueueRef::<PeerSignal>::new(2, control_path.clone());
-    registry::register_producible(&control_path, &control_oqueue);
+    let control_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+        .default_buffer_length(2)
+        .path(ostd::path!(oqbench.control))
+        .userspace_producible()
+        .build::<PeerSignal>();
     let control_consumer = control_oqueue
         .attach_consumer()
         .expect("the oqbench control OQueue always allows attaching its consumer");

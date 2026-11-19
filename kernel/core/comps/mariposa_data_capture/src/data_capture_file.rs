@@ -25,7 +25,8 @@ use aster_block::{BLOCK_SIZE, BlockDevice, id::Bid};
 use ostd::{
     orpc::{
         oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, StrongObserver, ValueProducer,
+            ConsumableOQueue as _, ConsumableOQueueRef, Consumer, DefaultProjection,
+            StrongObserver, ValueProducer,
         },
         path::Path,
         sync::{BlockOnMany, Blocker},
@@ -59,6 +60,33 @@ enum DataCaptureFileCommand<T: Copy + Send + Serialize + 'static> {
     WriteValues(Box<dyn Iterator<Item = T> + Send>),
     Sync,
     Stop,
+}
+
+#[derive(Clone, Copy, Serialize)]
+enum DataCaptureCommandKind {
+    RegisterObserver,
+    WriteValues,
+    Sync,
+    Stop,
+}
+
+impl<T: Copy + Send + Serialize + 'static> DataCaptureFileCommand<T> {
+    fn kind(&self) -> DataCaptureCommandKind {
+        match self {
+            Self::RegisterObserver(_) => DataCaptureCommandKind::RegisterObserver,
+            Self::WriteValues(_) => DataCaptureCommandKind::WriteValues,
+            Self::Sync => DataCaptureCommandKind::Sync,
+            Self::Stop => DataCaptureCommandKind::Stop,
+        }
+    }
+}
+
+impl<T: Copy + Send + Serialize + 'static> DefaultProjection for DataCaptureFileCommand<T> {
+    type Projection = DataCaptureCommandKind;
+
+    fn default_projection(&self) -> Self::Projection {
+        self.kind()
+    }
 }
 
 impl<T: Copy + Send + Serialize + 'static> core::fmt::Debug for DataCaptureFileCommand<T> {
@@ -235,7 +263,11 @@ impl DataCaptureFileBuilder {
     where
         T: Copy + Send + Serialize + 'static,
     {
-        let command_oqueue = ConsumableOQueueRef::new(8, self.path.append(&path!(commands)));
+        let command_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(8)
+            .path(self.path.append(&path!(commands)))
+            .allow_consumers()
+            .build();
         let command_producer = command_oqueue
             .attach_value_producer()
             .expect("single purpose OQueue failed.");

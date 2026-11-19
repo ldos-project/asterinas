@@ -255,22 +255,22 @@ fn setup_userspace_policy() -> (
     ostd::orpc::oqueue::ValueProducer<selection_policies::SelectionRequestMessage>,
     ostd::orpc::oqueue::Consumer<u32>,
 ) {
-    use ostd::orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _, registry,
-    };
+    use ostd::orpc::oqueue::ConsumableOQueue as _;
 
-    let request_path = path!(raid1.selection_request);
-    let request_oqueue = ConsumableOQueueRef::new(SELECTION_QUEUE_CAPACITY, request_path.clone());
-    // Register the request queue so user space policy server can observe requests.
-    registry::register(&request_path, &request_oqueue.as_any_oqueue());
+    let request_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+        .default_buffer_length(SELECTION_QUEUE_CAPACITY)
+        .path(path!(raid1.selection_request))
+        .allow_consumers()
+        .build();
     let request_producer = request_oqueue
         .attach_value_producer()
         .expect("the RAID-1 selection request OQueue always allows a value producer");
 
-    let decision_path = path!(raid1.decision);
-    let decision_oqueue =
-        ConsumableOQueueRef::<u32>::new(SELECTION_QUEUE_CAPACITY, decision_path.clone());
-    registry::register_producible(&decision_path, &decision_oqueue);
+    let decision_oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+        .default_buffer_length(SELECTION_QUEUE_CAPACITY)
+        .path(path!(raid1.decision))
+        .userspace_producible()
+        .build::<u32>();
     let decision_consumer = decision_oqueue
         .attach_consumer()
         .expect("the RAID-1 decision OQueue always allows attaching its consumer");

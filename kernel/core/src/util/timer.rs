@@ -5,7 +5,7 @@ use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ostd::{
-    orpc::oqueue::{GenericOQueueRef, OQueue, OQueueError, OQueueRef},
+    orpc::oqueue::{OQueue, OQueueError, OQueueRef},
     sync::WaitQueue,
 };
 
@@ -40,7 +40,10 @@ impl TimerServer {
     pub(crate) fn new(freq: Duration) -> Arc<Self> {
         Arc::new(Self {
             freq,
-            notification_oqueue: GenericOQueueRef::new_anonymous(1),
+            notification_oqueue: ostd::orpc::oqueue::OQueueBuilder::new()
+                .default_buffer_length(1)
+                .anonymous()
+                .build(),
         })
     }
 

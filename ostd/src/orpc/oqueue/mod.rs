@@ -555,9 +555,11 @@ pub fn trace_structured_data_at_path<'a, D, U, F>(
     let producer = producer.call_once(|| {
         let path = path_fn();
         let oqueue = registry::lookup_by_path::<D>(&path).unwrap_or_else(|| {
-            let oqueue = GenericOQueueRef::<D>::new(length, path.clone()).as_any_oqueue();
-            registry::register_with(&path, &oqueue);
-            oqueue
+            OQueueBuilder::new()
+                .default_buffer_length(length)
+                .path(path.clone())
+                .build::<D, U>()
+                .as_any_oqueue()
         });
         oqueue.attach_ref_producer().unwrap()
     });

@@ -15,14 +15,12 @@
 //! whichever of the following its export currently carries — an export may carry either, or both,
 //! independently:
 //!
-//! - `strong_observe` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register`] /
-//!   [`ostd::orpc::oqueue::registry::register_with`]: a per-open CBOR stream of every value
+//! - `strong_observe` — when the export supports observation: a per-open CBOR stream of values
 //!   produced after `open` (see [`reader`]).
-//! - `consume` — for an OQueue exported via [`ostd::orpc::oqueue::registry::register_producible`]:
-//!   a per-open CBOR stream that consumes the values produced after `open` (see [`reader`]).
-//! - `produce` — for an OQueue exported via
-//!   [`ostd::orpc::oqueue::registry::register_producible`]: a per-open handle that lets userspace
-//!   produce CBOR-encoded values into the OQueue (see [`produce`]).
+//! - `consume` — when the export supports consumption: a per-open CBOR stream that consumes values
+//!   produced after `open` (see [`reader`]).
+//! - `produce` — when the export supports production: a per-open handle for producing CBOR-encoded
+//!   values into the OQueue (see [`produce`]).
 //! - `metadata.yaml` — a human-readable description of the queue (see [`metadata`]), present on
 //!   every leaf regardless of which attachments it carries.
 //!
@@ -241,7 +239,7 @@ mod tests {
 
     use ostd::{
         orpc::{
-            oqueue::{ConsumableOQueue as _, ConsumableOQueueRef, OQueueBase as _, registry},
+            oqueue::ConsumableOQueue as _,
             path::{Path, PathComponent},
         },
         prelude::*,
@@ -294,8 +292,11 @@ mod tests {
             PathComponent::Name("queue"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
-        registry::register(&path, &queue.as_any_oqueue());
+        let queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(16)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         let fs = OQueueFs::new();
         let root = fs.root_inode();
@@ -369,8 +370,11 @@ mod tests {
             PathComponent::Name("slow"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        registry::register(&path, &queue.as_any_oqueue());
+        let queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         let fs = OQueueFs::new();
         let leaf = fs
@@ -414,8 +418,11 @@ mod tests {
             PathComponent::Name("decision"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
-        registry::register_producible(&path, &queue);
+        let _queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .userspace_producible()
+            .build::<u32>();
 
         let fs = OQueueFs::new();
         let leaf = fs
@@ -488,8 +495,11 @@ mod tests {
             PathComponent::Name("consumefile"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<u32>::new(16, path.clone());
-        registry::register_producible(&path, &queue);
+        let queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(16)
+            .path(path.clone())
+            .userspace_producible()
+            .build::<u32>();
 
         let fs = OQueueFs::new();
         let leaf = fs
@@ -569,8 +579,11 @@ mod tests {
             PathComponent::Name("pollread"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        registry::register(&path, &queue.as_any_oqueue());
+        let queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         let fs = OQueueFs::new();
         let stream = match open_inode(
@@ -632,8 +645,11 @@ mod tests {
             PathComponent::Name("pollwrite"),
             PathComponent::Index(0),
         ]);
-        let queue = ConsumableOQueueRef::<u32>::new(4, path.clone());
-        registry::register_producible(&path, &queue);
+        let queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .userspace_producible()
+            .build::<u32>();
         let consumer = queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();
@@ -694,16 +710,22 @@ mod tests {
             PathComponent::Name("perm_observe"),
             PathComponent::Index(0),
         ]);
-        let observe_queue = ConsumableOQueueRef::<usize>::new(4, observe_path.clone());
-        registry::register(&observe_path, &observe_queue.as_any_oqueue());
+        let _observe_queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(observe_path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         let produce_path = Path::new(alloc::vec![
             PathComponent::Name("oqfstest"),
             PathComponent::Name("perm_produce"),
             PathComponent::Index(0),
         ]);
-        let produce_queue = ConsumableOQueueRef::<u32>::new(4, produce_path.clone());
-        registry::register_producible(&produce_path, &produce_queue);
+        let produce_queue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(produce_path.clone())
+            .userspace_producible()
+            .build::<u32>();
         let _consumer = produce_queue.attach_consumer().unwrap();
 
         let fs = OQueueFs::new();

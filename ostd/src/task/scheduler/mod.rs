@@ -91,20 +91,14 @@ use crate::{
 pub(crate) fn init() {
     #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
     SCHEDULING_EVENT_PRODUCER.call_once(|| {
-        use crate::{
-            orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, registry},
-            path,
-        };
+        use crate::{orpc::oqueue::OQueue, path};
 
         // TODO(arthurp): This calls the OQueue constructor before the scheduler is running. This is
         // probably safe, but we should have documentation on when and why this is allowed.
-        let path = path!(scheduler.events);
-        let oqueue = GenericOQueueRef::new(1024, path.clone());
-
-        // Export the queue so it appears under the OQueue filesystem (e.g. at
-        // `/oqueues/scheduler/events`). The observer is revocable, so a slow userspace reader is
-        // dropped rather than blocking the scheduler.
-        registry::register_with(&path, &oqueue.as_any_oqueue());
+        let oqueue = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(1024)
+            .path(path!(scheduler.events))
+            .build();
 
         oqueue.attach_ref_producer().unwrap()
     });
