@@ -79,8 +79,12 @@ pub(crate) mod oqueues {
 pub fn init_in_first_kthread() {
     #[cfg(not(baseline_asterinas))]
     {
-        use ostd::orpc::oqueue::GenericOQueueRef;
         // Only support a single strong observer for now - hugepaged.
-        oqueues::PAGE_FAULT_OQUEUE.call_once(|| GenericOQueueRef::new_anonymous(64));
+        oqueues::PAGE_FAULT_OQUEUE.call_once(|| {
+            ostd::orpc::oqueue::OQueueBuilder::new()
+                .default_buffer_length(64)
+                .anonymous()
+                .build()
+        });
     }
 }

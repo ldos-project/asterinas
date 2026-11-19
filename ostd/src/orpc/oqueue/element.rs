@@ -73,10 +73,7 @@ mod test {
 
     use super::*;
     use crate::orpc::{
-        oqueue::{
-            ConsumableOQueue as _, ConsumableOQueueRef, OQueue as _, OQueueBase as _, OQueueRef,
-            Projection,
-        },
+        oqueue::{ConsumableOQueue as _, OQueue as _, OQueueBase as _, Projection, Visibility},
         path::Path,
     };
 
@@ -89,7 +86,12 @@ mod test {
 
         assert_impl_all!(NoLifetime: Element);
 
-        let queue = ConsumableOQueueRef::<NoLifetime>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<NoLifetime>();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -108,7 +110,11 @@ mod test {
         assert_impl_all!(OneLifetime<'static>: Element);
         assert_impl_all!(OneLifetimeDescriptor: ElementDescriptor);
 
-        let queue = OQueueRef::<OneLifetime>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<OneLifetime as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &OneLifetime| *m.value))
@@ -129,7 +135,11 @@ mod test {
 
         assert_impl_all!(WithTypeParamNoLifetime<usize>: Element);
 
-        let queue = OQueueRef::<WithTypeParamNoLifetime<u32>>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<WithTypeParamNoLifetime<u32> as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &WithTypeParamNoLifetime<u32>| m.value))
@@ -150,7 +160,11 @@ mod test {
 
         assert_impl_all!(WithTypeParamDescriptor<u32>: ElementDescriptor);
 
-        let queue = OQueueRef::<WithTypeParam<u32>>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<WithTypeParam<u32> as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &WithTypeParam<u32>| *m.value))
@@ -174,7 +188,11 @@ mod test {
 
         assert_impl_all!(WithWhereClauseDescriptor<u32>: ElementDescriptor);
 
-        let queue = OQueueRef::<WithWhereClause<u32>>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<WithWhereClause<u32> as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &WithWhereClause<u32>| *m.value))
@@ -196,7 +214,11 @@ mod test {
 
         assert_impl_all!(MultiTypeParamsDescriptor<u32, usize>: ElementDescriptor);
 
-        let queue = OQueueRef::<MultiTypeParams<u32, usize>>::new(4, Path::test());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<MultiTypeParams<u32, usize> as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &MultiTypeParams<u32, usize>| {

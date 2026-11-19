@@ -75,7 +75,7 @@ mod tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, Projection},
+        orpc::oqueue::{OQueue, OQueueBase, OQueueRef, Projection, registry},
         path,
         prelude::*,
     };
@@ -98,7 +98,10 @@ mod tests {
         let capture_file = builder.build();
 
         // Attach an OQueue to the capture
-        let oqueue: OQueueRef<u32> = GenericOQueueRef::new(4, path.clone());
+        let oqueue: OQueueRef<u32> = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .build();
         let attachment = ObserverRegistration {
             path,
             observer: oqueue
@@ -154,6 +157,11 @@ mod tests {
             })
             .unwrap()
             .build::<u32>();
+
+        let command_path = path!(test_write_values).append(&path!(commands));
+        let export = registry::lookup_export(&command_path).unwrap();
+        assert!(export.supports_observe());
+        assert!(!export.supports_produce());
 
         capture_file.write_values(Box::new([42, 100, 200].into_iter()));
         capture_file.stop();

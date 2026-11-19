@@ -18,7 +18,7 @@ use aster_util::mem_obj_slice::Slice;
 use device_id::{DeviceId, MinorId};
 use io_util::batch::IoBatch;
 #[cfg(not(baseline_asterinas))]
-use ostd::orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueRef};
+use ostd::orpc::oqueue::{OQueue as _, OQueueRef};
 use ostd::{
     arch::trap::TrapFrame,
     debug, info,
@@ -143,10 +143,10 @@ impl BlockDevice {
                 ),
                 name,
                 partition_manager: PartitionManager::new(),
-                bio_completion_oqueue: GenericOQueueRef::new(
-                    4096,
-                    ostd::path!(io.block_io.bio_completion[unique]),
-                ),
+                bio_completion_oqueue: ostd::orpc::oqueue::OQueueBuilder::new()
+                    .default_buffer_length(4096)
+                    .path(ostd::path!(io.block_io.bio_completion[unique]))
+                    .build(),
             });
 
             aster_block::register(block_device_server).unwrap();
