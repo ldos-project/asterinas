@@ -624,7 +624,7 @@ impl<T: Send + 'static> ValueProducer<T> {
         self.oqueue.has_consumers()
     }
 
-    /// True if at least one strong or weak observer is currently attached to this OQueue.
+    /// True if at least one observer is currently attached to this OQueue.
     pub fn has_observers(&self) -> bool {
         self.oqueue.has_observers()
     }
@@ -671,7 +671,7 @@ impl<D: ElementDescriptor + 'static> GenericRefProducer<D> {
         self.oqueue.try_produce_ref(v)
     }
 
-    /// True if at least one strong or weak observer is currently attached to this OQueue.
+    /// True if at least one observer is currently attached to this OQueue.
     pub fn has_observers(&self) -> bool {
         self.oqueue.has_observers()
     }
@@ -783,29 +783,37 @@ type ConvertToInlineFn<U> = fn(
 
 /// An attachment to an OQueue which allows observing events from the OQueue.
 pub struct StrongObserver<U> {
-    oqueue: Arc<dyn implementation::UntypedOQueueImplementation>,
+    oqueue: Option<Arc<dyn implementation::UntypedOQueueImplementation>>,
     observer_id: ObserverKey,
     convert_to_inline: ConvertToInlineFn<U>,
     _phantom: PhantomData<Cell<U>>,
 }
 
+impl<U> StrongObserver<U> {
+    fn oqueue(&self) -> &Arc<dyn implementation::UntypedOQueueImplementation> {
+        self.oqueue.as_ref().expect("observer is attached")
+    }
+}
+
 impl<U> Drop for StrongObserver<U> {
     fn drop(&mut self) {
-        self.oqueue.detach_observer(self.observer_id);
+        if let Some(oqueue) = &self.oqueue {
+            oqueue.detach_observer(self.observer_id);
+        }
     }
 }
 
 impl<U> Blocker for StrongObserver<U> {
     fn should_try(&self) -> bool {
-        self.oqueue.can_strong_observe(self.observer_id)
+        self.oqueue().can_strong_observe(self.observer_id)
     }
 
     fn enqueue(&self, waker: &Arc<crate::sync::Waker>) -> WakerKey {
-        self.oqueue.enqueue_observe_waker(waker)
+        self.oqueue().enqueue_observe_waker(waker)
     }
 
     fn remove(&self, key: WakerKey) {
-        self.oqueue.remove_observe_waker(key)
+        self.oqueue().remove_observe_waker(key)
     }
 }
 
@@ -818,7 +826,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
         // SAFETY: U matches the call to `attach_strong_observer` which created self and
         // `observer_id`.
         unsafe {
-            self.oqueue.strong_observe_into(
+            self.oqueue().strong_observe_into(
                 self.observer_id,
                 TypeId::of::<U>(),
                 ret.as_mut_ptr() as *mut (),
@@ -836,7 +844,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
         // SAFETY: U matches the call to `attach_strong_observer` which created self and
         // `observer_id`.
         let success = unsafe {
-            self.oqueue.try_strong_observe_into(
+            self.oqueue().try_strong_observe_into(
                 self.observer_id,
                 TypeId::of::<U>(),
                 ret.as_mut_ptr() as *mut (),
@@ -861,7 +869,7 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
     /// disabled, on the producer's thread, so a slow hook delays every other user of this OQueue. It must not
     /// create or drop a [`WakeHook`] for this OQueue.
     pub fn on_ready(&self, hook: Box<dyn Fn() + Send>) -> WakeHook {
-        WakeHook::register(self.oqueue.clone(), WakeEvent::Produced, hook)
+        WakeHook::register(self.oqueue().clone(), WakeEvent::Produced, hook)
     }
 
     /// Register a function to be called by the OQueue to observe each message. This function does
@@ -874,13 +882,13 @@ impl<U: Copy + Send + 'static> StrongObserver<U> {
     ///
     /// `f` **must** be fast and non-blocking. It will be run on the producers thread.
     pub fn strong_observe_inline(
-        self,
+        mut self,
         f: impl Fn(&U) + Send + 'static,
     ) -> Result<InlineStrongObserver, OQueueError> {
         let inline_observer_id =
-            (self.convert_to_inline)(self.oqueue.as_ref(), self.observer_id, Box::new(f))?;
+            (self.convert_to_inline)(self.oqueue().as_ref(), self.observer_id, Box::new(f))?;
         Ok(InlineStrongObserver {
-            oqueue: self.oqueue.clone(),
+            oqueue: self.oqueue.take().unwrap(),
             inline_observer_id,
             _phantom: PhantomData,
         })
