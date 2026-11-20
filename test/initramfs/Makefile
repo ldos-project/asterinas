@@ -170,8 +170,9 @@ x86_64_pkgs:
 		-A benchmark.sqlite-speedtest1 \
 		-A benchmark.stress-ng \
 		-A benchmark.sysbench \
-		-A conformance.ltp \
+		-A conformance.gvisor \
 		-A conformance.kselftest \
+		-A conformance.ltp \
 		-A conformance.pjdfstest \
 		-A conformance.xfstests \
 		-A regression.package

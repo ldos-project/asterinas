@@ -28,7 +28,7 @@ struct CacheOfSizes {
 /// The size of each frame is determined by `LEVEL`, with level 1 corresponding to the base page
 /// size, and higher levels being a function of `LEVEL`. See [`mm::page_size`].
 struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel> {
-    inner: [Option<Paddr>; COUNT],
+    inner: [Paddr; COUNT],
     size: usize,
 }
 
@@ -37,7 +37,7 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
 {
     const fn new() -> Self {
         Self {
-            inner: [const { None }; COUNT],
+            inner: [0; COUNT],
             size: 0,
         }
     }
@@ -68,8 +68,12 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
         )?;
 
         // Push all allocated frames except for the one we will return to the requester into the
-        // cache
-        for i in 1..nr_to_alloc {
+        // cache.
+        //
+        // `rev()` keeps future allocations contiguous from lower to higher
+        // addresses. This increases the likelihood that they can be merged,
+        // for example, when performing device operations.
+        for i in (1..nr_to_alloc).rev() {
             self.push_front(allocated + i * Self::segment_size());
         }
 
@@ -101,7 +105,7 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
             return None;
         }
 
-        self.inner[self.size] = Some(frame);
+        self.inner[self.size] = frame;
         self.size += 1;
         Some(())
     }
@@ -111,7 +115,7 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const LEVEL: PagingLevel>
             return None;
         }
 
-        let frame = self.inner[self.size - 1].take().unwrap();
+        let frame = self.inner[self.size - 1];
         self.size -= 1;
         Some(frame)
     }
@@ -130,7 +134,7 @@ impl CacheOfSizes {
 
 pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Paddr> {
     let nr_frames = layout.size() / PAGE_SIZE;
-    if layout.align() > layout.size() {
+    if layout.align() > PAGE_SIZE {
         return super::pools::alloc(guard, layout);
     }
 
