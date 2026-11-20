@@ -11,10 +11,11 @@ pub use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 /// Supplies the value exported for an OQueue message when using [`register_with`](super::registry::register_with).
 ///
-/// The `DefaultProjection` derive recursively projects fields that implement this trait. POD
-/// values project to themselves; mark fields that should be opaque identifiers with
+/// The `DefaultProjection` derive recursively projects fields that implement this trait. POD values
+/// project to themselves; mark fields that should be opaque identifiers with
 /// `#[projection(opaque)]`, which projects them through [`OpaqueId`], or omit fields with
-/// `#[projection(omit)]`.
+/// `#[projection(omit)]`. POD values that cannot implement `Projectable` (due to orphan rules) can
+/// be annotated with `#[projection(self)]` to produce the same behavior.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement `DefaultProjection`",
     note = "derive `DefaultProjection` for a local type, or use `#[projection(opaque)]` on a field that should be represented by an ID;",
@@ -414,5 +415,51 @@ mod test {
         let arc = Arc::new(7);
         let projected = BorrowedArc { arc: &arc }.default_projection();
         assert_eq!(projected.arc, OID::of_ref(arc.as_ref()));
+    }
+
+    #[derive(Clone, Copy, Serialize)]
+    enum SelfProjectedValue {
+        Ready,
+    }
+
+    #[derive(DefaultProjection)]
+    struct SelfProjectedStruct<T> {
+        #[projection(self)]
+        value: T,
+    }
+
+    #[derive(DefaultProjection)]
+    enum SelfProjectedEnum {
+        Value(#[projection(self)] SelfProjectedValue),
+    }
+
+    #[derive(DefaultProjection)]
+    struct DereferencedSelfProjectedValue<'a> {
+        #[projection(deref, self)]
+        value: &'a SelfProjectedValue,
+    }
+
+    #[ktest]
+    fn self_projection_copies_struct_and_enum_fields() {
+        let message = SelfProjectedStruct {
+            value: SelfProjectedValue::Ready,
+        };
+        assert!(matches!(
+            message.default_projection().value,
+            SelfProjectedValue::Ready
+        ));
+
+        let message = SelfProjectedEnum::Value(SelfProjectedValue::Ready);
+        assert!(matches!(
+            message.default_projection(),
+            SelfProjectedEnumDefaultProjection::Value(SelfProjectedValue::Ready)
+        ));
+
+        let value = SelfProjectedValue::Ready;
+        let message = DereferencedSelfProjectedValue { value: &value };
+        assert!(matches!(
+            message.default_projection().value,
+            SelfProjectedValue::Ready
+        ));
     }
 }
