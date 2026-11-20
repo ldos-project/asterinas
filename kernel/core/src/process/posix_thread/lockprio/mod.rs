@@ -225,7 +225,7 @@ pub(super) fn forget_thread(tid: Tid) {
 #[cfg(not(baseline_asterinas))]
 mod decisions {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
+        orpc::oqueue::{OQueue as _, RefProducer},
         path,
     };
     use serde::Serialize;
@@ -238,7 +238,7 @@ mod decisions {
     };
 
     /// A change to a PI futex owner's policy.
-    #[derive(Clone, Copy, Debug, Serialize)]
+    #[derive(Clone, Copy, Debug, Serialize, ostd::orpc::oqueue::Projectable)]
     pub(crate) struct LockPrioDecision {
         /// The monotonic time of the change, in nanoseconds.
         pub time_ns: u64,
@@ -253,9 +253,10 @@ mod decisions {
 
     pub(crate) fn init() {
         PRODUCER.call_once(|| {
-            let path = path!(lockprio.decisions);
-            let oqueue = GenericOQueueRef::new(1024, path.clone());
-            registry::register(&path, &oqueue.as_any_oqueue());
+            let oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+                .default_buffer_length(1024)
+                .path(path!(lockprio.decisions))
+                .build();
             oqueue
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")

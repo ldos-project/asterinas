@@ -16,9 +16,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ostd::{
-    orpc::oqueue::{
-        ConsumableOQueue, ConsumableOQueueRef, Consumer, OQueueBase, ValueProducer, registry,
-    },
+    orpc::oqueue::{ConsumableOQueue, ConsumableOQueueRef, Consumer, ValueProducer},
     path,
 };
 
@@ -57,24 +55,29 @@ impl OqfsTest {
 
         // The `userspace_produce_consume` queue is produced and consumed entirely in userspace; the kernel keeps only
         // the strong reference so the queue (and its OQFS export) stays alive.
-        let userspace_produce_consume_path = path!(oqfs_test.userspace_produce_consume);
-        let userspace_produce_consume =
-            ConsumableOQueueRef::<u32>::new(CAPACITY, userspace_produce_consume_path.clone());
-        registry::register_producible(&userspace_produce_consume_path, &userspace_produce_consume);
+        let userspace_produce_consume = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(CAPACITY)
+            .path(path!(oqfs_test.userspace_produce_consume))
+            .userspace_producible()
+            .build::<u32>();
 
         // The `observe` queue is observable: the kernel produces into it and userspace reads it
         // through `strong_observe` or `weak_observe`.
-        let observe_path = path!(oqfs_test.observe);
-        let observe = ConsumableOQueueRef::<u32>::new(CAPACITY, observe_path.clone());
-        registry::register(&observe_path, &observe.as_any_oqueue());
+        let observe = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(CAPACITY)
+            .path(path!(oqfs_test.observe))
+            .allow_consumers()
+            .build::<u32>();
         let observe_producer = observe
             .attach_value_producer()
             .expect("the oqfs_test observe OQueue always allows a value producer");
 
         // The `trigger` queue is produced by userspace and consumed by the test thread.
-        let trigger_path = path!(oqfs_test.trigger);
-        let trigger = ConsumableOQueueRef::<u32>::new(4, trigger_path.clone());
-        registry::register_producible(&trigger_path, &trigger);
+        let trigger = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path!(oqfs_test.trigger))
+            .userspace_producible()
+            .build::<u32>();
         let trigger_consumer = trigger
             .attach_consumer()
             .expect("the oqfs_test trigger OQueue always allows attaching its consumer");

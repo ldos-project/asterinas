@@ -20,7 +20,11 @@ type ReplyHandlePair<T> = (ValueProducer<T>, Consumer<T>);
 impl<T: Send + 'static> ReplyQueue<T> {
     /// Construct a producer/consumer pair for handling an async message reply.
     pub fn new_pair() -> Result<ReplyHandlePair<T>, OQueueError> {
-        let oqueue = ConsumableOQueueRef::new_anonymous(2);
+        let oqueue = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(2)
+            .anonymous()
+            .allow_consumers()
+            .build_unprojectable();
         Ok((oqueue.attach_value_producer()?, oqueue.attach_consumer()?))
     }
 }

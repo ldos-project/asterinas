@@ -160,6 +160,7 @@ pub(crate) struct OQueueImplementation<D: ElementDescriptor> {
     /// The size to use for the consumer and strong-observer ring-buffers.
     len: usize,
     supports_consume: bool,
+    supports_observer_blocking_produce: bool,
     path: Option<Path>,
     /// Wait queue for observers. Awoken when there are elements to observe.
     observe_wait_queue: WaitQueue,
@@ -184,7 +185,12 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// * `len` is the ring buffer length used for consumers and strong-observers.
     /// * `supports_consume` specifies the attachment it allows later.
     /// * `path` is the queue's path, or `None` for an anonymous queue.
-    pub(crate) fn new(mut len: usize, supports_consume: bool, path: Option<Path>) -> Self {
+    pub(crate) fn new(
+        mut len: usize,
+        supports_consume: bool,
+        supports_observer_blocking_produce: bool,
+        path: Option<Path>,
+    ) -> Self {
         if len < 2 {
             warn!(
                 "Creating an OQueue with length {len} is automatically increased to 2. Ring buffers smaller than 2 are not supported."
@@ -201,6 +207,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             }),
             len,
             supports_consume,
+            supports_observer_blocking_produce,
             path,
             observe_wait_queue: WaitQueue::new(),
             consume_wait_queue: WaitQueue::new(),
@@ -263,6 +270,9 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     where
         U: Copy + Send + 'static,
     {
+        if !self.supports_observer_blocking_produce {
+            return super::UnsupportedSnafu.fail();
+        }
         self.attach_strong_observer_inner(projection, ReaderMode::Strong)
     }
 
@@ -975,7 +985,7 @@ mod test {
 
     #[ktest]
     fn shared_readers_keep_independent_positions_and_inline_delivery() {
-        let queue = Arc::new(TestQueue::new(2, false, None));
+        let queue = Arc::new(TestQueue::new(2, false, true, None));
         let first = queue
             .attach_strong_observer(Projection::identity())
             .unwrap();
@@ -1029,7 +1039,7 @@ mod test {
 
     #[ktest]
     fn revoking_shared_reader_preserves_other_readers() {
-        let queue = Arc::new(TestQueue::new(2, false, None));
+        let queue = Arc::new(TestQueue::new(2, false, true, None));
         let slow = queue
             .attach_revocable_strong_observer(Projection::identity())
             .unwrap();
@@ -1068,7 +1078,7 @@ mod test {
             }
         }
         let queue = Arc::new(
-            OQueueImplementation::<LifetimelessElementDescriptor<Value>>::new(4, true, None),
+            OQueueImplementation::<LifetimelessElementDescriptor<Value>>::new(4, true, true, None),
         );
         let consumer = queue.attach_consumer().unwrap();
         let drops = Arc::new(AtomicUsize::new(0));
@@ -1085,7 +1095,8 @@ mod test {
     /// handler producing to the same OQueue could interrupt a holder and spin on it forever.
     #[ktest]
     fn last_consumer_lock_disables_local_irqs() {
-        let queue = OQueueImplementation::<LifetimelessElementDescriptor<u32>>::new(4, true, None);
+        let queue =
+            OQueueImplementation::<LifetimelessElementDescriptor<u32>>::new(4, true, true, None);
         assert!(crate::arch::irq::is_local_enabled());
 
         let guard = queue.last_consumer.lock();

@@ -5,8 +5,7 @@ use core::sync::atomic::Ordering;
 use ostd::{
     cpu::CpuId,
     orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, InlineConsumer, OQueueBase as _, Projection,
-        WeakObserver, registry,
+        ConsumableOQueue as _, InlineConsumer, OQueueBase as _, Projection, WeakObserver,
     },
     path,
     sync::{LocalIrqDisabled, SpinLock},
@@ -38,9 +37,11 @@ impl UserspacePolicy {
     ///
     /// Panics if that OQueue is already exported, i.e. if this is called twice.
     pub(crate) fn new() -> Self {
-        let path = path!(scheduler.select_cpu);
-        let oqueue = ConsumableOQueueRef::<u32>::new(OQUEUE_CAPACITY, path.clone());
-        registry::register_producible(&path, &oqueue);
+        let oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(OQUEUE_CAPACITY)
+            .path(path!(scheduler.select_cpu))
+            .userspace_producible()
+            .build::<u32>();
         let observer = oqueue
             .attach_weak_observer(1, Projection::identity())
             .expect("a new OQueue accepts a weak observer");

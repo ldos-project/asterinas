@@ -22,7 +22,7 @@ use ostd::{
         dma::{DmaStream, FromAndToDevice},
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
-    orpc::oqueue::Element,
+    orpc::oqueue::{Element, Projectable},
     sync::WaitQueue,
 };
 use serde::Serialize;
@@ -34,7 +34,7 @@ use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, pre
 /// Trace data for block device I/O completion.
 ///
 /// This struct captures performance metrics when a block I/O request completes.
-#[derive(Clone, Copy, Default, Serialize)]
+#[derive(Clone, Copy, Default, Serialize, Projectable)]
 pub struct BlockDeviceCompletionStats {
     /// The latency of the I/O request.
     pub latency: Duration,

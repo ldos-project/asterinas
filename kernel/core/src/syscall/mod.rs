@@ -431,16 +431,13 @@ macro_rules! log_syscall_entry {
 pub(crate) mod oqueue {
     use core::time::Duration;
 
-    use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueueRef},
-        path,
-    };
+    use ostd::{orpc::oqueue::OQueueRef, path};
     use serde::Serialize;
     use spin::Once;
 
     use crate::fs::file::file_table::FileDesc;
 
-    #[derive(Clone, Copy, Serialize)]
+    #[derive(Clone, Copy, Serialize, ostd::orpc::oqueue::Projectable)]
     pub(crate) struct SocketOQueueMessage {
         pub fd: FileDesc,
         pub is_close: u8,
@@ -450,11 +447,30 @@ pub(crate) mod oqueue {
     static SOCKET_OQUEUE: Once<OQueueRef<SocketOQueueMessage>> = Once::new();
 
     pub(crate) fn init_in_first_kthread() {
-        SOCKET_OQUEUE.call_once(|| GenericOQueueRef::new(1024, path!(syscall.socket_oqueue)));
+        SOCKET_OQUEUE.call_once(|| {
+            ostd::orpc::oqueue::OQueueBuilder::new()
+                .default_buffer_length(1024)
+                .path(path!(syscall.socket_oqueue))
+                .build()
+        });
     }
 
     pub(crate) fn get_socket_oqueue() -> OQueueRef<SocketOQueueMessage> {
         SOCKET_OQUEUE.wait().clone()
+    }
+
+    #[cfg(ktest)]
+    mod test {
+        use ostd::{orpc::oqueue::registry, prelude::*};
+
+        use super::*;
+
+        #[ktest]
+        fn socket_oqueue_is_exported() {
+            init_in_first_kthread();
+            let export = registry::lookup_export(&path!(syscall.socket_oqueue)).unwrap();
+            assert!(export.supports_observe());
+        }
     }
 }
 

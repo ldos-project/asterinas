@@ -464,7 +464,7 @@ const MAX_REQUEST_CANDIDATES: usize = 8;
 /// being routed. Fixed-size to stay `Copy` (required for OQueue observation).
 ///
 /// Mirrored by `SelectionRequest` in `test/initramfs/src/raid_policy_server/src/main.rs`.
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, ostd::orpc::oqueue::Projectable)]
 pub struct SelectionRequestMessage {
     candidate_count: u32,
     candidates: [u32; MAX_REQUEST_CANDIDATES],

@@ -3,8 +3,9 @@
 //! The `produce` file: lets userspace produce values into an OQueue.
 //!
 //! Opening this file attaches a fresh producer to the OQueue, so writes to it are decoded as CBOR
-//! records and produced into the queue by value. Only OQueues exported via
-//! [`ostd::orpc::oqueue::registry::register_producible`] support this; every other export reports
+//! records and produced into the queue by value. Only OQueues configured with
+//! [`userspace_producible`](ostd::orpc::oqueue::OQueueBuilder::userspace_producible) support this;
+//! every other export reports
 //! [`ostd::orpc::oqueue::OQueueError::Unsupported`] on `open`, matching `attach_producer`'s default.
 //!
 //! The file behaves like a pipe in the write direction: writes are producing and offset-free
@@ -217,7 +218,7 @@ impl FileOps for ProduceFile {
     ///
     /// `_status_flags` (`O_NONBLOCK`) is intentionally not consulted: a write blocks until the
     /// OQueue has space rather than returning `EAGAIN`, which is fine given a produce-exposed
-    /// OQueue's single dedicated producer (see `registry::register_producible`).
+    /// OQueue's single dedicated producer.
     fn write_at(
         &self,
         offset: usize,
