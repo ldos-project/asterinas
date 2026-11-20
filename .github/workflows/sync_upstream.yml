@@ -1,0 +1,166 @@
+name: Sync upstream
+
+# Every night, try to merge asterinas/asterinas main into our main. If the merge
+# is clean (after rewriting Docker image refs) and no upstream asterinas/* image
+# is referenced, push it to a rolling branch and open/update a PR to main.
+# Otherwise, report the conflicts in the run summary and do nothing.
+
+on:
+  push:   # TEMPORARY: test from this branch (always a dry run); remove before merge
+    branches: [aanyas72/sync-upstream-action]
+  schedule:
+    - cron: '0 7 * * *'   # daily 07:00 UTC (~1-2am US Central)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Attempt the merge but do not push or open a PR'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_URL: https://github.com/asterinas/asterinas.git
+  SYNC_BRANCH: upstream-sync/nightly
+  # A PAT or GitHub App token is needed to push merges that touch
+  # .github/workflows/* and for the PR to trigger CI. Falls back to GITHUB_TOKEN.
+  GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+  DRY_RUN: ${{ github.event_name == 'push' || inputs.dry_run == true }}
+  HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+
+      - name: Load merge tools from this workflow's commit
+        # Use the scripts that ship with this workflow, even when main doesn't have them yet.
+        run: |
+          mkdir -p "$RUNNER_TEMP/merge-tool"
+          for f in resolve_image_conflicts.py check_image_refs.py; do
+            git show "$GITHUB_SHA:tools/merge-tool/$f" > "$RUNNER_TEMP/merge-tool/$f"
+          done
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$HAS_SYNC_TOKEN" != "true" ]; then
+            echo "::warning::UPSTREAM_SYNC_TOKEN is not set; using GITHUB_TOKEN. Pushing upstream workflow changes will fail and the PR will not trigger CI."
+          fi
+
+      - name: Report divergence
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/main)
+          ahead=$(git rev-list --count upstream/main..HEAD)
+          echo "main is $behind commits behind and $ahead ahead of upstream/main"
+          {
+            echo "### main vs upstream/main"
+            echo "- Behind upstream/main: **$behind** commits"
+            echo "- Ahead of upstream/main: **$ahead** commits"
+            if [ "$behind" -gt 0 ]; then
+              echo
+              echo "<details><summary>Upstream commits not yet in main (newest first, up to 20)</summary>"
+              echo
+              echo '```'
+              git log --oneline HEAD..upstream/main | head -20
+              echo '```'
+              echo "</details>"
+            fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attempt merge
+        id: merge
+        run: |
+          base=$(git merge-base HEAD upstream/main)
+          new=$(git rev-parse upstream/main)
+          echo "range=${base:0:9}..${new:0:9}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            echo "### Upstream sync: already up to date" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git merge --no-ff --no-commit upstream/main || true
+          python3 "$RUNNER_TEMP/merge-tool/resolve_image_conflicts.py" | tee "$RUNNER_TEMP/resolve.log"
+
+          unmerged=$(git diff --name-only --diff-filter=U)
+          markers=$(git diff --cached --name-only -z | xargs -0 -r grep -lE '^(<<<<<<<|>>>>>>>)( |$)' 2>/dev/null || true)
+          if [ -n "$unmerged$markers" ]; then
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Upstream sync: conflicts (\`${base:0:9}..${new:0:9}\`)"
+              echo "$(git rev-list --count HEAD..upstream/main) upstream commits; merge needs manual resolution."
+              echo
+              echo "Conflicted files:"
+              echo '```'
+              printf '%s\n' $unmerged $markers | sort -u
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Upstream merge has conflicts; no PR created."
+          else
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check Docker image references
+        if: steps.merge.outputs.status == 'clean'
+        run: python3 "$RUNNER_TEMP/merge-tool/check_image_refs.py"
+
+      - name: Commit merge
+        if: steps.merge.outputs.status == 'clean'
+        run: |
+          git commit -q -m "Merge upstream commits ${{ steps.merge.outputs.range }}"
+          git log --oneline -1
+
+      - name: Push and open/update PR
+        if: steps.merge.outputs.status == 'clean' && env.DRY_RUN != 'true'
+        run: |
+          git push --force origin "HEAD:refs/heads/$SYNC_BRANCH"
+
+          {
+            echo "Automated nightly merge of [asterinas/asterinas](https://github.com/asterinas/asterinas) \`main\` (\`${{ steps.merge.outputs.range }}\`)."
+            echo
+            echo "The merge was conflict-free after rewriting Docker image refs with \`tools/merge-tool/resolve_image_conflicts.py\`, and \`tools/merge-tool/check_image_refs.py\` found no upstream \`asterinas/*\` images."
+            echo
+            echo "<details><summary>Upstream commits ($(git rev-list --count HEAD^1..HEAD^2))</summary>"
+            echo
+            git log --format='- %h %s' HEAD^1..HEAD^2 | head -200
+            echo
+            echo "</details>"
+            echo
+            echo "<details><summary>Image ref rewrites</summary>"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/resolve.log"
+            echo '```'
+            echo "</details>"
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          title="Merge upstream commits ${{ steps.merge.outputs.range }}"
+          pr=$(gh pr list --head "$SYNC_BRANCH" --base main --state open --json number -q '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
+          else
+            gh pr create --base main --head "$SYNC_BRANCH" --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
+          echo "### Upstream sync: clean merge pushed to \`$SYNC_BRANCH\` and PR updated" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry-run summary
+        if: steps.merge.outputs.status == 'clean' && env.DRY_RUN == 'true'
+        run: |
+          echo "### Upstream sync (dry run): clean merge \`${{ steps.merge.outputs.range }}\`; not pushed" >> "$GITHUB_STEP_SUMMARY"
