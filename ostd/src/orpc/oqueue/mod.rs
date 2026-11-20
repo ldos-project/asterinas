@@ -75,8 +75,8 @@
 //! ## Observation
 //!
 //! Observation occurs via [`StrongObserver<U>`] and [`WeakObserver<U>`]. These are created on a
-//! specific OQueue and include a query. A query is a function which extracts a observable value of
-//! type `U` from a message in the OQueue of type `T`. They are run in the producing context. The
+//! specific OQueue and include a projection. A projection extracts an observable value of type `U`
+//! from a message in the OQueue of type `T`. Projections run in the producing context. The
 //! observable value must be `Copy + Send` regardless of the message type. This allows the
 //! observable value to be efficiently observed by multiple strong and weak observers.
 //!
@@ -117,7 +117,7 @@ pub mod default_projection;
 mod element;
 pub mod export;
 mod implementation;
-pub mod query;
+pub mod projection;
 pub mod registry;
 pub mod reply;
 mod single_thread_ring_buffer;
@@ -127,7 +127,7 @@ pub use element::{Element, ElementDescriptor, LifetimelessElementDescriptor};
 pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
 pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
-pub use query::ObservationQuery;
+pub use projection::Projection;
 use snafu::Snafu;
 
 use self::implementation::{InlineObserverKey, ObserverKey, WakeEvent};
@@ -192,15 +192,15 @@ pub enum TryProduceError<T> {
 /// The interface provided by all OQueues.
 pub trait OQueueBase<D: ElementDescriptor + 'static> {
     /// Attach a strong observer which will observe values of type `U` which are extracted from
-    /// the messages using the query.
+    /// the messages using the projection.
     fn attach_strong_observer<U>(
         &self,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
 
-    /// Attach a *revocable* strong observer which extracts values of type `U` using the query.
+    /// Attach a *revocable* strong observer which extracts values of type `U` using the projection.
     ///
     /// Unlike [`Self::attach_strong_observer`], which applies backpressure to producers when its
     /// ring fills, a revocable observer is silently dropped in that situation: the producer keeps
@@ -208,7 +208,7 @@ pub trait OQueueBase<D: ElementDescriptor + 'static> {
     /// untrusted or userspace-facing observers that must never be able to stall kernel execution.
     fn attach_revocable_strong_observer<U>(
         &self,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
@@ -224,12 +224,12 @@ pub trait OQueueBase<D: ElementDescriptor + 'static> {
     ) -> Result<InlineStrongObserver, OQueueError>;
 
     /// Attach a weak observer which will observer values of type `U` which are extracted from
-    /// the messages using the query. The history length specifies how many previous values the
+    /// the messages using the projection. The history length specifies how many previous values the
     /// observer wishes to see.
     fn attach_weak_observer<U>(
         &self,
         history_len: usize,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<WeakObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static;
@@ -330,33 +330,33 @@ macro_rules! impl_oqueue_base_forward {
         impl<$generic: $generic_bound + 'static> OQueueBase<$md> for $type_name<$generic> {
             fn attach_strong_observer<U>(
                 &self,
-                query: ObservationQuery<$md, U>,
+                projection: Projection<$md, U>,
             ) -> Result<StrongObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
             {
-                self.$member.attach_strong_observer(query)
+                self.$member.attach_strong_observer(projection)
             }
 
             fn attach_revocable_strong_observer<U>(
                 &self,
-                query: ObservationQuery<$md, U>,
+                projection: Projection<$md, U>,
             ) -> Result<StrongObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
             {
-                self.$member.attach_revocable_strong_observer(query)
+                self.$member.attach_revocable_strong_observer(projection)
             }
 
             fn attach_weak_observer<U>(
                 &self,
                 history_len: usize,
-                query: ObservationQuery<$md, U>,
+                projection: Projection<$md, U>,
             ) -> Result<WeakObserver<U>, OQueueError>
             where
                 U: Copy + Send + 'static,
             {
-                self.$member.attach_weak_observer(history_len, query)
+                self.$member.attach_weak_observer(history_len, projection)
             }
 
             fn attach_inline_strong_observer(
@@ -770,7 +770,7 @@ impl<T> Drop for InlineConsumer<T> {
 
 /// A function to convert a `StrongObserver` into an `InlineStrongObserver`. This erases the message
 /// type `T` by having the function itself perform a downcast to the specific types. The function
-/// will also use the observer key to get the query function used by the existing non-inline strong
+/// will also use the observer key to get the projection function used by the existing non-inline strong
 /// observer.
 ///
 /// This is always an instance of
@@ -811,7 +811,7 @@ impl<U> Blocker for StrongObserver<U> {
 
 impl<U: Copy + Send + 'static> StrongObserver<U> {
     /// Observe a value from the queue. This value will have been extracted from the message by the
-    /// query provided on attachment.
+    /// projection provided on attachment.
     pub fn strong_observe(&self) -> Result<U, OQueueError> {
         let mut ret = MaybeUninit::uninit();
 
@@ -1052,7 +1052,7 @@ mod test {
         let queue = OQueueRef::<u32>::new_anonymous(4);
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_revocable_strong_observer(ObservationQuery::identity())
+            .attach_revocable_strong_observer(Projection::identity())
             .unwrap();
 
         // Publish far more than the ring can hold. If a full strong observer blocked the producer,
@@ -1076,7 +1076,7 @@ mod test {
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::identity())
+            .attach_strong_observer(Projection::identity())
             .unwrap();
         let freed = Arc::new(AtomicUsize::new(0));
         let _hook = producer.on_ready({
@@ -1108,7 +1108,7 @@ mod test {
 
         // So does converting a full strong observer to an inline one.
         let observer = queue
-            .attach_strong_observer(ObservationQuery::identity())
+            .attach_strong_observer(Projection::identity())
             .unwrap();
         producer.try_produce(3).unwrap();
         assert!(!producer.can_produce());
@@ -1143,7 +1143,7 @@ mod test {
         // Swap the consumed value for one that also fills a newly attached revocable observer,
         // without letting the blocked producer run in between.
         let observer = queue
-            .attach_revocable_strong_observer(ObservationQuery::identity())
+            .attach_revocable_strong_observer(Projection::identity())
             .unwrap();
         {
             let _guard = disable_preempt();
@@ -1167,7 +1167,7 @@ mod test {
         let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .attach_strong_observer(Projection::new(|m: &Message| m.id))
             .unwrap();
 
         producer.produce(new_message(3, "world"));
@@ -1182,7 +1182,7 @@ mod test {
         let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
-            .attach_weak_observer(1, ObservationQuery::new(|m: &Message| m.id))
+            .attach_weak_observer(1, Projection::new(|m: &Message| m.id))
             .unwrap();
 
         producer.produce(new_message(1, "abcde"));
@@ -1197,7 +1197,7 @@ mod test {
         let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .attach_strong_observer(Projection::new(|m: &Message| m.id))
             .unwrap();
 
         producer.produce_ref(&new_message(3, "world"));
@@ -1213,7 +1213,7 @@ mod test {
         let queue = OQueueRef::<[u32]>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &[u32]| m.len()))
+            .attach_strong_observer(Projection::new(|m: &[u32]| m.len()))
             .unwrap();
 
         producer.produce_ref(msg);
@@ -1227,7 +1227,7 @@ mod test {
         let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_weak_observer(history, ObservationQuery::new(|m: &Message| m.id))
+            .attach_weak_observer(history, Projection::new(|m: &Message| m.id))
             .unwrap();
         (producer, observer)
     }
@@ -1286,7 +1286,7 @@ mod test {
         let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
             .expect("expected OQueue to exist");
         let observer = queue
-            .attach_weak_observer(2, ObservationQuery::identity())
+            .attach_weak_observer(2, Projection::identity())
             .unwrap();
 
         produce(11);
@@ -1350,7 +1350,7 @@ mod test {
         let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
             .expect("expected OQueue to exist");
         let observer = queue
-            .attach_weak_observer(2, ObservationQuery::identity())
+            .attach_weak_observer(2, Projection::identity())
             .unwrap();
 
         produce(21);
@@ -1382,7 +1382,7 @@ mod test {
         let queue = registry::lookup_by_path::<<u32 as Element>::Descriptor>(&path.into())
             .expect("expected a single OQueue at the shared path");
         let observer = queue
-            .attach_weak_observer(4, ObservationQuery::identity())
+            .attach_weak_observer(4, Projection::identity())
             .unwrap();
 
         // Productions from both should appear in the same OQueue.
@@ -1424,7 +1424,7 @@ mod test {
         let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new_filter(|m: &Message| {
+            .attach_strong_observer(Projection::new_filter(|m: &Message| {
                 if m.id.is_multiple_of(2) {
                     Some(m.id)
                 } else {
@@ -1459,7 +1459,7 @@ mod test {
         let observer = queue
             .attach_weak_observer(
                 2,
-                ObservationQuery::new_filter(|m: &Message| {
+                Projection::new_filter(|m: &Message| {
                     if m.id.is_multiple_of(2) {
                         Some(m.id)
                     } else {
@@ -1505,7 +1505,7 @@ mod test {
         let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .attach_strong_observer(Projection::new(|m: &Message| m.id))
             .unwrap();
 
         assert_eq!(observer.try_strong_observe().unwrap(), None);
@@ -1549,7 +1549,7 @@ mod test {
         let queue = ConsumableOQueueRef::new(4, Path::test());
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .attach_strong_observer(Projection::new(|m: &Message| m.id))
             .unwrap();
 
         let observed_ids: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
@@ -1582,7 +1582,7 @@ mod test {
         let queue = OQueueRef::<Message>::new(4, Path::test());
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
-            .attach_strong_observer(ObservationQuery::new(|m: &Message| m.id))
+            .attach_strong_observer(Projection::new(|m: &Message| m.id))
             .unwrap();
 
         let observed_ids: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));

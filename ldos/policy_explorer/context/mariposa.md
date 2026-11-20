@@ -10,7 +10,7 @@ interface provides directly.
 ## OQueues
 
 An OQueue is a typed ring of events with a path name (e.g. `scheduler.events`); the API is in
-`ostd::orpc::oqueue`. Producers publish events; observers read them through a **query**, a function
+`ostd::orpc::oqueue`. Producers publish events; observers read them through a **projection**, a function
 that projects each event to a small `Copy + Send` value. Two kinds of observers:
 
 - **Weak observer** (use this in policies): keeps the most recent `history_len` projected values.
@@ -33,13 +33,13 @@ your code runs before the producing component is initialized.
 ### Observing at runtime
 
 ```rust
-use ostd::{orpc::oqueue::{registry, LifetimelessElementDescriptor, ObservationQuery, OQueueBase, WeakObserver}, path};
+use ostd::{orpc::oqueue::{registry, LifetimelessElementDescriptor, Projection, OQueueBase, WeakObserver}, path};
 use aster_block::bio::BlockDeviceCompletionStats;
 
 // Once, where allocation is allowed (e.g. in your constructor):
 let observers: Vec<WeakObserver<(u32, u64)>> = registry::lookup_by_type::<LifetimelessElementDescriptor<BlockDeviceCompletionStats>>()
     .into_iter()
-    .filter_map(|q| q.attach_weak_observer(16, ObservationQuery::new(|s: &BlockDeviceCompletionStats| {
+    .filter_map(|q| q.attach_weak_observer(16, Projection::new(|s: &BlockDeviceCompletionStats| {
         (s.device_id, s.latency.as_micros() as u64)
     })).ok())
     .collect();

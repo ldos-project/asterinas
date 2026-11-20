@@ -75,7 +75,7 @@ mod tests {
     use aster_block::test_utils::MemoryDisk;
     use ostd::{
         assertion::sleep,
-        orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, ObservationQuery},
+        orpc::oqueue::{GenericOQueueRef, OQueue, OQueueBase, OQueueRef, Projection},
         path,
         prelude::*,
     };
@@ -102,7 +102,7 @@ mod tests {
         let attachment = ObserverRegistration {
             path,
             observer: oqueue
-                .attach_strong_observer(ObservationQuery::new(|x| *x as u8))
+                .attach_strong_observer(Projection::new(|x| *x as u8))
                 .unwrap(),
         };
         capture_file.register_observer(attachment);

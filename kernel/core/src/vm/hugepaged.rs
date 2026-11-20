@@ -4,7 +4,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::time::Duration;
 
 use ostd::orpc::{
-    oqueue::{OQueueBase as _, query::ObservationQuery},
+    oqueue::{OQueueBase as _, projection::Projection},
     sync::select,
 };
 
@@ -25,7 +25,7 @@ fn run(initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
 
     let pagefault_oq = vmar::oqueues::get_page_fault_oqueue();
     let pagefault_observer =
-        pagefault_oq.attach_strong_observer(ObservationQuery::new(|e: &PageFaultMessage| {
+        pagefault_oq.attach_strong_observer(Projection::new(|e: &PageFaultMessage| {
             PageFaultRecord {
                 vm_space_id: e.vm_space.id(),
                 fault_info: e.fault_info,
@@ -33,7 +33,7 @@ fn run(initproc: Arc<Process>) -> Result<(), Box<dyn core::error::Error>> {
         }))?;
     let notify_observer = notify_server
         .notification_oqueue()
-        .attach_strong_observer(ObservationQuery::identity())?;
+        .attach_strong_observer(Projection::identity())?;
     loop {
         let mut value: Option<PageFaultRecord> = None;
         loop {

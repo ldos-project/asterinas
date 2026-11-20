@@ -12,7 +12,7 @@ use aster_block::BlockDevice;
 use ostd::{
     error, info,
     orpc::{
-        oqueue::{Element, OQueueBase as _, ObservationQuery, registry::lookup_by_type},
+        oqueue::{Element, OQueueBase as _, Projection, registry::lookup_by_type},
         path::Path,
     },
 };
@@ -26,7 +26,7 @@ fn sync_capture_files(period: Duration) -> Result<(), Box<dyn core::error::Error
 
     let notify_observer = notify_server
         .notification_oqueue()
-        .attach_strong_observer(ObservationQuery::identity())?;
+        .attach_strong_observer(Projection::identity())?;
     loop {
         notify_observer.strong_observe()?;
         for f in DATA_CAPTURE_FILE_SYNCERS.lock().iter() {
@@ -122,10 +122,10 @@ pub(crate) fn new_data_capture_file<T: Serialize + Copy + Send + 'static>(
 /// represent the same kind of event for different entities. For example, the I/O operations for
 /// different disks.
 ///
-/// The `query` argument is a function which creates `ObservationQuery`s. This additional level of
-/// indirection is needed because `ObservationQuery` is not `Clone`.
+/// The `projection` argument is a function which creates `Projection`s. This additional level of
+/// indirection is needed because `Projection` is not `Clone`.
 ///
-/// There is no way to put the path of the actual source OQueue into the output file via the query.
+/// There is no way to put the path of the actual source OQueue into the output file via the projection.
 /// This is because `Path` is not `Copy`, so it can't go in the event. (see
 /// <https://github.com/ldos-project/asterinas/issues/232>)
 pub(crate) fn new_data_capture_data_file_by_type<
@@ -134,7 +134,7 @@ pub(crate) fn new_data_capture_data_file_by_type<
 >(
     capture_path: Path,
     length: usize,
-    query: impl Fn() -> ObservationQuery<T::Descriptor, E>,
+    projection: impl Fn() -> Projection<T::Descriptor, E>,
 ) {
     let oqueues = lookup_by_type::<T::Descriptor>();
     if !oqueues.is_empty() {
@@ -156,7 +156,7 @@ pub(crate) fn new_data_capture_data_file_by_type<
                 continue;
             };
             capture_file.register_observer(mariposa_data_capture::ObserverRegistration {
-                observer: oqueue.attach_strong_observer(query()).unwrap(),
+                observer: oqueue.attach_strong_observer(projection()).unwrap(),
                 path: oqueue_path,
             });
         }

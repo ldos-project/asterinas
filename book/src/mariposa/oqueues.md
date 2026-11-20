@@ -181,9 +181,9 @@ observation. The observed value is extracted from the message by a *projection*.
 projection must be `Copy + Send` regardless of the message type. This allows the observed value to
 be efficiently observed by multiple strong and weak observers.
 
-A projection is an `Projection`, a function which extracts the observable value from a message. The
-query is run in the producing context, so it **must** be fast and side-effect free. There are three
-ways to construct one:
+A projection is a `Projection`, a function which extracts the observable value from a message. It
+runs in the producing context, so it **must** be fast and side-effect free. There are three ways to
+construct one:
 
 * `Projection::new(f)` — `f` extracts a value from every message.
 * `Projection::new_filter(f)` — `f` returns an `Option` and may discard some values, so they
@@ -191,10 +191,9 @@ ways to construct one:
 * `Projection::identity()` — for OQueues with a `Copy` element type, observes the whole
   message. Equivalent to `Projection::new(|x| *x)`.
 
-**Future:** Today, a query is an arbitrary Rust closure. A more advanced query language — field
+**Future:** Today, a projection is an arbitrary Rust closure. A more advanced query language — field
 chains, filtering, aggregation, and even joins — is planned. By using such a language, the system
-can perform query optimization across all the queries in the system. This would not be possible
-with arbitrary functions.
+can optimize queries across the system. This would not be possible with arbitrary functions.
 
 ### Default Projections
 
@@ -441,5 +440,5 @@ For details see
 This page describes a future state of the code in some places. The following items are
 **unimplemented**:
 
-1. **Query language.** A richer query language — field chains, filtering, aggregation, and even
-   joins — is planned. Today, queries are arbitrary Rust closures (`Projection`).
+1. **Query language.** A richer projection language — field chains, filtering, aggregation,
+   and even joins — is planned. Today, projections are arbitrary Rust closures (`Projection`).

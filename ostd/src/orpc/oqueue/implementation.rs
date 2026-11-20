@@ -41,7 +41,7 @@ use crate::{
     orpc::{
         oqueue::{
             Cursor, ElementDescriptor, InlineStrongObserver, LifetimelessElementDescriptor,
-            OQueueError, ObservationQuery, ResourceUnavailableSnafu,
+            OQueueError, Projection, ResourceUnavailableSnafu,
             single_thread_ring_buffer::RingBuffer,
         },
         path::Path,
@@ -221,7 +221,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// observation ring buffer.
     fn new_observation_ring_buffer<U>(
         self: &Arc<Self>,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
         len: usize,
         is_strong: bool,
         revocable: bool,
@@ -229,7 +229,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     where
         U: Copy + Send + 'static,
     {
-        let mut ring_buffer = ObservationRingBuffer::new::<U>(query, len)
+        let mut ring_buffer = ObservationRingBuffer::new::<U>(projection, len)
             .map_err(|_| ResourceUnavailableSnafu.build())?;
         ring_buffer.revocable = revocable;
 
@@ -251,35 +251,36 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attach a strong observer.
     pub(super) fn attach_strong_observer<U>(
         self: &Arc<Self>,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
-        self.attach_strong_observer_inner(query, false)
+        self.attach_strong_observer_inner(projection, false)
     }
 
     /// Attach a revocable strong observer that is dropped, rather than blocking producers, when it
     /// falls too far behind.
     pub(super) fn attach_revocable_strong_observer<U>(
         self: &Arc<Self>,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
-        self.attach_strong_observer_inner(query, true)
+        self.attach_strong_observer_inner(projection, true)
     }
 
     fn attach_strong_observer_inner<U>(
         self: &Arc<Self>,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
         revocable: bool,
     ) -> Result<super::StrongObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
-        let observer_key = self.new_observation_ring_buffer(query, self.len, true, revocable)?;
+        let observer_key =
+            self.new_observation_ring_buffer(projection, self.len, true, revocable)?;
         let oqueue: Arc<dyn UntypedOQueueImplementation> = self.clone();
         Ok(super::StrongObserver {
             oqueue,
@@ -292,7 +293,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
     /// value.
     ///
-    /// This cannot be combined with the below query based one because the "identity query" cannot
+    /// This cannot be combined with the below projection based one because the "identity projection" cannot
     /// exist for `T: !Copy`.
     pub(super) fn attach_inline_strong_observer(
         self: &Arc<Self>,
@@ -308,7 +309,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     }
 
     /// Attach a strong observer to the OQueue by calling a strong observer function with each
-    /// value. The value is passed through a query. This is used for converting a strong-observer
+    /// value. The value is passed through a projection. This is used for converting a strong-observer
     /// attachment into an inline.
     ///
     /// This removes the ring buffer associated with `observer_id` so it is no longer valid (and may
@@ -331,8 +332,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             .remove(observer_id)
             .expect("tried to attach inline strong observer for observer_id which did not exist");
         let freed = this.unfull(observation_ring_buffer.blocks_producers());
-        let query = (observation_ring_buffer.query as Box<dyn Any>)
-            .downcast::<ObservationQuery<D, U>>()
+        let projection = (observation_ring_buffer.projection as Box<dyn Any>)
+            .downcast::<Projection<D, U>>()
             .expect("tried to attach inline strong observer with a different type from original attachment");
 
         // Drain the ring buffer into the function. A revoked observer has no buffer, so there is
@@ -350,7 +351,7 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         // own GAT lifetime, as `for<'a> Fn(&'a MD::Element<'a>)` requires.
         #[expect(clippy::type_complexity)]
         let handler: Box<dyn for<'a> Fn(&'a D::Element<'a>) + Send> = Box::new(move |v| {
-            if let Some(v) = query.call(v) {
+            if let Some(v) = projection.call(v) {
                 f(&v)
             }
         });
@@ -367,14 +368,15 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
     pub(super) fn attach_weak_observer<U>(
         self: &Arc<Self>,
         history_len: usize,
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
     ) -> Result<super::WeakObserver<U>, OQueueError>
     where
         U: Copy + Send + 'static,
     {
         // weak observer doesn't have the "blocking producer" issue so the discussion of
         // whether it's buffer is revokable is not applicable. Always set to false.
-        let observer_key = self.new_observation_ring_buffer(query, history_len, false, false)?;
+        let observer_key =
+            self.new_observation_ring_buffer(projection, history_len, false, false)?;
         Ok(super::WeakObserver {
             oqueue: self.clone(),
             observer_id: observer_key,
@@ -409,8 +411,8 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
         })
     }
 
-    /// Attempt to produce a value by reference. This executes all the queries on `v` and places the
-    /// query results into the appropriate observation ring buffers.
+    /// Attempt to produce a value by reference. This executes all the projections on `v` and places the
+    /// projection results into the appropriate observation ring buffers.
     pub(super) fn try_produce_ref<'a>(&self, v: &'a D::Element<'a>) -> bool {
         let mut inner = self.inner.lock();
         assert!(inner.consumer_ring_buffer.is_none());
@@ -427,14 +429,14 @@ impl<D: ElementDescriptor + 'static> OQueueImplementation<D> {
             // become full.
             let mut newly_full = 0;
             for ObservationRingBuffer {
-                query,
+                projection,
                 ring_buffer,
                 revocable,
                 ..
             } in inner.observer_ring_buffers.values_mut()
             {
                 if let Some(ring_buffer) = ring_buffer {
-                    query.call_into(v, ring_buffer);
+                    projection.call_into(v, ring_buffer);
                     if !*revocable && !ring_buffer.can_produce() {
                         newly_full += 1;
                     }
@@ -554,14 +556,14 @@ impl<T: Send + 'static> OQueueImplementation<LifetimelessElementDescriptor<T>> {
             // become full.
             let mut newly_full = 0;
             for ObservationRingBuffer {
-                query,
+                projection,
                 ring_buffer,
                 revocable,
                 ..
             } in inner.observer_ring_buffers.values_mut()
             {
                 if let Some(ring_buffer) = ring_buffer {
-                    query.call_into(&v, ring_buffer);
+                    projection.call_into(&v, ring_buffer);
                     if !*revocable && !ring_buffer.can_produce() {
                         newly_full += 1;
                     }
@@ -701,7 +703,7 @@ struct OQueueInner<D: ElementDescriptor> {
     // buffer, or *only* a single observer ring. It would be nice if either could be inlined. As of
     // now, the consumer is always inlined even when it's not in use, and the observer never is.
     // TODO: PERFORMANCE: This needs a way to share ring buffers when multiple consumers use the
-    // same query.
+    // same projection.
     /// Inline strong observers of the message type. These will be called during production.
     #[expect(clippy::type_complexity)]
     inline_strong_observers:
@@ -743,19 +745,17 @@ impl<D: ElementDescriptor> OQueueInner<D> {
     }
 }
 
-/// A partially type erased [`ObservationQuery`] with `U` (the query output type) erased, but `MD`
+/// A partially type erased [`Projection`] with `U` (the projection output type) erased, but `MD`
 /// (the message descriptor) retained statically. This is used in the OQueue machinery to dispatch
-/// to the query and produce it's result into a [`RingBuffer`].
-trait ErasedObservationQuery<D: ElementDescriptor>: Send + Any {
-    /// Call the query and then produce the value into the provided ring buffer. The ring buffer
-    /// must have a type matching the result of the query (`U` below). Returns false if the value
+/// to the projection and produce it's result into a [`RingBuffer`].
+trait ErasedProjection<D: ElementDescriptor>: Send + Any {
+    /// Call the projection and then produce the value into the provided ring buffer. The ring buffer
+    /// must have a type matching the result of the projection (`U` below). Returns false if the value
     /// could not be produced into `ring_buffer`.
     fn call_into<'a>(&self, v: &'a D::Element<'a>, ring_buffer: &mut RingBuffer) -> bool;
 }
 
-impl<D: ElementDescriptor + 'static, U: Send + 'static> ErasedObservationQuery<D>
-    for ObservationQuery<D, U>
-{
+impl<D: ElementDescriptor + 'static, U: Send + 'static> ErasedProjection<D> for Projection<D, U> {
     fn call_into<'a>(&self, v: &'a D::Element<'a>, ring_buffer: &mut RingBuffer) -> bool {
         if let Some(v) = self.call(v) {
             ring_buffer.try_produce(v).is_none()
@@ -769,9 +769,9 @@ impl<D: ElementDescriptor + 'static, U: Send + 'static> ErasedObservationQuery<D
 /// observe operations without exposing the type of the observed value (`U`).
 struct ObservationRingBuffer<D: ElementDescriptor> {
     // TODO: PERFORMANCE: Replace the dyn ref and optimize based on the known structure of
-    // ObservationQuery. This should remove a level of pointer indirection.
-    /// The query to filter the message and place the result into the ring buffer.
-    query: Box<dyn ErasedObservationQuery<D>>,
+    // Projection. This should remove a level of pointer indirection.
+    /// The projection to filter the message and place the result into the ring buffer.
+    projection: Box<dyn ErasedProjection<D>>,
     /// Function to extract a value from the ring buffer with strong observer semantics and place it
     /// in the memory pointed to by `dest`. This indirection is needed since the type `U` in the
     /// ring buffer is not statically known.
@@ -795,7 +795,7 @@ struct ObservationRingBuffer<D: ElementDescriptor> {
     /// A revoked observer no longer gates production and its next observe returns
     /// [`OQueueError::Revoked`](super::OQueueError::Revoked). Revoking frees the (potentially large)
     /// ring buffer so that an observer which is repeatedly revoked and reattached cannot grow memory
-    /// without bound. The lighter-weight `query` is retained so the slot can still report the
+    /// without bound. The lighter-weight `projection` is retained so the slot can still report the
     /// revoked state and be converted to an inline observer.
     ring_buffer: Option<RingBuffer>,
     /// Whether this observer may be revoked (dropped) when its ring fills, instead of applying
@@ -819,7 +819,7 @@ impl<D: ElementDescriptor + 'static> ObservationRingBuffer<D> {
     /// Create a new ring buffer for a message descriptor `MD` and an observed type of `U`. This
     /// will be used to store values of type `U` for observation.
     fn new<U: Copy + Send + 'static>(
-        query: ObservationQuery<D, U>,
+        projection: Projection<D, U>,
         len: usize,
     ) -> Result<Self, AllocError> {
         let ring_buffer = RingBuffer::new::<U>(len)?;
@@ -860,7 +860,7 @@ impl<D: ElementDescriptor + 'static> ObservationRingBuffer<D> {
         }
 
         Ok(ObservationRingBuffer {
-            query: Box::new(query),
+            projection: Box::new(projection),
             try_strong_observe_into: try_strong_observe_into::<U>,
             weak_observe_into: weak_observe_into::<U>,
             ring_buffer: Some(ring_buffer),

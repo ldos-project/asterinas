@@ -5,8 +5,8 @@ use core::sync::atomic::Ordering;
 use ostd::{
     cpu::CpuId,
     orpc::oqueue::{
-        ConsumableOQueue as _, ConsumableOQueueRef, InlineConsumer, OQueueBase as _,
-        ObservationQuery, WeakObserver, registry,
+        ConsumableOQueue as _, ConsumableOQueueRef, InlineConsumer, OQueueBase as _, Projection,
+        WeakObserver, registry,
     },
     path,
     sync::{LocalIrqDisabled, SpinLock},
@@ -42,7 +42,7 @@ impl UserspacePolicy {
         let oqueue = ConsumableOQueueRef::<u32>::new(OQUEUE_CAPACITY, path.clone());
         registry::register_producible(&path, &oqueue);
         let observer = oqueue
-            .attach_weak_observer(1, ObservationQuery::identity())
+            .attach_weak_observer(1, Projection::identity())
             .expect("a new OQueue accepts a weak observer");
         let consumer = oqueue
             .attach_consumer()
