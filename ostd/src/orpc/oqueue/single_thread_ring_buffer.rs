@@ -76,6 +76,7 @@ pub(super) struct RingBuffer<T: ?Sized> {
     /// Function to drop all values still in the queue. This is safe, because it will simply discard
     /// values until the queue has no droppable values in it.
     drop_fn: fn(&mut RingBuffer<T>),
+
     // Construction requires Send + 'static elements. The non-owning marker lets descriptor-
     // generic queues contain an empty consumer ring even for unsized or non-Send elements.
     element: PhantomData<fn() -> T>,

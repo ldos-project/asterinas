@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Projection-backed streams with independently positioned buffered and inline readers.
+//! Projection-backed ring buffers with independently positioned buffered and inline readers.
 
 use alloc::{alloc::AllocError, boxed::Box};
 use core::{
@@ -30,12 +30,12 @@ pub(super) enum ReadPosition {
 }
 
 /// A destination whose type is guaranteed by its observer handle.
-/// It erases the output type `U` when passed through the stream interface.
+/// It erases the output type `U` when passed through the ring buffer interface.
 pub(super) struct ErasedOutput<'a> {
-    /// Writable storage for `U`, passed through the stream interface as an untyped pointer.
+    /// Writable storage for `U`, passed through the ring buffer interface as an untyped pointer.
     pointer: *mut (),
     #[cfg(debug_assertions)]
-    /// The `TypeId` of erased `U`, checked against the stream in debug builds.
+    /// The `TypeId` of erased `U`, checked against the ring buffer in debug builds.
     type_id: TypeId,
     lifetime: PhantomData<&'a mut ()>,
 }
@@ -62,17 +62,17 @@ impl<'a> ErasedOutput<'a> {
     }
 }
 
-/// A boxed typed callback, downcast once when attaching it to a stream.
-/// The callback's input type `U` is erased until it reaches that stream.
+/// A boxed typed callback, downcast once when attaching it to a ring buffer.
+/// The callback's input type `U` is erased until it reaches that ring buffer.
 pub(in crate::orpc::oqueue) type ErasedHandler = Box<dyn Any + Send>;
 
 /// A projection-backed sequence of observations and the readers attached to it.
 ///
-/// A stream evaluates one projection on produced queue elements and retains its results in a ring
-/// shared by its buffered readers. Strong readers have independent heads; weak readers access
+/// Each buffer evaluates one projection and retains its results for buffered readers.
+/// Strong readers have independent heads; weak readers access
 /// retained results by cursor. Inline readers receive results directly without a ring head.
 /// The projection's output type `U` is erased, while its input descriptor remains `D`.
-pub(super) trait ObservationStream<D: ElementDescriptor>: Send {
+pub(super) trait ObservationRingBuffer<D: ElementDescriptor>: Send {
     /// Attaches a reader with the requested mode.
     fn attach_reader(&mut self, mode: ReaderMode) -> Result<ReaderKey, AllocError>;
 
@@ -97,7 +97,7 @@ pub(super) trait ObservationStream<D: ElementDescriptor>: Send {
     /// Writes an observation iff this returns `Ok(true)`.
     ///
     /// # Safety
-    /// `output` must be valid storage for this stream's output type.
+    /// `output` must be valid storage for this ring buffer's output type.
     unsafe fn read_into(
         &mut self,
         reader: ReaderKey,
@@ -109,7 +109,7 @@ pub(super) trait ObservationStream<D: ElementDescriptor>: Send {
     fn make_inline(&mut self, reader: ReaderKey, handler: ErasedHandler);
 }
 
-pub(super) struct TypedObservationStream<D: ElementDescriptor, U> {
+pub(super) struct TypedObservationRingBuffer<D: ElementDescriptor, U> {
     projection: Projection<D, U>,
     ring: Option<RingBuffer<U>>,
     len: usize,
@@ -123,7 +123,7 @@ enum Reader<U> {
     Inline(Box<dyn Fn(&U) + Send>),
 }
 
-impl<D: ElementDescriptor, U: Copy + Send + 'static> TypedObservationStream<D, U> {
+impl<D: ElementDescriptor, U: Copy + Send + 'static> TypedObservationRingBuffer<D, U> {
     pub(super) fn new(projection: Projection<D, U>, len: usize) -> Self {
         Self {
             projection,
@@ -144,8 +144,8 @@ impl<D: ElementDescriptor, U: Copy + Send + 'static> TypedObservationStream<D, U
     }
 }
 
-impl<D: ElementDescriptor, U: Copy + Send + 'static> ObservationStream<D>
-    for TypedObservationStream<D, U>
+impl<D: ElementDescriptor, U: Copy + Send + 'static> ObservationRingBuffer<D>
+    for TypedObservationRingBuffer<D, U>
 {
     fn attach_reader(&mut self, mode: ReaderMode) -> Result<ReaderKey, AllocError> {
         if self.ring.is_none() {
@@ -248,7 +248,7 @@ impl<D: ElementDescriptor, U: Copy + Send + 'static> ObservationStream<D>
             _ => unreachable!("read position must match observer kind"),
         };
         if let Some(value) = value {
-            // SAFETY: The caller supplies storage for this stream's U.
+            // SAFETY: The caller supplies storage for this ring buffer's U.
             unsafe { output.write(value) };
             Ok(true)
         } else {
@@ -259,7 +259,7 @@ impl<D: ElementDescriptor, U: Copy + Send + 'static> ObservationStream<D>
     fn make_inline(&mut self, reader: ReaderKey, handler: ErasedHandler) {
         let handler = *handler
             .downcast::<Box<dyn Fn(&U) + Send>>()
-            .expect("inline callback must match the stream's output type");
+            .expect("inline callback must match the ring buffer's output type");
         if let Reader::Strong { head, .. } = self.readers[reader] {
             let ring = self.ring.as_mut().unwrap();
             while let Some(value) = ring.try_strong_observe(head) {
