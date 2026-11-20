@@ -153,10 +153,10 @@ impl Pause for Waiter {
             };
 
             if has_pending {
-                return Err(Error::with_message(
+                return_errno_with_message!(
                     Errno::EINTR,
-                    "the current thread is interrupted by a signal",
-                ));
+                    "the current thread is interrupted by a signal"
+                );
             }
             Ok(())
         };
@@ -200,7 +200,7 @@ impl Pause for Waiter {
         }
 
         if let Some(timer) = timer {
-            let timer_guard = timer.lock();
+            let mut timer_guard = timer.lock();
             if timer_guard.remain().is_zero() {
                 return_errno_with_message!(Errno::ETIME, "the time limit is reached");
             }
