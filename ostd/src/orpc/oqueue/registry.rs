@@ -18,8 +18,7 @@ use crate::{
             Projection, WeakAnyOQueueRef,
             default_projection::DefaultProjection,
             export::{
-                OQueueExport, OQueueExportHandle, make_export, make_export_with,
-                make_produce_export, make_public_producible_export,
+                OQueueExport, OQueueExportHandle, make_export_with, make_public_producible_export,
             },
         },
         path::{Path, PathPattern},
@@ -128,21 +127,6 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
     guard
 }
 
-/// Registers an OQueue at `path` and exports it to userspace with the message type's derived
-/// `Serialize` implementation (the whole message is streamed).
-///
-/// This is the common case for exportable queues: the message type just needs
-/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use
-/// [`register_with_projection`] to provide a projection, [`register_with`] to use the message
-/// type's [`DefaultProjection`], or [`register_no_export`] for queues that must not be exported.
-pub fn register<T: Copy + Send + Serialize + 'static>(
-    path: &Path,
-    oqueue: &GenericAnyOQueueRef<crate::orpc::oqueue::LifetimelessElementDescriptor<T>>,
-) {
-    ensure_registered(path, oqueue);
-    insert_export(path, make_export(oqueue));
-}
-
 /// Registers an OQueue at `path` and exports it to userspace using the element's default projection.
 ///
 /// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
@@ -175,25 +159,6 @@ pub fn register_with_projection<D, U>(
 {
     ensure_registered(path, oqueue);
     insert_export(path, make_export_with(oqueue, projection));
-}
-
-/// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production
-/// and consumption: a userspace writer can attach a producer (e.g. via the OQueue filesystem's
-/// `produce` file) and send values of type `T` into the queue by writing their CBOR encoding, and
-/// a userspace reader can attach a consumer.
-///
-/// Unlike [`register`], [`register_with`], and [`register_with_projection`], this is for produce and
-/// consume in userspace; only a [`ConsumableOQueueRef`] can be passed.
-///
-/// # Panics
-///
-/// Panics if a live export already exists at `path`.
-pub fn register_producible<T: Send + Serialize + serde::de::DeserializeOwned + 'static>(
-    path: &Path,
-    oqueue: &ConsumableOQueueRef<T>,
-) {
-    ensure_registered(path, &oqueue.as_any_oqueue());
-    insert_export(path, make_produce_export(oqueue));
 }
 
 /// Registers a consumable OQueue with userspace observation, production, and consumption.

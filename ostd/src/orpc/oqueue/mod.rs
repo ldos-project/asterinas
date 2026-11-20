@@ -793,33 +793,6 @@ impl<T: 'static> ConsumableOQueueRef<T> {
     }
 }
 
-impl<T: Send + 'static> ConsumableOQueueRef<T> {
-    /// Create a new OQueue with the specified buffer length and support for produce by value and
-    /// consumers.
-    pub fn new(len: usize, path: Path) -> Self {
-        let inner = Arc::new(implementation::OQueueImplementation::new(
-            len,
-            true,
-            true,
-            Some(path.clone()),
-        ));
-        let ret = Self { inner };
-        registry::register_no_export(&path, &ret.as_any_oqueue());
-        ret
-    }
-
-    /// Create a new anonymous OQueue with the specified buffer length and support for produce by
-    /// value and consumers. This should only be used when the OQueue should never be discovered for
-    /// observation such as for ephemeral queues.
-    pub fn new_anonymous(len: usize) -> Self {
-        Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(
-                len, true, true, None,
-            )),
-        }
-    }
-}
-
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(ConsumableOQueueRef, T: Send, LifetimelessElementDescriptor<T>, inner);
 impl_consumable_oqueue_forward!(ConsumableOQueueRef<T>, inner);
@@ -835,32 +808,6 @@ pub struct GenericOQueueRef<D: ElementDescriptor + 'static> {
 pub type OQueueRef<T> = GenericOQueueRef<<T as Element>::Descriptor>;
 
 clone_without_t!(GenericOQueueRef, : ElementDescriptor + 'static);
-
-impl<D: ElementDescriptor + 'static> GenericOQueueRef<D> {
-    /// Create a new observation OQueue with the specified buffer length.
-    pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(
-                len,
-                false,
-                true,
-                Some(path.clone()),
-            )),
-        };
-        registry::register_no_export(&path, &ret.as_any_oqueue());
-        ret
-    }
-
-    /// Create a new observation OQueue with the specified buffer length. This should only be used
-    /// when the OQueue should never be discovered for observation such as for ephemeral queues.
-    pub fn new_anonymous(len: usize) -> Self {
-        Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(
-                len, false, true, None,
-            )),
-        }
-    }
-}
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(GenericOQueueRef, D: ElementDescriptor, D, inner);
