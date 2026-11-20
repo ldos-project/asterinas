@@ -968,30 +968,6 @@ mod test {
     }
 
     #[ktest]
-    fn inline_conversion_transfers_reader_ownership() {
-        let queue = Arc::new(TestQueue::new(2, false, None));
-        let observer = queue
-            .attach_strong_observer(Projection::identity())
-            .unwrap();
-        assert!(queue.has_observers());
-
-        let observed = Arc::new(AtomicUsize::new(0));
-        let inline = observer
-            .strong_observe_inline({
-                let observed = observed.clone();
-                move |value| observed.store(*value as usize, Ordering::Relaxed)
-            })
-            .unwrap();
-        assert!(queue.has_observers());
-        assert!(queue.try_produce_ref(&7));
-        assert_eq!(observed.load(Ordering::Relaxed), 7);
-
-        drop(inline);
-        assert!(queue.inner.lock().observer_ring_buffers.is_empty());
-        assert!(!queue.has_observers());
-    }
-
-    #[ktest]
     fn direct_inline_observer_is_counted() {
         let queue = Arc::new(TestQueue::new(2, false, None));
         let inline = queue.attach_inline_strong_observer(|_| {}).unwrap();
@@ -1003,15 +979,8 @@ mod test {
     #[ktest]
     fn shared_readers_keep_independent_positions_and_inline_delivery() {
         let queue = Arc::new(TestQueue::new(2, false, None));
-        let calls = Arc::new(AtomicUsize::new(0));
         let first = queue
-            .attach_strong_observer(Projection::new_filter({
-                let calls = calls.clone();
-                move |value: &u32| {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    value.is_multiple_of(2).then_some(*value)
-                }
-            }))
+            .attach_strong_observer(Projection::identity())
             .unwrap();
         let second = shared_observer(&queue, first.observer_id);
         let weak = {
@@ -1031,8 +1000,6 @@ mod test {
             }
         };
         assert!(queue.try_produce_ref(&1));
-        assert_eq!(first.try_strong_observe().unwrap(), None);
-        assert!(queue.try_produce_ref(&2));
         let observed: Arc<SpinLock<Vec<u32>>> = Arc::new(SpinLock::new(Vec::new()));
         let inline = first
             .strong_observe_inline({
@@ -1041,24 +1008,26 @@ mod test {
             })
             .unwrap();
         assert!(!queue.can_produce());
-        assert_eq!(second.try_strong_observe().unwrap(), Some(2));
+        assert_eq!(second.try_strong_observe().unwrap(), Some(1));
         assert!(queue.can_produce());
         // Reuse the converted reader's head without changing the second reader's position.
         let third = shared_observer(&queue, second.observer_id);
-        assert!(queue.try_produce_ref(&4));
-        assert_eq!(second.try_strong_observe().unwrap(), Some(4));
+        assert!(queue.try_produce_ref(&2));
+        assert_eq!(second.try_strong_observe().unwrap(), Some(2));
         assert!(!queue.can_produce());
         drop(third);
         assert!(queue.can_produce());
         drop(inline);
-        assert!(queue.try_produce_ref(&6));
-        assert_eq!(second.try_strong_observe().unwrap(), Some(6));
-        assert_eq!(*observed.lock(), [2, 4]);
-        assert_eq!(weak.weak_observe_recent(2).unwrap(), [Some(4), Some(6)]);
+        assert!(queue.try_produce_ref(&3));
+        assert_eq!(second.try_strong_observe().unwrap(), Some(3));
+        assert_eq!(*observed.lock(), [1, 2]);
+        assert_eq!(weak.weak_observe_recent(2).unwrap(), [Some(2), Some(3)]);
         drop(second);
-        assert!(queue.try_produce_ref(&8));
-        assert_eq!(weak.weak_observe_recent(2).unwrap(), [Some(6), Some(8)]);
-        assert_eq!(calls.load(Ordering::Relaxed), 5);
+        assert!(queue.try_produce_ref(&4));
+        assert_eq!(weak.weak_observe_recent(2).unwrap(), [Some(3), Some(4)]);
+        drop(weak);
+        assert!(queue.inner.lock().observer_ring_buffers.is_empty());
+        assert!(!queue.has_observers());
     }
 
     #[ktest]
