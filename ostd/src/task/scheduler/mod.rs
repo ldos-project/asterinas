@@ -70,19 +70,17 @@ pub mod info;
 
 use core::time::Duration;
 
-use orpc_macros::Element;
 use serde::Serialize;
 use spin::Once;
 
 use super::{Task, preempt::cpu_local, processor};
 #[cfg(all(feature = "capture_scheduling", not(baseline_asterinas)))]
 use crate::orpc::oqueue::RefProducer;
-#[cfg(not(baseline_asterinas))]
-use crate::orpc::oqueue::default_projection::DefaultProjection;
 use crate::{
     cpu::{CpuId, CpuSet, PinCurrentCpu},
+    orpc::oqueue::{DefaultProjection, Element},
     prelude::*,
-    task::disable_preempt,
+    task::{disable_preempt, scheduler::info::CommonSchedInfo as _},
     timer,
 };
 
@@ -177,18 +175,17 @@ pub fn enable_preemption_on_cpu() {
 static SCHEDULER: Once<&'static dyn Scheduler<Task>> = Once::new();
 
 /// An event either or scheduling or descheduling a task.
-#[cfg_attr(not(baseline_asterinas), derive(Element, DefaultProjection))]
+#[derive(Element, DefaultProjection)]
 pub struct SchedulingEvent {
     /// The task
-    #[cfg_attr(not(baseline_asterinas), projection(opaque))]
+    #[projection(opaque)]
     pub task: Arc<Task>,
     /// The kind of event
     pub kind: SchedulingEventKind,
 }
 
 /// The kind of a [`SchedulingEvent`].
-#[derive(Debug, Clone, Copy, Serialize)]
-#[cfg_attr(not(baseline_asterinas), derive(DefaultProjection))]
+#[derive(Debug, Clone, Copy, Serialize, DefaultProjection)]
 pub enum SchedulingEventKind {
     /// The task is about to start executing.
     Schedule,
@@ -562,6 +559,11 @@ where
 
 /// Unblocks a target task.
 pub(crate) fn unpark_target(runnable: Arc<Task>) {
+    // Refuse to schedule exited tasks.
+    if runnable.is_exited() {
+        return;
+    }
+
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Wake);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
@@ -571,6 +573,11 @@ pub(crate) fn unpark_target(runnable: Arc<Task>) {
 /// Unblocks a target task and force it to run immediate, giving up the CPU to it if needed
 /// (similarly to yielding).
 pub(crate) fn switch_to_target(runnable: Arc<Task>) {
+    // Refuse to schedule exited tasks.
+    if runnable.is_exited() {
+        return;
+    }
+
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::ForceSchedule);
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
@@ -618,26 +625,39 @@ pub fn set_need_preempt(cpu_id: CpuId) {
 /// This should only be called if the current is to exit.
 #[track_caller]
 pub(super) fn exit_current() -> ! {
-    let mut is_first_try = true;
+    if let Some(task) = Task::current() {
+        task.is_exited
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
 
-    reschedule(|local_rq: &mut dyn LocalRunQueue| {
-        let next_task_opt = if is_first_try {
-            is_first_try = false;
-            let should_pick_next = local_rq.update_current(UpdateFlags::Exit);
-            let _current = local_rq.dequeue_current();
-            should_pick_next.then(|| local_rq.pick_next())
-        } else {
-            local_rq.try_pick_next()
-        };
+    loop {
+        let mut is_first_try = true;
 
-        if let Some(next_task) = next_task_opt {
-            ReschedAction::SwitchTo(next_task.clone())
-        } else {
-            ReschedAction::Retry
-        }
-    });
+        reschedule(|local_rq: &mut dyn LocalRunQueue| {
+            let next_task_opt = if is_first_try {
+                is_first_try = false;
+                let should_pick_next = local_rq.update_current(UpdateFlags::Exit);
+                let _current = local_rq.dequeue_current();
+                should_pick_next.then(|| local_rq.pick_next())
+            } else {
+                local_rq.try_pick_next()
+            };
 
-    unreachable!()
+            if let Some(next_task) = next_task_opt {
+                ReschedAction::SwitchTo(next_task.clone())
+            } else {
+                ReschedAction::Retry
+            }
+        });
+
+        // The above reschedule should never return because the task exited. However, a buggy
+        // scheduler could return a task which already exited and cause it to run. To avoid this in
+        // all cases, the scheduler must perform some kind of synchronization between
+        // `update_current(Exit)` and `enqueue` on different LocalRunQueue implementation. Even
+        // without that, this is unreachable if task references do not outlive the task (which is
+        // the common case).
+        crate::warn!("Switched to already exited task.");
+    }
 }
 
 /// Yields execution.
@@ -749,7 +769,7 @@ pub fn idle_time() -> Duration {
 mod test {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::*;
+    use super::{info::CommonSchedInfo, *};
     use crate::task::TaskOptions;
 
     /// Test the expected scheduling behavior of unparking. It relies on the behavior of the ostd
@@ -816,5 +836,29 @@ mod test {
         switch_to_target(test_task);
 
         assert_eq!(counter.fetch_add(1, Ordering::Relaxed), 1);
+    }
+
+    /// Waking a task whose function has returned must be a no-op: the task will
+    /// never be scheduled again, and re-enqueuing it would resume a dead stack
+    /// and panic in `exit_current`.
+    #[ktest]
+    fn wake_exiting_task() {
+        let exiting_task = TaskOptions::new(|| Task::yield_now()).spawn().unwrap();
+
+        // Wait until the task has exited, i.e. `exit_current` dequeued it and
+        // cleared its `cpu` field (the `exiting` flag was set just before, under
+        // the same runqueue lock).
+        while exiting_task.cpu().get().is_some() {
+            Task::yield_now();
+        }
+
+        // Both wake flavors must now be no-ops.
+        unpark_target(exiting_task.clone());
+        switch_to_target(exiting_task);
+        Task::yield_now();
+
+        // Without the fix, the zombie above is picked by now (or inside
+        // `switch_to_target` via `might_preempt`) and panics at
+        // `exit_current`'s `unreachable!()`; reaching this point means it didn't.
     }
 }

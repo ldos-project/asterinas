@@ -80,10 +80,17 @@ impl CommonSchedInfo for Task {
     fn cpu(&self) -> &AtomicCpuId {
         &self.schedule_info().cpu
     }
+
+    fn is_exited(&self) -> bool {
+        self.is_exited.load(Ordering::Acquire)
+    }
 }
 
 /// Trait for fetching common scheduling information.
 pub trait CommonSchedInfo {
     /// Gets the CPU that the task is running on or lately ran on.
     fn cpu(&self) -> &AtomicCpuId;
+
+    /// True if the task has already exited.
+    fn is_exited(&self) -> bool;
 }

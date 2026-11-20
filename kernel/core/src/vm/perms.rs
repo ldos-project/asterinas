@@ -2,7 +2,7 @@
 
 use aster_rights::Rights;
 use bitflags::bitflags;
-use ostd::mm::PageFlags;
+use ostd::{mm::PageFlags, orpc::oqueue::Projectable};
 use serde::Serialize;
 
 use crate::prelude::*;
@@ -10,7 +10,7 @@ use crate::prelude::*;
 bitflags! {
     /// The memory access permissions of memory mappings.
     // NOTE: `check` hardcodes `MAY_READ >> 3 == READ`, and so for r/w/x bits.
-    #[derive(Clone, Copy, Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Projectable, Serialize)]
     pub(crate) struct VmPerms: u32 {
         /// Readable.
         const READ          = 1 << 0;
@@ -28,17 +28,6 @@ bitflags! {
         const ALL_PERMS     = Self::READ.bits() | Self::WRITE.bits() | Self::EXEC.bits();
         /// All `MAY_*` permissions (MAY_READ | MAY_WRITE | MAY_EXEC).
         const ALL_MAY_PERMS = Self::MAY_READ.bits() | Self::MAY_WRITE.bits() | Self::MAY_EXEC.bits();
-    }
-}
-
-// Implemented manually because `bitflags` 2.x can only derive `Serialize`
-// with its `serde` feature, which is not enabled.
-impl Serialize for VmPerms {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> core::result::Result<S::Ok, S::Error> {
-        serializer.serialize_u32(self.bits())
     }
 }
 

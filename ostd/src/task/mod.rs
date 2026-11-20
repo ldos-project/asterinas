@@ -134,6 +134,13 @@ pub struct Task {
     /// See [`processor::switch_to_task`] for more details.
     switched_to_cpu: AtomicBool,
 
+    /// True if this task has exited by returning from its body function. This is set in
+    /// [`scheduler::exit_current()`].
+    ///
+    /// This is to enforce not context switching to a task which has been exited and does not have a
+    /// valid stack. See [`processor::switch_to_task`] for more details.
+    is_exited: AtomicBool,
+
     /// An opaque ID for the task.
     id: NonZeroUsize,
 
@@ -347,6 +354,7 @@ impl TaskOptions {
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
             switched_to_cpu: AtomicBool::new(false),
+            is_exited: AtomicBool::new(false),
             id: NonZeroUsize::new(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed)).unwrap(),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
