@@ -112,7 +112,7 @@ pub enum ProduceCborError {
 }
 
 /// A per-reader handle that accepts CBOR-encoded bytes from userspace and produces the decoded
-/// values into an OQueue, with the message type erased.
+/// values into an OQueue, with the message type `T` erased.
 pub trait CborProducer: Send {
     /// Attempts to decode one CBOR-encoded record from the front of `bytes` and, if complete,
     /// blocks (if necessary) until there is space to produce it into the OQueue.
@@ -143,6 +143,7 @@ pub trait CborProducer: Send {
 ///
 /// Strong observe and consume can be combined in the CBOR layer (unlike the OQueue main interface),
 /// because the conversion to CBOR eliminates the Rust ownership semantics of consume.
+/// The erased type is projected output `U` for observers and message type `T` for consumers.
 pub trait CborReader: Send {
     /// Drains the next value without blocking and appends its CBOR record to `out`.
     ///
