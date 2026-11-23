@@ -128,6 +128,289 @@ pub use export::{CborProducer, CborReader, OQueueExport, ProduceCborError};
 pub use implementation::WakeHook;
 use ostd_macros::ostd_error;
 pub use projection::Projection;
+
+/// Where a named OQueue is registered.
+pub struct Visibility;
+
+/// Registers in the kernel and exports through `/oqfs`.
+pub struct PublicVisibility;
+/// Registers for kernel lookup only.
+pub struct KernelVisibility;
+/// Does not register the OQueue.
+pub struct NoVisibility;
+
+impl Visibility {
+    /// Kernel lookup and userspace export.
+    #[expect(non_upper_case_globals)]
+    pub const Public: PublicVisibility = PublicVisibility;
+    /// Kernel lookup only.
+    #[expect(non_upper_case_globals)]
+    pub const Kernel: KernelVisibility = KernelVisibility;
+    /// No registration.
+    #[expect(non_upper_case_globals)]
+    pub const None: NoVisibility = NoVisibility;
+}
+
+/// Configures an OQueue before it is created.
+pub struct OQueueBuilder<
+    const ALLOW_CONSUMERS: bool = false,
+    V = PublicVisibility,
+    const USERSPACE_PRODUCIBLE: bool = false,
+> {
+    len: usize,
+    path: BuilderPath,
+    supports_observer_blocking_produce: bool,
+    visibility: PhantomData<V>,
+}
+
+enum BuilderPath {
+    Unset,
+    Named(Path),
+    Anonymous,
+}
+
+impl BuilderPath {
+    fn named(&self) -> Option<Path> {
+        match self {
+            Self::Named(path) => Some(path.clone()),
+            Self::Unset | Self::Anonymous => None,
+        }
+    }
+
+    fn into_option(self) -> Option<Path> {
+        match self {
+            Self::Named(path) => Some(path),
+            Self::Anonymous => None,
+            Self::Unset => panic!("an OQueue needs a path or must be anonymous"),
+        }
+    }
+}
+
+impl Default for OQueueBuilder<false> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OQueueBuilder<false> {
+    /// Creates a builder for an observation OQueue.
+    pub fn new() -> Self {
+        Self {
+            len: 1024,
+            path: BuilderPath::Unset,
+            supports_observer_blocking_produce: true,
+            visibility: PhantomData,
+        }
+    }
+}
+
+impl<const ALLOW_CONSUMERS: bool, V, const USERSPACE_PRODUCIBLE: bool>
+    OQueueBuilder<ALLOW_CONSUMERS, V, USERSPACE_PRODUCIBLE>
+{
+    /// Sets the path of the OQueue.
+    pub fn path(mut self, path: Path) -> Self {
+        self.path = BuilderPath::Named(path);
+        self
+    }
+
+    /// Makes the OQueue anonymous and unregistered.
+    pub fn anonymous(self) -> OQueueBuilder<ALLOW_CONSUMERS, NoVisibility, USERSPACE_PRODUCIBLE> {
+        let mut builder = self.visibility(Visibility::None);
+        builder.path = BuilderPath::Anonymous;
+        builder
+    }
+
+    /// Sets where the named OQueue is registered.
+    pub fn visibility<W>(
+        self,
+        _visibility: W,
+    ) -> OQueueBuilder<ALLOW_CONSUMERS, W, USERSPACE_PRODUCIBLE> {
+        OQueueBuilder {
+            len: self.len,
+            path: self.path,
+            supports_observer_blocking_produce: self.supports_observer_blocking_produce,
+            visibility: PhantomData,
+        }
+    }
+
+    /// Sets the default ring buffer length for consumers and strong observers.
+    pub fn default_buffer_length(mut self, len: usize) -> Self {
+        self.len = len;
+        self
+    }
+
+    /// Disallows observers that can block producers.
+    pub fn non_blocking_produce(mut self) -> Self {
+        self.supports_observer_blocking_produce = false;
+        self
+    }
+
+    /// Allows consumers and production by value.
+    pub fn allow_consumers(self) -> OQueueBuilder<true, V, USERSPACE_PRODUCIBLE> {
+        OQueueBuilder {
+            len: self.len,
+            path: self.path,
+            supports_observer_blocking_produce: self.supports_observer_blocking_produce,
+            visibility: PhantomData,
+        }
+    }
+}
+
+impl<const ALLOW_CONSUMERS: bool> OQueueBuilder<ALLOW_CONSUMERS, PublicVisibility> {
+    /// Enables userspace production and consumption.
+    pub fn userspace_producible(self) -> OQueueBuilder<true, PublicVisibility, true> {
+        OQueueBuilder {
+            len: self.len,
+            path: self.path,
+            supports_observer_blocking_produce: self.supports_observer_blocking_produce,
+            visibility: PhantomData,
+        }
+    }
+}
+
+impl<V, const USERSPACE_PRODUCIBLE: bool> OQueueBuilder<false, V, USERSPACE_PRODUCIBLE> {
+    fn build_raw<D: ElementDescriptor + 'static>(self) -> GenericOQueueRef<D> {
+        let path = self.path.into_option();
+        GenericOQueueRef {
+            inner: Arc::new(implementation::OQueueImplementation::new(
+                self.len,
+                false,
+                self.supports_observer_blocking_produce,
+                path,
+            )),
+        }
+    }
+}
+
+impl<V, const USERSPACE_PRODUCIBLE: bool> OQueueBuilder<true, V, USERSPACE_PRODUCIBLE> {
+    fn build_raw<T: Send + 'static>(self) -> ConsumableOQueueRef<T> {
+        let path = self.path.into_option();
+        ConsumableOQueueRef {
+            inner: Arc::new(implementation::OQueueImplementation::new(
+                self.len,
+                true,
+                self.supports_observer_blocking_produce,
+                path,
+            )),
+        }
+    }
+}
+
+impl OQueueBuilder<false> {
+    /// Builds an OQueue and exports its default projection when named.
+    pub fn build<D, U>(self) -> GenericOQueueRef<D>
+    where
+        D: ElementDescriptor + 'static,
+        for<'a> D::Element<'a>: DefaultProjection<Projection = U>,
+        U: Copy + Send + serde::Serialize + 'static,
+    {
+        let path = self.path.named();
+        let queue = self.build_raw();
+        if let Some(path) = path {
+            registry::register_with::<D, U>(&path, &queue.as_any_oqueue());
+        }
+        queue
+    }
+}
+
+impl OQueueBuilder<true> {
+    /// Builds a consumable OQueue and exports its default projection when named.
+    pub fn build<T>(self) -> ConsumableOQueueRef<T>
+    where
+        T: Send + DefaultProjection + 'static,
+    {
+        let path = self.path.named();
+        let queue = self.build_raw();
+        if let Some(path) = path {
+            registry::register_with(&path, &queue.as_any_oqueue());
+        }
+        queue
+    }
+}
+
+impl OQueueBuilder<true, PublicVisibility, true> {
+    /// Builds an OQueue with userspace observation, production, and consumption.
+    pub fn build<T>(self) -> ConsumableOQueueRef<T>
+    where
+        T: Send + serde::Serialize + serde::de::DeserializeOwned + DefaultProjection + 'static,
+    {
+        let path = self.path.named();
+        let queue = self.build_raw();
+        if let Some(path) = path {
+            registry::register_public_producible(&path, &queue);
+        }
+        queue
+    }
+}
+
+impl OQueueBuilder<false, KernelVisibility> {
+    /// Builds an OQueue whose elements implement `DefaultProjection`.
+    pub fn build<D, U>(self) -> GenericOQueueRef<D>
+    where
+        D: ElementDescriptor + 'static,
+        for<'a> D::Element<'a>: DefaultProjection<Projection = U>,
+        U: Copy + Send + serde::Serialize + 'static,
+    {
+        self.build_unprojectable()
+    }
+
+    /// Builds an OQueue without requiring `DefaultProjection`.
+    pub fn build_unprojectable<D: ElementDescriptor + 'static>(self) -> GenericOQueueRef<D> {
+        let path = self.path.named();
+        let queue = self.build_raw();
+        if let Some(path) = path {
+            registry::register_no_export(&path, &queue.as_any_oqueue());
+        }
+        queue
+    }
+}
+
+impl OQueueBuilder<true, KernelVisibility> {
+    /// Builds a consumable OQueue whose elements implement `DefaultProjection`.
+    pub fn build<T: Send + DefaultProjection + 'static>(self) -> ConsumableOQueueRef<T> {
+        self.build_unprojectable()
+    }
+
+    /// Builds a consumable OQueue without requiring `DefaultProjection`.
+    pub fn build_unprojectable<T: Send + 'static>(self) -> ConsumableOQueueRef<T> {
+        let path = self.path.named();
+        let queue = self.build_raw();
+        if let Some(path) = path {
+            registry::register_no_export(&path, &queue.as_any_oqueue());
+        }
+        queue
+    }
+}
+
+impl OQueueBuilder<false, NoVisibility> {
+    /// Builds an OQueue whose elements implement `DefaultProjection`.
+    pub fn build<D, U>(self) -> GenericOQueueRef<D>
+    where
+        D: ElementDescriptor + 'static,
+        for<'a> D::Element<'a>: DefaultProjection<Projection = U>,
+        U: Copy + Send + serde::Serialize + 'static,
+    {
+        self.build_unprojectable()
+    }
+
+    /// Builds an OQueue without requiring `DefaultProjection`.
+    pub fn build_unprojectable<D: ElementDescriptor + 'static>(self) -> GenericOQueueRef<D> {
+        self.build_raw()
+    }
+}
+
+impl OQueueBuilder<true, NoVisibility> {
+    /// Builds a consumable OQueue whose elements implement `DefaultProjection`.
+    pub fn build<T: Send + DefaultProjection + 'static>(self) -> ConsumableOQueueRef<T> {
+        self.build_unprojectable()
+    }
+
+    /// Builds a consumable OQueue without requiring `DefaultProjection`.
+    pub fn build_unprojectable<T: Send + 'static>(self) -> ConsumableOQueueRef<T> {
+        self.build_raw()
+    }
+}
+
 use snafu::Snafu;
 
 use self::implementation::{InlineObserverKey, ObserverKey, WakeEvent};
@@ -272,9 +555,11 @@ pub fn trace_structured_data_at_path<'a, D, U, F>(
     let producer = producer.call_once(|| {
         let path = path_fn();
         let oqueue = registry::lookup_by_path::<D>(&path).unwrap_or_else(|| {
-            let oqueue = GenericOQueueRef::<D>::new(length, path.clone()).as_any_oqueue();
-            registry::register_with(&path, &oqueue);
-            oqueue
+            OQueueBuilder::new()
+                .default_buffer_length(length)
+                .path(path.clone())
+                .build::<D, U>()
+                .as_any_oqueue()
         });
         oqueue.attach_ref_producer().unwrap()
     });
@@ -508,30 +793,6 @@ impl<T: 'static> ConsumableOQueueRef<T> {
     }
 }
 
-impl<T: Send + 'static> ConsumableOQueueRef<T> {
-    /// Create a new OQueue with the specified buffer length and support for produce by value and
-    /// consumers.
-    pub fn new(len: usize, path: Path) -> Self {
-        let inner = Arc::new(implementation::OQueueImplementation::new(
-            len,
-            true,
-            Some(path.clone()),
-        ));
-        let ret = Self { inner };
-        registry::register_no_export(&path, &ret.as_any_oqueue());
-        ret
-    }
-
-    /// Create a new anonymous OQueue with the specified buffer length and support for produce by
-    /// value and consumers. This should only be used when the OQueue should never be discovered for
-    /// observation such as for ephemeral queues.
-    pub fn new_anonymous(len: usize) -> Self {
-        Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, true, None)),
-        }
-    }
-}
-
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(ConsumableOQueueRef, T: Send, LifetimelessElementDescriptor<T>, inner);
 impl_consumable_oqueue_forward!(ConsumableOQueueRef<T>, inner);
@@ -547,29 +808,6 @@ pub struct GenericOQueueRef<D: ElementDescriptor + 'static> {
 pub type OQueueRef<T> = GenericOQueueRef<<T as Element>::Descriptor>;
 
 clone_without_t!(GenericOQueueRef, : ElementDescriptor + 'static);
-
-impl<D: ElementDescriptor + 'static> GenericOQueueRef<D> {
-    /// Create a new observation OQueue with the specified buffer length.
-    pub fn new(len: usize, path: Path) -> Self {
-        let ret = Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(
-                len,
-                false,
-                Some(path.clone()),
-            )),
-        };
-        registry::register_no_export(&path, &ret.as_any_oqueue());
-        ret
-    }
-
-    /// Create a new observation OQueue with the specified buffer length. This should only be used
-    /// when the OQueue should never be discovered for observation such as for ephemeral queues.
-    pub fn new_anonymous(len: usize) -> Self {
-        Self {
-            inner: Arc::new(implementation::OQueueImplementation::new(len, false, None)),
-        }
-    }
-}
 
 // Manually forward do that we control the the exposed methods from OQueueImplementation
 impl_oqueue_base_forward!(GenericOQueueRef, D: ElementDescriptor, D, inner);
@@ -1050,7 +1288,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_consume() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -1063,7 +1306,10 @@ mod test {
     #[ktest]
     fn slow_strong_observer_is_revoked_not_blocking() {
         // A tiny observation queue with a strong observer that never observes.
-        let queue = OQueueRef::<u32>::new_anonymous(4);
+        let queue = OQueueBuilder::new()
+            .default_buffer_length(4)
+            .anonymous()
+            .build_unprojectable::<<u32 as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_revocable_strong_observer(Projection::identity())
@@ -1086,7 +1332,12 @@ mod test {
     #[ktest]
     fn space_freed_tracks_full_buffers() {
         // A length of 2 holds a single value, so one produce fills each ring.
-        let queue = ConsumableOQueueRef::<u32>::new(2, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(2)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<u32>();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
         let observer = queue
@@ -1134,7 +1385,12 @@ mod test {
     #[ktest]
     fn blocked_producer_is_not_held_back_by_full_revocable_observer() {
         // A length of 2 holds a single value, so one produce fills each ring.
-        let queue = ConsumableOQueueRef::<u32>::new(2, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(2)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<u32>();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -1178,7 +1434,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_strong_observe() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &Message| m.id))
@@ -1193,7 +1454,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_weak_observe_recent() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_weak_observer(1, Projection::new(|m: &Message| m.id))
@@ -1208,7 +1474,11 @@ mod test {
 
     #[ktest]
     fn oqueue_strong_observe() {
-        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<Message as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &Message| m.id))
@@ -1224,7 +1494,11 @@ mod test {
     #[ktest]
     fn oqueue_strong_observe_unsized() {
         let msg = &[1, 2, 3];
-        let queue = OQueueRef::<[u32]>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<[u32] as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &[u32]| m.len()))
@@ -1238,7 +1512,11 @@ mod test {
     }
 
     fn setup_for_weak_observation(history: usize) -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<Message as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(history, Projection::new(|m: &Message| m.id))
@@ -1426,7 +1704,11 @@ mod test {
 
     #[ktest]
     fn unsupported_consumer() {
-        let queue = OQueueRef::<u32>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<u32 as Element>::Descriptor>();
         assert_matches!(
             queue.as_any_oqueue().attach_consumer().err().unwrap(),
             OQueueError::Unsupported { .. }
@@ -1434,8 +1716,178 @@ mod test {
     }
 
     #[ktest]
+    fn builder_disallows_blocking_observers() {
+        let queue: OQueueRef<u32> = OQueueBuilder::new()
+            .anonymous()
+            .default_buffer_length(2)
+            .non_blocking_produce()
+            .build_unprojectable();
+        assert!(matches!(
+            queue.attach_strong_observer(Projection::identity()),
+            Err(OQueueError::Unsupported { .. })
+        ));
+        let observer = queue
+            .attach_revocable_strong_observer(Projection::identity())
+            .unwrap();
+        let _weak = queue
+            .attach_weak_observer(2, Projection::identity())
+            .unwrap();
+        let producer = queue.attach_ref_producer().unwrap();
+        producer.produce_ref(&1);
+        producer.produce_ref(&2);
+        assert_matches!(
+            observer.try_strong_observe(),
+            Err(OQueueError::Revoked { .. })
+        );
+    }
+
+    #[ktest]
+    fn builder_allows_consumers() {
+        let queue: ConsumableOQueueRef<u32> = OQueueBuilder::new()
+            .anonymous()
+            .default_buffer_length(2)
+            .allow_consumers()
+            .build_unprojectable();
+        let producer = queue.attach_value_producer().unwrap();
+        let consumer = queue.attach_consumer().unwrap();
+        producer.produce(7);
+        assert_eq!(consumer.try_consume(), Some(7));
+    }
+
+    #[ktest]
+    fn builder_exports_observation() {
+        let path = crate::path!(ostd.oqueue.builder_exported);
+        let _queue: OQueueRef<u32> = OQueueBuilder::new().path(path.clone()).build();
+        let export = registry::lookup_export(&path).unwrap();
+        assert!(export.supports_observe());
+        assert!(!export.supports_produce());
+    }
+
+    #[ktest]
+    fn builder_registers_kernel_only() {
+        struct Message;
+
+        let path = crate::path!(ostd.oqueue.builder_kernel);
+        let _queue: GenericOQueueRef<LifetimelessElementDescriptor<Message>> = OQueueBuilder::new()
+            .path(path.clone())
+            .visibility(Visibility::Kernel)
+            .build_unprojectable();
+        assert!(
+            registry::lookup_by_path::<LifetimelessElementDescriptor<Message>>(&path).is_some()
+        );
+        assert!(registry::lookup_export(&path).is_none());
+    }
+
+    #[ktest]
+    fn builder_registers_nowhere() {
+        struct Message;
+
+        let path = crate::path!(ostd.oqueue.builder_none);
+        let _queue: GenericOQueueRef<LifetimelessElementDescriptor<Message>> = OQueueBuilder::new()
+            .path(path.clone())
+            .visibility(Visibility::None)
+            .build_unprojectable();
+        assert!(
+            registry::lookup_by_path::<LifetimelessElementDescriptor<Message>>(&path).is_none()
+        );
+        assert!(registry::lookup_export(&path).is_none());
+    }
+
+    #[ktest]
+    fn builder_anonymous_overrides_path() {
+        let queue: OQueueRef<u32> = OQueueBuilder::new()
+            .path(crate::path!(ostd.oqueue.builder_anonymous))
+            .anonymous()
+            .build_unprojectable();
+        assert_eq!(queue.path(), None);
+    }
+
+    #[ktest]
+    fn builder_exports_production() {
+        let path = crate::path!(ostd.oqueue.builder_producible);
+        let _queue = OQueueBuilder::new()
+            .path(path.clone())
+            .userspace_producible()
+            .build::<u32>();
+        let export = registry::lookup_export(&path).unwrap();
+        assert!(export.supports_produce());
+        assert!(export.supports_consume());
+        assert!(export.supports_observe());
+    }
+
+    #[ktest]
+    fn builder_exports_noncopy_message() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Message(String);
+
+        impl DefaultProjection for Message {
+            type Projection = u32;
+
+            fn default_projection(&self) -> Self::Projection {
+                self.0.len() as u32
+            }
+        }
+
+        let path = crate::path!(ostd.oqueue.builder_projection);
+        let queue = OQueueBuilder::new()
+            .path(path.clone())
+            .userspace_producible()
+            .build::<Message>();
+        let export = registry::lookup_export(&path).unwrap();
+        assert!(export.supports_produce());
+        assert!(export.supports_consume());
+        assert_eq!(export.type_name(), core::any::type_name::<Message>());
+        let observer = export.attach_strong_observer().unwrap();
+        queue
+            .attach_value_producer()
+            .unwrap()
+            .produce(Message(String::from("abc")));
+
+        let mut record = Vec::new();
+        assert!(observer.try_read_into(&mut record).unwrap());
+        assert_eq!(record, vec![3]);
+    }
+
+    #[ktest]
+    fn builder_exports_borrowed_message() {
+        #[derive(Element)]
+        struct Borrowed<'a> {
+            value: &'a u32,
+        }
+
+        impl DefaultProjection for Borrowed<'_> {
+            type Projection = u32;
+
+            fn default_projection(&self) -> Self::Projection {
+                *self.value
+            }
+        }
+
+        let path = crate::path!(ostd.oqueue.builder_borrowed);
+        let queue: OQueueRef<Borrowed> = OQueueBuilder::new().path(path.clone()).build();
+        let observer = registry::lookup_export(&path)
+            .unwrap()
+            .attach_strong_observer()
+            .unwrap();
+        let value = 5;
+        queue
+            .attach_ref_producer()
+            .unwrap()
+            .produce_ref(&Borrowed { value: &value });
+
+        let mut record = Vec::new();
+        assert!(observer.try_read_into(&mut record).unwrap());
+        assert_eq!(record, vec![5]);
+    }
+
+    #[ktest]
     fn consumable_oqueue_strong_observe_filtered() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new_filter(|m: &Message| {
@@ -1468,7 +1920,11 @@ mod test {
     }
 
     fn setup_for_weak_observation_filtered() -> (RefProducer<Message>, WeakObserver<u32>) {
-        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<Message as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_weak_observer(
@@ -1487,7 +1943,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_produce() {
-        let queue = ConsumableOQueueRef::new(2, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(2)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let _consumer = queue.attach_consumer().unwrap();
 
@@ -1503,7 +1964,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_consume() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -1516,7 +1982,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_try_strong_observe() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &Message| m.id))
@@ -1531,7 +2002,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_inline_consumer() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let consumer = queue.attach_consumer().unwrap();
 
@@ -1560,7 +2036,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_inline_strong_observer() {
-        let queue = ConsumableOQueueRef::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable();
         let producer = queue.attach_value_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &Message| m.id))
@@ -1593,7 +2074,11 @@ mod test {
 
     #[ktest]
     fn oqueue_inline_strong_observer() {
-        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<Message as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
         let observer = queue
             .attach_strong_observer(Projection::new(|m: &Message| m.id))
@@ -1624,7 +2109,12 @@ mod test {
 
     #[ktest]
     fn consumable_oqueue_attach_inline_strong_observer() {
-        let queue = ConsumableOQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<Message>();
         let producer = queue.attach_value_producer().unwrap();
 
         let observed_messages: Arc<SpinLock<Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
@@ -1654,7 +2144,11 @@ mod test {
 
     #[ktest]
     fn oqueue_attach_inline_strong_observer() {
-        let queue = OQueueRef::<Message>::new(4, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .build_unprojectable::<<Message as Element>::Descriptor>();
         let producer = queue.attach_ref_producer().unwrap();
 
         let observed_messages: Arc<SpinLock<Vec<Message>>> = Arc::new(SpinLock::new(Vec::new()));
@@ -1685,97 +2179,166 @@ mod test {
 
     #[ktest]
     fn generic_produce_consume() {
-        generic_test::test_produce_consume(ConsumableOQueueRef::<generic_test::TestMessage>::new(
-            2,
-            Path::test(),
-        ));
+        generic_test::test_produce_consume(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(2)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
+        );
     }
 
     #[ktest]
     fn generic_produce_direct() {
-        generic_test::test_produce_direct(ConsumableOQueueRef::<generic_test::TestMessage>::new(
-            2,
-            Path::test(),
-        ));
+        generic_test::test_produce_direct(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(2)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
+        );
     }
 
     #[ktest]
     fn generic_produce_ref_direct() {
-        generic_test::test_produce_ref_direct(OQueueRef::<generic_test::TestMessage>::new(
-            2,
-            Path::test(),
-        ));
+        generic_test::test_produce_ref_direct(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(2)
+                .path(Path::test())
+                .build_unprojectable::<<generic_test::TestMessage as Element>::Descriptor>(),
+        );
     }
 
     #[ktest]
     fn generic_produce_strong_observe() {
         generic_test::test_produce_strong_observe(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(2, Path::test()),
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(2)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
         );
     }
 
     #[ktest]
     fn generic_produce_weak_observe() {
         generic_test::test_produce_weak_observe(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(3, Path::test()),
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(3)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
         );
     }
 
     #[ktest]
     fn generic_send_receive_blocker() {
-        let queue = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
+        let queue = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(16)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<generic_test::TestMessage>();
         generic_test::test_send_receive_blocker(queue, 32, 3);
     }
 
     #[ktest]
     fn send_multi_receive_blocker_observable() {
-        let oqueue1 = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
-        let oqueue2 = ConsumableOQueueRef::<generic_test::TestMessage>::new(16, Path::test());
+        let oqueue1 = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(16)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<generic_test::TestMessage>();
+        let oqueue2 = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(16)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<generic_test::TestMessage>();
         generic_test::test_send_multi_receive_blocker(oqueue1, oqueue2, 50);
     }
 
     #[ktest]
     fn generic_produce_strong_observe_only() {
-        generic_test::test_produce_strong_observe_only(ConsumableOQueueRef::<
-            generic_test::TestMessage,
-        >::new(2, Path::test()));
+        generic_test::test_produce_strong_observe_only(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(2)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
+        );
     }
 
     #[ktest]
     fn generic_consumer_late_attach() {
         generic_test::test_consumer_late_attach(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(4, Path::test()),
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(4)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
         );
     }
 
     #[ktest]
     fn generic_consumer_detach() {
-        generic_test::test_consumer_detach(ConsumableOQueueRef::<generic_test::TestMessage>::new(
-            4,
-            Path::test(),
-        ));
+        generic_test::test_consumer_detach(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(4)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
+        );
     }
 
     #[ktest]
     fn generic_strong_observer_detach() {
         generic_test::test_strong_observer_detach(
-            ConsumableOQueueRef::<generic_test::TestMessage>::new(4, Path::test()),
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(4)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
         );
     }
 
     #[ktest]
     fn generic_strong_observer_late_attach() {
-        generic_test::test_strong_observer_late_attach(ConsumableOQueueRef::<
-            generic_test::TestMessage,
-        >::new(4, Path::test()));
+        generic_test::test_strong_observer_late_attach(
+            OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(4)
+                .path(Path::test())
+                .allow_consumers()
+                .build_unprojectable::<generic_test::TestMessage>(),
+        );
     }
 
     #[ktest]
     fn oqueue_path() {
-        let named = ConsumableOQueueRef::<u32>::new(4, Path::test());
+        let named = OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(Path::test())
+            .allow_consumers()
+            .build_unprojectable::<u32>();
         assert_eq!(named.path(), Some(&Path::test()));
 
-        let anon = ConsumableOQueueRef::<u32>::new_anonymous(4);
+        let anon = OQueueBuilder::new()
+            .default_buffer_length(4)
+            .anonymous()
+            .allow_consumers()
+            .build_unprojectable::<u32>();
         assert_eq!(anon.path(), None);
     }
 }

@@ -14,12 +14,11 @@ use serde::Serialize;
 use crate::{
     orpc::{
         oqueue::{
-            ConsumableOQueueRef, ElementDescriptor, GenericAnyOQueueRef,
-            LifetimelessElementDescriptor, OQueueBase as _, Projection, WeakAnyOQueueRef,
+            ConsumableOQueueRef, ElementDescriptor, GenericAnyOQueueRef, OQueueBase as _,
+            Projection, WeakAnyOQueueRef,
             default_projection::DefaultProjection,
             export::{
-                OQueueExport, OQueueExportHandle, make_export, make_export_with,
-                make_produce_export,
+                OQueueExport, OQueueExportHandle, make_export_with, make_public_producible_export,
             },
         },
         path::{Path, PathPattern},
@@ -128,21 +127,6 @@ fn exports() -> MutexGuard<'static, Option<BTreeMap<Path, Arc<dyn OQueueExport>>
     guard
 }
 
-/// Registers an OQueue at `path` and exports it to userspace with the message type's derived
-/// `Serialize` implementation (the whole message is streamed).
-///
-/// This is the common case for exportable queues: the message type just needs
-/// `#[derive(Serialize)]` (plus `Copy`, since the whole value is observed). Use
-/// [`register_with_projection`] to provide a projection, [`register_with`] to use the message
-/// type's [`DefaultProjection`], or [`register_no_export`] for queues that must not be exported.
-pub fn register<T: Copy + Send + Serialize + 'static>(
-    path: &Path,
-    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-) {
-    ensure_registered(path, oqueue);
-    insert_export(path, make_export(oqueue));
-}
-
 /// Registers an OQueue at `path` and exports it to userspace using the element's default projection.
 ///
 /// The projected value (which must be `Copy + Serialize`) is what appears in the stream. Use
@@ -177,23 +161,13 @@ pub fn register_with_projection<D, U>(
     insert_export(path, make_export_with(oqueue, projection));
 }
 
-/// Registers a [`super::ConsumableOQueue`] at `path` and exports it to userspace for production
-/// and consumption: a userspace writer can attach a producer (e.g. via the OQueue filesystem's
-/// `produce` file) and send values of type `T` into the queue by writing their CBOR encoding, and
-/// a userspace reader can attach a consumer.
-///
-/// Unlike [`register`], [`register_with`], and [`register_with_projection`], this is for produce and
-/// consume in userspace; only a [`ConsumableOQueueRef`] can be passed.
-///
-/// # Panics
-///
-/// Panics if a live export already exists at `path`.
-pub fn register_producible<T: Copy + Send + Serialize + serde::de::DeserializeOwned + 'static>(
-    path: &Path,
-    oqueue: &ConsumableOQueueRef<T>,
-) {
+/// Registers a consumable OQueue with userspace observation, production, and consumption.
+pub fn register_public_producible<T>(path: &Path, oqueue: &ConsumableOQueueRef<T>)
+where
+    T: Send + Serialize + serde::de::DeserializeOwned + DefaultProjection + 'static,
+{
     ensure_registered(path, &oqueue.as_any_oqueue());
-    insert_export(path, make_produce_export(oqueue));
+    insert_export(path, make_public_producible_export(oqueue));
 }
 
 /// Inserts an export handle into [`OQFS_REGISTRY`], enforcing one export per path.
@@ -310,13 +284,20 @@ fn get_type_map<'a, D: ElementDescriptor + 'static>(
 mod test {
     use super::*;
     use crate::{
-        orpc::oqueue::{ConsumableOQueue as _, OQueue as _},
+        orpc::oqueue::{
+            ConsumableOQueue as _, LifetimelessElementDescriptor, OQueue as _, Visibility,
+        },
         path, path_pattern,
         prelude::*,
     };
 
     fn new_oqueue(path: &Path) -> ConsumableOQueueRef<usize> {
-        ConsumableOQueueRef::<usize>::new(4, path.clone())
+        crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build_unprojectable::<usize>()
     }
 
     #[ktest(expect_redundant_test_prefix)]
@@ -399,8 +380,11 @@ mod test {
     #[ktest]
     fn export_registration_and_streaming() {
         let path = path!(observe.test[1]);
-        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
-        register(&path, &queue.as_any_oqueue());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(16)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         // The queue is discoverable by path alone, without naming its message type.
         assert!(list_export_paths().contains(&path));
@@ -432,8 +416,11 @@ mod test {
     #[ktest]
     fn export_is_independent_per_open() {
         let path = path!(observe.multi[1]);
-        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
-        register(&path, &queue.as_any_oqueue());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(16)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
         let handle = lookup_export(&path).unwrap();
 
         // Two independent observers each receive the full stream.
@@ -458,8 +445,11 @@ mod test {
     #[ktest]
     fn export_replaces_dead_entry_after_cleanup() {
         let path = path!(observe.dup[1]);
-        let queue1 = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        register(&path, &queue1.as_any_oqueue());
+        let queue1 = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         // Once the underlying queue is gone the handle is dead and `clean_exports` reaps it, so
         // registering a fresh queue at the same path afterward is not a double-exposure.
@@ -468,8 +458,11 @@ mod test {
         clean_exports();
         assert!(lookup_export(&path).is_none());
 
-        let queue2 = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        register(&path, &queue2.as_any_oqueue());
+        let _queue2 = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
         assert_eq!(
             list_export_paths().iter().filter(|p| **p == path).count(),
             1
@@ -480,38 +473,28 @@ mod test {
     #[should_panic]
     fn export_rejects_duplicate_live_export() {
         let path = path!(observe.dup2[1]);
-        let queue1 = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        register(&path, &queue1.as_any_oqueue());
+        let _queue1 = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
 
         // A second, live export at the same path must fail loudly rather than being silently
         // dropped (it is a one-stream-per-path programming error).
-        let queue2 = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        register(&path, &queue2.as_any_oqueue());
+        let _queue2 = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(4)
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
     }
 
     #[ktest]
-    fn register_populates_both_maps() {
+    fn builder_populates_both_maps() {
         let path = path!(observe.both[1]);
-        // The constructor registers to TYPED_OQUEUE_REGISTRY only; the queue is not exported yet.
-        let queue = ConsumableOQueueRef::<usize>::new(4, path.clone());
-        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
-        assert!(lookup_export(&path).is_none());
-
-        // `register` adds it to OQFS_REGISTRY while keeping the TYPED_OQUEUE_REGISTRY entry.
-        register(&path, &queue.as_any_oqueue());
-        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
-        assert!(lookup_export(&path).is_some());
-    }
-
-    #[ktest]
-    fn register_covers_anonymous_queue() {
-        let path = path!(observe.anon[1]);
-        // An anonymous queue is not registered by its constructor.
-        let queue = ConsumableOQueueRef::<usize>::new_anonymous(4);
-        assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_none());
-
-        // `register` puts it in both maps: `ensure_registered` covers TYPED_OQUEUE_REGISTRY.
-        register(&path, &queue.as_any_oqueue());
+        let _queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .path(path.clone())
+            .allow_consumers()
+            .build::<usize>();
         assert!(lookup_by_path::<LifetimelessElementDescriptor<usize>>(&path).is_some());
         assert!(lookup_export(&path).is_some());
     }
@@ -523,7 +506,12 @@ mod test {
         struct Sample(u64);
 
         let path = path!(observe.proj[1]);
-        let queue = ConsumableOQueueRef::<Sample>::new(16, path.clone());
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(16)
+            .path(path.clone())
+            .allow_consumers()
+            .build_unprojectable::<Sample>();
         // Export only the inner value via a projection; `Sample` itself need not be `Serialize`.
         register_with_projection(
             &path,
@@ -553,7 +541,12 @@ mod test {
         }
 
         let path = path!(observe.borrowed[1]);
-        let queue = crate::orpc::oqueue::OQueueRef::<Borrowed>::new(4, path.clone());
+        let queue: crate::orpc::oqueue::OQueueRef<Borrowed> =
+            crate::orpc::oqueue::OQueueBuilder::new()
+                .visibility(Visibility::Kernel)
+                .default_buffer_length(4)
+                .path(path.clone())
+                .build_unprojectable();
         register_with_projection(
             &path,
             &queue.as_any_oqueue(),

@@ -9,9 +9,9 @@
 //! The OQueue [`registry`](super::registry) is keyed by the message type `T`, which callers must
 //! name statically. A generic consumer such as the OQueue filesystem holds only a
 //! [`Path`](crate::orpc::path::Path) and cannot recover `T` — Rust has no runtime reflection. To
-//! bridge this gap, [`register`](super::registry::register) (and its projecting sibling
-//! [`register_with`](super::registry::register_with)) capture — at registration time, when `T` is
-//! known — a type-erased [`OQueueExport`] handle that knows how to attach an observer and encode
+//! bridge this gap, [`OQueueBuilder`](super::OQueueBuilder) and
+//! [`register_with_projection`](super::registry::register_with_projection) capture — at registration
+//! time, when `T` is known — a type-erased [`OQueueExport`] handle that knows how to attach an observer and encode
 //! the observed values as CBOR. The queue can then be streamed by path alone, without the reader
 //! naming `T`.
 
@@ -24,9 +24,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use snafu::Snafu;
 
 use super::{
-    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, ElementDescriptor, GenericAnyOQueueRef,
-    LifetimelessElementDescriptor, OQueueBase as _, OQueueError, Projection, RevokedSnafu,
-    StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
+    ConsumableOQueue as _, ConsumableOQueueRef, Consumer, DefaultProjection, ElementDescriptor,
+    GenericAnyOQueueRef, LifetimelessElementDescriptor, OQueueBase as _, OQueueError, Projection,
+    RevokedSnafu, StrongObserver, UnsupportedSnafu, ValueProducer, WakeHook, WeakAnyOQueueRef,
 };
 
 /// A message-type-erased handle to an OQueue that has been exported for userspace consumption.
@@ -34,9 +34,7 @@ use super::{
 /// Stored in the export registry so consumers can enumerate and read queues by
 /// [`Path`](crate::orpc::path::Path) without naming the message type. An export can independently
 /// carry an observe attachment, a produce attachment, and a consume attachment:
-/// [`register`](super::registry::register) / [`register_with`](super::registry::register_with) add
-/// an observe attachment, and [`register_producible`](super::registry::register_producible) adds a
-/// produce attachment and a consume attachment. This is a factory: attaching mints a fresh
+/// [`OQueueBuilder`](super::OQueueBuilder) configures the attachments when the queue is built. This is a factory: attaching mints a fresh
 /// per-reader (or per-writer) handle.
 pub trait OQueueExport: Send + Sync {
     /// Returns the name of the message type, for use in file metadata.
@@ -176,7 +174,7 @@ type AttachReaderFn<D> =
     Box<dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborReader>, OQueueError> + Send + Sync>;
 
 /// A closure that attaches a fresh producer to an OQueue and wraps it as a [`CborProducer`]. Only
-/// present on exports registered via [`super::registry::register_producible`].
+/// present on exports configured with [`userspace_producible`](super::OQueueBuilder::userspace_producible).
 type AttachProducerFn<D> = Box<
     dyn Fn(&GenericAnyOQueueRef<D>) -> Result<Box<dyn CborProducer>, OQueueError> + Send + Sync,
 >;
@@ -317,23 +315,6 @@ where
 }
 
 /// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
-/// whole message is streamed via the identity projection (so the message type's derived
-/// `Serialize` is used).
-pub(super) fn make_export<T: Copy + Send + Serialize + 'static>(
-    oqueue: &GenericAnyOQueueRef<LifetimelessElementDescriptor<T>>,
-) -> OQueueExportHandle<LifetimelessElementDescriptor<T>> {
-    OQueueExportHandle {
-        weak: oqueue.downgrade(),
-        type_name: core::any::type_name::<T>(),
-        observe: Some(Box::new(|oqueue| {
-            attach_cbor_observer(oqueue, Projection::identity())
-        })),
-        produce: None,
-        consume: None,
-    }
-}
-
-/// Builds a type-erased export handle carrying only an observe attachment for an OQueue whose
 /// messages are streamed through `query`, which produces the `Copy + Serialize` stream values.
 pub(super) fn make_export_with<D, U>(
     oqueue: &GenericAnyOQueueRef<D>,
@@ -409,11 +390,11 @@ impl<T: Send + DeserializeOwned + 'static> CborProducer for CborValueProducer<T>
 
 /// Builds a type-erased export handle carrying a produce attachment and a consume attachment for
 /// a [`super::ConsumableOQueue`]: it accepts values produced from userspace and streams values
-/// consumed from the queue (see [`super::registry::register_producible`]).
+/// consumed from the queue.
 ///
 /// Requiring `&ConsumableOQueueRef<T>` (rather than the type-erased `&GenericAnyOQueueRef<T>`) enforces at
 /// compile time that only a `ConsumableOQueue` can be made producible.
-pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned + 'static>(
+pub(super) fn make_produce_export<T: Send + Serialize + DeserializeOwned + 'static>(
     oqueue: &ConsumableOQueueRef<T>,
 ) -> OQueueExportHandle<LifetimelessElementDescriptor<T>> {
     OQueueExportHandle {
@@ -431,12 +412,33 @@ pub(super) fn make_produce_export<T: Copy + Send + Serialize + DeserializeOwned 
     }
 }
 
+/// Builds one export handle with observation, production, and consumption attachments.
+pub(super) fn make_public_producible_export<T>(
+    oqueue: &ConsumableOQueueRef<T>,
+) -> OQueueExportHandle<LifetimelessElementDescriptor<T>>
+where
+    T: Send + Serialize + DeserializeOwned + DefaultProjection + 'static,
+{
+    let observe = make_export_with(
+        &oqueue.as_any_oqueue(),
+        Projection::new(|message: &T| message.default_projection()),
+    );
+    let produce = make_produce_export(oqueue);
+    OQueueExportHandle {
+        weak: observe.weak,
+        type_name: core::any::type_name::<T>(),
+        observe: observe.observe,
+        produce: produce.produce,
+        consume: produce.consume,
+    }
+}
+
 #[cfg(ktest)]
 mod test {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{path, prelude::*};
+    use crate::{orpc::oqueue::Visibility, path, prelude::*};
 
     /// Decode a self-delimiting CBOR stream of records, as produced by a reader.
     fn decode_records(buf: &[u8]) -> Vec<u64> {
@@ -451,22 +453,12 @@ mod test {
     #[ktest]
     fn handle_serves_observe_and_produce_independently() {
         let path = path!(export.bidirectional[1]);
-        let queue = ConsumableOQueueRef::<usize>::new(16, path.clone());
-
-        // A single `OQueueExportHandle` can carry both attachments at once; this is representable
-        // even though the registry no longer lets two separate registrations at the same path
-        // merge into one (see `registry::insert_export`). Combine the observe half from
-        // `make_export` and the produce half from `make_produce_export` into one handle, exactly
-        // as a caller who needs both would build it directly.
-        let observe_only = make_export(&queue.as_any_oqueue());
-        let produce_only = make_produce_export(&queue);
-        let handle = OQueueExportHandle {
-            weak: observe_only.weak,
-            type_name: observe_only.type_name,
-            observe: observe_only.observe,
-            produce: produce_only.produce,
-            consume: produce_only.consume,
-        };
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .default_buffer_length(16)
+            .path(path.clone())
+            .userspace_producible()
+            .build::<usize>();
+        let handle = crate::orpc::oqueue::registry::lookup_export(&path).unwrap();
         assert!(handle.supports_observe());
         assert!(handle.supports_produce());
         assert!(handle.supports_consume());
@@ -501,7 +493,12 @@ mod test {
 
     #[ktest]
     fn reader_on_ready_runs_after_each_produce() {
-        let queue = ConsumableOQueueRef::<usize>::new(4, path!(export.wake_hook[0]));
+        let queue = crate::orpc::oqueue::OQueueBuilder::new()
+            .visibility(Visibility::Kernel)
+            .default_buffer_length(4)
+            .path(path!(export.wake_hook[0]))
+            .allow_consumers()
+            .build_unprojectable::<usize>();
         let handle = make_produce_export(&queue);
         let reader = handle.attach_consumer().unwrap();
         let producer = queue.attach_value_producer().unwrap();

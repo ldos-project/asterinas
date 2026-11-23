@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// An event on a PI futex.
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, ostd::orpc::oqueue::Projectable)]
 pub(crate) struct PiFutexEvent {
     /// The monotonic time of the event, in nanoseconds.
     pub time_ns: u64,
@@ -111,7 +111,7 @@ pub(crate) fn policy_of(thread: &Thread) -> SchedPolicyView {
 #[cfg(not(baseline_asterinas))]
 mod imp {
     use ostd::{
-        orpc::oqueue::{GenericOQueueRef, OQueue as _, OQueueBase as _, RefProducer, registry},
+        orpc::oqueue::{OQueue as _, RefProducer},
         path,
     };
     use spin::Once;
@@ -122,9 +122,10 @@ mod imp {
 
     pub(crate) fn init() {
         PRODUCER.call_once(|| {
-            let path = path!(futex.pi.events);
-            let oqueue = GenericOQueueRef::new(1024, path.clone());
-            registry::register(&path, &oqueue.as_any_oqueue());
+            let oqueue = ostd::orpc::oqueue::OQueueBuilder::new()
+                .default_buffer_length(1024)
+                .path(path!(futex.pi.events))
+                .build();
             oqueue
                 .attach_ref_producer()
                 .expect("a new OQueue always allows a ref producer")

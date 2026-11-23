@@ -85,16 +85,28 @@ rare. Most observation will be done using one of the tracing macros. See
 [Ad-hoc OQueues](#ad-hoc-oqueues) and [Method OQueues](#method-oqueues).
 
 ```rust
-let queue = OQueueRef::new(64, path!(test.oqueue));
+#[derive(Element, DefaultProjection)]
+struct Event { x: u32, y: u32 }
+
+let queue: OQueueRef<Event> = OQueueBuilder::new()
+    .path(path!(test.oqueue))
+    .default_buffer_length(64)
+    .build();
 let producer = queue.attach_ref_producer()?;
-let strong_observer = queue.attach_strong_observer(Projection::new(|e| e.x))?;
-let weak_observer = queue.attach_weak_observer(Projection::new(|e| e.y))?;
+let strong_observer = queue.attach_strong_observer(Projection::new(|e: &Event| e.x))?;
+let weak_observer = queue.attach_weak_observer(10, Projection::new(|e: &Event| e.y))?;
 
-producer.produce(&v);
+producer.produce_ref(&Event { x: 1, y: 2 });
 
-let x = strong_observer.observe();
-let ys = weak_observer.weak_observe_recent(10);
+let x = strong_observer.strong_observe()?;
+let ys = weak_observer.weak_observe_recent(10)?;
 ```
+
+Named queues are exported to userspace through their default projection.
+Use `.visibility(Visibility::Kernel)` for kernel lookup without userspace export, or
+`.anonymous()` for a queue without a registered path.
+For elements without `DefaultProjection`, use `build_unprojectable()` with either of those options.
+Add `.allow_consumers()` to create a queue that transfers ownership to consumers.
 
 Strong observers and consumers can cause the producer to block if they do not process values fast
 enough. However, weak observers can never block the queue because they are not guaranteed to see
